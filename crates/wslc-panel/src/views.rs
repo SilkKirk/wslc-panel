@@ -318,21 +318,17 @@ pub fn dashboard(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                 .gap_4()
                 .items_start()
                 .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap_4()
-                        .child(card(
-                            "客户端",
-                            v_flex()
-                                .w_full()
-                                .gap_2()
-                                .child(kv("WSL 版本", client.version.clone()))
-                                .child(kv("内核版本", client.kernel_version.clone()))
-                                .child(kv("Windows", client.windows_version.clone()))
-                                .child(kv("Direct3D", client.direct3d_version.clone()))
-                                .child(kv("DXCore", client.dxcore_version.clone())),
-                        )),
+                    v_flex().flex_1().min_w_0().gap_4().child(card(
+                        "客户端",
+                        v_flex()
+                            .w_full()
+                            .gap_2()
+                            .child(kv("WSL 版本", client.version.clone()))
+                            .child(kv("内核版本", client.kernel_version.clone()))
+                            .child(kv("Windows", client.windows_version.clone()))
+                            .child(kv("Direct3D", client.direct3d_version.clone()))
+                            .child(kv("DXCore", client.dxcore_version.clone())),
+                    )),
                 )
                 .child(
                     v_flex()
@@ -418,8 +414,11 @@ fn storage_rows(state: &AppState, entity: &Entity<Shell>) -> Vec<AnyElement> {
 
     vec![
         kv("storagePath", configured_text).into_any_element(),
-        kv_block("实际目录（storagePath 展开后）", storage.base.display().to_string())
-            .into_any_element(),
+        kv_block(
+            "实际目录（storagePath 展开后）",
+            storage.base.display().to_string(),
+        )
+        .into_any_element(),
         kv_block("会话磁盘（VHD）", vhd_text).into_any_element(),
         reveal_storage_button(entity),
     ]
