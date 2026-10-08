@@ -1313,7 +1313,8 @@ fn refresh_secs_picker(state: &AppState, entity: &Entity<Shell>) -> impl IntoEle
 ///    必须在有 `&mut Window` 的地方（见 `Shell::open_pull_dialog`）；
 /// 2. **持有** —— `Shell::pull_input: Option<Entity<InputState>>`；
 /// 3. **渲染** —— 就是这里的 `Input::new(input)`；
-/// 4. **读值** —— `input.read(cx).value(cx)`（见 `Shell::confirm_pull`）。
+/// 4. **读值** —— `input.read(cx).value()`（见 `Shell::confirm_pull`；
+///    注意 `value` 不带参数，见那里的注释）。
 ///
 /// 焦点在打开弹窗时由 `window.focus(&handle, cx)` 交给输入框，
 /// 用的是公开的 `InputState::focus_handle`（`InputState::focus` 是

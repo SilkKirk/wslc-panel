@@ -95,7 +95,10 @@ impl Shell {
         let Some(input) = self.pull_input.clone() else {
             return;
         };
-        let reference = input.read(cx).value(cx).trim().to_owned();
+        // 注意：`InputState::value` **不带参数**（`pub fn value(&self) -> SharedString`，
+        // gpui-base/src/input/base/state.rs:1257）。
+        // gpui-component 里另有一个 `value(&self, cx)`，那是别的类型，别混。
+        let reference = input.read(cx).value().trim().to_owned();
 
         if reference.is_empty() {
             self.state.notify(Toast::error("请先填写镜像引用"));
