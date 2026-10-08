@@ -107,7 +107,9 @@ mod tests {
         let items: Vec<ImageListItem> = crate::jsonl::parse_lines(FIXTURE).unwrap();
         let hello: Vec<_> = items.iter().filter(|i| i.id == "e2ac70e7319a").collect();
         assert_eq!(hello.len(), 2, "同一镜像 ID 应出现两次（不同 Repository）");
-        let refs: Vec<String> = hello.iter().map(ImageListItem::reference).collect();
+        // 注意：`hello` 是 `Vec<&ImageListItem>`，所以 `hello.iter()` 给出的是
+        // `&&ImageListItem`，不能直接把 `ImageListItem::reference` 当函数用。
+        let refs: Vec<String> = hello.iter().map(|i| i.reference()).collect();
         assert!(refs.contains(&"docker.1panel.live/library/hello-world:latest".to_owned()));
         assert!(refs.contains(&"hello-world:latest".to_owned()));
     }

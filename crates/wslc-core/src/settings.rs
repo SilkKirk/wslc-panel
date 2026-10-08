@@ -168,7 +168,11 @@ pub struct SettingsValues {
 
 impl SettingsValues {
     /// 按 [`SETTING_KEYS`] 的顺序取出 `(描述, 生效值)` 列表。
-    pub fn iter(&self) -> Vec<(&'static SettingKey, Option<String>)> {
+    ///
+    /// 刻意**不叫 `iter`**：它返回的是 `Vec` 而不是迭代器，
+    /// 叫 `iter` 会遮蔽 `slice::iter`，让 `values.iter().all(...)` 这类写法
+    /// 产生"method not found"的迷惑错误（CI 上踩过一次）。
+    pub fn entries(&self) -> Vec<(&'static SettingKey, Option<String>)> {
         SETTING_KEYS.iter().map(|k| (k, self.get(k))).collect()
     }
 
@@ -529,7 +533,7 @@ mod tests {
         let values = doc().values();
         assert_eq!(values.cpu_count, None);
         assert_eq!(values.credential_store, None);
-        assert!(values.iter().all(|(_, v)| v.is_none()));
+        assert!(values.entries().iter().all(|(_, v)| v.is_none()));
     }
 
     #[test]

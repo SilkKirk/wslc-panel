@@ -180,7 +180,7 @@ fn settings_fixture_round_trip_preserves_comments() {
     let mut doc = SettingsDoc::from_text("settings.yaml", include_str!("fixtures/settings.yaml"));
 
     // 出厂状态下每一项都是注释 = 使用内置默认值。
-    assert!(doc.values().iter().all(|(_, v)| v.is_none()));
+    assert!(doc.values().entries().iter().all(|(_, v)| v.is_none()));
 
     // 改写一项，必须保留它上方的英文说明和其它所有内容。
     assert!(doc.set(Some("session"), "cpuCount", Some("4")));

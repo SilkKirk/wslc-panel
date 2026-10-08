@@ -67,7 +67,7 @@ jobs:
         run: cargo check -p wslc-panel --bins
 
   lint:
-    name: 格式与 clippy（建议性，不阻塞）
+    name: 格式与 clippy（只报告，不阻塞）
     runs-on: windows-latest
     timeout-minutes: 60
     continue-on-error: true
@@ -82,8 +82,34 @@ jobs:
       - name: 缓存 cargo 与 target
         uses: Swatinem/rust-cache@v2
 
+      # 本机没有 Rust 工具链，所以这里是唯一能拿到 rustfmt diff 的地方。
+      # 输出同时进日志和 Step Summary，方便直接照抄回去。
       - name: rustfmt
-        run: cargo fmt --all -- --check
+        shell: pwsh
+        run: |
+          $out = (cargo fmt --all -- --check 2>&1 | Out-String)
+          $code = $LASTEXITCODE
+          Write-Output $out
+          if ($code -ne 0) {
+            Write-Output "::warning title=rustfmt::代码未通过 rustfmt 检查，需要运行 cargo fmt"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## rustfmt 需要调整`n`n``````diff`n$out`n``````"
+          } else {
+            Write-Output "rustfmt 通过"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## rustfmt 通过"
+          }
+          exit 0
 
       - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        shell: pwsh
+        run: |
+          $out = (cargo clippy --workspace --all-targets --message-format short 2>&1 | Out-String)
+          Write-Output $out
+          $warn = ($out -split "`n" | Where-Object { $_ -match '^(warning|error)' }).Count
+          if ($warn -gt 0) {
+            Write-Output "::warning title=clippy::clippy 报告了 $warn 条问题"
+            $tail = ($out -split "`n" | Where-Object { $_ -match '^(warning|error)' } | Select-Object -First 100) -join "`n"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## clippy（$warn 条）`n`n``````n$tail`n``````"
+          } else {
+            Write-Output "clippy 通过"
+          }
+          exit 0

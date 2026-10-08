@@ -1,5 +1,8 @@
 # wslc-panel
 
+[![CI](https://github.com/SilkKirk/wslc-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/SilkKirk/wslc-panel/actions/workflows/ci.yml)
+[![Release](https://github.com/SilkKirk/wslc-panel/actions/workflows/release.yml/badge.svg)](https://github.com/SilkKirk/wslc-panel/actions/workflows/release.yml)
+
 **WSL 容器（wslc）管理面板** —— Rust + [GPUI](https://gpui.rs)（Zed 的 GPU 加速 UI 框架）。
 
 面向 Windows 上 **WSL 3.x 的容器功能**（`wslc.exe`）：不依赖 Docker Desktop，
@@ -45,10 +48,22 @@
 
 ## 快速开始
 
-> ⚠️ 本机当前**没有安装 Rust 工具链**（也没有 MSVC 链接器）。先完成第 0 步。
+**前置条件**：Windows 上装有 **WSL 3.0 以上版本**（提供 `wslc.exe`）。
+若安装在非默认路径，设置环境变量 `WSLC_PATH` 指向 `wslc.exe`。
+
+### 方式一：直接下载（推荐）
+
+到 [Releases](https://github.com/SilkKirk/wslc-panel/releases) 下载
+`wslc-panel-vX.Y.Z-windows-x64.zip`，解压后直接运行 `wslc-panel.exe`。
+
+单文件、无需安装、不依赖 WebView2 或任何运行时。
+
+### 方式二：从源码编译
+
+> ⚠️ 需要 Rust 工具链 + MSVC 链接器（约数 GB）。本机当前**两者都没有**。
 
 ```powershell
-# 0) 安装工具链（一次性，数 GB 下载）
+# 0) 安装工具链（一次性）
 winget install --id Rustlang.Rustup
 winget install --id Microsoft.VisualStudio.2022.BuildTools `
   --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
@@ -62,8 +77,16 @@ cargo test -p wslc-core
 cargo run -p wslc-panel
 ```
 
-前置条件：**Windows 上装有 WSL 3.0 以上版本**（提供 `wslc.exe`）。
-若安装在非默认路径，设置环境变量 `WSLC_PATH` 指向 `wslc.exe`。
+### 方式三：用 CI 验证（本机没有工具链时）
+
+仓库里的 GitHub Actions 就是为此准备的 —— Windows runner 自带 Rust 与 MSVC：
+
+| Workflow | 触发 | 作用 |
+|---|---|---|
+| [`ci.yml`](.github/workflows/ci.yml) | 任意 push / PR | `wslc-core` 测试 + 整个 workspace 的 `cargo check` |
+| [`release.yml`](.github/workflows/release.yml) | 推 `v*` 标签，或手动触发 | 编译 release、打包 zip、建 Release |
+
+在 Actions 页手动触发 `release.yml`，就能在不打标签的情况下验证"exe 能不能产出"。
 
 ---
 
