@@ -11,11 +11,12 @@
 //! 4. **并发读 stdout/stderr** —— 单线程读其中一个管道会死锁。
 
 use std::ffi::OsString;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::decode;
@@ -244,9 +245,49 @@ impl Wslc {
         cmd.spawn().map(|_| ()).map_err(|e| self.map_spawn_error(e))
     }
 
+    /// 边跑边读：把子进程的 stdout/stderr **逐行**回调出去。
+    ///
+    /// `run` 系方法会把输出缓冲到进程结束才返回，只适合短命令；
+    /// 而 `wslc pull` 可能跑几分钟，用户需要看到实时进度，所以用这个。
+    ///
+    /// `on_line` 会在**两个**读取线程上被调用（stdout 一个、stderr 一个），
+    /// 因此要求 `Send + Sync`，实现里也不该长时间持锁。
+    ///
+    /// 注意：单线程读其中一个管道会死锁（管道缓冲区写满后子进程卡住），
+    /// 所以这里一定并发读 —— 和 `run` 的处理一致。
+    pub fn spawn_streaming(
+        &self,
+        args: &[&str],
+        on_line: impl Fn(&str) + Send + Sync + 'static,
+    ) -> Result<StreamHandle> {
+        let owned = self.command_args(args);
+        let mut cmd = self.build_command(&owned);
+        let mut child = cmd.spawn().map_err(|e| self.map_spawn_error(e))?;
+
+        let callback: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(on_line);
+
+        let mut pipes: Vec<Box<dyn Read + Send>> = Vec::new();
+        if let Some(out) = child.stdout.take() {
+            pipes.push(Box::new(out));
+        }
+        if let Some(err) = child.stderr.take() {
+            pipes.push(Box::new(err));
+        }
+
+        let readers = pipes
+            .into_iter()
+            .map(|pipe| spawn_line_reader(pipe, Arc::clone(&callback)))
+            .collect();
+
+        Ok(StreamHandle {
+            child: Arc::new(Mutex::new(child)),
+            readers,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
     /// 构造 `Command`（不含超时/取消逻辑）。
-    fn build_command(&self, args: &[String]) -> Command {
-        let mut cmd = Command::new(&self.program);
+    fn build_command(&self, args: &[String]) -> Command {        let mut cmd = Command::new(&self.program);
         cmd.args(args);
 
         // 关键：不设这个，wslc 输出 UTF-16LE。
@@ -411,6 +452,118 @@ pub fn to_os_strings(args: &[String]) -> Vec<OsString> {
     args.iter().map(OsString::from).collect()
 }
 
+// ---------------------------------------------------------------------------
+// 流式执行
+// ---------------------------------------------------------------------------
+
+/// [`Wslc::spawn_streaming`] 返回的句柄。
+///
+/// 用 [`StreamHandle::try_wait`] **非阻塞**地轮询是否结束 —— 不要用阻塞的
+/// `wait()`：调用方通常在 GPUI 的异步执行器上，阻塞线程会占着线程池。
+pub struct StreamHandle {
+    child: Arc<Mutex<Child>>,
+    readers: Vec<JoinHandle<()>>,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl StreamHandle {
+    /// 取一个可克隆的取消令牌。
+    ///
+    /// 界面侧握令牌（点"取消"用），执行任务握句柄 —— 取消能力不需要
+    /// 把整个句柄搬来搬去。
+    pub fn cancel_token(&self) -> CancelToken {
+        CancelToken {
+            child: Arc::clone(&self.child),
+            cancelled: Arc::clone(&self.cancelled),
+        }
+    }
+
+    /// 非阻塞地看一眼：`Some(退出码)` 表示已经结束。
+    pub fn try_wait(&self) -> Result<Option<i32>> {
+        let mut child = self.lock_child();
+        match child.try_wait() {
+            Ok(Some(status)) => Ok(Some(status.code().unwrap_or(-1))),
+            Ok(None) => Ok(None),
+            Err(e) => Err(Error::Io(e)),
+        }
+    }
+
+    /// 是否被取消过。
+    pub fn was_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    /// 收尾：等读取线程把剩余输出读完，返回退出码。
+    ///
+    /// 要在 `try_wait` 返回 `Some` 之后再调，否则会阻塞到进程结束。
+    pub fn finish(self) -> Result<i32> {
+        let status = {
+            let mut child = self.lock_child();
+            child.wait()
+        };
+        for reader in self.readers {
+            let _ = reader.join();
+        }
+        Ok(status.map_err(Error::Io)?.code().unwrap_or(-1))
+    }
+
+    /// 拿子进程锁。中毒时也照常用 —— 那只是别的线程 panic 了，
+    /// 锁里的 `Child` 依然有效。
+    fn lock_child(&self) -> std::sync::MutexGuard<'_, Child> {
+        self.child.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// 可克隆的取消令牌。
+#[derive(Clone)]
+pub struct CancelToken {
+    child: Arc<Mutex<Child>>,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl CancelToken {
+    /// 杀掉子进程。重复调用无害。
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner());
+        // 进程已经退出时 `kill` 会报错，忽略即可。
+        let _ = child.kill();
+    }
+
+    /// 是否已经取消过。
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
+
+/// 一个读取线程：按行切分并回调。
+///
+/// 用 `read_until(b'\n')` 而不是 `BufRead::lines()`：后者遇到非 UTF-8
+/// 会直接报错中断，而 `wslc` 的输出偶尔会混入非 UTF-8 字节
+/// （所以才需要 `decode::decode` 那套启发式判定）。空行会被跳过。
+fn spawn_line_reader(
+    pipe: impl Read + Send + 'static,
+    callback: Arc<dyn Fn(&str) + Send + Sync>,
+) -> JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(pipe);
+        let mut buf = Vec::new();
+        loop {
+            buf.clear();
+            match reader.read_until(b'\n', &mut buf) {
+                Ok(0) => break, // EOF
+                Ok(_) => {}
+                Err(_) => break,
+            }
+            let text = decode::decode(&buf);
+            let text = text.trim_end_matches(['\r', '\n']);
+            if !text.is_empty() {
+                callback(text);
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,5 +687,144 @@ mod tests {
             Err(Error::Timeout { .. }) => {}
             Err(other) => panic!("不应出现其它错误：{other}"),
         }
+    }
+
+    // -- 流式执行 ----------------------------------------------------------
+
+    /// 收集回调内容的辅助函数。
+    fn collector() -> (Arc<Mutex<Vec<String>>>, impl Fn(&str) + Send + Sync + 'static) {
+        let sink: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let for_closure = Arc::clone(&sink);
+        (sink, move |line: &str| {
+            for_closure.lock().unwrap().push(line.to_owned());
+        })
+    }
+
+    #[test]
+    fn line_reader_splits_on_newlines() {
+        let (got, callback) = collector();
+        let reader = spawn_line_reader(
+            std::io::Cursor::new(b"one\ntwo\r\nthree".to_vec()),
+            Arc::new(callback),
+        );
+        reader.join().unwrap();
+        assert_eq!(*got.lock().unwrap(), vec!["one", "two", "three"]);
+    }
+
+    #[test]
+    fn line_reader_skips_truly_empty_lines() {
+        let (got, callback) = collector();
+        let reader = spawn_line_reader(
+            std::io::Cursor::new(b"a\n\n\n   \nb".to_vec()),
+            Arc::new(callback),
+        );
+        reader.join().unwrap();
+        // 只跳过**完全空**的行；纯空白行保留（不去猜用户的意图）
+        assert_eq!(*got.lock().unwrap(), vec!["a", "   ", "b"]);
+    }
+
+    #[test]
+    fn line_reader_keeps_last_line_without_newline() {
+        let (got, callback) = collector();
+        let reader = spawn_line_reader(
+            std::io::Cursor::new(b"no-newline-at-end".to_vec()),
+            Arc::new(callback),
+        );
+        reader.join().unwrap();
+        assert_eq!(*got.lock().unwrap(), vec!["no-newline-at-end"]);
+    }
+
+    #[test]
+    fn line_reader_handles_empty_input() {
+        let (got, callback) = collector();
+        let reader = spawn_line_reader(std::io::Cursor::new(Vec::new()), Arc::new(callback));
+        reader.join().unwrap();
+        assert!(got.lock().unwrap().is_empty());
+    }
+
+    /// 端到端：真的起一个子进程，逐行收输出。
+    #[cfg(windows)]
+    #[test]
+    fn streaming_runs_a_real_process_and_reports_exit_code() {
+        let (got, callback) = collector();
+        let wslc = Wslc::with_program("cmd");
+        // 整串作为**一个**参数传：`cmd /c "echo a&&echo b"` 才有换行效果，
+        // 拆成多个参数时 `&&` 的行为依赖 cmd 自己的命令行重组，不稳。
+        let handle = wslc
+            .spawn_streaming(&["/c", "echo hello&&echo world"], callback)
+            .expect("应能启动 cmd");
+
+        let mut code = None;
+        for _ in 0..100 {
+            if let Some(c) = handle.try_wait().expect("try_wait 不应失败") {
+                code = Some(c);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let polled = code.expect("5 秒内应结束");
+        let exit = handle.finish().expect("finish 不应失败");
+        assert_eq!(exit, polled, "try_wait 与 finish 的退出码应一致");
+        assert_eq!(exit, 0, "cmd /c echo 应返回 0");
+
+        let lines = got.lock().unwrap().clone();
+        assert!(
+            lines.iter().any(|l| l.contains("hello")),
+            "应收到 hello，实际：{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("world")),
+            "应收到 world（说明多行被逐行读出），实际：{lines:?}"
+        );
+    }
+
+    /// 取消：起一个要跑很久的进程，kill 掉，确认很快结束且标记为已取消。
+    #[cfg(windows)]
+    #[test]
+    fn streaming_can_be_cancelled() {
+        let wslc = Wslc::with_program("cmd");
+        let handle = wslc
+            .spawn_streaming(&["/c", "ping", "-n", "30", "127.0.0.1"], |_| {})
+            .expect("应能启动 cmd");
+
+        let token = handle.cancel_token();
+        assert!(!token.is_cancelled());
+        token.cancel();
+        assert!(token.is_cancelled());
+
+        let started = Instant::now();
+        loop {
+            if handle.try_wait().unwrap().is_some() {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(15),
+                "取消后 15 秒仍未结束"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        assert!(handle.was_cancelled());
+        let _ = handle.finish();
+    }
+
+    /// 取消一个已经结束的进程不应 panic。
+    #[cfg(windows)]
+    #[test]
+    fn cancelling_a_finished_process_is_harmless() {
+        let wslc = Wslc::with_program("cmd");
+        let handle = wslc
+            .spawn_streaming(&["/c", "echo", "done"], |_| {})
+            .expect("应能启动 cmd");
+
+        let started = Instant::now();
+        while handle.try_wait().unwrap().is_none() {
+            assert!(started.elapsed() < Duration::from_secs(10));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        // 已经退出了再 cancel：kill 会失败，但不该 panic。
+        handle.cancel_token().cancel();
+        let _ = handle.finish();
     }
 }

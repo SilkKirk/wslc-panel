@@ -15,6 +15,9 @@
 //! 这是整个项目里**唯一**接触 GPUI 异步 API 的地方，
 //! 因此如果上游 API 有变动，只需要改这一个文件。
 
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
 // 注意：`primary()` / `danger()` 这些样式方法来自 trait `ButtonVariants`，
 // 光导入 `Button` 是不够的 —— 这里用 glob 把 button 模块全带上。
 use gpui_kit::component::button::*;
@@ -43,6 +46,12 @@ pub struct Shell {
     /// 另外 `InputState::new` 需要一个 `&mut Window`，而 `Shell::new` 拿不到
     /// window —— 所以只能**懒创建**：用户点按钮时（事件回调里有 window）才建。
     pull_input: Option<Entity<InputState>>,
+    /// 正在进行的拉取任务的取消令牌。
+    ///
+    /// 和 `pull_input` 一样放 `Shell`：这是**能力**（能 kill 子进程），
+    /// 不是"状态"。纯数据部分（拉了哪个镜像、输出了什么）在
+    /// `AppState::pulling` 里，因为 `views.rs` 只拿得到 `&AppState`。
+    pull_cancel: Option<wslc_core::CancelToken>,
 }
 
 impl Shell {
@@ -51,6 +60,7 @@ impl Shell {
         let mut shell = Self {
             state: AppState::new(Wslc::new()),
             pull_input: None,
+            pull_cancel: None,
         };
         shell.refresh(cx);
         shell.start_auto_refresh(cx);
@@ -61,7 +71,8 @@ impl Shell {
 
     /// 打开「拉取镜像」弹窗，并把焦点交给输入框。
     pub fn open_pull_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(image) = self.state.pulling.clone() {
+        if let Some(progress) = &self.state.pulling {
+            let image = progress.image.clone();
             self.state
                 .notify(Toast::error(format!("{image} 正在拉取中，请等它结束")));
             cx.notify();
@@ -80,17 +91,25 @@ impl Shell {
         cx.notify();
     }
 
-    /// 关闭弹窗（取消）。
+    /// 关闭弹窗。
+    ///
+    /// 拉取进行中时**不允许关闭** —— 那会让人以为任务被取消了。
+    /// 想停请用「取消拉取」。
     pub fn close_pull_dialog(&mut self, cx: &mut Context<Self>) {
+        if self.state.pulling.is_some() {
+            return;
+        }
         self.pull_input = None;
         cx.notify();
     }
 
-    /// 读取输入框内容，发起 `wslc pull`。
+    /// 读取输入框内容，发起**流式** `wslc pull`。
     ///
-    /// 拉取是**长任务**（`wslc pull` 的超时设的是 600 秒），所以：
-    /// 关掉弹窗 → 记下 `pulling` → 丢到后台执行器 → 完成后弹提示并刷新。
-    /// 界面上会显示"正在拉取"，期间不允许重复发起。
+    /// 弹窗保持打开并切到"进度模式"：实时显示输出最后若干行 + 「取消拉取」。
+    /// 结束后自动关闭、弹提示、刷新列表。
+    ///
+    /// 为什么不用阻塞的 `cmd::image::pull`：那个要等进程结束才返回，
+    /// 用户只能干看着转圈，也没法取消。
     pub fn confirm_pull(&mut self, cx: &mut Context<Self>) {
         let Some(input) = self.pull_input.clone() else {
             return;
@@ -109,36 +128,130 @@ impl Shell {
             return;
         }
 
-        self.pull_input = None;
-        self.state.pulling = Some(reference.clone());
-        self.state
-            .notify(Toast::info(format!("开始拉取 {reference}，可能需要几分钟")));
-        cx.notify();
+        // 读取线程不能直接碰 `AppState`，所以先把输出行塞进这个共享缓冲，
+        // 由下面的异步任务定期搬进状态。
+        //
+        // 用 `Arc<Mutex<Vec<String>>>` 而不是 `mpsc::Sender`：
+        // 回调要求 `Send + Sync`，而 `Sender` 的 `Sync` 实现随版本变化，
+        // 共享缓冲没有这个不确定性。
+        let buffer: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&buffer);
 
         let wslc = self.state.wslc.clone();
-        let for_task = reference.clone();
+        let handle = match wslc_core::cmd::image::pull_streaming(&wslc, &reference, move |line| {
+            if let Ok(mut pending) = sink.lock() {
+                // 兜底防爆：读取线程可能远快于界面轮询。
+                if pending.len() < 2000 {
+                    pending.push(line.to_owned());
+                }
+            }
+        }) {
+            Ok(handle) => handle,
+            Err(e) => {
+                self.state
+                    .notify(Toast::error(format!("无法启动拉取：{e}")));
+                cx.notify();
+                return;
+            }
+        };
+
+        self.pull_cancel = Some(handle.cancel_token());
+        self.state.pulling = Some(state::PullProgress::new(reference.clone()));
+        self.state
+            .notify(Toast::info(format!("开始拉取 {reference}")));
+        cx.notify();
+
         cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { wslc_core::cmd::image::pull(&wslc, &for_task) })
-                .await;
+            let code = loop {
+                // 1) 把这一轮攒下的输出搬进状态
+                let batch: Vec<String> = {
+                    let mut pending = buffer.lock().unwrap_or_else(|e| e.into_inner());
+                    std::mem::take(&mut *pending)
+                };
+                if !batch.is_empty() {
+                    let _ = this.update(cx, |shell, cx| {
+                        if let Some(progress) = shell.state.pulling.as_mut() {
+                            // 没有新增就不重绘
+                            if progress.push_lines(batch) {
+                                cx.notify();
+                            }
+                        }
+                    });
+                }
+
+                // 2) 子进程结束了吗（非阻塞）
+                match handle.try_wait() {
+                    Ok(Some(code)) => break code,
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::warn!("检查拉取进程失败：{e}");
+                        break -1;
+                    }
+                }
+
+                cx.background_executor()
+                    .timer(Duration::from_millis(200))
+                    .await;
+            };
+
+            let cancelled = handle.was_cancelled();
+            // 进程已退出，这里只是等读取线程把剩余输出读完。
+            let _ = handle.finish();
 
             let _ = this.update(cx, |shell, cx| {
+                // 最后一行留作失败时的原因说明
+                let last_line = shell
+                    .state
+                    .pulling
+                    .as_ref()
+                    .and_then(|p| p.last_line())
+                    .unwrap_or_default()
+                    .to_owned();
+
                 shell.state.pulling = None;
-                match result {
-                    Ok(_) => shell
+                shell.pull_cancel = None;
+
+                if cancelled {
+                    shell
                         .state
-                        .notify(Toast::success(format!("{reference} 拉取完成"))),
-                    Err(e) => shell
+                        .notify(Toast::info(format!("{reference} 已取消")));
+                } else if code == 0 {
+                    shell
                         .state
-                        .notify(Toast::error(format!("{reference} 拉取失败：{e}"))),
+                        .notify(Toast::success(format!("{reference} 拉取完成")));
+                } else {
+                    let detail = if last_line.is_empty() {
+                        format!("退出码 {code}")
+                    } else {
+                        last_line
+                    };
+                    shell
+                        .state
+                        .notify(Toast::error(format!("{reference} 拉取失败：{detail}")));
+                }
+
+                // 取消不刷新（用户明确不想继续）；失败也刷一下，
+                // 因为可能已经拉下来一部分层。
+                if !cancelled {
+                    shell.refresh(cx);
                 }
                 cx.notify();
-                // 拉完立刻刷一次，让新镜像出现在列表里。
-                shell.refresh(cx);
             });
         })
         .detach();
+    }
+
+    /// 取消正在进行的拉取（kill 子进程）。
+    pub fn cancel_pull(&mut self, cx: &mut Context<Self>) {
+        match &self.pull_cancel {
+            Some(token) => {
+                token.cancel();
+                tracing::info!("已请求取消拉取");
+                self.state.notify(Toast::info("正在取消…"));
+            }
+            None => self.state.notify(Toast::error("当前没有正在进行的拉取")),
+        }
+        cx.notify();
     }
 
     // -- 数据刷新 ----------------------------------------------------------
@@ -554,7 +667,7 @@ impl Render for Shell {
         // 拉取镜像弹窗。`pull_input` 是 `Shell` 的字段，不在 `state` 里。
         let pull_dialog: AnyElement = match &self.pull_input {
             None => div().into_any_element(),
-            Some(input) => views::pull_dialog_overlay(input, &entity),
+            Some(input) => views::pull_dialog_overlay(input, state, &entity),
         };
 
         let page_body = views::page(state, &entity);

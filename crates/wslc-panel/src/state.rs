@@ -358,6 +358,53 @@ impl Toast {
     }
 }
 
+/// 拉取镜像的实时进度。
+///
+/// 纯数据（不含任何 GPUI 类型），所以能放在 `AppState` 里；
+/// 而输入框 `Entity<InputState>` 与取消令牌留在 `Shell`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullProgress {
+    /// 正在拉取的镜像引用。
+    pub image: String,
+    /// 最近若干行输出（新的追加在后面）。
+    pub lines: Vec<String>,
+}
+
+impl PullProgress {
+    /// 最多保留多少行输出。
+    ///
+    /// 拉取的输出可能有上千行（每层都有自己的进度行），全留着没意义，
+    /// 还会让内存一直涨。
+    pub const MAX_LINES: usize = 200;
+
+    /// 新建一个进度记录。
+    pub fn new(image: impl Into<String>) -> Self {
+        Self {
+            image: image.into(),
+            lines: Vec::new(),
+        }
+    }
+
+    /// 追加若干行，并裁掉超出上限的旧行。
+    ///
+    /// 返回**是否真的有新增** —— 调用方据此决定要不要 `cx.notify()`，
+    /// 避免每个轮询周期都触发一次重绘。
+    pub fn push_lines(&mut self, new_lines: impl IntoIterator<Item = String>) -> bool {
+        let before = self.lines.len();
+        self.lines.extend(new_lines);
+        if self.lines.len() > Self::MAX_LINES {
+            let excess = self.lines.len() - Self::MAX_LINES;
+            self.lines.drain(..excess);
+        }
+        self.lines.len() != before
+    }
+
+    /// 最后一行（界面拿它做"当前在干什么"）。
+    pub fn last_line(&self) -> Option<&str> {
+        self.lines.last().map(String::as_str)
+    }
+}
+
 /// 应用的完整状态。
 ///
 /// 这是 [`crate::app::Shell`] 里唯一的字段，所有页面都是它的只读视图。
@@ -379,11 +426,10 @@ pub struct AppState {
     pub prefs: crate::prefs::Prefs,
     /// 是否正在后台采集。
     pub busy: bool,
-    /// 正在拉取的镜像引用；空闲时为 `None`。
+    /// 正在拉取的镜像；空闲时为 `None`。
     ///
-    /// 拉取可能要几分钟（`wslc pull` 的超时设的是 600 秒），
-    /// 期间界面要能显示"正在进行"，也要防止重复发起。
-    pub pulling: Option<String>,
+    /// 拉取可能几分钟到几十分钟，期间界面显示**实时输出**并允许取消。
+    pub pulling: Option<PullProgress>,
     /// 待用户确认的危险操作。
     pub confirm: Option<PendingAction>,
     /// 提示条。
@@ -496,6 +542,26 @@ mod tests {
             3,
             "默认刷新间隔应为 3 秒"
         );
+    }
+
+    #[test]
+    fn pull_progress_keeps_only_the_last_lines() {
+        let mut p = PullProgress::new("alpine:latest");
+        assert_eq!(p.image, "alpine:latest");
+        assert!(p.last_line().is_none());
+
+        assert!(p.push_lines((0..10).map(|i| format!("line {i}"))));
+        assert_eq!(p.lines.len(), 10);
+        assert_eq!(p.last_line(), Some("line 9"));
+
+        // 超过上限后丢掉最老的，保留最新的
+        assert!(p.push_lines((0..PullProgress::MAX_LINES + 20).map(|i| format!("extra {i}"))));
+        assert_eq!(p.lines.len(), PullProgress::MAX_LINES);
+        assert_eq!(p.last_line(), Some("extra 219"));
+
+        // 空输入不算新增（调用方据此跳过重绘）
+        assert!(!p.push_lines(Vec::new()));
+        assert_eq!(p.lines.len(), PullProgress::MAX_LINES);
     }
 
     #[test]

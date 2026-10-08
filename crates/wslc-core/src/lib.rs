@@ -39,6 +39,6 @@ pub mod model;
 pub mod settings;
 pub mod storage;
 
-pub use cli::{CommandOutput, Wslc};
+pub use cli::{CancelToken, CommandOutput, StreamHandle, Wslc};
 pub use error::{Error, Result};
 pub use storage::{StorageInfo, StoragePathOrigin, VolumeSpace};

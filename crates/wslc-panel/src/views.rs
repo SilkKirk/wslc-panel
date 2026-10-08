@@ -16,7 +16,7 @@ use wslc_core::model::ContainerState;
 use wslc_core::settings::{SETTING_KEYS, SettingKey, SettingKind};
 
 use crate::app::Shell;
-use crate::state::{AppState, Page, PendingAction};
+use crate::state::{AppState, Page, PendingAction, PullProgress};
 use crate::theme;
 
 // ---------------------------------------------------------------------------
@@ -789,7 +789,7 @@ pub fn images(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                 })
                 .child(div().text_sm().text_color(theme::text_muted()).child(
                     match &state.pulling {
-                        Some(image) => format!("正在拉取 {image} …"),
+                        Some(progress) => format!("正在拉取 {} …", progress.image),
                         None => format!(
                             "共 {} 条镜像记录（同一镜像可能对应多个仓库引用）",
                             state.snapshot.images.len()
@@ -1312,7 +1312,47 @@ fn refresh_secs_picker(state: &AppState, entity: &Entity<Shell>) -> impl IntoEle
 /// 焦点在打开弹窗时由 `window.focus(&handle, cx)` 交给输入框，
 /// 用的是公开的 `InputState::focus_handle`（`InputState::focus` 是
 /// `pub(crate)`，外部调不到）。
-pub fn pull_dialog_overlay(input: &Entity<InputState>, entity: &Entity<Shell>) -> AnyElement {
+pub fn pull_dialog_overlay(
+    input: &Entity<InputState>,
+    state: &AppState,
+    entity: &Entity<Shell>,
+) -> AnyElement {
+    // 弹窗有两种形态：没在拉取时是表单，拉取中是进度。
+    let body: AnyElement = match &state.pulling {
+        Some(progress) => pull_progress_body(progress, entity),
+        None => pull_form_body(input, entity),
+    };
+
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme::scrim())
+        .child(
+            v_flex()
+                .w(px(620.))
+                .gap_4()
+                .p_5()
+                .rounded_lg()
+                .bg(theme::bg_card())
+                .border_1()
+                .border_color(theme::border())
+                .child(
+                    div()
+                        .text_lg()
+                        .font_bold()
+                        .text_color(theme::text())
+                        .child("拉取镜像"),
+                )
+                .child(body),
+        )
+        .into_any_element()
+}
+
+/// 弹窗的**表单**形态（还没开始拉）。
+fn pull_form_body(input: &Entity<InputState>, entity: &Entity<Shell>) -> AnyElement {
     let cancel = {
         let entity = entity.clone();
         Button::new("pull-cancel")
@@ -1333,61 +1373,118 @@ pub fn pull_dialog_overlay(input: &Entity<InputState>, entity: &Entity<Shell>) -
             })
     };
 
-    div()
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(theme::scrim())
+    v_flex()
+        .w_full()
+        .gap_4()
+        .child(
+            div().text_sm().text_color(theme::text_muted()).child(
+                "镜像引用，例如 nginx:latest 或 docker.1ms.run/library/nginx:latest",
+            ),
+        )
+        .child(Input::new(input).id("pull-reference").w_full())
         .child(
             v_flex()
-                .w(px(560.))
-                .gap_4()
-                .p_5()
-                .rounded_lg()
-                .bg(theme::bg_card())
-                .border_1()
-                .border_color(theme::border())
+                .w_full()
+                .gap_1()
+                .rounded_md()
+                .bg(theme::bg())
+                .p_3()
+                .child(div().text_xs().text_color(theme::warning()).child(
+                    "实测本机直连 Docker Hub 会超时（registry-1.docker.io 不可达），\
+                     建议填写镜像加速地址。",
+                ))
                 .child(
                     div()
-                        .text_lg()
-                        .font_bold()
-                        .text_color(theme::text())
-                        .child("拉取镜像"),
-                )
-                .child(
-                    div().text_sm().text_color(theme::text_muted()).child(
-                        "镜像引用，例如 nginx:latest 或 docker.1ms.run/library/nginx:latest",
-                    ),
-                )
-                .child(Input::new(input).id("pull-reference").w_full())
-                .child(
-                    v_flex()
-                        .w_full()
-                        .gap_1()
-                        .rounded_md()
-                        .bg(theme::bg())
-                        .p_3()
-                        .child(div().text_xs().text_color(theme::warning()).child(
-                            "实测本机直连 Docker Hub 会超时（registry-1.docker.io 不可达），\
-                                     建议填写镜像加速地址。",
-                        ))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme::text_dim())
-                                .child("拉取期间界面保持可用；单次超时上限 10 分钟。"),
-                        ),
-                )
-                .child(
-                    h_flex()
-                        .w_full()
-                        .justify_end()
-                        .gap_2()
-                        .child(cancel)
-                        .child(confirm),
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child("拉取期间界面保持可用，随时可以取消。"),
                 ),
+        )
+        .child(
+            h_flex()
+                .w_full()
+                .justify_end()
+                .gap_2()
+                .child(cancel)
+                .child(confirm),
+        )
+        .into_any_element()
+}
+
+/// 弹窗的**进度**形态（正在拉）。
+///
+/// 只渲染最后 [`PROGRESS_TAIL_LINES`] 行、且**不滚动** ——
+/// 拉取的输出动辄上千行，滚动容器会把用户带到最老的那几行，
+/// 而这里永远显示"刚刚发生了什么"。
+fn pull_progress_body(progress: &PullProgress, entity: &Entity<Shell>) -> AnyElement {
+    /// 进度区显示多少行。
+    const PROGRESS_TAIL_LINES: usize = 12;
+
+    let tail: Vec<AnyElement> = progress
+        .lines
+        .iter()
+        .skip(progress.lines.len().saturating_sub(PROGRESS_TAIL_LINES))
+        .map(|line| {
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child(line.clone())
+                .into_any_element()
+        })
+        .collect();
+
+    let body = if tail.is_empty() {
+        vec![
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child("等待输出…")
+                .into_any_element(),
+        ]
+    } else {
+        tail
+    };
+
+    let abort = {
+        let entity = entity.clone();
+        Button::new("pull-abort")
+            .label("取消拉取")
+            .small()
+            .danger()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.cancel_pull(cx));
+            })
+    };
+
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(
+            div()
+                .text_sm()
+                .text_color(theme::text())
+                .child(format!("正在拉取 {} ……", progress.image)),
+        )
+        .child(
+            v_flex()
+                .w_full()
+                .gap_1()
+                .rounded_md()
+                .bg(theme::bg())
+                .p_3()
+                .children(body),
+        )
+        .child(
+            h_flex()
+                .w_full()
+                .justify_between()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child(format!("已收到 {} 行输出", progress.lines.len())),
+                )
+                .child(abort),
         )
         .into_any_element()
 }

@@ -1,6 +1,6 @@
 //! 镜像命令。
 
-use crate::cli::Wslc;
+use crate::cli::{StreamHandle, Wslc};
 use crate::error::{Error, Result};
 use crate::jsonl;
 use crate::model::ImageListItem;
@@ -37,6 +37,25 @@ pub fn pull(wslc: &Wslc, reference: &str) -> Result<String> {
         .run_with_timeout(&["pull", reference], std::time::Duration::from_secs(600))?
         .into_result()?;
     Ok(out.stdout_trimmed().to_owned())
+}
+
+/// **流式**拉取：每读到一行输出就回调一次。
+///
+/// 与 [`pull`] 的区别：`pull` 要等进程结束才返回，界面只能显示"进行中"；
+/// 这个版本能实时显示 `Downloading` / `Pull complete` 之类的进度，
+/// 而且返回的句柄可以**取消**（界面上那个"取消拉取"按钮）。
+///
+/// 流式模式**没有内建超时** —— 免得把还在正常下载的任务误杀。
+/// 想要上限就自己计时后调 [`crate::cli::CancelToken::cancel`]。
+pub fn pull_streaming(
+    wslc: &Wslc,
+    reference: &str,
+    on_line: impl Fn(&str) + Send + Sync + 'static,
+) -> Result<StreamHandle> {
+    if reference.trim().is_empty() {
+        return Err(Error::InvalidArgument("镜像引用不能为空".into()));
+    }
+    wslc.spawn_streaming(&["pull", reference], on_line)
 }
 
 /// 删除镜像。
