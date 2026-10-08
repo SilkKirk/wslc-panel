@@ -24,7 +24,8 @@ use gpui_kit::component::button::*;
 // `StyledExt` 提供 `font_bold` / `font_semibold` 等字重方法（由宏生成），
 // 不导入 trait 就会报 "no method named font_bold"。
 use gpui_kit::component::input::InputState;
-use gpui_kit::component::{Disableable, Sizable, StyledExt, h_flex, v_flex};
+// 同 views.rs：不导入 `Disableable`，全项目不再用 `.disabled()`。
+use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 
 use wslc_core::Wslc;
@@ -575,10 +576,12 @@ impl Render for Shell {
             let entity = entity.clone();
             let busy = state.busy;
             let label = if busy { "刷新中…" } else { "刷新" };
+            // 刻意**不**用 `.disabled(busy)`：禁用态的文字几乎看不清
+            // （实机截图确认过）。`refresh()` 内部本来就有 `busy` 守卫，
+            // 重复点击是无害的，文案也会变成"刷新中…"。
             Button::new("refresh")
                 .label(label)
                 .primary()
-                .disabled(busy)
                 .on_click(move |_, _, cx| {
                     entity.update(cx, |shell, cx| shell.refresh(cx));
                 })

@@ -9,7 +9,9 @@
 use gpui_kit::component::button::*;
 // `StyledExt` 提供 `font_bold` / `font_semibold` 等字重方法（由宏生成）。
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::{Disableable, Sizable, StyledExt, h_flex, v_flex};
+// 注意：这里**不导入** `Disableable` —— 全项目不再使用 `.disabled()`：
+// gpui-component 的禁用态文字几乎看不清，改用"守卫 + 文案"表达不可用状态。
+use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 
 use wslc_core::model::ContainerState;
@@ -62,6 +64,32 @@ fn kv(label: &'static str, value: impl Into<SharedString>) -> impl IntoElement {
                 .text_color(theme::text())
                 .overflow_hidden()
                 .truncate()
+                .child(value.into()),
+        )
+}
+
+/// 块状键值对行：标签一行，值**换行占满整行**。
+///
+/// 用于路径这类长值 —— [`kv`] 的右半边带 `truncate()`，
+/// 长路径会被截成 `C:\...\wslc-cli-76...`，用户看不出到底是哪个文件。
+/// 这里改用等宽字体 + 自动换行，一行放不下就折行，绝不截断。
+fn kv_block(label: &'static str, value: impl Into<SharedString>) -> impl IntoElement {
+    v_flex()
+        .w_full()
+        .gap_1()
+        .child(
+            div()
+                .flex_none()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child(label),
+        )
+        .child(
+            div()
+                .w_full()
+                .text_sm()
+                .text_color(theme::text())
+                .font_family("Consolas")
                 .child(value.into()),
         )
 }
@@ -304,14 +332,6 @@ pub fn dashboard(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                                 .child(kv("Windows", client.windows_version.clone()))
                                 .child(kv("Direct3D", client.direct3d_version.clone()))
                                 .child(kv("DXCore", client.dxcore_version.clone())),
-                        ))
-                        .child(card(
-                            "存储",
-                            v_flex()
-                                .w_full()
-                                .gap_2()
-                                .child(kv("配置文件", client.settings_file.clone()))
-                                .children(storage_rows(state, entity)),
                         )),
                 )
                 .child(
@@ -334,6 +354,16 @@ pub fn dashboard(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                         )),
                 ),
         )
+        // 「存储」放**整行**而不是挤在左半边：里面全是长路径，
+        // 窄列会被 `truncate()` 截成 "C:\...\wslc-cli-76..."，等于没显示。
+        .child(card(
+            "存储",
+            v_flex()
+                .w_full()
+                .gap_2()
+                .child(kv("配置文件", client.settings_file.clone()))
+                .children(storage_rows(state, entity)),
+        ))
         // `wslc` 没有 `system df`，磁盘占用是我们在 Windows 侧自己算的。
         .child(disk_usage_card(state))
 }
@@ -362,6 +392,9 @@ fn format_bytes(bytes: u64) -> String {
 /// 关键点：出厂状态下 `settings.yaml` 里所有键都是注释，
 /// 读到的永远是"未设置"。所以这里显示的是**展开后的真实路径**，
 /// 而不是"（默认：%LOCALAPPDATA%）"这种等于没说的字符串。
+///
+/// 用 [`kv_block`] 而不是 [`kv`]：路径很长，`kv` 的值带
+/// `overflow_hidden().truncate()`，会截成 `C:\...\wslc-cli-76...`。
 fn storage_rows(state: &AppState, entity: &Entity<Shell>) -> Vec<AnyElement> {
     let Some(storage) = state.snapshot.storage.as_ref() else {
         return vec![kv("storagePath", "无法确定（LOCALAPPDATA 未设置）").into_any_element()];
@@ -370,7 +403,7 @@ fn storage_rows(state: &AppState, entity: &Entity<Shell>) -> Vec<AnyElement> {
     let configured_text = match &storage.configured {
         Some(value) => format!("{value}（来自 settings.yaml）"),
         None => format!(
-            "未设置 → 用内置默认值 {}，展开后见下行",
+            "未设置 → 用内置默认值 {}",
             wslc_core::storage::DEFAULT_PLACEHOLDER
         ),
     };
@@ -385,8 +418,9 @@ fn storage_rows(state: &AppState, entity: &Entity<Shell>) -> Vec<AnyElement> {
 
     vec![
         kv("storagePath", configured_text).into_any_element(),
-        kv("实际目录", storage.base.display().to_string()).into_any_element(),
-        kv("会话磁盘", vhd_text).into_any_element(),
+        kv_block("实际目录（storagePath 展开后）", storage.base.display().to_string())
+            .into_any_element(),
+        kv_block("会话磁盘（VHD）", vhd_text).into_any_element(),
         reveal_storage_button(entity),
     ]
 }
@@ -472,8 +506,12 @@ fn disk_usage_card(state: &AppState) -> AnyElement {
         .into_any_element(),
     );
 
-    rows.push(kv("容器可写层", "无法单独统计（与镜像共用同一个 VHD）").into_any_element());
-    rows.push(kv("卷", "无法单独统计（同上）").into_any_element());
+    // 刻意**不显示**"容器可写层"和"卷"两项。
+    //
+    // `wslc` 没有 `system df`，这两项和镜像挤在同一个 VHD 里，
+    // Windows 侧根本分不出来。写一行"无法单独统计"只是占地方、
+    // 让人以为面板缺功能 —— 不如不显示，把"为什么没有"写在
+    // docs/SPIKE.md 里。
 
     if let Some(volume) = storage.volume {
         rows.push(
@@ -776,11 +814,12 @@ pub fn images(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                 .justify_between()
                 .child({
                     let entity = entity.clone();
-                    let busy = state.pulling.is_some();
+                    // 刻意**不**用 `.disabled(busy)`：禁用态的文字几乎看不清
+                    // （实机截图确认过）。重复点击由 `open_pull_dialog` 里的
+                    // 守卫 + 提示条处理，不需要把它变灰。
                     Button::new("pull-image")
                         .label("拉取镜像")
                         .small()
-                        .disabled(busy)
                         .on_click(move |_, window, cx| {
                             // 注意：`InputState` 只能在有 `window` 的地方创建，
                             // 这里正好有 —— 所以弹窗是懒创建的。
@@ -1194,19 +1233,32 @@ fn open_in_editor_button(entity: &Entity<Shell>) -> impl IntoElement {
         })
 }
 
-fn save_button(entity: &Entity<Shell>, dirty: bool) -> impl IntoElement {
+/// 保存按钮。
+///
+/// 没有改动时**不返回禁用按钮**，而是一行绿色文字。
+/// 原因：gpui-component 的禁用态文字几乎看不清（实机截图确认过），
+/// 而"已保存"本身是个**状态**，用文字表达比用灰按钮更准确。
+fn save_button(entity: &Entity<Shell>, dirty: bool) -> AnyElement {
+    if !dirty {
+        return h_flex()
+            .items_center()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme::success())
+                    .child("✓ 已保存"),
+            )
+            .into_any_element();
+    }
+
     let entity = entity.clone();
-    let label = if dirty {
-        "备份并保存"
-    } else {
-        "已保存"
-    };
     Button::new("save-settings")
-        .label(label)
-        .disabled(!dirty)
+        .label("备份并保存")
+        .primary()
         .on_click(move |_, _, cx| {
             entity.update(cx, |shell, cx| shell.save_settings(cx));
         })
+        .into_any_element()
 }
 
 fn reload_button(entity: &Entity<Shell>) -> impl IntoElement {
