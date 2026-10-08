@@ -418,3 +418,25 @@ gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, c
 与其去调组件库的禁用态配色，不如**干脆不用 `.disabled()`**：
 不可用状态用"守卫 + 文案"表达，可读性反而更好 ——
 比如"已保存"本来就是个**状态**，一行绿色文字比灰按钮更准确。
+
+### 7.8 `cargo check --all-targets` **不会执行**测试
+
+一个差点被漏掉的验证缺口：
+
+`views.rs` / `app.rs` 里的单测属于 **bin 的 test target**。
+`cargo check --workspace --all-targets` 只把它们**编译**一遍，
+**不会运行**。而 `core` 任务跑的是 `cargo test -p wslc-core`，
+覆盖不到 `wslc-panel`。
+
+也就是说：`wslc-panel` 里那些测试（表格列宽、设置预设、输入切分……）
+在加上这一步之前，**从来没有真正执行过**。
+
+补上：
+
+```yaml
+- name: 跑 wslc-panel 自己的测试
+  run: cargo test -p wslc-panel --bins -- --nocapture
+```
+
+它们都是纯逻辑，不创建窗口也不需要 GPU，所以能在 CI 上直接跑。
+**今后往 `wslc-panel` 里加测试，记得它是靠这一步执行的。**

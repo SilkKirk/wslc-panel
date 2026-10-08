@@ -66,6 +66,15 @@ jobs:
       - name: 检查默认启动是否可用
         run: cargo check -p wslc-panel --bins
 
+      - name: 跑 wslc-panel 自己的测试
+        # ⚠️ 这一步不能省：`views.rs` / `app.rs` / `state.rs` 里的单测属于
+        # **bin 的 test target**，而 `cargo check --all-targets` 只做类型检查、
+        # **不会执行**。少了这一步，那些测试等于从没跑过。
+        #
+        # 这些测试都是纯逻辑（表格列宽、预设值、输入切分……），
+        # 不创建窗口也不需要 GPU，所以能在 CI 上直接跑。
+        run: cargo test -p wslc-panel --bins -- --nocapture
+
   lint:
     name: 格式与 clippy（只报告，不阻塞）
     runs-on: windows-latest
