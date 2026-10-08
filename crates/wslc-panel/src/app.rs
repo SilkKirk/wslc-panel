@@ -29,11 +29,90 @@ use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 
 use wslc_core::Wslc;
+use wslc_core::cmd::container::{PullPolicy, RunSpec};
 use wslc_core::settings::SettingKey;
 
-use crate::state::{self, AppState, Page, PendingAction, Toast, ToastKind};
+use crate::state::{self, AppState, ImmediateAction, Page, PendingAction, Toast, ToastKind};
 use crate::theme;
 use crate::views;
+
+/// 「创建容器」弹窗的全部输入框。
+///
+/// 每个字段一个独立的 `InputState` —— 这是 GPUI 的标准做法。
+/// 拉取策略用预设按钮（不是输入框），所以这里只存一个枚举值。
+///
+/// `pub(crate)` + 公开字段：渲染在 `views.rs` 里，需要逐个读出来画。
+pub(crate) struct CreateDialog {
+    pub(crate) image: Entity<InputState>,
+    pub(crate) name: Entity<InputState>,
+    pub(crate) ports: Entity<InputState>,
+    pub(crate) env: Entity<InputState>,
+    pub(crate) volumes: Entity<InputState>,
+    pub(crate) network: Entity<InputState>,
+    pub(crate) memory: Entity<InputState>,
+    pub(crate) cpus: Entity<InputState>,
+    pub(crate) pull: PullPolicy,
+}
+
+impl CreateDialog {
+    /// 把表单读成一个 [`RunSpec`]。
+    ///
+    /// 需要 `cx` 才能从 `InputState` 里取值，所以它不是纯函数 ——
+    /// 这也是 `views::page` 要多收一个 `cx` 的原因
+    /// （弹窗底部要**实时**预览等效命令）。
+    /// `pub(crate)`：`views.rs` 要用它来做**实时**等效命令预览。
+    pub(crate) fn to_spec(&self, cx: &App) -> RunSpec {        let text = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
+
+        let mut spec = RunSpec::new(text(&self.image));
+        // 强制后台运行，理由见 `Shell::confirm_create` 的文档注释。
+        spec.detach = true;
+        spec.pull = self.pull;
+
+        let name = text(&self.name);
+        if !name.is_empty() {
+            spec.name = Some(name);
+        }
+
+        spec.ports = split_list(&text(&self.ports));
+        spec.volumes = split_list(&text(&self.volumes));
+
+        // 环境变量按 `KEY=VALUE` 解析；没有等号的**直接丢掉**，
+        // 不去猜用户想表达什么（猜错了反而更难查）。
+        spec.env = split_list(&text(&self.env))
+            .iter()
+            .filter_map(|pair| pair.split_once('='))
+            .map(|(key, value)| (key.trim().to_owned(), value.trim().to_owned()))
+            .filter(|(key, _)| !key.is_empty())
+            .collect();
+
+        let network = text(&self.network);
+        if !network.is_empty() {
+            spec.network = Some(network);
+        }
+        let memory = text(&self.memory);
+        if !memory.is_empty() {
+            spec.memory = Some(memory);
+        }
+        let cpus = text(&self.cpus);
+        if !cpus.is_empty() {
+            spec.cpus = Some(cpus);
+        }
+
+        spec
+    }
+}
+
+/// 按逗号（中英文）或换行切分，去掉空白项。
+///
+/// 刻意**不按空格切**：环境变量的值里完全可能有空格
+/// （`MESSAGE=hello world`），按空格切会把它切成两条。
+fn split_list(text: &str) -> Vec<String> {
+    text.split([',', '，', '\n', '\r'])
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
 
 /// 应用外壳。
 pub struct Shell {
@@ -52,7 +131,10 @@ pub struct Shell {
     /// 和 `pull_input` 一样放 `Shell`：这是**能力**（能 kill 子进程），
     /// 不是"状态"。纯数据部分（拉了哪个镜像、输出了什么）在
     /// `AppState::pulling` 里，因为 `views.rs` 只拿得到 `&AppState`。
+    // 拉取策略。
     pull_cancel: Option<wslc_core::CancelToken>,
+    /// 「创建容器」弹窗；关闭时为 `None`。
+    create_dialog: Option<CreateDialog>,
 }
 
 impl Shell {
@@ -62,6 +144,7 @@ impl Shell {
             state: AppState::new(Wslc::new()),
             pull_input: None,
             pull_cancel: None,
+            create_dialog: None,
         };
         shell.refresh(cx);
         shell.start_auto_refresh(cx);
@@ -253,6 +336,165 @@ impl Shell {
             None => self.state.notify(Toast::error("当前没有正在进行的拉取")),
         }
         cx.notify();
+    }
+
+    // -- 容器：启动 / 重启（不需要二次确认）--------------------------------
+
+    /// 启动容器。
+    ///
+    /// 启动/重启**不加二次确认**：它们不破坏数据，而且是运维里最高频的
+    /// 动作，每次都弹窗反而碍事。破坏性的停止/强杀/删除仍然走确认。
+    pub fn start_container(&mut self, name: String, cx: &mut Context<Self>) {
+        self.spawn_container_action("启动", name, wslc_core::cmd::container::start, cx);
+    }
+
+    /// 重启容器。
+    pub fn restart_container(&mut self, name: String, cx: &mut Context<Self>) {
+        self.spawn_container_action("重启", name, wslc_core::cmd::container::restart, cx);
+    }
+
+    /// 分派一个即时操作（界面统一走这个入口）。
+    pub fn run_immediate(&mut self, action: ImmediateAction, cx: &mut Context<Self>) {
+        match action {
+            ImmediateAction::StartContainer(name) => self.start_container(name, cx),
+            ImmediateAction::RestartContainer(name) => self.restart_container(name, cx),
+        }
+    }
+
+    /// 启动/重启的公共实现：后台跑一条 `wslc <verb> <name>`，完了刷新。
+    ///
+    /// 用函数指针而不是闭包泛型：`start` 和 `restart` 签名一致，
+    /// 函数指针省掉一层泛型参数，编译器也更容易推断。
+    fn spawn_container_action(
+        &mut self,
+        verb: &'static str,
+        name: String,
+        action: fn(&Wslc, &[String]) -> wslc_core::Result<Vec<String>>,
+        cx: &mut Context<Self>,
+    ) {
+        let wslc = self.state.wslc.clone();
+        let target = name.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { action(&wslc, std::slice::from_ref(&target)) })
+                .await;
+
+            let _ = this.update(cx, |shell, cx| {
+                match result {
+                    Ok(_) => shell
+                        .state
+                        .notify(Toast::success(format!("{name} 已{verb}"))),
+                    Err(e) => shell
+                        .state
+                        .notify(Toast::error(format!("{name} {verb}失败：{e}"))),
+                }
+                shell.refresh(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    // -- 创建容器弹窗 --------------------------------------------------------
+
+    /// 打开「创建容器」弹窗。
+    ///
+    /// 和拉取弹窗一样是**懒创建**：`InputState::new` 要 `&mut Window`，
+    /// 而 `Shell::new` 拿不到 window。
+    pub fn open_create_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dialog = CreateDialog {
+            image: cx.new(|cx| {
+                InputState::new(window, cx).placeholder("docker.1ms.run/library/nginx:latest")
+            }),
+            name: cx.new(|cx| InputState::new(window, cx).placeholder("留空则自动命名")),
+            ports: cx.new(|cx| InputState::new(window, cx).placeholder("8080:80, 9090:90")),
+            env: cx.new(|cx| InputState::new(window, cx).placeholder("TZ=Asia/Shanghai")),
+            volumes: cx.new(|cx| InputState::new(window, cx).placeholder("webdata:/usr/share/nginx/html")),
+            network: cx.new(|cx| InputState::new(window, cx).placeholder("留空则用 bridge")),
+            memory: cx.new(|cx| InputState::new(window, cx).placeholder("512M")),
+            cpus: cx.new(|cx| InputState::new(window, cx).placeholder("0.5")),
+            pull: PullPolicy::Never,
+        };
+
+        // 焦点给第一个必填字段
+        let handle = dialog.image.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+
+        self.create_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    /// 关闭「创建容器」弹窗。
+    pub fn close_create_dialog(&mut self, cx: &mut Context<Self>) {
+        self.create_dialog = None;
+        cx.notify();
+    }
+
+    /// 切换拉取策略。
+    pub fn set_create_pull(&mut self, pull: PullPolicy, cx: &mut Context<Self>) {
+        if let Some(dialog) = self.create_dialog.as_mut() {
+            dialog.pull = pull;
+            cx.notify();
+        }
+    }
+
+    /// 读取表单，执行 `wslc run`。
+    ///
+    /// **强制后台运行**（`-d`）：不带 `-d` 时 `wslc run` 会前台阻塞，
+    /// 而我们的子进程有超时，超时后会把刚建好的容器连带杀掉。
+    pub fn confirm_create(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.create_dialog.as_ref() else {
+            return;
+        };
+        let spec = dialog.to_spec(cx);
+
+        if spec.image.trim().is_empty() {
+            self.state.notify(Toast::error("请先填写镜像引用"));
+            cx.notify();
+            return;
+        }
+        if let Err(e) = spec.validate() {
+            self.state.notify(Toast::error(format!("参数有误：{e}")));
+            cx.notify();
+            return;
+        }
+
+        let command = format!("wslc {}", spec.to_args().join(" "));
+        tracing::info!("创建容器：{command}");
+
+        self.create_dialog = None;
+        self.state
+            .notify(Toast::info("正在创建容器…（若需拉取镜像可能要几分钟）"));
+        cx.notify();
+
+        let wslc = self.state.wslc.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { wslc_core::cmd::container::run(&wslc, &spec) })
+                .await;
+
+            let _ = this.update(cx, |shell, cx| {
+                match result {
+                    Ok(id) => {
+                        let id = id.trim().to_owned();
+                        let short = if id.len() > 12 { &id[..12] } else { &id };
+                        shell
+                            .state
+                            .notify(Toast::success(format!("容器已创建：{short}")));
+                        // 建完直接跳到「当前运行」，让用户看到结果
+                        shell.set_page(Page::Running, cx);
+                    }
+                    Err(e) => shell
+                        .state
+                        .notify(Toast::error(format!("创建失败：{e}"))),
+                }
+                shell.refresh(cx);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     // -- 数据刷新 ----------------------------------------------------------
@@ -673,6 +915,13 @@ impl Render for Shell {
             Some(input) => views::pull_dialog_overlay(input, state, &entity),
         };
 
+        // 创建容器弹窗。要读 8 个 InputState 的值来做等效命令预览，
+        // 所以得把 `cx` 传下去。
+        let create_dialog: AnyElement = match &self.create_dialog {
+            None => div().into_any_element(),
+            Some(dialog) => views::create_dialog_overlay(dialog, &entity, cx),
+        };
+
         let page_body = views::page(state, &entity);
 
         div()
@@ -772,6 +1021,7 @@ impl Render for Shell {
             .child(toast)
             .child(confirm)
             .child(pull_dialog)
+            .child(create_dialog)
     }
 }
 
@@ -879,4 +1129,39 @@ fn confirm_overlay(action: &PendingAction, entity: &Entity<Shell>) -> AnyElement
                 ),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    // ⚠️ 同 views.rs：这里**不能**写 `use super::*;`。
+    //
+    // `app.rs` 里有 `use gpui_kit::*;`，而 gpui 在 gpui.rs 里无条件
+    // 再导出了 gpui_macros 的 `test` **属性宏** —— 一旦 `use super::*`，
+    // 本模块的 `#[test]` 会解析到那个宏而不是内建的，展开时自我递归，
+    // 报 `recursion limit reached while expanding #[test]`。
+    use super::split_list;
+
+    #[test]
+    fn split_list_handles_commas_and_newlines() {
+        assert_eq!(split_list("8080:80, 9090:90"), vec!["8080:80", "9090:90"]);
+        assert_eq!(split_list("a\nb\r\nc"), vec!["a", "b", "c"]);
+        // 中文逗号也认 —— 用户从中文文档里复制粘贴很常见
+        assert_eq!(split_list("a，b"), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn split_list_drops_empty_items() {
+        assert!(split_list("").is_empty());
+        assert!(split_list("  ,  , \n ").is_empty());
+        assert_eq!(split_list(" , a , "), vec!["a"]);
+    }
+
+    #[test]
+    fn split_list_does_not_split_on_spaces() {
+        // 环境变量的值里完全可能有空格，按空格切会把它切成两条
+        assert_eq!(
+            split_list("MESSAGE=hello world"),
+            vec!["MESSAGE=hello world"]
+        );
+    }
 }

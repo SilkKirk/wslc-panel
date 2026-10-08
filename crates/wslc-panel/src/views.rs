@@ -14,11 +14,12 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 
+use wslc_core::cmd::container::{PullPolicy, RunSpec};
 use wslc_core::model::ContainerState;
 use wslc_core::settings::{SETTING_KEYS, SettingKey, SettingKind};
 
-use crate::app::Shell;
-use crate::state::{AppState, Page, PendingAction, PullProgress};
+use crate::app::{CreateDialog, Shell};
+use crate::state::{AppState, ImmediateAction, Page, PendingAction, PullProgress};
 use crate::theme;
 
 // ---------------------------------------------------------------------------
@@ -217,6 +218,26 @@ fn danger_button(
         })
 }
 
+/// 即时操作按钮（启动 / 重启）。
+///
+/// 与 [`danger_button`] 的区别：不弹二次确认，点了就跑。
+fn immediate_button(
+    id: &str,
+    label: &'static str,
+    action: ImmediateAction,
+    entity: &Entity<Shell>,
+) -> impl IntoElement {
+    let entity = entity.clone();
+    Button::new(SharedString::from(id.to_owned()))
+        .label(label)
+        .small()
+        .on_click(move |_, _, cx| {
+            entity.update(cx, |shell, cx| {
+                shell.run_immediate(action.clone(), cx);
+            });
+        })
+}
+
 // ---------------------------------------------------------------------------
 // 页面分发
 // ---------------------------------------------------------------------------
@@ -318,17 +339,21 @@ pub fn dashboard(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                 .gap_4()
                 .items_start()
                 .child(
-                    v_flex().flex_1().min_w_0().gap_4().child(card(
-                        "客户端",
-                        v_flex()
-                            .w_full()
-                            .gap_2()
-                            .child(kv("WSL 版本", client.version.clone()))
-                            .child(kv("内核版本", client.kernel_version.clone()))
-                            .child(kv("Windows", client.windows_version.clone()))
-                            .child(kv("Direct3D", client.direct3d_version.clone()))
-                            .child(kv("DXCore", client.dxcore_version.clone())),
-                    )),
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_4()
+                        .child(card(
+                            "客户端",
+                            v_flex()
+                                .w_full()
+                                .gap_2()
+                                .child(kv("WSL 版本", client.version.clone()))
+                                .child(kv("内核版本", client.kernel_version.clone()))
+                                .child(kv("Windows", client.windows_version.clone()))
+                                .child(kv("Direct3D", client.direct3d_version.clone()))
+                                .child(kv("DXCore", client.dxcore_version.clone())),
+                        )),
                 )
                 .child(
                     v_flex()
@@ -414,11 +439,8 @@ fn storage_rows(state: &AppState, entity: &Entity<Shell>) -> Vec<AnyElement> {
 
     vec![
         kv("storagePath", configured_text).into_any_element(),
-        kv_block(
-            "实际目录（storagePath 展开后）",
-            storage.base.display().to_string(),
-        )
-        .into_any_element(),
+        kv_block("实际目录（storagePath 展开后）", storage.base.display().to_string())
+            .into_any_element(),
         kv_block("会话磁盘（VHD）", vhd_text).into_any_element(),
         reveal_storage_button(entity),
     ]
@@ -606,6 +628,12 @@ pub fn running(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                     cell_text(pids),
                     h_flex()
                         .gap_2()
+                        .child(immediate_button(
+                            &format!("restart-run-{ix}"),
+                            "重启",
+                            ImmediateAction::RestartContainer(name.clone()),
+                            entity,
+                        ))
                         .child(danger_button(
                             &format!("stop-{ix}"),
                             "停止",
@@ -700,18 +728,53 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
                     cell_muted(item.size.clone()),
                     h_flex()
                         .gap_2()
-                        .child(danger_button(
-                            &format!("rm-{ix}"),
-                            "删除",
-                            PendingAction::RemoveContainer(name.clone()),
-                            entity,
-                        ))
-                        .child(danger_button(
-                            &format!("stop-all-{ix}"),
-                            "停止",
-                            PendingAction::StopContainer(name),
-                            entity,
-                        ))
+                        .children({
+                            let mut actions: Vec<AnyElement> = Vec::new();
+
+                            // 运行中的给「重启」，已停止的给「启动」。
+                            // 两者互换没有意义 —— 重启一个停着的容器会直接报错。
+                            if item.is_running() {
+                                actions.push(
+                                    immediate_button(
+                                        &format!("restart-{ix}"),
+                                        "重启",
+                                        ImmediateAction::RestartContainer(name.clone()),
+                                        entity,
+                                    )
+                                    .into_any_element(),
+                                );
+                                actions.push(
+                                    danger_button(
+                                        &format!("stop-all-{ix}"),
+                                        "停止",
+                                        PendingAction::StopContainer(name.clone()),
+                                        entity,
+                                    )
+                                    .into_any_element(),
+                                );
+                            } else {
+                                actions.push(
+                                    immediate_button(
+                                        &format!("start-{ix}"),
+                                        "启动",
+                                        ImmediateAction::StartContainer(name.clone()),
+                                        entity,
+                                    )
+                                    .into_any_element(),
+                                );
+                            }
+
+                            actions.push(
+                                danger_button(
+                                    &format!("rm-{ix}"),
+                                    "删除",
+                                    PendingAction::RemoveContainer(name),
+                                    entity,
+                                )
+                                .into_any_element(),
+                            );
+                            actions
+                        })
                         .into_any_element(),
                 ],
             )
@@ -738,13 +801,29 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
             h_flex()
                 .w_full()
                 .justify_between()
+                .child({
+                    let entity = entity.clone();
+                    Button::new("create-container")
+                        .label("创建容器")
+                        .small()
+                        .primary()
+                        .on_click(move |_, window, cx| {
+                            // `InputState` 只能在有 window 的地方创建，
+                            // 所以弹窗是懒创建的。
+                            entity.update(cx, |shell, cx| shell.open_create_dialog(window, cx));
+                        })
+                })
                 .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme::text_muted())
-                        .child(format!("共 {} 个容器", items.len())),
-                )
-                .child(prune),
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(theme::text_muted())
+                                .child(format!("共 {} 个容器", items.len())),
+                        )
+                        .child(prune),
+                ),
         )
         .child(
             v_flex()
@@ -1537,6 +1616,281 @@ fn pull_progress_body(progress: &PullProgress, entity: &Entity<Shell>) -> AnyEle
                         .child(format!("已收到 {} 行输出", progress.lines.len())),
                 )
                 .child(abort),
+        )
+        .into_any_element()
+}
+
+/// 「创建容器」弹窗的**表单字段**：标签 + 输入框。
+///
+/// `full` 决定宽度：直接放进 `v_flex` 的用 `w_full`，
+/// 放进 `h_flex` 成对排列的用 `flex_1`。
+/// （在 `v_flex` 里写 `flex_1` 会把字段**竖向**拉长，是个容易踩的坑。）
+fn form_field(
+    id: &'static str,
+    label: &'static str,
+    input: &Entity<InputState>,
+    cx: &App,
+    full: bool,
+) -> AnyElement {
+    let field = if full {
+        v_flex().w_full()
+    } else {
+        v_flex().flex_1().min_w_0()
+    };
+
+    // 取值只为在为空时把标签调暗一点，让"必填未填"看得见。
+    let empty = input.read(cx).value().trim().is_empty();
+
+    field
+        .gap_1()
+        .child(
+            div()
+                .text_xs()
+                .text_color(if empty {
+                    theme::text_muted()
+                } else {
+                    theme::text_dim()
+                })
+                .child(label),
+        )
+        .child(Input::new(input).id(id).w_full())
+        .into_any_element()
+}
+
+/// 拉取策略选择器。
+fn pull_policy_row(current: &PullPolicy, entity: &Entity<Shell>) -> AnyElement {
+    let options: [(&str, &str, PullPolicy); 3] = [
+        ("never", "只用本地镜像", PullPolicy::Never),
+        ("missing", "缺了就拉", PullPolicy::Missing),
+        ("always", "总是拉取", PullPolicy::Always),
+    ];
+
+    let buttons: Vec<AnyElement> = options
+        .into_iter()
+        .map(|(id, label, policy)| {
+            let entity = entity.clone();
+            // `PullPolicy` 是 `Copy`，直接按值捕获即可
+            // （写 `.clone()` 会被 clippy 的 `clone_on_copy` 抓）。
+            let selected = *current == policy;
+
+            let mut button = Button::new(SharedString::from(format!("create-pull-{id}")))
+                .label(label)
+                .small()
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |shell, cx| {
+                        shell.set_create_pull(policy, cx);
+                    });
+                });
+            if selected {
+                button = button.primary();
+            }
+            button.into_any_element()
+        })
+        .collect();
+
+    h_flex()
+        .w_full()
+        .gap_2()
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child("镜像拉取策略"),
+        )
+        .children(buttons)
+        .into_any_element()
+}
+
+/// 等效命令预览。
+///
+/// 直接调 `RunSpec::to_args()` 生成 —— 和真正执行时用的是**同一段代码**，
+/// 不会出现"预览和执行不一致"。用户也可以直接复制到终端复现。
+fn command_preview(spec: &RunSpec) -> AnyElement {
+    let command = format!("wslc {}", spec.to_args().join(" "));
+
+    v_flex()
+        .w_full()
+        .gap_1()
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child("等效命令（与实际执行完全一致）"),
+        )
+        .child(
+            div()
+                .w_full()
+                .rounded_md()
+                .bg(theme::bg())
+                .p_3()
+                .font_family("Consolas")
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child(command),
+        )
+        .into_any_element()
+}
+
+/// 「创建容器」弹窗。
+///
+/// 表单字段直接对应 [`RunSpec`]，底部用 `to_args()` 实时预览等效命令。
+///
+/// **强制后台运行**（`-d`）：不带 `-d` 时 `wslc run` 会前台阻塞，
+/// 而我们的子进程有超时，超时后会把刚建好的容器连带杀掉。
+/// 需要前台交互的场景请用 `wslc` 自己的命令。
+pub fn create_dialog_overlay(
+    dialog: &CreateDialog,
+    entity: &Entity<Shell>,
+    cx: &App,
+) -> AnyElement {
+    let spec = dialog.to_spec(cx);
+    let image_missing = spec.image.trim().is_empty();
+
+    let cancel = {
+        let entity = entity.clone();
+        Button::new("create-cancel")
+            .label("取消")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.close_create_dialog(cx));
+            })
+    };
+
+    let confirm = {
+        let entity = entity.clone();
+        Button::new("create-ok")
+            .label("创建并启动")
+            .primary()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.confirm_create(cx));
+            })
+    };
+
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme::scrim())
+        .child(
+            v_flex()
+                // 字段多，窗口矮时允许滚动，别把底部按钮挤没
+                .id("create-dialog-card")
+                .w(px(780.))
+                .max_h(px(880.))
+                .overflow_y_scroll()
+                .gap_4()
+                .p_5()
+                .rounded_lg()
+                .bg(theme::bg_card())
+                .border_1()
+                .border_color(theme::border())
+                .child(
+                    div()
+                        .text_lg()
+                        .font_bold()
+                        .text_color(theme::text())
+                        .child("创建容器"),
+                )
+                .child(form_field(
+                    "create-image",
+                    "镜像引用（必填，例如 nginx:latest）",
+                    &dialog.image,
+                    cx,
+                    true,
+                ))
+                .child(form_field("create-name", "容器名（留空自动命名）", &dialog.name, cx, true))
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_3()
+                        .child(form_field(
+                            "create-ports",
+                            "端口映射（逗号或换行分隔，如 8080:80）",
+                            &dialog.ports,
+                            cx,
+                            false,
+                        ))
+                        .child(form_field(
+                            "create-env",
+                            "环境变量 KEY=VALUE（逗号或换行分隔）",
+                            &dialog.env,
+                            cx,
+                            false,
+                        )),
+                )
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_3()
+                        .child(form_field(
+                            "create-volumes",
+                            "卷挂载 卷名:/容器内路径",
+                            &dialog.volumes,
+                            cx,
+                            false,
+                        ))
+                        .child(form_field(
+                            "create-network",
+                            "网络（留空用 bridge）",
+                            &dialog.network,
+                            cx,
+                            false,
+                        )),
+                )
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_3()
+                        .child(form_field("create-memory", "内存上限（如 512M）", &dialog.memory, cx, false))
+                        .child(form_field("create-cpus", "CPU 数（如 0.5）", &dialog.cpus, cx, false)),
+                )
+                .child(pull_policy_row(&dialog.pull, entity))
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap_1()
+                        .rounded_md()
+                        .bg(theme::bg())
+                        .p_3()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::text_muted())
+                                .child("容器以「后台方式」(-d) 启动。前台模式会一直占着子进程，\
+                                       超时后连容器一起被杀，所以这里不提供。"),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::warning())
+                                .child("实测本机连不上 Docker Hub：请先在「镜像」页用加速地址\
+                                       拉好镜像，再把这里的策略选成「只用本地镜像」。"),
+                        ),
+                )
+                .child(command_preview(&spec))
+                .child(
+                    h_flex()
+                        .w_full()
+                        .justify_between()
+                        .child(div().text_xs().text_color(if image_missing {
+                            theme::warning()
+                        } else {
+                            theme::text_dim()
+                        })
+                        .child(if image_missing {
+                            "还差一个镜像引用"
+                        } else {
+                            ""
+                        }))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(cancel)
+                                .child(confirm),
+                        ),
+                ),
         )
         .into_any_element()
 }

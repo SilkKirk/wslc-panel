@@ -358,6 +358,19 @@ impl Toast {
     }
 }
 
+/// **不需要二次确认**的即时操作。
+///
+/// 与 [`PendingAction`] 的区别：这些不破坏数据、可逆，而且是运维里
+/// 最高频的动作 —— 每次都弹确认反而碍事。破坏性的停止/强杀/删除
+/// 仍然走 [`PendingAction`]。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImmediateAction {
+    /// 启动一个已停止的容器。
+    StartContainer(String),
+    /// 重启一个运行中的容器。
+    RestartContainer(String),
+}
+
 /// 拉取镜像的实时进度。
 ///
 /// 纯数据（不含任何 GPUI 类型），所以能放在 `AppState` 里；
