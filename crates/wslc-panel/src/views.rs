@@ -1377,9 +1377,10 @@ fn pull_form_body(input: &Entity<InputState>, entity: &Entity<Shell>) -> AnyElem
         .w_full()
         .gap_4()
         .child(
-            div().text_sm().text_color(theme::text_muted()).child(
-                "镜像引用，例如 nginx:latest 或 docker.1ms.run/library/nginx:latest",
-            ),
+            div()
+                .text_sm()
+                .text_color(theme::text_muted())
+                .child("镜像引用，例如 nginx:latest 或 docker.1ms.run/library/nginx:latest"),
         )
         .child(Input::new(input).id("pull-reference").w_full())
         .child(

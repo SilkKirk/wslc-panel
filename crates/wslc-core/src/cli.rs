@@ -287,7 +287,8 @@ impl Wslc {
     }
 
     /// 构造 `Command`（不含超时/取消逻辑）。
-    fn build_command(&self, args: &[String]) -> Command {        let mut cmd = Command::new(&self.program);
+    fn build_command(&self, args: &[String]) -> Command {
+        let mut cmd = Command::new(&self.program);
         cmd.args(args);
 
         // 关键：不设这个，wslc 输出 UTF-16LE。
@@ -692,7 +693,10 @@ mod tests {
     // -- 流式执行 ----------------------------------------------------------
 
     /// 收集回调内容的辅助函数。
-    fn collector() -> (Arc<Mutex<Vec<String>>>, impl Fn(&str) + Send + Sync + 'static) {
+    fn collector() -> (
+        Arc<Mutex<Vec<String>>>,
+        impl Fn(&str) + Send + Sync + 'static,
+    ) {
         let sink: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let for_closure = Arc::clone(&sink);
         (sink, move |line: &str| {
