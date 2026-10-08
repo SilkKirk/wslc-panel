@@ -13,11 +13,17 @@
 //! theme.rs  配色
 //! ```
 
+// `views.rs` 里的 `assert_eq!` 嵌套比较会超出默认的宏展开递归上限（128）。
+// 这是 CI 抓到的：`error: recursion limit reached while expanding #[test]`。
+#![recursion_limit = "256"]
+
 mod app;
 mod state;
 mod theme;
 mod views;
 
+// `cx.new(...)` 来自 `AppContext` trait，不导入就没有这个方法。
+use gpui_kit::AppContext;
 use gpui_kit::WindowOptions;
 
 fn main() {

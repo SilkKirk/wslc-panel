@@ -292,8 +292,16 @@ impl SettingsDoc {
                     Some(idx) => {
                         let old = self.line(idx).to_owned();
                         let indent = leading_whitespace(&old);
-                        // 保留该行原有的行尾注释（例如 `# cpuCount: 4  # 说明`）。
-                        let suffix = inline_comment(&old);
+                        // 只有原本就是"生效行"（`key: 值 # 说明`）时才保留行尾注释。
+                        //
+                        // 如果原行是被注释掉的（`# key: default`），
+                        // `inline_comment` 会把那个 `#` 误认成行尾注释，
+                        // 结果生成 `key: 4 # key: default` —— CI 抓到的就是这个。
+                        let suffix = if old.trim_start().starts_with('#') {
+                            ""
+                        } else {
+                            inline_comment(&old)
+                        };
                         format!("{indent}{key}: {v}{suffix}")
                     }
                     None => {

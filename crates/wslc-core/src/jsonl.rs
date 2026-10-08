@@ -53,6 +53,22 @@ pub fn parse_lines_lenient<T: DeserializeOwned>(text: &str) -> (Vec<T>, Vec<Line
         if line.is_empty() {
             continue;
         }
+
+        // JSON Lines 的每一行必须是一个**对象**。
+        //
+        // 这里必须显式拒绝数组：serde 允许"结构体从序列反序列化"，
+        // 而本项目的模型字段全是 `#[serde(default)]`，
+        // 于是 `[]` 会被悄悄解析成一条"所有字段都是默认值"的垃圾记录，
+        // 而不是报错。CI 上就是这么发现 `parse_lines::<Row>("[]")` 返回 Ok 的。
+        if line.starts_with('[') {
+            errors.push(LineError {
+                line_no: idx + 1,
+                raw: truncate(line, 200),
+                message: "JSON Lines 的每一行必须是对象，不能是数组".to_owned(),
+            });
+            continue;
+        }
+
         match serde_json::from_str::<T>(line) {
             Ok(v) => items.push(v),
             Err(err) => errors.push(LineError {
@@ -138,10 +154,17 @@ mod tests {
 
     #[test]
     fn a_bare_array_is_not_valid_json_lines() {
-        // `[]` 是合法的 JSON，但不是合法的 JSON Lines 行（它无法反序列化成 Row）。
-        // 需要解析数组的场景必须显式走 `parse_array_or_lines`。
+        // `[]` 是合法的 JSON，但**不是**合法的 JSON Lines 行。
+        //
+        // 这条测试是 CI 抓出来的：模型字段全带 `#[serde(default)]`，
+        // 而 serde 允许结构体从序列反序列化，所以 `[]` 会被解析成
+        // 一条全默认值的垃圾记录而**不报错**。修法是显式拒绝 `[` 开头的行。
         assert!(parse_lines::<Row>("[]").is_err());
+        assert!(parse_lines::<Row>("[{\"ID\":\"a\"}]").is_err());
+        // 但走数组解析入口时 `[]` 应得到空列表。
         assert!(parse_array_or_lines::<Row>("[]").unwrap().is_empty());
+        // 正常的对象行仍然是逐行解析。
+        assert_eq!(parse_lines::<Row>("{\"ID\":\"a\"}").unwrap().len(), 1);
     }
 
     #[test]

@@ -20,7 +20,9 @@ use std::time::Duration;
 // 注意：`primary()` / `danger()` 这些样式方法来自 trait `ButtonVariants`，
 // 光导入 `Button` 是不够的 —— 这里用 glob 把 button 模块全带上。
 use gpui_kit::component::button::*;
-use gpui_kit::component::{Disableable, Sizable, h_flex, v_flex};
+// `StyledExt` 提供 `font_bold` / `font_semibold` 等字重方法（由宏生成），
+// 不导入 trait 就会报 "no method named font_bold"。
+use gpui_kit::component::{Disableable, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 
 use wslc_core::Wslc;
@@ -111,9 +113,8 @@ impl Shell {
 
     /// 加载 `settings.yaml`（优先使用 `wslc info` 报告的路径）。
     pub fn load_settings(&mut self, cx: &mut Context<Self>) {
-        let wslc = self.state.wslc.clone();
         let info = self.state.snapshot.info.clone();
-        match state::load_settings(&wslc, info.as_ref()) {
+        match state::load_settings(info.as_ref()) {
             Ok(doc) => {
                 self.state.settings = Some(doc);
                 self.state.settings_error = None;
@@ -460,7 +461,11 @@ impl Render for Shell {
                                     .child(refresh_button),
                             )
                             .child(
+                                // `overflow_y_scroll` 来自 `StatefulInteractiveElement`，
+                                // 只对**带 id 的**元素可用（这正是它叫 "stateful" 的原因）。
+                                // 不带 `.id()` 会报 "no method named overflow_y_scroll"。
                                 v_flex()
+                                    .id("app-body-scroll")
                                     .w_full()
                                     .flex_1()
                                     .min_h_0()

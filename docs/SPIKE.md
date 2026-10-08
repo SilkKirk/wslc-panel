@@ -121,27 +121,42 @@ wslc volume remove -f spike-vol
 
 | 假设 | 结果 | 备注 |
 |---|---|---|
-| A | ✅ **依赖树已验证** | CI run 1：`gpui-component` / `gpui-base` / `gpui-pre-platform` / `accesskit_windows` 全部 `Checking` 通过 —— GPUI 在 windows-latest 上能编译 |
+| A | ✅ **已验证** | CI run 1：`gpui-component` / `gpui-base` / `gpui-pre-platform` / `accesskit_windows` 全部 `Checking` 通过 —— GPUI 在 windows-latest 上能编译 |
 | B | ⏳ 待运行验证 | 需要真实窗口，只能本机 `cargo run` 后目视 |
 | C | 🟡 编译期通过 | GPU/D3D11 是运行期行为，CI 无显示设备 |
-| D | ⏳ 待运行验证 | `WindowOptions::default()` |
-| E | ⏳ 待编译验证 | `app.rs` 的异步闭包 |
-| F | ✅ 已静态核对 | `ButtonVariants::primary` 通过导入 `button::*` 引入；`Sizable::small`、`Disableable::disabled` 均在 `gpui-component` 源码中确认 |
-| G | ✅ 已静态核对 | `gap_*` / `p_*` / `px_*` / `rounded_*` 等的刻度表见 `gpui-pre-macros/src/styles.rs::box_style_suffixes`，`6` 与 `8` 在列 |
-| H | 🟡 已绕开 | 不再使用 `.opacity()`，改为 `theme.rs` 里预置的不透明色 + `hsla` 遮罩 |
-| I | ⏳ 待编译验证 | `div().id(&'static str).on_click()` |
-| J | ⏳ 待运行验证 | `gpui_kit::assets::Assets` |
+| D | ⏳ 待运行验证 | `WindowOptions::default()` 编译通过，运行效果待看 |
+| E | ✅ **已验证** | `Context::spawn` 签名是 `AsyncFnOnce(WeakEntity<T>, &mut AsyncApp) -> R`，与 `layer_shell.rs` / `testing.rs` / `example_editor.rs` 的写法**逐字一致**；`WeakEntity::update` 返回 `Result`，用 `let _ =` 接住 |
+| F | ✅ **已验证** | `ButtonVariants`（`primary()`）需从 `button::*` 导入；`Sizable::small` / `Disableable::disabled` 见 gpui-component 源码 |
+| G | ✅ **已验证** | 刻度表见 `gpui-pre-macros/src/styles.rs::box_style_suffixes`（含 `6`/`8`）与 `*_box_style_prefixes`（含 `px`/`py`/`gap`） |
+| H | ✅ 已绕开 | 不用 `.opacity()`，改为 `theme.rs` 预置不透明色 + `hsla` 遮罩 |
+| I | ✅ **已验证** | `div().id(...).on_click(...)` 在 CI run 2 没有再报错 |
+| J | 🟡 编译期通过 | `gpui_kit::assets::Assets` + `.with_assets()` 已过编译 |
 | K | ⏳ 待补采样 | 卷的真实 JSON 字段名 |
 
 ### CI 找到的问题（已修）
+
+**第一轮（编译错误，3 处）**
 
 | 位置 | 错误 | 修法 |
 |---|---|---|
 | `model/image.rs:110` | `E0631` / `E0599`：`hello.iter()` 给出 `&&ImageListItem`，不能把 `ImageListItem::reference` 直接当函数传给 `map` | 改成闭包 `.map(\|i\| i.reference())` |
 | `settings.rs:532`、`wslc_smoke.rs:183` | `E0599`：`SettingsValues::iter()` 这个**固有方法遮蔽了 `slice::iter`**，返回的是 `Vec` 而不是迭代器，于是 `.all()` 不存在 | 重命名为 `entries()`，并在文档注释里写明为什么不再叫 `iter` |
 
-> 这两类错误都是"本机无法编译"才会拖到 CI 才暴露的典型问题 ——
-> 一个是自动解引用层级，一个是固有方法遮蔽标准方法。
+**第二轮（逻辑 bug，3 处 + UI 层 12 处编译错误）**
+
+| 位置 | 问题 | 修法 |
+|---|---|---|
+| `jsonl.rs` | `parse_lines::<Row>("[]")` **返回 Ok** —— serde 允许结构体从序列反序列化，而模型字段全带 `#[serde(default)]`，于是 `[]` 会变成一条"全默认值"的垃圾记录而不是报错 | 显式拒绝 `[` 开头的行，记成 `LineError` |
+| `model/container.rs` | `PortMapping::parse("8080->80/tcp")` 把 `8080` 当成了**主机 IP**（应为主机端口） | 宿主段无冒号时按端口解析；补了两条测试 |
+| `settings.rs` | `set()` 把注释行的 `#` 误认成行尾注释，生成 `cpuCount: 4 # cpuCount: default` | 只在原本是生效行时才保留行尾注释 |
+| `wslc-panel` × 9 | `no method named font_bold / font_semibold` —— 字重方法来自 `StyledExt` trait，未导入 | `use gpui_kit::component::StyledExt` |
+| `wslc-panel` × 2 | `no method named overflow_y_scroll` —— 它属于 `StatefulInteractiveElement`，**只对带 `.id()` 的元素可用**；GPUI 的 overflow 宏只提供 `overflow_hidden` / `overflow_x_hidden` / `overflow_y_hidden` | 滚动容器加 `.id(...)` |
+| `main.rs` | `no method named new found for &mut App` —— `cx.new` 来自 `AppContext` trait | `use gpui_kit::AppContext;` |
+| `views.rs` | `error: recursion limit reached while expanding #[test]` | crate 级加 `#![recursion_limit = "256"]` |
+
+> 这些都是"本机无法编译"才会拖到 CI 才暴露的典型问题：
+> 自动解引用层级、固有方法遮蔽标准方法、serde 对序列的宽容、trait 不在作用域。
+
 
 ---
 

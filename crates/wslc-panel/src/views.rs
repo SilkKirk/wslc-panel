@@ -7,7 +7,8 @@
 // 注意：`primary()` / `danger()` 这些样式方法来自 trait `ButtonVariants`，
 // 光导入 `Button` 是不够的 —— 这里用 glob 把 button 模块全带上。
 use gpui_kit::component::button::*;
-use gpui_kit::component::{Disableable, Sizable, h_flex, v_flex};
+// `StyledExt` 提供 `font_bold` / `font_semibold` 等字重方法（由宏生成）。
+use gpui_kit::component::{Disableable, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 
 use wslc_core::model::ContainerState;
@@ -820,7 +821,9 @@ pub fn config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
         .child(card("配置项", v_flex().w_full().gap_2().children(rows)))
         .child(card(
             "原始 YAML",
+            // 同 app.rs：滚动容器必须先有 id。
             v_flex()
+                .id("settings-raw-yaml")
                 .w_full()
                 .max_h(px(420.))
                 .overflow_y_scroll()

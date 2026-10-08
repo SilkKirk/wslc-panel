@@ -254,7 +254,15 @@ impl PortMapping {
             None => (String::from("0.0.0.0"), None),
             Some(h) => match h.rsplit_once(':') {
                 Some((ip, port)) => (ip.to_owned(), port.trim().parse::<u16>().ok()),
-                None => (h.to_owned(), None),
+                // 没有冒号：可能是只写了端口的简写（`8080->80/tcp`），
+                // 也可能是个不带端口的主机名/地址。纯数字按端口处理。
+                //
+                // `wslc list` 实际输出的是 `127.0.0.1:18080->80/tcp` 这种完整形式，
+                // 但简写在这里如果不处理就会被当成"IP 叫 8080"，展示时会很怪。
+                None => match h.trim().parse::<u16>() {
+                    Ok(port) => (String::from("0.0.0.0"), Some(port)),
+                    Err(_) => (h.to_owned(), None),
+                },
             },
         };
 
@@ -754,7 +762,19 @@ mod tests {
 
     #[test]
     fn port_parse_accepts_short_form() {
+        // `8080->80/tcp`（省掉主机地址的简写）：纯数字的宿主段是**端口**，不是 IP。
+        // 这条断言也是 CI 抓出来的 —— 原实现把 "8080" 当成了 host_ip。
         let p = PortMapping::parse("8080->80/tcp").unwrap();
+        assert_eq!(p.host_ip, "0.0.0.0");
+        assert_eq!(p.host_port, Some(8080));
+        assert_eq!(p.container_port, 80);
+        assert_eq!(p.protocol, "tcp");
+    }
+
+    #[test]
+    fn port_parse_handles_container_port_only() {
+        // 只有容器端口时（未发布），宿主侧应为通配地址且无端口。
+        let p = PortMapping::parse("80/tcp").unwrap();
         assert_eq!(p.host_ip, "0.0.0.0");
         assert_eq!(p.host_port, None);
         assert_eq!(p.container_port, 80);

@@ -157,7 +157,7 @@ pub fn default_settings_path() -> Option<PathBuf> {
 /// 加载 `settings.yaml`。
 ///
 /// 优先用 `wslc info` 报告的路径（这是权威来源），失败再退回默认位置。
-pub fn load_settings(wslc: &Wslc, info: Option<&SystemInfo>) -> std::result::Result<SettingsDoc, String> {
+pub fn load_settings(info: Option<&SystemInfo>) -> std::result::Result<SettingsDoc, String> {
     let reported = info
         .map(|i| i.client.settings_file.clone())
         .filter(|p| !p.trim().is_empty())
