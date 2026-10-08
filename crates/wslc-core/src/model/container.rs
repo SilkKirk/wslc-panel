@@ -204,6 +204,28 @@ impl ContainerListItem {
         parse_wsl_metadata(&self.labels).unwrap_or_default()
     }
 
+    /// 挂载列表（来自 `Labels` 的元数据，给的是用户认得的主机路径）。
+    pub fn mounts(&self) -> Vec<WslVolumeSpec> {
+        parse_wsl_volumes(&self.labels).unwrap_or_default()
+    }
+
+    /// 挂载的可读摘要：`主机 → 容器`，多个用 `; ` 连接。
+    ///
+    /// 没有挂载时返回 `None`（界面上显示 `—`）。
+    pub fn mounts_summary(&self) -> Option<String> {
+        let mounts = self.mounts();
+        if mounts.is_empty() {
+            return None;
+        }
+        Some(
+            mounts
+                .iter()
+                .map(WslVolumeSpec::summary)
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    }
+
     /// 体积（字节）。
     pub fn size_bytes(&self) -> Option<f64> {
         parse_size(&self.size)
@@ -329,6 +351,15 @@ impl WslPortSpec {
 /// com.microsoft.wsl.container.metadata={"V1":{"Flags":0,...,"Ports":[{...}],"Volumes":[]}}
 /// ```
 pub fn parse_wsl_metadata(labels: &str) -> Option<Vec<WslPortSpec>> {
+    let parsed = wsl_metadata_value(labels)?;
+    let ports = parsed.get("V1")?.get("Ports")?;
+    serde_json::from_value(ports.clone()).ok()
+}
+
+/// 取出 `com.microsoft.wsl.container.metadata` 的 JSON 值。
+///
+/// 端口和挂载都在这一份 metadata 里，所以抽出来共用。
+fn wsl_metadata_value(labels: &str) -> Option<Value> {
     const KEY: &str = "com.microsoft.wsl.container.metadata";
 
     for part in split_outside_brackets(labels, ',') {
@@ -339,11 +370,47 @@ pub fn parse_wsl_metadata(labels: &str) -> Option<Vec<WslPortSpec>> {
         if k.trim() != KEY {
             continue;
         }
-        let parsed: Value = serde_json::from_str(v.trim()).ok()?;
-        let ports = parsed.get("V1")?.get("Ports")?;
-        return serde_json::from_value(ports.clone()).ok();
+        return serde_json::from_str(v.trim()).ok();
     }
     None
+}
+
+/// `Labels` 里 WSL 元数据描述的**挂载**。
+///
+/// 形如：
+/// ```json
+/// {"ContainerPath":"/etc/nginx/conf.d/","HostPath":"E:\\code","ReadOnly":false}
+/// ```
+///
+/// 为什么要从这里取，而不是用 `list` 的 `Mounts` 字段：
+/// `Mounts` 给的是 VM 内部路径（形如 `/mnt/{078dfade-...}`），
+/// 对用户**没有意义** —— 用户认得的是自己填的 `E:\code`。
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct WslVolumeSpec {
+    /// 主机路径（bind 挂载的源）。
+    #[serde(rename = "HostPath", default)]
+    pub host_path: String,
+    /// 容器内路径（挂载目标）。
+    #[serde(rename = "ContainerPath", default)]
+    pub container_path: String,
+    /// 是否只读。
+    #[serde(rename = "ReadOnly", default)]
+    pub read_only: bool,
+}
+
+impl WslVolumeSpec {
+    /// `主机 → 容器`（只读时带标记）。
+    pub fn summary(&self) -> String {
+        let suffix = if self.read_only { "（只读）" } else { "" };
+        format!("{} → {}{}", self.host_path, self.container_path, suffix)
+    }
+}
+
+/// 从 `Labels` 解析挂载列表。
+pub fn parse_wsl_volumes(labels: &str) -> Option<Vec<WslVolumeSpec>> {
+    let parsed = wsl_metadata_value(labels)?;
+    let volumes = parsed.get("V1")?.get("Volumes")?;
+    serde_json::from_value(volumes.clone()).ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -466,6 +533,11 @@ impl ContainerSummary {
     /// 容器名。
     pub fn name(&self) -> &str {
         self.item.display_name()
+    }
+
+    /// 挂载摘要（`主机 → 容器`），委托给 `list` 的静态信息。
+    pub fn mounts_summary(&self) -> Option<String> {
+        self.item.mounts_summary()
     }
 
     /// 是否运行中。
@@ -786,6 +858,92 @@ mod tests {
         assert_eq!(p.host_ip, "0.0.0.0");
         assert_eq!(p.host_port, None);
         assert_eq!(p.container_port, 80);
+    }
+
+    /// 真实的 `Labels`（实机抓的）—— 端口和挂载都在同一段 metadata 里。
+    const REAL_LABELS: &str = concat!(
+        r#"com.microsoft.wsl.container.metadata={"V1":{"Flags":0,"InitProcessFlags":0,"#,
+        r#""Ports":[{"BindingAddress":"127.0.0.1","ContainerPort":80,"Family":2,"#,
+        r#""HostPort":80,"Protocol":6,"VmPort":20002}],"#,
+        r#""Volumes":[{"ContainerPath":"/etc/nginx/conf.d/","CreateSourceIfMissing":true,"#,
+        r#""HostPath":"E:\\code","ParentVMPath":"/mnt/{078dfade-e629-4e05-a2ce-8406c9b90422}","#,
+        r#""ReadOnly":false,"SourceFilename":""}]}},"#,
+        r#"maintainer=NGINX Docker Maintainers <docker-maint@nginx.com>"#,
+    );
+
+    #[test]
+    fn parse_wsl_volumes_reads_host_and_container_paths() {
+        let volumes = parse_wsl_volumes(REAL_LABELS).expect("应能解析出挂载");
+        assert_eq!(volumes.len(), 1);
+        assert_eq!(volumes[0].host_path, r"E:\code");
+        assert_eq!(volumes[0].container_path, "/etc/nginx/conf.d/");
+        assert!(!volumes[0].read_only);
+        assert_eq!(
+            volumes[0].summary(),
+            r"E:\code → /etc/nginx/conf.d/"
+        );
+    }
+
+    #[test]
+    fn parse_wsl_volumes_and_ports_share_the_same_metadata() {
+        // 同一个 Labels 里两样都能解析出来 —— 这是把 metadata 取值抽成
+        // `wsl_metadata_value` 的原因。
+        let ports = parse_wsl_metadata(REAL_LABELS).expect("应能解析出端口");
+        assert_eq!(ports.len(), 1);
+        assert_eq!(ports[0].host_port, Some(80));
+
+        let volumes = parse_wsl_volumes(REAL_LABELS).expect("应能解析出挂载");
+        assert_eq!(volumes.len(), 1);
+    }
+
+    #[test]
+    fn parse_wsl_volumes_returns_none_without_metadata() {
+        assert!(parse_wsl_volumes("").is_none());
+        assert!(parse_wsl_volumes("maintainer=someone").is_none());
+        // metadata 在，但没有 Volumes 字段
+        assert!(parse_wsl_volumes(r#"com.microsoft.wsl.container.metadata={"V1":{}}"#).is_none());
+    }
+
+    #[test]
+    fn parse_wsl_volumes_handles_empty_list() {
+        let labels = r#"com.microsoft.wsl.container.metadata={"V1":{"Volumes":[]}}"#;
+        let volumes = parse_wsl_volumes(labels).expect("空列表也应能解析");
+        assert!(volumes.is_empty());
+    }
+
+    #[test]
+    fn read_only_volume_is_marked_in_summary() {
+        let labels = concat!(
+            r#"com.microsoft.wsl.container.metadata={"V1":{"Volumes":[{"#,
+            r#""HostPath":"D:\\data","ContainerPath":"/data","ReadOnly":true}]}}"#,
+        );
+        let volumes = parse_wsl_volumes(labels).unwrap();
+        assert!(volumes[0].read_only);
+        assert_eq!(volumes[0].summary(), r"D:\data → /data（只读）");
+    }
+
+    #[test]
+    fn mounts_summary_is_none_when_no_mounts() {
+        let item = ContainerListItem::default();
+        assert!(item.mounts_summary().is_none());
+        assert!(item.mounts().is_empty());
+    }
+
+    #[test]
+    fn mounts_summary_joins_multiple_mounts() {
+        let labels = concat!(
+            r#"com.microsoft.wsl.container.metadata={"V1":{"Volumes":["#,
+            r#"{"HostPath":"C:\\a","ContainerPath":"/a","ReadOnly":false},"#,
+            r#"{"HostPath":"C:\\b","ContainerPath":"/b","ReadOnly":false}]}}"#,
+        );
+        let item = ContainerListItem {
+            labels: labels.to_owned(),
+            ..Default::default()
+        };
+        assert_eq!(
+            item.mounts_summary().unwrap(),
+            r"C:\a → /a; C:\b → /b"
+        );
     }
 
     #[test]

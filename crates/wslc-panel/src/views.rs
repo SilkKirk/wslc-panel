@@ -95,6 +95,18 @@ fn kv_block(label: &'static str, value: impl Into<SharedString>) -> impl IntoEle
         )
 }
 
+/// 挂载单元格：`主机 → 容器`；没有挂载时显示 `—`。
+///
+/// 挂载信息来自 `Labels` 的元数据（`E:\code → /etc/nginx/conf.d/`），
+/// 不是 `list` 的 `Mounts` 字段 —— 后者给的是 VM 内部路径
+/// （`/mnt/{078dfade-...}`），用户认不出来。
+fn cell_mounts(item: &ContainerSummary) -> AnyElement {
+    match item.mounts_summary() {
+        Some(text) => cell_muted(text),
+        None => cell_muted("—"),
+    }
+}
+
 /// 顶部统计数字块。
 fn stat_tile(label: &'static str, value: String, color: Rgba) -> impl IntoElement {
     v_flex()
@@ -562,14 +574,14 @@ fn disk_usage_card(state: &AppState) -> AnyElement {
 const RUNNING_COLUMNS: &[(&str, f32)] = &[
     ("名称", 150.0),
     ("状态", 90.0),
-    ("镜像", 190.0),
-    ("端口", 160.0),
+    ("镜像", 170.0),
+    ("端口", 150.0),
+    ("挂载", 220.0),
     ("CPU", 70.0),
     ("内存", 140.0),
     ("网络 I/O", 120.0),
-    ("块 I/O", 110.0),
     ("PID", 50.0),
-    ("操作", 160.0),
+    ("操作", 200.0),
 ];
 
 /// 当前运行容器页：列表 + 实时统计。
@@ -592,9 +604,8 @@ pub fn running(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
             let net = stats
                 .map(|s| s.net_io.clone())
                 .unwrap_or_else(|| "-".into());
-            let block = stats
-                .map(|s| s.block_io.clone())
-                .unwrap_or_else(|| "-".into());
+            // 「块 I/O」这一列被换成了「挂载」—— 实测所有容器都是 `0B / 0B`，
+            // 而挂载是用户真正会配、也真正需要看见的东西。
             let pids = stats
                 .map(|s| s.pids.to_string())
                 .unwrap_or_else(|| "-".into());
@@ -620,10 +631,10 @@ pub fn running(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                     cell_badge(item.state_kind()),
                     cell_muted(item.image.clone()),
                     cell_text(ports),
+                    cell_mounts(item),
                     cell_text(cpu),
                     cell_muted(mem),
                     cell_muted(net),
-                    cell_muted(block),
                     cell_text(pids),
                     h_flex()
                         .gap_2()
@@ -687,11 +698,11 @@ pub fn running(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
 const ALL_COLUMNS: &[(&str, f32)] = &[
     ("名称", 160.0),
     ("状态", 200.0),
-    ("镜像", 230.0),
+    ("镜像", 210.0),
     ("运行时长", 130.0),
-    ("端口", 160.0),
-    ("大小", 80.0),
-    ("操作", 160.0),
+    ("端口", 150.0),
+    ("挂载", 220.0),
+    ("操作", 240.0),
 ];
 
 /// 全部容器页（含已退出）。
@@ -724,7 +735,7 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
                     cell_muted(item.image.clone()),
                     cell_muted(item.running_for.clone()),
                     cell_text(ports),
-                    cell_muted(item.size.clone()),
+                    cell_mounts(item),
                     h_flex()
                         .gap_2()
                         .children({
