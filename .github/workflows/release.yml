@@ -139,6 +139,17 @@ jobs:
 
           **数据来源**：全部通过 `wslc.exe` 子进程 + `--format json`，
           不依赖 Docker Desktop，也不需要 WebView2。
+
+          ### 打不开怎么办
+
+          发布版是 Windows 子系统程序，**不会**弹控制台窗口。日志在这里：
+
+          ```
+          %LOCALAPPDATA%\wslc-panel\logs\wslc-panel.log
+          ```
+
+          正常启动最后一行是 `窗口已打开`。如果只有 `启动` 而没有它，
+          多半是显卡/驱动问题 —— GPUI 走 Direct3D 11，需要 D3D11 及以上。
           '@
           $notes | Out-File -FilePath NOTES.md -Encoding utf8
 
