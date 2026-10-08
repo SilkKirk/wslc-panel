@@ -38,10 +38,22 @@ jobs:
           key: release
 
       - name: 环境信息
+        shell: pwsh
         run: |
           rustc --version
           cargo --version
-          where.exe rc.exe || echo "rc.exe 不在 PATH（Windows SDK 通常已装）"
+          # 注意：这里**不能用 `where.exe rc.exe || echo ...`**。
+          # where.exe 找不到文件时返回 1，而 PowerShell 不会因为后面跑了一个
+          # cmdlet 就把 $LASTEXITCODE 清零 —— 步骤最后仍会以 1 退出，
+          # 于是一个纯信息步骤把整个构建搞挂了（CI 上真实踩过）。
+          # 用 Get-Command 不触碰 $LASTEXITCODE，并且显式 exit 0。
+          $rc = Get-Command rc.exe -ErrorAction SilentlyContinue
+          if ($rc) {
+            Write-Output "rc.exe: $($rc.Source)"
+          } else {
+            Write-Output "rc.exe 不在 PATH —— Rust 的 embed-resource 会自行从 Windows SDK 定位，通常不影响构建"
+          }
+          exit 0
 
       - name: 编译 release
         run: cargo build -p wslc-panel --release
