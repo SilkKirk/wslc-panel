@@ -433,15 +433,12 @@ pub fn running(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
         .w_full()
         .gap_3()
         .child(
-            h_flex()
-                .w_full()
-                .justify_between()
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme::text_muted())
-                        .child(format!("{} 个容器正在运行", items.len())),
-                ),
+            h_flex().w_full().justify_between().child(
+                div()
+                    .text_sm()
+                    .text_color(theme::text_muted())
+                    .child(format!("{} 个容器正在运行", items.len())),
+            ),
         )
         .child(
             v_flex()

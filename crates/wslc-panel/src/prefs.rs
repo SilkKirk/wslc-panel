@@ -89,10 +89,11 @@ impl Prefs {
             return Err("LOCALAPPDATA 未设置，无法确定偏好文件位置".to_owned());
         };
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("创建 {} 失败：{e}", dir.display()))?;
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("创建 {} 失败：{e}", dir.display()))?;
         }
-        let text = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("序列化偏好失败：{e}"))?;
+        let text =
+            serde_json::to_string_pretty(self).map_err(|e| format!("序列化偏好失败：{e}"))?;
         std::fs::write(&path, text).map_err(|e| format!("写入 {} 失败：{e}", path.display()))
     }
 }
@@ -124,7 +125,10 @@ mod tests {
 
     #[test]
     fn normalized_clamps_out_of_range_values() {
-        assert_eq!(Prefs { refresh_secs: 0 }.normalized().refresh_secs, MIN_REFRESH_SECS);
+        assert_eq!(
+            Prefs { refresh_secs: 0 }.normalized().refresh_secs,
+            MIN_REFRESH_SECS
+        );
         assert_eq!(
             Prefs {
                 refresh_secs: 99999

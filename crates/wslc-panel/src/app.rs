@@ -249,7 +249,8 @@ impl Shell {
         match self.state.prefs.save() {
             Ok(()) => {
                 tracing::info!("自动刷新间隔已改为 {secs} 秒");
-                self.state.notify(Toast::success(format!("刷新间隔已改为 {secs} 秒")));
+                self.state
+                    .notify(Toast::success(format!("刷新间隔已改为 {secs} 秒")));
             }
             Err(e) => {
                 tracing::warn!("保存偏好失败：{e}");

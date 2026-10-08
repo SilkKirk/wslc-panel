@@ -90,8 +90,16 @@ fn initial_window_options(cx: &App) -> WindowOptions {
         .map(|display| {
             let usable = display.visible_bounds().size;
             size(
-                px(fit_to_display(usable.width.as_f32(), DESIRED_WINDOW.0, MIN_WINDOW.0)),
-                px(fit_to_display(usable.height.as_f32(), DESIRED_WINDOW.1, MIN_WINDOW.1)),
+                px(fit_to_display(
+                    usable.width.as_f32(),
+                    DESIRED_WINDOW.0,
+                    MIN_WINDOW.0,
+                )),
+                px(fit_to_display(
+                    usable.height.as_f32(),
+                    DESIRED_WINDOW.1,
+                    MIN_WINDOW.1,
+                )),
             )
         })
         .unwrap_or_else(|| size(px(DESIRED_WINDOW.0), px(DESIRED_WINDOW.1)));
