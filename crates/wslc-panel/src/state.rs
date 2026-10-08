@@ -508,7 +508,7 @@ mod tests {
             assert!(!page.label().is_empty());
             assert!(!page.group().is_empty());
         }
-        assert_eq!(Page::ALL.len(), 7);
+        // 去掉「当前运行」页后是 6 个（这个断言以前从没跑过，\n        // 因为 cargo check --all-targets 只编译不执行 —— 见 SPIKE 7.8）\n        assert_eq!(Page::ALL.len(), 6);
     }
 
     #[test]
