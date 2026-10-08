@@ -13,10 +13,11 @@
 //! theme.rs  配色
 //! ```
 
-// 手写代码里嵌套的 `assert_eq!` 会超出默认的宏展开递归上限（128）。
-// 这是 CI 抓到的：`error: recursion limit reached while expanding #[test]`。
-// 512 是够用的余量；真正的问题片段已经改写成类型更简单的比较（见 views.rs 测试）。
-#![recursion_limit = "512"]
+// 注意：这里**没有** `#![recursion_limit]`。
+// 如果遇到 `error: recursion limit reached while expanding #[test]`，
+// 不要靠调大这个上限去解决 —— 真正的原因是 `use super::*;` 把 gpui 再导出的
+// `test` 属性宏继承进了测试模块，遮蔽了 Rust 内建的 `#[test]`。
+// 完整说明见 views.rs 的测试模块。
 
 mod app;
 mod state;
@@ -41,8 +42,10 @@ fn main() {
             // 必须在打开任何窗口之前初始化组件层。
             gpui_kit::init(cx);
 
+            // `cx.new(app::Shell::new)` 而不是 `cx.new(|cx| app::Shell::new(cx))`：
+            // 后者是 clippy 的 redundant_closure，签名本来就完全吻合。
             match gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| {
-                cx.new(|cx| app::Shell::new(cx))
+                cx.new(app::Shell::new)
             }) {
                 Ok(_) => tracing::info!("窗口已打开"),
                 Err(e) => {

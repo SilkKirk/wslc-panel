@@ -1082,7 +1082,26 @@ fn interval_switcher(state: &AppState, entity: &Entity<Shell>) -> impl IntoEleme
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // ⚠️ 这里**故意不用 `use super::*;`** —— 这是个很难查的坑，记下来：
+    //
+    // `views` 模块里有 `use gpui_kit::*;`，而 gpui 在 gpui.rs 里无条件再导出了
+    // gpui_macros 的 `test` **属性宏**：
+    //
+    //     pub use gpui_macros::{..., property_test, register_action, test, ...};
+    //
+    // `use super::*` 会把这个名字继承进来，于是本模块里的 `#[test]`
+    // 解析到 **GPUI 的 test 宏**而不是 Rust 内建的那个，展开时自我递归。
+    //
+    // 症状极具迷惑性：报错是
+    //     error: recursion limit reached while expanding `#[test]`
+    // 而且提示的递归上限会随你调高而水涨船高（128 → 512 → 1024），
+    // 因为问题不是"深度不够"，而是宏被同名遮蔽了。
+    //
+    // 正确做法（gpui-kit 的 lib.rs 注释里也写了）：测试模块**显式导入**需要的类型。
+    use super::{
+        ALL_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS, RUNNING_COLUMNS, VOLUME_COLUMNS, presets_for,
+    };
+    use wslc_core::settings::{SETTING_KEYS, SettingKind};
 
     /// 汇总所有表格的列定义，方便逐个检查。
     fn all_column_sets() -> Vec<&'static [(&'static str, f32)]> {
