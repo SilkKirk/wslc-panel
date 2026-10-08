@@ -158,7 +158,12 @@ crates.io 上目前有三条 GPUI 线：
 
 ## 7. 编译验证步骤
 
-工具链当前**未安装**。装好后按顺序执行：
+> **本机没有 Rust 工具链，所以编译验证已经交给 GitHub Actions**：
+> `ci.yml` 在每次 push 时跑 `cargo test -p wslc-core` 与
+> `cargo check --workspace --all-targets`，目前**全绿**。
+> 详见 [`SPIKE.md`](./SPIKE.md) §4 与 §5。
+>
+> 下面的步骤用于**本机**开发（装好工具链之后）。
 
 ```powershell
 # 1) 安装 Rust（MSVC 工具链）
@@ -183,8 +188,8 @@ cargo build -p wslc-panel
 cargo run -p wslc-panel
 ```
 
-**M0 必须最先确认的一件事**：GPUI 能否在本机正常创建窗口并渲染中文。
-若失败，回退顺序为：`gpui-pre` → 官方 `gpui` 0.2.2 → `egui`。
+**唯一还没有被验证的一件事**：GPUI 能否在本机**正常创建窗口并渲染中文**
+（CI 只能编译，没有显示设备可跑）。若失败，回退顺序见 SPIKE.md §6。
 因为 UI 层只依赖 `wslc-core` 的数据模型，**回退不会影响数据层代码**。
 
 ---
