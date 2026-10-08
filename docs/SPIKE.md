@@ -394,3 +394,27 @@ POST /repos/{owner}/{repo}/actions/workflows/ci.yml/dispatches  {"ref":"main"}
 ```
 
 反正 `ci.yml` 本来就带 `workflow_dispatch`，不影响正常用法。
+
+### 7.7 组件库的主题必须**显式**切换
+
+这是实机截图才发现的：`Input` 里明明打了字，但读不出来 ——
+因为 **gpui-component 的默认主题是浅色**，它渲染出来的是白底浅灰字。
+
+我们自己画的 `div` 由 `theme.rs` 定色，看起来是深色的，
+于是很容易以为"整个界面都是深色的"。**但组件库的控件
+（`Input` / `Button` / `Select` …）只认它自己的主题。**
+
+```rust
+gpui_kit::init(cx);
+gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, cx);
+```
+
+出处：`gpui-component/src/theme/mod.rs:389`
+（`pub fn change(mode: impl Into<ThemeMode>, _window: Option<&mut Window>, cx: &mut App)`），
+签名里那个 `window` 参数**不读** —— 它内部会刷新所有窗口。
+
+**连带发现**：`.disabled()` 的禁用态文字几乎看不清
+（「拉取镜像」「刷新」「已保存」三个按钮都中招）。
+与其去调组件库的禁用态配色，不如**干脆不用 `.disabled()`**：
+不可用状态用"守卫 + 文案"表达，可读性反而更好 ——
+比如"已保存"本来就是个**状态**，一行绿色文字比灰按钮更准确。

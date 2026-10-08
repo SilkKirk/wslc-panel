@@ -63,6 +63,17 @@ fn main() {
             // 必须在打开任何窗口之前初始化组件层。
             gpui_kit::init(cx);
 
+            // ★ 必须**显式**切到深色主题。
+            //
+            // gpui-component 的默认主题是**浅色**，于是它渲染出来的
+            // `Input` 是白底浅灰字 —— 在深色界面上完全看不清
+            // （实机截图确认过：输入框里明明打了字，但读不出来）。
+            //
+            // 我们自己画的 div 由 `theme.rs` 定色，但组件库的控件
+            // （`Input` / `Button` / `Select` …）只认它自己的主题，
+            // 两套配色必须在这里对齐。
+            gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, cx);
+
             let options = initial_window_options(cx);
             tracing::info!("窗口尺寸：{:?}", options.window_bounds);
 
