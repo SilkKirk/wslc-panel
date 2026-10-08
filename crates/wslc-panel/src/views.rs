@@ -564,6 +564,7 @@ const ALL_COLUMNS: &[(&str, f32)] = &[
     ("状态", 120.0),
     ("资源", 190.0),
     ("端口", 200.0),
+    ("操作", 250.0),
 ];
 
 /// 端口映射的精简显示：`主机端口:容器端口`。
@@ -629,6 +630,57 @@ fn container_name_link(name: &str, entity: &Entity<Shell>) -> AnyElement {
         .into_any_element()
 }
 
+/// 行内操作：**只放高频的**启动/重启、停止、删除。
+///
+/// 「强杀」这种低频且危险的操作留在详情弹窗里 —— 列表里塞满按钮
+/// 反而找不到常用的那个。
+fn container_row_actions(name: &str, running: bool, entity: &Entity<Shell>) -> AnyElement {
+    let mut actions: Vec<AnyElement> = Vec::new();
+
+    if running {
+        actions.push(
+            immediate_button(
+                &format!("restart-{name}"),
+                "重启",
+                ImmediateAction::RestartContainer(name.to_owned()),
+                entity,
+            )
+            .into_any_element(),
+        );
+        actions.push(
+            danger_button(
+                &format!("stop-{name}"),
+                "停止",
+                PendingAction::StopContainer(name.to_owned()),
+                entity,
+            )
+            .into_any_element(),
+        );
+    } else {
+        actions.push(
+            immediate_button(
+                &format!("start-{name}"),
+                "启动",
+                ImmediateAction::StartContainer(name.to_owned()),
+                entity,
+            )
+            .into_any_element(),
+        );
+    }
+
+    actions.push(
+        danger_button(
+            &format!("remove-{name}"),
+            "删除",
+            PendingAction::RemoveContainer(name.to_owned()),
+            entity,
+        )
+        .into_any_element(),
+    );
+
+    h_flex().gap_2().children(actions).into_any_element()
+}
+
 /// 全部容器页（含已退出）。
 pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
     let items = &state.snapshot.all;
@@ -644,6 +696,11 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
                     cell_badge(summary.item.state_kind()),
                     cell_resources(summary),
                     cell_text(ports_summary(summary)),
+                    container_row_actions(
+                        summary.item.display_name(),
+                        summary.item.is_running(),
+                        entity,
+                    ),
                 ],
             )
             .into_any_element()
@@ -1979,7 +2036,7 @@ mod tests {
         // 行内的 cell 数量少于列数只会留下空白，多出来则会被丢弃；
         // 这里把"必须一一对应"的约束固化下来，避免改表头时忘记改行。
         let counts: Vec<usize> = all_column_sets().iter().map(|c| c.len()).collect();
-        assert_eq!(counts, vec![5, 5, 6, 5]);
+        assert_eq!(counts, vec![6, 5, 6, 5]);
     }
 
     #[test]
