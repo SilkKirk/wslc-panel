@@ -126,16 +126,35 @@ wslc volume remove -f spike-vol
 | 假设 | 结果 | 备注 |
 |---|---|---|
 | A | ✅ **已验证** | CI run 1：`gpui-component` / `gpui-base` / `gpui-pre-platform` / `accesskit_windows` 全部 `Checking` 通过 —— GPUI 在 windows-latest 上能编译 |
-| B | ⏳ 待运行验证 | 需要真实窗口，只能本机 `cargo run` 后目视 |
-| C | 🟡 编译期通过 | GPU/D3D11 是运行期行为，CI 无显示设备 |
-| D | ⏳ 待运行验证 | `WindowOptions::default()` 编译通过，运行效果待看 |
+| B | ✅ **已实机验证** | 实跑 release exe，日志：`gpui_windows::direct_write: Use Microsoft YaHei UI as UI font.` —— 中文走系统雅黑，不缺字 |
+| C | ✅ **已实机验证** | 同一次运行：`Using GPU: Intel(R) UHD Graphics` / `Created device with Direct3D 11.1 feature level.` |
+| D | ✅ **已实机验证** | 同一次运行：`wslc_panel: 窗口已打开`；随后把 `WindowOptions::default()` 换成显式的 1280×820 居中 |
 | E | ✅ **已验证** | `Context::spawn` 签名是 `AsyncFnOnce(WeakEntity<T>, &mut AsyncApp) -> R`，与 `layer_shell.rs` / `testing.rs` / `example_editor.rs` 的写法**逐字一致**；`WeakEntity::update` 返回 `Result`，用 `let _ =` 接住 |
 | F | ✅ **已验证** | `ButtonVariants`（`primary()`）需从 `button::*` 导入；`Sizable::small` / `Disableable::disabled` 见 gpui-component 源码 |
 | G | ✅ **已验证** | 刻度表见 `gpui-pre-macros/src/styles.rs::box_style_suffixes`（含 `6`/`8`）与 `*_box_style_prefixes`（含 `px`/`py`/`gap`） |
 | H | ✅ 已绕开 | 不用 `.opacity()`，改为 `theme.rs` 预置不透明色 + `hsla` 遮罩 |
 | I | ✅ **已验证** | `div().id(...).on_click(...)` 在 CI run 2 没有再报错 |
-| J | 🟡 编译期通过 | `gpui_kit::assets::Assets` + `.with_assets()` 已过编译 |
+| J | ✅ **已实机验证** | `.with_assets()` 编译通过；程序完整跑起来没有资源相关报错 |
 | K | ⏳ 待补采样 | 卷的真实 JSON 字段名 |
+
+### 实机运行的完整日志（第一次跑 release exe）
+
+```text
+INFO wslc_panel: wslc-panel 启动
+INFO gpui_windows::direct_write: Use Microsoft YaHei UI as UI font.
+INFO gpui_windows::directx_devices: Using GPU: Intel(R) UHD Graphics
+INFO gpui_windows::directx_devices: Created device with Direct3D 11.1 feature level.
+INFO wslc_panel: 窗口已打开
+```
+
+这一份日志一次性回答了三个问题：中文字体、D3D11 设备、窗口创建。
+
+**同时暴露的缺陷（已修）**：release 版还带着控制台窗口 ——
+默认是 console 子系统。已加
+`#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`，
+并把发布版日志改写到
+`%LOCALAPPDATA%\wslc-panel\logs\wslc-panel.log`（没有控制台之后，
+文件是唯一能看到日志的地方）。debug 构建仍保留控制台，方便 `cargo run`。
 
 ### CI 找到的问题（已修）
 

@@ -154,6 +154,43 @@ base, component, and assets, so a Rust application lists a single dependency.」
   会开一个独立的 Windows 控制台窗口。
 - **本机直连 Docker Hub 会超时**：`run` 表单默认 `--pull missing`，
   并提供"使用本地已有镜像"的输入方式；离线环境请用 `--pull never`。
+- **界面尚未接入 GPUI 的 `InputState`**：`views.rs` 的测试模块不能写
+  `use super::*;`，因为那会把 gpui 再导出的 `test` 属性宏带进来、
+  遮蔽 Rust 的 `#[test]`（详见 [`docs/SPIKE.md`](docs/SPIKE.md)）。
+
+---
+
+## 故障排查
+
+程序打不开、或者界面空白时，**先看日志文件**：
+
+```
+%LOCALAPPDATA%\wslc-panel\logs\wslc-panel.log
+```
+
+发布版是 Windows 子系统程序（**不会**弹出控制台窗口），所以这个文件是唯一能看到日志的地方。
+正常启动时它长这样：
+
+```text
+INFO wslc_panel: wslc-panel 启动（版本 0.1.0）
+INFO gpui_windows::direct_write: Use Microsoft YaHei UI as UI font.
+INFO gpui_windows::directx_devices: Using GPU: Intel(R) UHD Graphics
+INFO gpui_windows::directx_devices: Created device with Direct3D 11.1 feature level.
+INFO wslc_panel: 窗口尺寸：Some(Windowed(Bounds { ... size: Size { width: 1178px, height: 754px } }))
+INFO wslc_panel: 窗口已打开
+```
+
+| 日志里看到 | 含义 / 处理 |
+|---|---|
+| 文件不存在 | 程序根本没启动（被杀软拦了？） |
+| 只有「启动」没有「窗口已打开」 | 显卡/驱动问题。GPUI 走 D3D11，需要 D3D11 及以上；虚拟机 / 远程桌面下可能不可用 |
+| `打开窗口失败：...` | 同上，看后面的具体错误 |
+| 窗口已打开但界面空白 | 把环境变量 `RUST_LOG` 设成 `debug` 再跑一次，日志会详细得多 |
+
+界面本身的问题（数据不显示、某个页面报错）会以红色横幅直接显示在页面顶部，不需要看日志。
+
+**窗口尺寸**按主显示器的可用区域自适应（已排除任务栏）：期望 1280×820，
+小屏上会自动缩小，并且任何情况下都不会超出屏幕。
 
 ---
 

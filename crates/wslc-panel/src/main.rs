@@ -13,6 +13,11 @@
 //! theme.rs  配色
 //! ```
 
+// 发布版不给它配控制台窗口 —— 这是个 GUI 程序，双击运行时多弹一个黑框很突兀
+// （第一次实机运行就暴露了这个问题）。
+// debug 构建保留控制台，方便 `cargo run` 时直接看日志。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 // 注意：这里**没有** `#![recursion_limit]`。
 // 如果遇到 `error: recursion limit reached while expanding #[test]`，
 // 不要靠调大这个上限去解决 —— 真正的原因是 `use super::*;` 把 gpui 再导出的
@@ -24,17 +29,28 @@ mod state;
 mod theme;
 mod views;
 
+use std::io::Write as _;
+use std::path::PathBuf;
+use std::sync::Arc;
+
 // `cx.new(...)` 来自 `AppContext` trait，不导入就没有这个方法。
-use gpui_kit::AppContext;
-use gpui_kit::WindowOptions;
+// `primary_display` 返回 `Rc<dyn PlatformDisplay>`，调用 `visible_bounds()`
+// 需要把 trait 带进作用域。
+use gpui_kit::{App, AppContext, PlatformDisplay, WindowBounds, WindowOptions, px, size};
+
+/// 期望的初始窗口尺寸（大屏上就用它）。
+const DESIRED_WINDOW: (f32, f32) = (1280.0, 820.0);
+
+/// 再小也不小于这个 —— 除非显示器的可用区域本身就比它还小。
+const MIN_WINDOW: (f32, f32) = (880.0, 620.0);
+
+/// 初始窗口占显示器可用区域的比例（留点边距，不让窗口贴边）。
+const WINDOW_RATIO: f32 = 0.92;
 
 fn main() {
-    // 日志走 RUST_LOG，默认 info。
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    init_tracing();
 
-    tracing::info!("wslc-panel 启动");
+    tracing::info!("wslc-panel 启动（版本 {}）", env!("CARGO_PKG_VERSION"));
 
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
@@ -42,16 +58,135 @@ fn main() {
             // 必须在打开任何窗口之前初始化组件层。
             gpui_kit::init(cx);
 
-            // `cx.new(app::Shell::new)` 而不是 `cx.new(|cx| app::Shell::new(cx))`：
-            // 后者是 clippy 的 redundant_closure，签名本来就完全吻合。
-            match gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| {
-                cx.new(app::Shell::new)
-            }) {
+            let options = initial_window_options(cx);
+            tracing::info!("窗口尺寸：{:?}", options.window_bounds);
+
+            // `cx.new(app::Shell::new)` 而不是 `cx.new(|cx| Shell::new(cx))`：
+            // 后者是 clippy 的 redundant_closure。
+            match gpui_kit::open_window(options, cx, |_, cx| cx.new(app::Shell::new)) {
                 Ok(_) => tracing::info!("窗口已打开"),
-                Err(e) => {
-                    tracing::error!("打开窗口失败：{e}");
-                    eprintln!("打开窗口失败：{e}");
-                }
+                Err(e) => tracing::error!("打开窗口失败：{e}"),
             }
         });
+}
+
+/// 按**主显示器的可用区域**算初始窗口尺寸，而不是写死像素。
+///
+/// 第一版写的是固定的 1280×820，结果在小屏上开出来的窗口比桌面还大
+/// （实机跑一次就发现了）。这里改成：
+///
+/// 1. 取显示器 `visible_bounds()`（已排除任务栏/停靠栏）；
+/// 2. 按 [`WINDOW_RATIO`] 缩放；
+/// 3. 夹到 `[MIN_WINDOW, DESIRED_WINDOW]`；
+/// 4. **最后再和可用区域取 min** —— 保证任何情况下都不会超出屏幕。
+///
+/// 拿不到显示器信息时退回 [`DESIRED_WINDOW`]。
+fn initial_window_options(cx: &App) -> WindowOptions {
+    let window_size = cx
+        .primary_display()
+        .map(|display| {
+            let usable = display.visible_bounds().size;
+            size(
+                px(fit_to_display(usable.width.as_f32(), DESIRED_WINDOW.0, MIN_WINDOW.0)),
+                px(fit_to_display(usable.height.as_f32(), DESIRED_WINDOW.1, MIN_WINDOW.1)),
+            )
+        })
+        .unwrap_or_else(|| size(px(DESIRED_WINDOW.0), px(DESIRED_WINDOW.1)));
+
+    WindowOptions {
+        window_bounds: Some(WindowBounds::centered(window_size, cx)),
+        ..Default::default()
+    }
+}
+
+/// 让窗口尺寸适配可用区域。
+fn fit_to_display(usable: f32, desired: f32, min: f32) -> f32 {
+    (usable * WINDOW_RATIO).clamp(min, desired).min(usable)
+}
+
+// ---------------------------------------------------------------------------
+// 日志
+// ---------------------------------------------------------------------------
+
+/// 日志文件路径：`%LOCALAPPDATA%\wslc-panel\logs\wslc-panel.log`。
+///
+/// 发布版没有控制台，这个文件是**唯一**能看到日志的地方，
+/// 所以出问题时要让用户先看这里。
+fn log_file_path() -> Option<PathBuf> {
+    let base = std::env::var_os("LOCALAPPDATA")?;
+    Some(
+        PathBuf::from(base)
+            .join("wslc-panel")
+            .join("logs")
+            .join("wslc-panel.log"),
+    )
+}
+
+/// 按需打开日志文件并追加写入。
+///
+/// 自己实现而不用 `tracing-appender`：只要"追加写"这一件事，
+/// 不想为此多一个依赖（它还会起后台线程，对桌面程序是多余的）。
+#[derive(Clone)]
+struct FileWriter {
+    path: Arc<PathBuf>,
+}
+
+impl std::io::Write for FileWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.path.as_path())?;
+        file.write_all(buf)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for FileWriter {
+    type Writer = FileWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// 初始化日志。
+///
+/// - debug 构建：写到控制台（`cargo run` 直接可见）
+/// - 发布构建：写到 `%LOCALAPPDATA%\wslc-panel\logs\wslc-panel.log`
+fn init_tracing() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    #[cfg(debug_assertions)]
+    {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        match log_file_path() {
+            Some(path) => {
+                if let Some(dir) = path.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                tracing_subscriber::fmt()
+                    .with_env_filter(filter)
+                    // 文件里不要 ANSI 颜色转义
+                    .with_ansi(false)
+                    .with_writer(FileWriter {
+                        path: Arc::new(path),
+                    })
+                    .init();
+            }
+            // 拿不到 LOCALAPPDATA 时退回默认
+            None => {
+                tracing_subscriber::fmt().with_env_filter(filter).init();
+            }
+        }
+    }
 }
