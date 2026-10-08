@@ -890,7 +890,7 @@ mod tests {
         // `wsl_metadata_value` 的原因。
         let ports = parse_wsl_metadata(REAL_LABELS).expect("应能解析出端口");
         assert_eq!(ports.len(), 1);
-        assert_eq!(ports[0].host_port, Some(80));
+        assert_eq!(ports[0].host_port, 80);
 
         let volumes = parse_wsl_volumes(REAL_LABELS).expect("应能解析出挂载");
         assert_eq!(volumes.len(), 1);

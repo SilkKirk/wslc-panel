@@ -15,7 +15,7 @@ use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 
 use wslc_core::cmd::container::{PullPolicy, RunSpec};
-use wslc_core::model::ContainerState;
+use wslc_core::model::{ContainerState, ContainerSummary};
 use wslc_core::settings::{SETTING_KEYS, SettingKey, SettingKind};
 
 use crate::app::{CreateDialog, Shell};
