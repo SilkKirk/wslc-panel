@@ -2,8 +2,14 @@ name: Release
 
 # 触发方式：
 #   - 推一个 v* 标签（例如 v0.1.0）→ 编译 + 打包 + 建 Release
-#   - 手动 workflow_dispatch → 只编译 + 上传 Artifact（不开 Release），
-#     用来在不打标签的情况下验证"exe 能不能真的产出"
+#   - 手动 workflow_dispatch：
+#       release_tag 留空 → 只编译 + 上传 Artifact（不开 Release）
+#       release_tag 填 v0.1.0 → 编译 + 打包，并为该标签建 Release
+#
+#     为什么需要"填 release_tag"这条路径：
+#     用 GitHub REST API 创建 tag（POST /git/refs）只会触发 `create` 事件，
+#     **不会**触发 `push` 事件，所以 `on: push: tags` 不会跑。
+#     这条路径同时也是"给已存在的标签补发 Release"的入口。
 #
 # 产物是**单文件 exe**：GPUI 走 D3D11，不依赖 WebView2 或任何运行时。
 
@@ -11,6 +17,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "要发布到的标签（留空则只出 Artifact，不建 Release）"
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -71,13 +82,22 @@ jobs:
       - name: 打包 zip
         shell: pwsh
         run: |
-          $tag = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}" } else { "dev-$("${{ github.sha }}".Substring(0,7))" }
+          $refTag   = ("${{ github.ref_type }}" -eq "tag")
+          $inputTag = "${{ inputs.release_tag }}".Trim()
+          $tag = if ($refTag) { "${{ github.ref_name }}" }
+                 elseif ($inputTag) { $inputTag }
+                 else { "dev-$("${{ github.sha }}".Substring(0,7))" }
+          # 是否要建 Release：标签触发，或手动指定了 release_tag。
+          $publish = $refTag -or ($inputTag -ne "")
+          Write-Output "tag=$tag  publish=$publish"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           $zip = "dist/$env:BIN_NAME-$tag-windows-x64.zip"
           Compress-Archive -Path "target/release/$env:BIN_NAME.exe", "README.md", "docs" -DestinationPath $zip -Force
-          "ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ZIP=$zip"          | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "TAG=$tag"          | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PUBLISH=$publish"  | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Get-Item $zip | Select-Object Name, Length
+          exit 0
 
       - name: 上传 Artifact
         # 无条件上传：打标签时它和 Release 并存，
@@ -92,7 +112,8 @@ jobs:
 
       - name: 创建 Release
         # 用 runner 自带的 gh CLI，避免引入第三方 action。
-        if: github.ref_type == 'tag'
+        # 两种触发方式都归一到 PUBLISH 这个环境变量上。
+        if: github.ref_type == 'tag' || inputs.release_tag != ''
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
