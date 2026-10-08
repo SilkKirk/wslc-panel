@@ -95,18 +95,6 @@ fn kv_block(label: &'static str, value: impl Into<SharedString>) -> impl IntoEle
         )
 }
 
-/// 挂载单元格：`主机 → 容器`；没有挂载时显示 `—`。
-///
-/// 挂载信息来自 `Labels` 的元数据（`E:\code → /etc/nginx/conf.d/`），
-/// 不是 `list` 的 `Mounts` 字段 —— 后者给的是 VM 内部路径
-/// （`/mnt/{078dfade-...}`），用户认不出来。
-fn cell_mounts(item: &ContainerSummary) -> AnyElement {
-    match item.mounts_summary() {
-        Some(text) => cell_muted(text),
-        None => cell_muted("—"),
-    }
-}
-
 /// 顶部统计数字块。
 fn stat_tile(label: &'static str, value: String, color: Rgba) -> impl IntoElement {
     v_flex()
@@ -258,7 +246,6 @@ fn immediate_button(
 pub fn page(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     match state.page {
         Page::Dashboard => dashboard(state, entity).into_any_element(),
-        Page::Running => running(state, entity).into_any_element(),
         Page::Containers => containers(state, entity).into_any_element(),
         Page::Images => images(state, entity).into_any_element(),
         Page::Networks => networks(state, entity).into_any_element(),
@@ -568,142 +555,79 @@ fn disk_usage_card(state: &AppState) -> AnyElement {
 // 刷新属于实现细节：耗时写日志，间隔在"设置"页里改，概览页不再展示。
 
 // ---------------------------------------------------------------------------
-// ② 当前运行 container
-// ---------------------------------------------------------------------------
-
-const RUNNING_COLUMNS: &[(&str, f32)] = &[
-    ("名称", 150.0),
-    ("状态", 90.0),
-    ("镜像", 170.0),
-    ("端口", 150.0),
-    ("挂载", 220.0),
-    ("CPU", 70.0),
-    ("内存", 140.0),
-    ("网络 I/O", 120.0),
-    ("PID", 50.0),
-    ("操作", 200.0),
-];
-
-/// 当前运行容器页：列表 + 实时统计。
-pub fn running(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
-    let items = &state.snapshot.running;
-
-    let rows: Vec<AnyElement> = items
-        .iter()
-        .enumerate()
-        .map(|(ix, summary)| {
-            let item = &summary.item;
-            let stats = summary.stats.as_ref();
-
-            let cpu = stats
-                .map(|s| s.cpu_perc.clone())
-                .unwrap_or_else(|| "-".into());
-            let mem = stats
-                .map(|s| s.mem_usage.clone())
-                .unwrap_or_else(|| "-".into());
-            let net = stats
-                .map(|s| s.net_io.clone())
-                .unwrap_or_else(|| "-".into());
-            // 「块 I/O」这一列被换成了「挂载」—— 实测所有容器都是 `0B / 0B`，
-            // 而挂载是用户真正会配、也真正需要看见的东西。
-            let pids = stats
-                .map(|s| s.pids.to_string())
-                .unwrap_or_else(|| "-".into());
-
-            let ports = item
-                .port_mappings()
-                .iter()
-                .map(|p| p.display())
-                .collect::<Vec<_>>()
-                .join("、");
-            let ports = if ports.is_empty() {
-                "—".to_owned()
-            } else {
-                ports
-            };
-
-            let name = item.display_name().to_owned();
-
-            table_row(
-                RUNNING_COLUMNS,
-                vec![
-                    cell_text(name.clone()),
-                    cell_badge(item.state_kind()),
-                    cell_muted(item.image.clone()),
-                    cell_text(ports),
-                    cell_mounts(item),
-                    cell_text(cpu),
-                    cell_muted(mem),
-                    cell_muted(net),
-                    cell_text(pids),
-                    h_flex()
-                        .gap_2()
-                        .child(immediate_button(
-                            &format!("restart-run-{ix}"),
-                            "重启",
-                            ImmediateAction::RestartContainer(name.clone()),
-                            entity,
-                        ))
-                        .child(danger_button(
-                            &format!("stop-{ix}"),
-                            "停止",
-                            PendingAction::StopContainer(name.clone()),
-                            entity,
-                        ))
-                        .child(danger_button(
-                            &format!("kill-{ix}"),
-                            "强杀",
-                            PendingAction::KillContainer(name),
-                            entity,
-                        ))
-                        .into_any_element(),
-                ],
-            )
-            .into_any_element()
-        })
-        .collect();
-
-    v_flex()
-        .w_full()
-        .gap_3()
-        .child(
-            h_flex().w_full().justify_between().child(
-                div()
-                    .text_sm()
-                    .text_color(theme::text_muted())
-                    .child(format!("{} 个容器正在运行", items.len())),
-            ),
-        )
-        .child(
-            v_flex()
-                .w_full()
-                .rounded_lg()
-                .bg(theme::bg_card())
-                .border_1()
-                .border_color(theme::border())
-                .overflow_hidden()
-                .child(table_header(RUNNING_COLUMNS))
-                .child(if rows.is_empty() {
-                    empty_state("当前没有运行中的容器").into_any_element()
-                } else {
-                    v_flex().w_full().children(rows).into_any_element()
-                }),
-        )
-}
-
-// ---------------------------------------------------------------------------
-// ③ 全部 container
+// ② 全部 container
 // ---------------------------------------------------------------------------
 
 const ALL_COLUMNS: &[(&str, f32)] = &[
-    ("名称", 160.0),
-    ("状态", 200.0),
-    ("镜像", 210.0),
-    ("运行时长", 130.0),
-    ("端口", 150.0),
-    ("挂载", 220.0),
-    ("操作", 240.0),
+    ("名称", 240.0),
+    ("镜像", 260.0),
+    ("状态", 120.0),
+    ("资源", 190.0),
+    ("端口", 200.0),
 ];
+
+/// 端口映射的精简显示：`主机端口:容器端口`。
+///
+/// 刻意**不显示绑定地址**（`127.0.0.1`）—— 实测默认就是它，
+/// 每行都重复一遍只是把列占满。想看完整信息点开详情。
+fn ports_summary(item: &ContainerSummary) -> String {
+    let ports = item.item.port_mappings();
+    if ports.is_empty() {
+        return "—".to_owned();
+    }
+    ports
+        .iter()
+        .map(|p| match p.host_port {
+            Some(host) => format!("{host}:{}", p.container_port),
+            None => format!("{}/{}", p.container_port, p.protocol),
+        })
+        .collect::<Vec<_>>()
+        .join("、")
+}
+
+/// 资源使用率：CPU 与内存**上下两行**（照 1Panel 的排版）。
+///
+/// 已停止的容器没有 stats，显示 `—`。
+fn cell_resources(summary: &ContainerSummary) -> AnyElement {
+    match summary.stats.as_ref() {
+        None => cell_muted("—"),
+        Some(stats) => v_flex()
+            .gap_1()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child(format!("CPU {}", stats.cpu_perc)),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child(stats.mem_usage.clone()),
+            )
+            .into_any_element(),
+    }
+}
+
+/// 容器名（蓝色链接，点开看详情）。
+///
+/// 照 1Panel 的做法：名字就是入口，表格里不再挤一列操作按钮。
+/// 挂载这类占地方的信息全部放进详情弹窗。
+fn container_name_link(name: &str, entity: &Entity<Shell>) -> AnyElement {
+    let entity = entity.clone();
+    let for_click = name.to_owned();
+    div()
+        .id(SharedString::from(format!("detail-{name}")))
+        .cursor_pointer()
+        .text_sm()
+        .text_color(theme::primary())
+        .child(name.to_owned())
+        .on_click(move |_, _, cx| {
+            let target = for_click.clone();
+            entity.update(cx, |shell, cx| shell.open_detail(target, cx));
+        })
+        .into_any_element()
+}
 
 /// 全部容器页（含已退出）。
 pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
@@ -711,81 +635,15 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
 
     let rows: Vec<AnyElement> = items
         .iter()
-        .enumerate()
-        .map(|(ix, summary)| {
-            let item = &summary.item;
-            let name = item.display_name().to_owned();
-            let ports = item
-                .port_mappings()
-                .iter()
-                .map(|p| p.display())
-                .collect::<Vec<_>>()
-                .join("、");
-            let ports = if ports.is_empty() {
-                "—".to_owned()
-            } else {
-                ports
-            };
-
+        .map(|summary| {
             table_row(
                 ALL_COLUMNS,
                 vec![
-                    cell_text(name.clone()),
-                    cell_badge(item.state_kind()),
-                    cell_muted(item.image.clone()),
-                    cell_muted(item.running_for.clone()),
-                    cell_text(ports),
-                    cell_mounts(item),
-                    h_flex()
-                        .gap_2()
-                        .children({
-                            let mut actions: Vec<AnyElement> = Vec::new();
-
-                            // 运行中的给「重启」，已停止的给「启动」。
-                            // 两者互换没有意义 —— 重启一个停着的容器会直接报错。
-                            if item.is_running() {
-                                actions.push(
-                                    immediate_button(
-                                        &format!("restart-{ix}"),
-                                        "重启",
-                                        ImmediateAction::RestartContainer(name.clone()),
-                                        entity,
-                                    )
-                                    .into_any_element(),
-                                );
-                                actions.push(
-                                    danger_button(
-                                        &format!("stop-all-{ix}"),
-                                        "停止",
-                                        PendingAction::StopContainer(name.clone()),
-                                        entity,
-                                    )
-                                    .into_any_element(),
-                                );
-                            } else {
-                                actions.push(
-                                    immediate_button(
-                                        &format!("start-{ix}"),
-                                        "启动",
-                                        ImmediateAction::StartContainer(name.clone()),
-                                        entity,
-                                    )
-                                    .into_any_element(),
-                                );
-                            }
-
-                            actions.push(
-                                danger_button(
-                                    &format!("rm-{ix}"),
-                                    "删除",
-                                    PendingAction::RemoveContainer(name),
-                                    entity,
-                                )
-                                .into_any_element(),
-                            );
-                            actions
-                        })
-                        .into_any_element(),
+                    container_name_link(summary.item.display_name(), entity),
+                    cell_muted(summary.item.image.clone()),
+                    cell_badge(summary.item.state_kind()),
+                    cell_resources(summary),
+                    cell_text(ports_summary(summary)),
                 ],
             )
             .into_any_element()
@@ -851,7 +709,6 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
                 }),
         )
 }
-
 // ---------------------------------------------------------------------------
 // ④ 镜像 / 网络 / 卷
 // ---------------------------------------------------------------------------
@@ -1916,6 +1773,164 @@ pub fn create_dialog_overlay(
         .into_any_element()
 }
 
+/// 容器详情弹窗。
+///
+/// 照 1Panel：列表里不放操作按钮，**点名字开这里** ——
+/// 挂载、端口这些占地方的信息在这儿看全，操作按钮也集中在这儿。
+///
+/// 挂载用 `kv_block`（换行不截断）：`E:\code → /etc/nginx/conf.d/`
+/// 这种长路径用 `kv` 会被截成 `E:\...\con...`，等于没显示。
+pub fn container_detail_overlay(
+    name: &str,
+    state: &AppState,
+    entity: &Entity<Shell>,
+) -> AnyElement {
+    let Some(summary) = state
+        .snapshot
+        .all
+        .iter()
+        .find(|c| c.item.display_name() == name)
+    else {
+        // 容器刚被删掉 —— 弹窗自己消失，别留一个空壳
+        return div().into_any_element();
+    };
+
+    let item = &summary.item;
+    let running = item.is_running();
+
+    let mut actions: Vec<AnyElement> = Vec::new();
+    if running {
+        actions.push(
+            immediate_button(
+                "detail-restart",
+                "重启",
+                ImmediateAction::RestartContainer(name.to_owned()),
+                entity,
+            )
+            .into_any_element(),
+        );
+        actions.push(
+            danger_button(
+                "detail-stop",
+                "停止",
+                PendingAction::StopContainer(name.to_owned()),
+                entity,
+            )
+            .into_any_element(),
+        );
+        actions.push(
+            danger_button(
+                "detail-kill",
+                "强杀",
+                PendingAction::KillContainer(name.to_owned()),
+                entity,
+            )
+            .into_any_element(),
+        );
+    } else {
+        actions.push(
+            immediate_button(
+                "detail-start",
+                "启动",
+                ImmediateAction::StartContainer(name.to_owned()),
+                entity,
+            )
+            .into_any_element(),
+        );
+    }
+    actions.push(
+        danger_button(
+            "detail-remove",
+            "删除",
+            PendingAction::RemoveContainer(name.to_owned()),
+            entity,
+        )
+        .into_any_element(),
+    );
+
+    let close = {
+        let entity = entity.clone();
+        Button::new("detail-close")
+            .label("关闭")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.close_detail(cx));
+            })
+    };
+
+    // 端口在这里显示**完整形式**（含绑定地址），和列表里的精简形式区分开：
+    // 列表看的是"映射了多少"，详情看的是"到底绑在哪"。
+    let ports_text = {
+        let ports = item.port_mappings();
+        if ports.is_empty() {
+            "—".to_owned()
+        } else {
+            ports
+                .iter()
+                .map(|p| p.display())
+                .collect::<Vec<_>>()
+                .join("  ")
+        }
+    };
+
+    let mut rows: Vec<AnyElement> = vec![
+        kv("ID", item.id().to_owned()).into_any_element(),
+        kv("镜像", item.image.clone()).into_any_element(),
+        kv("状态", item.status.clone()).into_any_element(),
+        kv("运行时长", item.running_for.clone()).into_any_element(),
+        kv_block("端口", ports_text).into_any_element(),
+    ];
+
+    rows.push(match item.mounts_summary() {
+        Some(mounts) => kv_block("挂载", mounts).into_any_element(),
+        None => kv("挂载", "—").into_any_element(),
+    });
+
+    if let Some(stats) = summary.stats.as_ref() {
+        rows.push(kv("CPU", stats.cpu_perc.clone()).into_any_element());
+        rows.push(kv("内存", stats.mem_usage.clone()).into_any_element());
+        rows.push(kv("网络 I/O", stats.net_io.clone()).into_any_element());
+        rows.push(kv("PID", stats.pids.to_string()).into_any_element());
+    }
+
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme::scrim())
+        .child(
+            v_flex()
+                .id("detail-card")
+                .w(px(700.))
+                .max_h(px(860.))
+                .overflow_y_scroll()
+                .gap_4()
+                .p_5()
+                .rounded_lg()
+                .bg(theme::bg_card())
+                .border_1()
+                .border_color(theme::border())
+                .child(
+                    div()
+                        .text_lg()
+                        .font_bold()
+                        .text_color(theme::text())
+                        .child(name.to_owned()),
+                )
+                .child(v_flex().w_full().gap_2().children(rows))
+                .child(
+                    h_flex()
+                        .w_full()
+                        .justify_between()
+                        .child(h_flex().gap_2().children(actions))
+                        .child(close),
+                ),
+        )
+        .into_any_element()
+}
+
 #[cfg(test)]
 mod tests {
     // ⚠️ 这里**故意不用 `use super::*;`** —— 这是个很难查的坑，记下来：
@@ -1935,14 +1950,13 @@ mod tests {
     //
     // 正确做法（gpui-kit 的 lib.rs 注释里也写了）：测试模块**显式导入**需要的类型。
     use super::{
-        ALL_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS, RUNNING_COLUMNS, VOLUME_COLUMNS, presets_for,
+        ALL_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS, presets_for,
     };
     use wslc_core::settings::{SETTING_KEYS, SettingKind};
 
     /// 汇总所有表格的列定义，方便逐个检查。
     fn all_column_sets() -> Vec<&'static [(&'static str, f32)]> {
         vec![
-            RUNNING_COLUMNS,
             ALL_COLUMNS,
             IMAGE_COLUMNS,
             NETWORK_COLUMNS,
@@ -1965,7 +1979,7 @@ mod tests {
         // 行内的 cell 数量少于列数只会留下空白，多出来则会被丢弃；
         // 这里把"必须一一对应"的约束固化下来，避免改表头时忘记改行。
         let counts: Vec<usize> = all_column_sets().iter().map(|c| c.len()).collect();
-        assert_eq!(counts, vec![10, 7, 5, 6, 5]);
+        assert_eq!(counts, vec![5, 5, 6, 5]);
     }
 
     #[test]

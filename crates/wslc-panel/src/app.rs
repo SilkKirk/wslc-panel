@@ -136,6 +136,8 @@ pub struct Shell {
     pull_cancel: Option<wslc_core::CancelToken>,
     /// 「创建容器」弹窗；关闭时为 `None`。
     create_dialog: Option<CreateDialog>,
+    /// 正在查看详情的容器名；关闭时为 None。
+    detail: Option<String>,
 }
 
 impl Shell {
@@ -146,6 +148,7 @@ impl Shell {
             pull_input: None,
             pull_cancel: None,
             create_dialog: None,
+            detail: None,
         };
         shell.refresh(cx);
         shell.start_auto_refresh(cx);
@@ -486,7 +489,7 @@ impl Shell {
                             .state
                             .notify(Toast::success(format!("容器已创建：{short}")));
                         // 建完直接跳到「当前运行」，让用户看到结果
-                        shell.set_page(Page::Running, cx);
+                        shell.set_page(Page::Containers, cx);
                     }
                     Err(e) => shell.state.notify(Toast::error(format!("创建失败：{e}"))),
                 }
@@ -495,6 +498,22 @@ impl Shell {
             });
         })
         .detach();
+    }
+
+    // -- 容器详情弹窗 --------------------------------------------------------
+
+    /// 打开容器详情弹窗。
+    ///
+    /// 照 1Panel：列表里不放操作按钮，点名字开这里。
+    pub fn open_detail(&mut self, name: String, cx: &mut Context<Self>) {
+        self.detail = Some(name);
+        cx.notify();
+    }
+
+    /// 关闭容器详情弹窗。
+    pub fn close_detail(&mut self, cx: &mut Context<Self>) {
+        self.detail = None;
+        cx.notify();
     }
 
     // -- 数据刷新 ----------------------------------------------------------
@@ -922,6 +941,12 @@ impl Render for Shell {
             Some(dialog) => views::create_dialog_overlay(dialog, &entity, cx),
         };
 
+        // 容器详情弹窗。
+        let detail_dialog: AnyElement = match &self.detail {
+            None => div().into_any_element(),
+            Some(name) => views::container_detail_overlay(name, state, &entity),
+        };
+
         let page_body = views::page(state, &entity);
 
         div()
@@ -1022,6 +1047,7 @@ impl Render for Shell {
             .child(confirm)
             .child(pull_dialog)
             .child(create_dialog)
+            .child(detail_dialog)
     }
 }
 
@@ -1059,7 +1085,6 @@ fn nav_item(page: Page, current: Page, entity: &Entity<Shell>) -> AnyElement {
 fn nav_id(page: Page) -> &'static str {
     match page {
         Page::Dashboard => "nav-dashboard",
-        Page::Running => "nav-running",
         Page::Containers => "nav-containers",
         Page::Images => "nav-images",
         Page::Networks => "nav-networks",

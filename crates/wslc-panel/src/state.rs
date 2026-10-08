@@ -18,9 +18,10 @@ use wslc_core::{Result, Wslc, cmd};
 pub enum Page {
     /// 总览 / 基本信息。
     Dashboard,
-    /// 当前运行 container。
-    Running,
-    /// 全部 container。
+    /// 全部 container（含运行中与已退出）。
+    ///
+    /// 曾经有个单独的「当前运行」页，去掉了 —— 同一个列表用状态筛一下就够了，
+    /// 没必要让用户在两页之间来回切（参考 1Panel：一个容器列表 + 状态筛选）。
     Containers,
     /// 镜像。
     Images,
@@ -34,9 +35,8 @@ pub enum Page {
 
 impl Page {
     /// 全部页面（决定导航顺序）。
-    pub const ALL: [Page; 7] = [
+    pub const ALL: [Page; 6] = [
         Page::Dashboard,
-        Page::Running,
         Page::Containers,
         Page::Images,
         Page::Networks,
@@ -48,8 +48,7 @@ impl Page {
     pub fn label(self) -> &'static str {
         match self {
             Page::Dashboard => "基本信息",
-            Page::Running => "当前运行",
-            Page::Containers => "全部容器",
+            Page::Containers => "容器",
             Page::Images => "镜像",
             Page::Networks => "网络",
             Page::Volumes => "卷",
@@ -61,7 +60,7 @@ impl Page {
     pub fn group(self) -> &'static str {
         match self {
             Page::Dashboard => "概览",
-            Page::Running | Page::Containers => "容器",
+            Page::Containers => "容器",
             Page::Images | Page::Networks | Page::Volumes => "资源",
             Page::Config => "设置",
         }
