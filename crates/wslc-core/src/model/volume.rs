@@ -50,7 +50,10 @@ impl VolumeListItem {
 
     /// 是否被容器使用（未能确定时返回 `None`）。
     pub fn in_use(&self) -> Option<bool> {
-        let raw = self.extra.get("InUse").or_else(|| self.extra.get("inUse"))?;
+        let raw = self
+            .extra
+            .get("InUse")
+            .or_else(|| self.extra.get("inUse"))?;
         match raw {
             Value::Bool(b) => Some(*b),
             Value::String(s) => Some(matches!(

@@ -84,26 +84,25 @@ impl Shell {
 
     /// 按固定间隔自动刷新；间隔由 `state.interval` 决定，暂停时不刷新。
     fn start_auto_refresh(&self, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| loop {
-            let interval = match this.update(cx, |shell, _| shell.state.interval) {
-                Ok(interval) => interval,
-                // 实体已销毁 → 退出循环，避免泄漏。
-                Err(_) => break,
-            };
+        cx.spawn(async move |this, cx| {
+            loop {
+                let interval = match this.update(cx, |shell, _| shell.state.interval) {
+                    Ok(interval) => interval,
+                    // 实体已销毁 → 退出循环，避免泄漏。
+                    Err(_) => break,
+                };
 
-            // 暂停时也要周期性醒来，才能感知"用户把自动刷新打开了"。
-            let wait = interval.duration().unwrap_or(Duration::from_secs(2));
-            cx.background_executor().timer(wait).await;
+                // 暂停时也要周期性醒来，才能感知"用户把自动刷新打开了"。
+                let wait = interval.duration().unwrap_or(Duration::from_secs(2));
+                cx.background_executor().timer(wait).await;
 
-            if interval.duration().is_none() {
-                continue;
-            }
+                if interval.duration().is_none() {
+                    continue;
+                }
 
-            if this
-                .update(cx, |shell, cx| shell.refresh(cx))
-                .is_err()
-            {
-                break;
+                if this.update(cx, |shell, cx| shell.refresh(cx)).is_err() {
+                    break;
+                }
             }
         })
         .detach();
@@ -308,12 +307,13 @@ impl Render for Shell {
                 .bg(theme::danger_soft())
                 .border_1()
                 .border_color(theme::danger_edge())
-                .children(state.snapshot.errors.iter().map(|e| {
-                    div()
-                        .text_xs()
-                        .text_color(theme::danger())
-                        .child(e.clone())
-                }))
+                .children(
+                    state
+                        .snapshot
+                        .errors
+                        .iter()
+                        .map(|e| div().text_xs().text_color(theme::danger()).child(e.clone())),
+                )
                 .into_any_element()
         } else if !state.snapshot.has_data() {
             // 首屏 / 连不上 wslc 时的提示。比一片空白有用得多。
@@ -363,14 +363,11 @@ impl Render for Shell {
                                     .overflow_hidden()
                                     .child(t.text.clone()),
                             )
-                            .child(
-                                Button::new("toast-dismiss")
-                                    .label("关闭")
-                                    .small()
-                                    .on_click(move |_, _, cx| {
-                                        entity.update(cx, |shell, cx| shell.dismiss_toast(cx));
-                                    }),
-                            ),
+                            .child(Button::new("toast-dismiss").label("关闭").small().on_click(
+                                move |_, _, cx| {
+                                    entity.update(cx, |shell, cx| shell.dismiss_toast(cx));
+                                },
+                            )),
                     )
                     .into_any_element()
             }

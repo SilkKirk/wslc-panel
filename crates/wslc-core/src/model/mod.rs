@@ -19,7 +19,7 @@ pub use container::{
 };
 pub use image::ImageListItem;
 pub use network::NetworkListItem;
-pub use session::{Session, parse_session_table};
+pub use session::{parse_session_table, Session};
 pub use system::{ClientInfo, ServerInfo, SessionInfo, SystemInfo};
 pub use volume::VolumeListItem;
 
@@ -151,7 +151,10 @@ mod tests {
 
     #[test]
     fn splits_pairs() {
-        assert_eq!(split_pair("3.465MiB / 15.48GiB"), Some(("3.465MiB", "15.48GiB")));
+        assert_eq!(
+            split_pair("3.465MiB / 15.48GiB"),
+            Some(("3.465MiB", "15.48GiB"))
+        );
         assert_eq!(split_pair("1.04kB / 0B"), Some(("1.04kB", "0B")));
         assert_eq!(split_pair("0B / 0B"), Some(("0B", "0B")));
         assert_eq!(split_pair("nope"), None);
@@ -172,7 +175,11 @@ mod tests {
             r#"other=1"#
         );
         let parts = split_outside_brackets(labels, ',');
-        assert_eq!(parts.len(), 2, "嵌入的 JSON 里的逗号不应被当作分隔符：{parts:?}");
+        assert_eq!(
+            parts.len(),
+            2,
+            "嵌入的 JSON 里的逗号不应被当作分隔符：{parts:?}"
+        );
         assert!(parts[0].starts_with("com.microsoft.wsl.container.metadata="));
         assert_eq!(parts[1], "other=1");
     }

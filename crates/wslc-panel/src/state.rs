@@ -6,7 +6,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use wslc_core::model::{ContainerSummary, ImageListItem, NetworkListItem, Session, SystemInfo, VolumeListItem};
+use wslc_core::model::{
+    ContainerSummary, ImageListItem, NetworkListItem, Session, SystemInfo, VolumeListItem,
+};
 use wslc_core::settings::SettingsDoc;
 use wslc_core::{Result, Wslc, cmd};
 
@@ -476,12 +478,18 @@ mod tests {
     #[test]
     fn refresh_intervals_map_to_durations() {
         assert_eq!(RefreshInterval::Off.duration(), None);
-        assert_eq!(RefreshInterval::Fast.duration(), Some(Duration::from_secs(1)));
+        assert_eq!(
+            RefreshInterval::Fast.duration(),
+            Some(Duration::from_secs(1))
+        );
         assert_eq!(
             RefreshInterval::Normal.duration(),
             Some(Duration::from_secs(3))
         );
-        assert_eq!(RefreshInterval::Slow.duration(), Some(Duration::from_secs(10)));
+        assert_eq!(
+            RefreshInterval::Slow.duration(),
+            Some(Duration::from_secs(10))
+        );
     }
 
     #[test]
@@ -505,7 +513,11 @@ mod tests {
     #[test]
     fn prune_warns_about_being_irreversible() {
         assert!(PendingAction::PruneContainers.body().contains("不可撤销"));
-        assert!(PendingAction::RemoveVolume("v".into()).body().contains("不可撤销"));
+        assert!(
+            PendingAction::RemoveVolume("v".into())
+                .body()
+                .contains("不可撤销")
+        );
     }
 
     #[test]
@@ -551,10 +563,12 @@ mod tests {
         use wslc_core::jsonl;
         use wslc_core::model::SystemInfo;
         let mut state = AppState::new(Wslc::new());
-        state.snapshot.info =
-            Some(jsonl::parse_object::<SystemInfo>(include_str!(
+        state.snapshot.info = Some(
+            jsonl::parse_object::<SystemInfo>(include_str!(
                 "../../wslc-core/tests/fixtures/info.json"
-            )).unwrap());
+            ))
+            .unwrap(),
+        );
         assert_eq!(state.session_label(), "#1 wslc-cli-76434");
     }
 }

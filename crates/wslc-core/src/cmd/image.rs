@@ -103,10 +103,7 @@ mod tests {
     #[test]
     fn pull_rejects_empty_reference_before_spawning() {
         let wslc = Wslc::with_program("definitely-not-a-real-binary");
-        assert!(matches!(
-            pull(&wslc, "  "),
-            Err(Error::InvalidArgument(_))
-        ));
+        assert!(matches!(pull(&wslc, "  "), Err(Error::InvalidArgument(_))));
     }
 
     #[test]

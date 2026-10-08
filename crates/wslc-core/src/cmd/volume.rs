@@ -27,7 +27,9 @@ pub fn create(wslc: &Wslc, name: &str) -> Result<String> {
 /// 删除卷。
 pub fn remove(wslc: &Wslc, names: &[String], force: bool) -> Result<()> {
     if names.is_empty() {
-        return Err(Error::InvalidArgument("volume remove 至少需要一个卷".into()));
+        return Err(Error::InvalidArgument(
+            "volume remove 至少需要一个卷".into(),
+        ));
     }
     let mut args: Vec<String> = vec!["volume".into(), "remove".into()];
     if force {
@@ -59,10 +61,7 @@ mod tests {
     #[test]
     fn create_rejects_blank_name_before_spawning() {
         let wslc = Wslc::with_program("definitely-not-a-real-binary");
-        assert!(matches!(
-            create(&wslc, " "),
-            Err(Error::InvalidArgument(_))
-        ));
+        assert!(matches!(create(&wslc, " "), Err(Error::InvalidArgument(_))));
     }
 
     #[test]

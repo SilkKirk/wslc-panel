@@ -455,8 +455,9 @@ mod tests {
         // 实测本机：C:\Program Files\WSL\wslc.exe
         let candidates = candidate_paths();
         assert!(
-            candidates.iter().any(|p| p.ends_with("WSL\\wslc.exe")
-                || p.to_string_lossy().contains("WSL")),
+            candidates
+                .iter()
+                .any(|p| p.ends_with("WSL\\wslc.exe") || p.to_string_lossy().contains("WSL")),
             "候选路径里应包含 Program Files\\WSL\\wslc.exe：{candidates:?}"
         );
     }

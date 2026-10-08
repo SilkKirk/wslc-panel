@@ -143,7 +143,10 @@ mod tests {
             r#"{"Command":"\"sleep 300\"","CreatedAt":"2026-10-08 16:34:46 +0800 GMT+8","#,
             r#""ID":"ff0667ee90fb","Names":"wslc-panel-probe","State":"running"}"#
         );
-        assert!(line.len() % 2 == 0, "测试样本应恰好是偶数长度以覆盖误判场景");
+        assert!(
+            line.len() % 2 == 0,
+            "测试样本应恰好是偶数长度以覆盖误判场景"
+        );
         assert_eq!(decode(line.as_bytes()), line);
     }
 

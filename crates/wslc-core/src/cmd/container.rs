@@ -65,7 +65,9 @@ pub fn inspect(wslc: &Wslc, container: &str, size: bool) -> Result<ContainerInsp
 
     let values: Vec<Value> = jsonl::parse_array_or_lines(&out.stdout)?;
     ContainerInspect::from_array(values).ok_or_else(|| {
-        Error::Parse(format!("wslc inspect {container} 返回了空数组，找不到该容器"))
+        Error::Parse(format!(
+            "wslc inspect {container} 返回了空数组，找不到该容器"
+        ))
     })
 }
 
@@ -361,12 +363,14 @@ pub fn create(wslc: &Wslc, spec: &RunSpec) -> Result<String> {
 }
 
 /// 执行 `wslc <verb> [extra...] <container...>` 并解析它打印出来的对象名。
-fn run_names(wslc: &Wslc, verb: &str, containers: &[String], extra: &[&str]) -> Result<Vec<String>> {
+fn run_names(
+    wslc: &Wslc,
+    verb: &str,
+    containers: &[String],
+    extra: &[&str],
+) -> Result<Vec<String>> {
     if containers.is_empty() {
-        return Err(Error::InvalidArgument(format!(
-            "{} 至少需要一个容器",
-            verb
-        )));
+        return Err(Error::InvalidArgument(format!("{} 至少需要一个容器", verb)));
     }
     let mut args: Vec<String> = vec![verb.to_owned()];
     args.extend(extra.iter().map(|s| (*s).to_owned()));
@@ -407,9 +411,27 @@ mod tests {
         assert_eq!(
             spec.to_args(),
             vec![
-                "run", "-d", "--pull", "never", "--name", "probe", "--network", "bridge",
-                "--memory", "512M", "--cpus", "0.5", "-p", "18080:80", "-e", "PROBE=1", "-v",
-                "data:/data", "alpine:latest", "sleep", "300",
+                "run",
+                "-d",
+                "--pull",
+                "never",
+                "--name",
+                "probe",
+                "--network",
+                "bridge",
+                "--memory",
+                "512M",
+                "--cpus",
+                "0.5",
+                "-p",
+                "18080:80",
+                "-e",
+                "PROBE=1",
+                "-v",
+                "data:/data",
+                "alpine:latest",
+                "sleep",
+                "300",
             ]
         );
     }
@@ -444,10 +466,7 @@ mod tests {
     #[test]
     fn run_spec_validation_rejects_empty_image() {
         let spec = RunSpec::default();
-        assert!(matches!(
-            spec.validate(),
-            Err(Error::InvalidArgument(_))
-        ));
+        assert!(matches!(spec.validate(), Err(Error::InvalidArgument(_))));
     }
 
     #[test]
@@ -472,10 +491,7 @@ mod tests {
     fn lifecycle_verbs_reject_empty_container_list_before_spawning() {
         let wslc = Wslc::with_program("definitely-not-a-real-binary");
         // 应该在启动子进程之前就失败，而不是报 ExecutableNotFound。
-        assert!(matches!(
-            stop(&wslc, &[]),
-            Err(Error::InvalidArgument(_))
-        ));
+        assert!(matches!(stop(&wslc, &[]), Err(Error::InvalidArgument(_))));
         assert!(matches!(
             remove(&wslc, &[], false),
             Err(Error::InvalidArgument(_))

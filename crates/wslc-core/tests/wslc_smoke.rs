@@ -10,8 +10,8 @@ use wslc_core::model::{
     ContainerInspect, ContainerListItem, ContainerState, ContainerStats, ContainerSummary,
     ImageListItem, NetworkListItem, Session, SystemInfo,
 };
-use wslc_core::settings::{SETTING_KEYS, SettingsDoc};
-use wslc_core::{Wslc, jsonl};
+use wslc_core::settings::{SettingsDoc, SETTING_KEYS};
+use wslc_core::{jsonl, Wslc};
 
 // ---------------------------------------------------------------------------
 // 1. fixture 测试
@@ -102,7 +102,10 @@ fn inspect_fixture_full_and_size_variants() {
 
     // inspect 的 Name 带前导 `/`，访问器会去掉。
     assert_eq!(insp.name(), Some("wslc-panel-probe"));
-    assert_eq!(insp.image_ref(), Some("docker.1ms.run/library/alpine:latest"));
+    assert_eq!(
+        insp.image_ref(),
+        Some("docker.1ms.run/library/alpine:latest")
+    );
     assert!(insp.is_running());
     assert_eq!(insp.cmd(), vec!["sleep", "300"]);
     assert_eq!(insp.networks()[0].1, "172.17.0.2");
@@ -135,10 +138,7 @@ fn image_fixture_handles_duplicate_ids() {
 
     // 浮点体积只做相对误差比较（1000 进制换算的最后一个 ulp 可能不同）。
     let bytes = items[0].size_bytes().expect("应能解析体积");
-    assert!(
-        (bytes - 8.42 * 1_000_000.0).abs() < 1.0,
-        "实际 {bytes}"
-    );
+    assert!((bytes - 8.42 * 1_000_000.0).abs() < 1.0, "实际 {bytes}");
 }
 
 #[test]
@@ -184,7 +184,9 @@ fn settings_fixture_round_trip_preserves_comments() {
 
     // 改写一项，必须保留它上方的英文说明和其它所有内容。
     assert!(doc.set(Some("session"), "cpuCount", Some("4")));
-    assert!(doc.raw().contains("Number of virtual CPUs allocated to the session"));
+    assert!(doc
+        .raw()
+        .contains("Number of virtual CPUs allocated to the session"));
     assert!(doc.raw().starts_with("# wslc user settings"));
     assert_eq!(doc.values().cpu_count.as_deref(), Some("4"));
 
@@ -209,12 +211,13 @@ fn settings_fixture_round_trip_preserves_comments() {
 #[test]
 fn empty_outputs_never_error() {
     // 0 个容器 / 0 个卷时 wslc 输出 0 字节，必须变成空 Vec。
-    assert!(jsonl::parse_lines::<ContainerListItem>("").unwrap().is_empty());
-    assert!(jsonl::parse_lines::<ImageListItem>("\n\n").unwrap().is_empty());
-    assert!(
-        wslc_core::model::session::parse_session_table("")
-            .is_empty()
-    );
+    assert!(jsonl::parse_lines::<ContainerListItem>("")
+        .unwrap()
+        .is_empty());
+    assert!(jsonl::parse_lines::<ImageListItem>("\n\n")
+        .unwrap()
+        .is_empty());
+    assert!(wslc_core::model::session::parse_session_table("").is_empty());
 }
 
 #[test]

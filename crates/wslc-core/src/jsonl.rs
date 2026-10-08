@@ -110,8 +110,12 @@ pub fn parse_object<T: DeserializeOwned>(text: &str) -> Result<T> {
     if trimmed.is_empty() {
         return Err(Error::Parse("输出为空，期望一个 JSON 对象".into()));
     }
-    serde_json::from_str(trimmed)
-        .map_err(|e| Error::Parse(format!("解析 JSON 对象失败：{e}；原始输出前 200 字符：{}", truncate(trimmed, 200))))
+    serde_json::from_str(trimmed).map_err(|e| {
+        Error::Parse(format!(
+            "解析 JSON 对象失败：{e}；原始输出前 200 字符：{}",
+            truncate(trimmed, 200)
+        ))
+    })
 }
 
 fn truncate(s: &str, max_chars: usize) -> String {

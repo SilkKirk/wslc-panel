@@ -171,7 +171,12 @@ fn cell_badge(state: ContainerState) -> AnyElement {
 }
 
 /// 危险操作按钮（点击后弹出二次确认）。
-fn danger_button(id: &str, label: &'static str, action: PendingAction, entity: &Entity<Shell>) -> impl IntoElement {
+fn danger_button(
+    id: &str,
+    label: &'static str,
+    action: PendingAction,
+    entity: &Entity<Shell>,
+) -> impl IntoElement {
     let entity = entity.clone();
     Button::new(SharedString::from(id.to_owned()))
         .label(label)
@@ -257,11 +262,27 @@ pub fn dashboard(state: &AppState) -> impl IntoElement {
             h_flex()
                 .w_full()
                 .gap_3()
-                .child(stat_tile("运行中容器", running.to_string(), theme::success()))
+                .child(stat_tile(
+                    "运行中容器",
+                    running.to_string(),
+                    theme::success(),
+                ))
                 .child(stat_tile("全部容器", total.to_string(), theme::text()))
-                .child(stat_tile("镜像", snap.images.len().to_string(), theme::text()))
-                .child(stat_tile("网络", snap.networks.len().to_string(), theme::text()))
-                .child(stat_tile("卷", snap.volumes.len().to_string(), theme::text())),
+                .child(stat_tile(
+                    "镜像",
+                    snap.images.len().to_string(),
+                    theme::text(),
+                ))
+                .child(stat_tile(
+                    "网络",
+                    snap.networks.len().to_string(),
+                    theme::text(),
+                ))
+                .child(stat_tile(
+                    "卷",
+                    snap.volumes.len().to_string(),
+                    theme::text(),
+                )),
         )
         .child(
             h_flex()
@@ -351,10 +372,18 @@ pub fn running(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
             let item = &summary.item;
             let stats = summary.stats.as_ref();
 
-            let cpu = stats.map(|s| s.cpu_perc.clone()).unwrap_or_else(|| "-".into());
-            let mem = stats.map(|s| s.mem_usage.clone()).unwrap_or_else(|| "-".into());
-            let net = stats.map(|s| s.net_io.clone()).unwrap_or_else(|| "-".into());
-            let block = stats.map(|s| s.block_io.clone()).unwrap_or_else(|| "-".into());
+            let cpu = stats
+                .map(|s| s.cpu_perc.clone())
+                .unwrap_or_else(|| "-".into());
+            let mem = stats
+                .map(|s| s.mem_usage.clone())
+                .unwrap_or_else(|| "-".into());
+            let net = stats
+                .map(|s| s.net_io.clone())
+                .unwrap_or_else(|| "-".into());
+            let block = stats
+                .map(|s| s.block_io.clone())
+                .unwrap_or_else(|| "-".into());
             let pids = stats
                 .map(|s| s.pids.to_string())
                 .unwrap_or_else(|| "-".into());
@@ -365,7 +394,11 @@ pub fn running(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                 .map(|p| p.display())
                 .collect::<Vec<_>>()
                 .join("、");
-            let ports = if ports.is_empty() { "—".to_owned() } else { ports };
+            let ports = if ports.is_empty() {
+                "—".to_owned()
+            } else {
+                ports
+            };
 
             let name = item.display_name().to_owned();
 
@@ -464,7 +497,11 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
                 .map(|p| p.display())
                 .collect::<Vec<_>>()
                 .join("、");
-            let ports = if ports.is_empty() { "—".to_owned() } else { ports };
+            let ports = if ports.is_empty() {
+                "—".to_owned()
+            } else {
+                ports
+            };
 
             table_row(
                 ALL_COLUMNS,
@@ -650,7 +687,11 @@ pub fn networks(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                     cell_muted(net.short_id().to_owned()),
                     cell_muted(net.driver.clone()),
                     cell_muted(net.scope.clone()),
-                    cell_muted(if net.ipv6_enabled() { "启用" } else { "关闭" }),
+                    cell_muted(if net.ipv6_enabled() {
+                        "启用"
+                    } else {
+                        "关闭"
+                    }),
                     op,
                 ],
             )
@@ -799,16 +840,18 @@ pub fn config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                 .w_full()
                 .gap_3()
                 .child(kv("路径", path))
-                .child(kv("状态", if dirty { "有未保存的修改" } else { "已同步" }))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_dim())
-                        .child(
-                            "所有配置项的默认值在文件里都是注释状态，表示使用 wslc 内置默认值。\
+                .child(kv(
+                    "状态",
+                    if dirty {
+                        "有未保存的修改"
+                    } else {
+                        "已同步"
+                    },
+                ))
+                .child(div().text_xs().text_color(theme::text_dim()).child(
+                    "所有配置项的默认值在文件里都是注释状态，表示使用 wslc 内置默认值。\
                              保存前会自动做一次时间戳备份。",
-                        ),
-                )
+                ))
                 .child(
                     h_flex()
                         .w_full()
@@ -979,7 +1022,11 @@ fn open_in_editor_button(entity: &Entity<Shell>) -> impl IntoElement {
 
 fn save_button(entity: &Entity<Shell>, dirty: bool) -> impl IntoElement {
     let entity = entity.clone();
-    let label = if dirty { "备份并保存" } else { "已保存" };
+    let label = if dirty {
+        "备份并保存"
+    } else {
+        "已保存"
+    };
     Button::new("save-settings")
         .label(label)
         .disabled(!dirty)
@@ -1006,17 +1053,15 @@ fn interval_switcher(state: &AppState, entity: &Entity<Shell>) -> impl IntoEleme
         .map(|interval| {
             let interval = *interval;
             let entity = entity.clone();
-            let mut button = Button::new(SharedString::from(format!(
-                "interval-{}",
-                interval.label()
-            )))
-            .label(interval.label())
-            .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| {
-                    shell.set_interval(interval, cx);
-                });
-            });
+            let mut button =
+                Button::new(SharedString::from(format!("interval-{}", interval.label())))
+                    .label(interval.label())
+                    .small()
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |shell, cx| {
+                            shell.set_interval(interval, cx);
+                        });
+                    });
             if state.interval == interval {
                 button = button.primary();
             }
@@ -1026,7 +1071,12 @@ fn interval_switcher(state: &AppState, entity: &Entity<Shell>) -> impl IntoEleme
 
     h_flex()
         .gap_2()
-        .child(div().text_xs().text_color(theme::text_dim()).child("自动刷新"))
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child("自动刷新"),
+        )
         .children(buttons)
 }
 
@@ -1095,7 +1145,10 @@ mod tests {
         let cpu_presets: Vec<&str> = presets_for(cpu).to_vec();
         assert_eq!(cpu_presets, vec!["4", "8", "16"]);
 
-        let idle = SETTING_KEYS.iter().find(|k| k.key == "idleTimeout").unwrap();
+        let idle = SETTING_KEYS
+            .iter()
+            .find(|k| k.key == "idleTimeout")
+            .unwrap();
         let idle_presets: Vec<&str> = presets_for(idle).to_vec();
         assert_eq!(idle_presets, vec!["30", "60", "300"]);
     }

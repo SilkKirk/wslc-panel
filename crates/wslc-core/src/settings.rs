@@ -205,9 +205,8 @@ impl SettingsDoc {
     /// 从路径读取。
     pub fn load(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
-        let raw = fs::read_to_string(&path).map_err(|e| {
-            Error::Settings(format!("读取 {} 失败：{e}", path.display()))
-        })?;
+        let raw = fs::read_to_string(&path)
+            .map_err(|e| Error::Settings(format!("读取 {} 失败：{e}", path.display())))?;
         Ok(Self {
             path,
             original: raw.clone(),
@@ -342,12 +341,9 @@ impl SettingsDoc {
     pub fn save_with_backup(&mut self) -> Result<Option<PathBuf>> {
         let backup = if self.path.exists() {
             let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-            let backup = self
-                .path
-                .with_extension(format!("yaml.bak-{stamp}"));
-            fs::copy(&self.path, &backup).map_err(|e| {
-                Error::Settings(format!("备份到 {} 失败：{e}", backup.display()))
-            })?;
+            let backup = self.path.with_extension(format!("yaml.bak-{stamp}"));
+            fs::copy(&self.path, &backup)
+                .map_err(|e| Error::Settings(format!("备份到 {} 失败：{e}", backup.display())))?;
             Some(backup)
         } else {
             None
@@ -517,7 +513,11 @@ fn insert_line(text: &mut String, at: usize, new_line: &str) {
 
 /// 用原有文本推断换行符，把行拼回去。
 fn join_lines(lines: &[String], original: &str) -> String {
-    let eol = if original.contains("\r\n") { "\r\n" } else { "\n" };
+    let eol = if original.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
     let mut out = lines.join(eol);
     // 原文本以换行结尾时保持一致 —— 注意这里也要用**推断出来的**换行符。
     // 如果硬写 `'\n'`，CRLF 文件被改写后最后一行会变成裸 LF。
@@ -554,7 +554,9 @@ mod tests {
         assert_eq!(values.cpu_count.as_deref(), Some("4"));
         assert!(d.raw().contains("\n  cpuCount: 4\n"));
         // 该键上方的英文说明注释必须保留。
-        assert!(d.raw().contains("Number of virtual CPUs allocated to the session"));
+        assert!(d
+            .raw()
+            .contains("Number of virtual CPUs allocated to the session"));
         // 其它键仍然处于注释状态。
         assert_eq!(d.values().memory_size, None);
         assert!(d.is_dirty());

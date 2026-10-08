@@ -277,7 +277,10 @@ impl PortMapping {
     /// `127.0.0.1:18080 → 80/tcp` 形式的展示文本。
     pub fn display(&self) -> String {
         match self.host_port {
-            Some(p) => format!("{}:{} → {}/{}", self.host_ip, p, self.container_port, self.protocol),
+            Some(p) => format!(
+                "{}:{} → {}/{}",
+                self.host_ip, p, self.container_port, self.protocol
+            ),
             None => format!("{}/{}", self.container_port, self.protocol),
         }
     }
@@ -452,7 +455,10 @@ impl ContainerSummary {
                         || (!item.display_name().is_empty() && s.name == item.display_name())
                 });
                 let matched = idx.map(|i| stats.remove(i));
-                Self { item, stats: matched }
+                Self {
+                    item,
+                    stats: matched,
+                }
             })
             .collect()
     }
@@ -522,7 +528,8 @@ impl ContainerInspect {
 
     /// 容器名，**已去掉 `inspect` 特有的前导 `/`**。
     pub fn name(&self) -> Option<&str> {
-        self.str_at(&["Name"]).map(|s| s.strip_prefix('/').unwrap_or(s))
+        self.str_at(&["Name"])
+            .map(|s| s.strip_prefix('/').unwrap_or(s))
     }
 
     /// 镜像引用名（`Config.Image`，如 `alpine:latest`）。
@@ -622,7 +629,8 @@ impl ContainerInspect {
 
     /// CPU 上限（纳 CPU）；`0` 表示未限制。
     pub fn nano_cpus(&self) -> Option<i64> {
-        self.get(&["HostConfig", "NanoCpus"]).and_then(Value::as_i64)
+        self.get(&["HostConfig", "NanoCpus"])
+            .and_then(Value::as_i64)
     }
 
     /// 根文件系统占用（需要 `-s`）。
@@ -863,7 +871,10 @@ mod tests {
         assert_eq!(insp.short_id(), Some("ff0667ee90fb"));
         // inspect 的 Name 带前导 `/`，访问器必须去掉。
         assert_eq!(insp.name(), Some("wslc-panel-probe"));
-        assert_eq!(insp.image_ref(), Some("docker.1ms.run/library/alpine:latest"));
+        assert_eq!(
+            insp.image_ref(),
+            Some("docker.1ms.run/library/alpine:latest")
+        );
         assert_eq!(insp.state_status(), Some("running"));
         assert!(insp.is_running());
         assert_eq!(insp.cmd(), vec!["sleep", "300"]);

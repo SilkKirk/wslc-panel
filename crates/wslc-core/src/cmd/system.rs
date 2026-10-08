@@ -3,8 +3,8 @@
 use crate::cli::Wslc;
 use crate::error::Result;
 use crate::jsonl;
-use crate::model::{Session, SystemInfo};
 use crate::model::session::parse_session_table;
+use crate::model::{Session, SystemInfo};
 
 /// `wslc info --format json`
 pub fn info(wslc: &Wslc) -> Result<SystemInfo> {

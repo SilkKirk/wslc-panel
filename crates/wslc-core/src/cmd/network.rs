@@ -23,7 +23,9 @@ pub fn attachable_names(wslc: &Wslc) -> Result<Vec<String>> {
 /// 删除网络。
 pub fn remove(wslc: &Wslc, names: &[String]) -> Result<()> {
     if names.is_empty() {
-        return Err(Error::InvalidArgument("network remove 至少需要一个网络".into()));
+        return Err(Error::InvalidArgument(
+            "network remove 至少需要一个网络".into(),
+        ));
     }
     let mut args: Vec<String> = vec!["network".into(), "remove".into()];
     args.extend(names.iter().cloned());
@@ -58,9 +60,6 @@ mod tests {
     #[test]
     fn remove_rejects_empty_list_before_spawning() {
         let wslc = Wslc::with_program("definitely-not-a-real-binary");
-        assert!(matches!(
-            remove(&wslc, &[]),
-            Err(Error::InvalidArgument(_))
-        ));
+        assert!(matches!(remove(&wslc, &[]), Err(Error::InvalidArgument(_))));
     }
 }
