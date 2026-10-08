@@ -339,21 +339,17 @@ pub fn dashboard(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                 .gap_4()
                 .items_start()
                 .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap_4()
-                        .child(card(
-                            "客户端",
-                            v_flex()
-                                .w_full()
-                                .gap_2()
-                                .child(kv("WSL 版本", client.version.clone()))
-                                .child(kv("内核版本", client.kernel_version.clone()))
-                                .child(kv("Windows", client.windows_version.clone()))
-                                .child(kv("Direct3D", client.direct3d_version.clone()))
-                                .child(kv("DXCore", client.dxcore_version.clone())),
-                        )),
+                    v_flex().flex_1().min_w_0().gap_4().child(card(
+                        "客户端",
+                        v_flex()
+                            .w_full()
+                            .gap_2()
+                            .child(kv("WSL 版本", client.version.clone()))
+                            .child(kv("内核版本", client.kernel_version.clone()))
+                            .child(kv("Windows", client.windows_version.clone()))
+                            .child(kv("Direct3D", client.direct3d_version.clone()))
+                            .child(kv("DXCore", client.dxcore_version.clone())),
+                    )),
                 )
                 .child(
                     v_flex()
@@ -439,8 +435,11 @@ fn storage_rows(state: &AppState, entity: &Entity<Shell>) -> Vec<AnyElement> {
 
     vec![
         kv("storagePath", configured_text).into_any_element(),
-        kv_block("实际目录（storagePath 展开后）", storage.base.display().to_string())
-            .into_any_element(),
+        kv_block(
+            "实际目录（storagePath 展开后）",
+            storage.base.display().to_string(),
+        )
+        .into_any_element(),
         kv_block("会话磁盘（VHD）", vhd_text).into_any_element(),
         reveal_storage_button(entity),
     ]
@@ -1800,7 +1799,13 @@ pub fn create_dialog_overlay(
                     cx,
                     true,
                 ))
-                .child(form_field("create-name", "容器名（留空自动命名）", &dialog.name, cx, true))
+                .child(form_field(
+                    "create-name",
+                    "容器名（留空自动命名）",
+                    &dialog.name,
+                    cx,
+                    true,
+                ))
                 .child(
                     h_flex()
                         .w_full()
@@ -1843,8 +1848,20 @@ pub fn create_dialog_overlay(
                     h_flex()
                         .w_full()
                         .gap_3()
-                        .child(form_field("create-memory", "内存上限（如 512M）", &dialog.memory, cx, false))
-                        .child(form_field("create-cpus", "CPU 数（如 0.5）", &dialog.cpus, cx, false)),
+                        .child(form_field(
+                            "create-memory",
+                            "内存上限（如 512M）",
+                            &dialog.memory,
+                            cx,
+                            false,
+                        ))
+                        .child(form_field(
+                            "create-cpus",
+                            "CPU 数（如 0.5）",
+                            &dialog.cpus,
+                            cx,
+                            false,
+                        )),
                 )
                 .child(pull_policy_row(&dialog.pull, entity))
                 .child(
@@ -1854,42 +1871,35 @@ pub fn create_dialog_overlay(
                         .rounded_md()
                         .bg(theme::bg())
                         .p_3()
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme::text_muted())
-                                .child("容器以「后台方式」(-d) 启动。前台模式会一直占着子进程，\
-                                       超时后连容器一起被杀，所以这里不提供。"),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme::warning())
-                                .child("实测本机连不上 Docker Hub：请先在「镜像」页用加速地址\
-                                       拉好镜像，再把这里的策略选成「只用本地镜像」。"),
-                        ),
+                        .child(div().text_xs().text_color(theme::text_muted()).child(
+                            "容器以「后台方式」(-d) 启动。前台模式会一直占着子进程，\
+                                       超时后连容器一起被杀，所以这里不提供。",
+                        ))
+                        .child(div().text_xs().text_color(theme::warning()).child(
+                            "实测本机连不上 Docker Hub：请先在「镜像」页用加速地址\
+                                       拉好镜像，再把这里的策略选成「只用本地镜像」。",
+                        )),
                 )
                 .child(command_preview(&spec))
                 .child(
                     h_flex()
                         .w_full()
                         .justify_between()
-                        .child(div().text_xs().text_color(if image_missing {
-                            theme::warning()
-                        } else {
-                            theme::text_dim()
-                        })
-                        .child(if image_missing {
-                            "还差一个镜像引用"
-                        } else {
-                            ""
-                        }))
                         .child(
-                            h_flex()
-                                .gap_2()
-                                .child(cancel)
-                                .child(confirm),
-                        ),
+                            div()
+                                .text_xs()
+                                .text_color(if image_missing {
+                                    theme::warning()
+                                } else {
+                                    theme::text_dim()
+                                })
+                                .child(if image_missing {
+                                    "还差一个镜像引用"
+                                } else {
+                                    ""
+                                }),
+                        )
+                        .child(h_flex().gap_2().child(cancel).child(confirm)),
                 ),
         )
         .into_any_element()

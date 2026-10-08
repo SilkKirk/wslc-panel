@@ -61,7 +61,8 @@ impl CreateDialog {
     /// 这也是 `views::page` 要多收一个 `cx` 的原因
     /// （弹窗底部要**实时**预览等效命令）。
     /// `pub(crate)`：`views.rs` 要用它来做**实时**等效命令预览。
-    pub(crate) fn to_spec(&self, cx: &App) -> RunSpec {        let text = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
+    pub(crate) fn to_spec(&self, cx: &App) -> RunSpec {
+        let text = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
 
         let mut spec = RunSpec::new(text(&self.image));
         // 强制后台运行，理由见 `Shell::confirm_create` 的文档注释。
@@ -410,7 +411,8 @@ impl Shell {
             name: cx.new(|cx| InputState::new(window, cx).placeholder("留空则自动命名")),
             ports: cx.new(|cx| InputState::new(window, cx).placeholder("8080:80, 9090:90")),
             env: cx.new(|cx| InputState::new(window, cx).placeholder("TZ=Asia/Shanghai")),
-            volumes: cx.new(|cx| InputState::new(window, cx).placeholder("webdata:/usr/share/nginx/html")),
+            volumes: cx
+                .new(|cx| InputState::new(window, cx).placeholder("webdata:/usr/share/nginx/html")),
             network: cx.new(|cx| InputState::new(window, cx).placeholder("留空则用 bridge")),
             memory: cx.new(|cx| InputState::new(window, cx).placeholder("512M")),
             cpus: cx.new(|cx| InputState::new(window, cx).placeholder("0.5")),
@@ -486,9 +488,7 @@ impl Shell {
                         // 建完直接跳到「当前运行」，让用户看到结果
                         shell.set_page(Page::Running, cx);
                     }
-                    Err(e) => shell
-                        .state
-                        .notify(Toast::error(format!("创建失败：{e}"))),
+                    Err(e) => shell.state.notify(Toast::error(format!("创建失败：{e}"))),
                 }
                 shell.refresh(cx);
                 cx.notify();
