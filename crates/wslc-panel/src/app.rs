@@ -262,6 +262,63 @@ impl Shell {
         cx.notify();
     }
 
+    /// 在资源管理器里定位会话存储。
+    ///
+    /// **只读操作** —— v0.2 刻意不允许修改 `storagePath`：
+    /// 改了不会迁移已有容器/镜像，还会在原地留下旧数据并新建一个空会话。
+    pub fn reveal_storage(&mut self, cx: &mut Context<Self>) {
+        let Some(storage) = self.state.snapshot.storage.clone() else {
+            self.state.notify(Toast::error("还没有解析出存储位置"));
+            cx.notify();
+            return;
+        };
+
+        // 优先选中 VHD 文件本身；它还不存在就退到目录。
+        let target = storage
+            .vhd
+            .clone()
+            .filter(|p| p.is_file())
+            .or_else(|| {
+                storage
+                    .sessions_dir
+                    .is_dir()
+                    .then(|| storage.sessions_dir.clone())
+            })
+            .or_else(|| storage.base.is_dir().then(|| storage.base.clone()));
+
+        let Some(target) = target else {
+            self.state.notify(Toast::error(format!(
+                "路径还不存在：{}",
+                storage.base.display()
+            )));
+            cx.notify();
+            return;
+        };
+
+        let is_file = target.is_file();
+        let mut command = std::process::Command::new("explorer.exe");
+        if is_file {
+            // 注意：`/select,` 后面**不能有空格**，否则资源管理器会把整串当路径。
+            command.arg(format!("/select,{}", target.display()));
+        } else {
+            command.arg(&target);
+        }
+
+        // `explorer.exe` 即使成功也常返回非 0，所以这里只看能否启动成功。
+        match command.spawn() {
+            Ok(_) => {
+                tracing::info!("已在资源管理器中打开 {}", target.display());
+                self.state
+                    .notify(Toast::info(format!("已打开 {}", target.display())));
+            }
+            Err(e) => {
+                tracing::warn!("打开资源管理器失败：{e}");
+                self.state.notify(Toast::error(format!("打开失败：{e}")));
+            }
+        }
+        cx.notify();
+    }
+
     /// 关闭提示条。
     pub fn dismiss_toast(&mut self, cx: &mut Context<Self>) {
         self.state.toast = None;

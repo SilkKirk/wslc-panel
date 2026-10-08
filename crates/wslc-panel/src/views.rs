@@ -227,11 +227,10 @@ pub fn dashboard(state: &AppState) -> impl IntoElement {
         .map(|i| i.server.clone())
         .unwrap_or_default();
 
-    let storage_path = state
-        .settings
-        .as_ref()
-        .and_then(|d| d.values().storage_path)
-        .unwrap_or_else(|| "（默认：%LOCALAPPDATA%）".to_owned());
+    // 存储那几行**不**直接展示 settings.yaml 里的原始值：
+    // 出厂状态所有键都是注释（`# storagePath: default`），读到的是"未设置"，
+    // 直接摆出来就变成"（默认：%LOCALAPPDATA%）"这种等于没说的东西。
+    // 真实落盘位置由 `snap.storage` 提供，见 `storage_rows`。
 
     let session_rows: Vec<AnyElement> = if snap.sessions.is_empty() {
         vec![empty_state("没有活动的 wslc 会话").into_any_element()]
@@ -311,7 +310,7 @@ pub fn dashboard(state: &AppState) -> impl IntoElement {
                                 .w_full()
                                 .gap_2()
                                 .child(kv("配置文件", client.settings_file.clone()))
-                                .child(kv("storagePath", storage_path)),
+                                .children(storage_rows(state, entity)),
                         )),
                 )
                 .child(
@@ -334,7 +333,170 @@ pub fn dashboard(state: &AppState) -> impl IntoElement {
                         )),
                 ),
         )
+        // `wslc` 没有 `system df`，磁盘占用是我们在 Windows 侧自己算的。
+        .child(disk_usage_card(state))
 }
+// ---------------------------------------------------------------------------
+// 存储与磁盘占用（概览页用）
+// ---------------------------------------------------------------------------
+
+/// 字节 → 人类可读（1024 进制）。
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0usize;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.2} {}", UNITS[unit])
+    }
+}
+
+/// "存储"卡片里 `storagePath` 那几行。
+///
+/// 关键点：出厂状态下 `settings.yaml` 里所有键都是注释，
+/// 读到的永远是"未设置"。所以这里显示的是**展开后的真实路径**，
+/// 而不是"（默认：%LOCALAPPDATA%）"这种等于没说的字符串。
+fn storage_rows(state: &AppState, entity: &Entity<Shell>) -> Vec<AnyElement> {
+    let Some(storage) = state.snapshot.storage.as_ref() else {
+        return vec![
+            kv("storagePath", "无法确定（LOCALAPPDATA 未设置）").into_any_element(),
+        ];
+    };
+
+    let configured_text = match &storage.configured {
+        Some(value) => format!("{value}（来自 settings.yaml）"),
+        None => format!(
+            "未设置 → 用内置默认值 {}，展开后见下行",
+            wslc_core::storage::DEFAULT_PLACEHOLDER
+        ),
+    };
+
+    let vhd_text = match (&storage.vhd, storage.vhd_bytes) {
+        (Some(path), Some(bytes)) => {
+            format!("{}（{}）", path.display(), format_bytes(bytes))
+        }
+        (Some(path), None) => format!("{}（尚未创建）", path.display()),
+        (None, _) => "（没有活动会话，无法定位 VHD）".to_owned(),
+    };
+
+    vec![
+        kv("storagePath", configured_text).into_any_element(),
+        kv("实际目录", storage.base.display().to_string()).into_any_element(),
+        kv("会话磁盘", vhd_text).into_any_element(),
+        reveal_storage_button(entity),
+    ]
+}
+
+/// "打开所在文件夹"按钮。
+///
+/// 注意这是**只读**操作 —— v0.2 不允许改 `storagePath`：
+/// 改了不会迁移已有容器/镜像，还会新建一个空会话，风险太大。
+fn reveal_storage_button(entity: &Entity<Shell>) -> AnyElement {
+    let entity = entity.clone();
+    h_flex()
+        .w_full()
+        .justify_end()
+        .child(
+            Button::new("reveal-storage")
+                .label("打开所在文件夹")
+                .small()
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |shell, cx| shell.reveal_storage(cx));
+                }),
+        )
+        .into_any_element()
+}
+
+/// 概览页的「磁盘占用」卡片。
+///
+/// 每一项都**如实标注来源与局限**。`wslc` 没有 `system df`：
+/// 会话磁盘是文件系统实测的，镜像合计来自 `wslc images` 的 `Size`，
+/// 而容器可写层与卷和镜像挤在同一个 VHD 里，Windows 侧分不出来 ——
+/// 那就写"无法单独统计"，不编数字。
+fn disk_usage_card(state: &AppState) -> AnyElement {
+    let snap = &state.snapshot;
+
+    let Some(storage) = snap.storage.as_ref() else {
+        return card(
+            "磁盘占用",
+            v_flex()
+                .w_full()
+                .gap_2()
+                .child(empty_state("无法确定存储位置（LOCALAPPDATA 未设置）")),
+        )
+        .into_any_element();
+    };
+
+    // `wslc images` 的 Size 是**每个镜像含共享层的总大小**，
+    // 直接相加会重复计算共享层，所以文案里要说明。
+    let image_total: f64 = snap.images.iter().filter_map(|i| i.size_bytes()).sum();
+
+    let mut rows: Vec<AnyElement> = vec![
+        kv(
+            "会话磁盘",
+            match storage.vhd_bytes {
+                Some(bytes) => format_bytes(bytes),
+                None => "尚未创建".to_owned(),
+            },
+        )
+        .into_any_element(),
+    ];
+
+    if storage.has_other_sessions() {
+        rows.push(
+            kv(
+                "其他会话",
+                format!(
+                    "{}（共 {} 个会话）",
+                    format_bytes(storage.other_sessions_bytes()),
+                    storage.sessions_count
+                ),
+            )
+            .into_any_element(),
+        );
+    }
+
+    rows.push(
+        kv(
+            "镜像合计",
+            format!(
+                "{}（{} 个镜像，含共享层重复计算）",
+                format_bytes(image_total.max(0.0) as u64),
+                snap.images.len()
+            ),
+        )
+        .into_any_element(),
+    );
+
+    rows.push(
+        kv("容器可写层", "无法单独统计（与镜像共用同一个 VHD）").into_any_element(),
+    );
+    rows.push(kv("卷", "无法单独统计（同上）").into_any_element());
+
+    if let Some(volume) = storage.volume {
+        rows.push(
+            kv(
+                "所在盘",
+                format!(
+                    "已用 {} / {}（剩余 {}，{:.1}%）",
+                    format_bytes(volume.used()),
+                    format_bytes(volume.total),
+                    format_bytes(volume.free),
+                    volume.used_percent()
+                ),
+            )
+            .into_any_element(),
+        );
+    }
+
+    card("磁盘占用", v_flex().w_full().gap_2().children(rows)).into_any_element()
+}
+
 // 这里曾经还有一张"刷新"卡片（上次耗时 / 自动刷新档位）。
 // 刷新属于实现细节：耗时写日志，间隔在"设置"页里改，概览页不再展示。
 

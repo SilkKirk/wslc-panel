@@ -10,6 +10,7 @@ use wslc_core::model::{
     ContainerSummary, ImageListItem, NetworkListItem, Session, SystemInfo, VolumeListItem,
 };
 use wslc_core::settings::SettingsDoc;
+use wslc_core::storage::StorageInfo;
 use wslc_core::{Result, Wslc, cmd};
 
 /// 左侧导航的页面。
@@ -87,6 +88,10 @@ pub struct Snapshot {
     pub networks: Vec<NetworkListItem>,
     /// 卷
     pub volumes: Vec<VolumeListItem>,
+    /// 会话存储的位置与占用（自行计算，`wslc` 不提供）。
+    ///
+    /// 解析不出来时为 `None`（例如 `LOCALAPPDATA` 没定义）。
+    pub storage: Option<StorageInfo>,
     /// 各区段的错误信息
     pub errors: Vec<String>,
     /// 本次刷新耗时（毫秒）
@@ -146,8 +151,30 @@ pub fn load_snapshot(wslc: &Wslc) -> Snapshot {
         Err(e) => snap.errors.push(format!("卷列表：{e}")),
     }
 
+    // 存储占用：`storagePath` 来自 settings.yaml，会话名来自 `wslc info`。
+    // 这一步纯文件系统，不会失败到需要报错 —— 拿不到就是 None。
+    let configured = settings_storage_path(snap.info.as_ref());
+    let session = snap.sessions.first().map(|s| s.name.clone());
+    snap.storage = wslc_core::storage::inspect(configured.as_deref(), session.as_deref());
+
     snap.elapsed_ms = started.elapsed().as_millis();
     snap
+}
+
+/// 只为了拿 `session.storagePath` 这一个值而读一次 `settings.yaml`。
+///
+/// 这里刻意**不复用** `Shell` 里那份 `SettingsDoc`：
+/// 采集是在后台执行器上跑的，不该依赖 UI 侧的状态；而且 settings.yaml
+/// 只有几百字节，读一次不到 1ms。
+fn settings_storage_path(info: Option<&SystemInfo>) -> Option<String> {
+    let path = info
+        .map(|i| i.client.settings_file.clone())
+        .filter(|p| !p.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(default_settings_path)?;
+
+    let doc = SettingsDoc::load(&path).ok()?;
+    doc.values().storage_path
 }
 
 /// 默认的 `settings.yaml` 路径（`wslc info` 拿不到时的兜底）。

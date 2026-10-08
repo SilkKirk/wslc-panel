@@ -14,5 +14,19 @@ thiserror = "2"
 tracing = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 
+# 只有 Windows 需要：`GetDiskFreeSpaceExW` 拿卷的总容量/可用空间。
+#
+# 为什么不用现成命令：
+#   - `wslc` 没有 `system df`；
+#   - `fsutil volume diskfree` 需要管理员权限（实测 Error 5: Access is denied）；
+#   - 起 PowerShell 查要 300ms 以上，刷新一次多一倍耗时。
+#
+# 版本刻意跟 GPUI 依赖树里已有的 windows 0.58 对齐，零额外编译成本。
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }
+
 [dev-dependencies]
 serde_json = { version = "1", features = ["preserve_order"] }
