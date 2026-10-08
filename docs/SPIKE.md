@@ -350,3 +350,47 @@ API 全部在依赖源码里核对过：
 
 这样做的好处已经在 CI 上体现：`cargo test -p wslc-core` 从始至终
 不需要 GPU、不需要窗口，一直能跑。
+
+### 7.5 流式执行与取消（`wslc pull` 的进度）
+
+`run` 系方法会把输出**缓冲到进程结束**才返回，所以拉取只能显示"进行中"。
+要实时进度就必须边跑边读。
+
+`Wslc::spawn_streaming` 的设计要点：
+
+| 决定 | 原因 |
+|---|---|
+| 两个读取线程（stdout / stderr 各一个） | 单线程读其中一个会死锁：管道缓冲写满后子进程卡住 |
+| `read_until(b'\n')` 而不是 `BufRead::lines()` | 后者碰到非 UTF-8 直接报错中断 |
+| `try_wait()` **非阻塞**轮询 | 调用方在 GPUI 异步执行器上，阻塞的 `wait()` 会占着线程池 |
+| `finish()` 单独负责 join 读取线程 | 进程退出后读取线程还要排空管道里的剩余字节 |
+| `CancelToken` 可克隆、与句柄分离 | 界面握令牌（点"取消"），执行任务握句柄，不用搬整个句柄 |
+| 回调要求 `Send + Sync` | 会在两个线程上被调用 |
+
+> ⚠️ **隐含前提：输出必须是 UTF-8**。按 `\n` 的字节切分时，
+> UTF-16LE 的一行字节数是奇数，`decode` 的启发式判定会失效。
+> `build_command` 注入的 `WSL_UTF8=1` 保证了这一点（实测过）。
+
+**输出从读取线程搬到界面**：读取线程碰不到 `AppState`，所以用一个
+`Arc<Mutex<Vec<String>>>` 当中转，异步任务每 200ms 搬一次。
+刻意不用 `std::sync::mpsc::Sender` —— 回调要求 `Send + Sync`，
+而 `Sender` 的 `Sync` 实现随 Rust 版本变化，共享缓冲没这个不确定性。
+
+**测试**：4 个纯逻辑的行切分测试 + 2 个 Windows 端到端测试
+（真起 `cmd` 收多行输出；起 `ping` 后 `kill`，断言 15 秒内结束且标记已取消）。
+CI 上确认过它们**真的执行**了，不是被条件编译跳过。
+`wslc-core` 目前 **167 个测试全绿**。
+
+### 7.6 一个坑：API 推送不再触发 `push` 事件
+
+用 REST API（`PATCH /git/refs/heads/main`）推送，前几次都能正常触发
+`ci.yml`；某一次之后就不再产生 `push` 类型的 run 了
+（三个 workflow 的 `state` 都是 `active`，不是被禁用）。
+
+**应对**：推完显式派发一次
+
+```powershell
+POST /repos/{owner}/{repo}/actions/workflows/ci.yml/dispatches  {"ref":"main"}
+```
+
+反正 `ci.yml` 本来就带 `workflow_dispatch`，不影响正常用法。
