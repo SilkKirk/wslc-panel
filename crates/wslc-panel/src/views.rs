@@ -1081,7 +1081,7 @@ fn interface_card(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
 fn refresh_secs_picker(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
     let current = state.prefs.refresh_secs;
 
-    let mut buttons: Vec<AnyElement> = crate::prefs::REFRESH_PRESETS
+    let buttons: Vec<AnyElement> = crate::prefs::REFRESH_PRESETS
         .iter()
         .map(|secs| {
             let secs = *secs;

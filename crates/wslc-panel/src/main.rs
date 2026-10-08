@@ -35,9 +35,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 // `cx.new(...)` 来自 `AppContext` trait，不导入就没有这个方法。
-// `primary_display` 返回 `Rc<dyn PlatformDisplay>`，调用 `visible_bounds()`
-// 需要把 trait 带进作用域。
-use gpui_kit::{App, AppContext, PlatformDisplay, WindowBounds, WindowOptions, px, size};
+//
+// 注意这里**没有** `PlatformDisplay`：`primary_display()` 返回的是
+// `Rc<dyn PlatformDisplay>`，在 trait object 上调 `visible_bounds()`
+// 不需要把 trait 带进作用域（带了反而是 unused import）。
+use gpui_kit::{App, AppContext, WindowBounds, WindowOptions, px, size};
 
 /// 期望的初始窗口尺寸（大屏上就用它）。
 const DESIRED_WINDOW: (f32, f32) = (1280.0, 820.0);
@@ -117,17 +119,29 @@ fn log_file_path() -> Option<PathBuf> {
     Some(crate::prefs::app_dir()?.join("logs").join("wslc-panel.log"))
 }
 
-/// 按需打开日志文件并追加写入。
+/// 日志出口：追加写日志文件，debug 构建下**同时**镜像到 stderr。
 ///
 /// 自己实现而不用 `tracing-appender`：只要"追加写"这一件事，
 /// 不想为此多一个依赖（它还会起后台线程，对桌面程序是多余的）。
+///
+/// 这里刻意**不做 `cfg(debug_assertions)` 分支**：早先的写法是
+/// "debug 写控制台 / 发布写文件"两条独立路径，结果发布分支里的
+/// `FileWriter`、`log_file_path` 在 debug 构建下成了死代码，
+/// CI 的 `cargo check`（dev profile）也就**根本不会类型检查它们**。
+/// 现在只有一条路径，两种构建都会编译到。
 #[derive(Clone)]
-struct FileWriter {
+struct LogWriter {
     path: Arc<PathBuf>,
+    /// debug 构建下把同样的内容再写一份到 stderr，`cargo run` 时直接可见。
+    mirror_stderr: bool,
 }
 
-impl std::io::Write for FileWriter {
+impl std::io::Write for LogWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.mirror_stderr {
+            // 尽力而为：没有控制台时写 stderr 会失败，但不该因此中断日志。
+            let _ = std::io::stderr().write_all(buf);
+        }
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -141,8 +155,8 @@ impl std::io::Write for FileWriter {
     }
 }
 
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for FileWriter {
-    type Writer = FileWriter;
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogWriter {
+    type Writer = LogWriter;
 
     fn make_writer(&'a self) -> Self::Writer {
         self.clone()
@@ -151,37 +165,29 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for FileWriter {
 
 /// 初始化日志。
 ///
-/// - debug 构建：写到控制台（`cargo run` 直接可见）
-/// - 发布构建：写到 `%LOCALAPPDATA%\wslc-panel\logs\wslc-panel.log`
+/// 永远写 `%LOCALAPPDATA%\wslc-panel\logs\wslc-panel.log`；
+/// debug 构建额外镜像到 stderr。拿不到 `LOCALAPPDATA` 时退回只写 stderr。
 fn init_tracing() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
-    #[cfg(debug_assertions)]
-    {
+    let Some(path) = log_file_path() else {
         tracing_subscriber::fmt().with_env_filter(filter).init();
+        return;
+    };
+
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
     }
 
-    #[cfg(not(debug_assertions))]
-    {
-        match log_file_path() {
-            Some(path) => {
-                if let Some(dir) = path.parent() {
-                    let _ = std::fs::create_dir_all(dir);
-                }
-                tracing_subscriber::fmt()
-                    .with_env_filter(filter)
-                    // 文件里不要 ANSI 颜色转义
-                    .with_ansi(false)
-                    .with_writer(FileWriter {
-                        path: Arc::new(path),
-                    })
-                    .init();
-            }
-            // 拿不到 LOCALAPPDATA 时退回默认
-            None => {
-                tracing_subscriber::fmt().with_env_filter(filter).init();
-            }
-        }
-    }
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        // 文件里不要 ANSI 颜色转义。代价是 debug 的控制台也没有颜色，
+        // 换来的是同一份字节同时进文件和终端。
+        .with_ansi(false)
+        .with_writer(LogWriter {
+            path: Arc::new(path),
+            mirror_stderr: cfg!(debug_assertions),
+        })
+        .init();
 }
