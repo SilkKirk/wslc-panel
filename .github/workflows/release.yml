@@ -79,7 +79,7 @@ jobs:
           # 记录大小到日志，便于对比不同版本
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| 项目 | 值 |`n|---|---|`n| exe | ``$exe`` |`n| 大小 | $([math]::Round($item.Length/1MB,2)) MB |"
 
-      - name: 打包 zip
+      - name: 准备产物（exe + zip）
         shell: pwsh
         run: |
           $refTag   = ("${{ github.ref_type }}" -eq "tag")
@@ -90,13 +90,22 @@ jobs:
           # 是否要建 Release：标签触发，或手动指定了 release_tag。
           $publish = $refTag -or ($inputTag -ne "")
           Write-Output "tag=$tag  publish=$publish"
+
           New-Item -ItemType Directory -Force -Path dist | Out-Null
+
+          # 主产物：**裸 exe**。单文件程序没必要让用户先解压。
+          $exeName = "$env:BIN_NAME.exe"
+          Copy-Item "target/release/$exeName" "dist/$exeName" -Force
+
+          # 附带 zip：里面多一份 README 与 docs，方便归档/离线分发。
           $zip = "dist/$env:BIN_NAME-$tag-windows-x64.zip"
           Compress-Archive -Path "target/release/$env:BIN_NAME.exe", "README.md", "docs" -DestinationPath $zip -Force
+
+          "EXE=dist/$exeName" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "ZIP=$zip"          | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "TAG=$tag"          | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "PUBLISH=$publish"  | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Get-Item $zip | Select-Object Name, Length
+          Get-ChildItem dist | Select-Object Name, Length
           exit 0
 
       - name: 上传 Artifact
@@ -107,7 +116,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wslc-panel-windows-x64
-          path: dist/*.zip
+          path: |
+            dist/*.exe
+            dist/*.zip
           if-no-files-found: error
 
       - name: 创建 Release
@@ -119,7 +130,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $notes = @'
-          Windows x64 单文件可执行程序，直接运行 `wslc-panel.exe`。
+          Windows x64 **单文件可执行程序**，下载下面的 `wslc-panel.exe` 直接运行即可，无需解压、无需安装。
+
+          （`wslc-panel-<tag>-windows-x64.zip` 是同一程序的压缩包，多带了 README 与 docs，按需取用。）
 
           **前置条件**：Windows 上装有 WSL 3.0 以上版本（提供 `wslc.exe`）。
           若安装在非默认路径，请设置环境变量 `WSLC_PATH` 指向它。
@@ -128,4 +141,5 @@ jobs:
           不依赖 Docker Desktop，也不需要 WebView2。
           '@
           $notes | Out-File -FilePath NOTES.md -Encoding utf8
-          gh release create "$env:TAG" "$env:ZIP" --title "$env:TAG" --notes-file NOTES.md
+          # 传两个文件：裸 exe 在前（GitHub 会把它作为主要下载项），zip 在后。
+          gh release create "$env:TAG" "$env:EXE" "$env:ZIP" --title "$env:TAG" --notes-file NOTES.md
