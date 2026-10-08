@@ -20,8 +20,8 @@
 use gpui_kit::component::button::*;
 // `StyledExt` 提供 `font_bold` / `font_semibold` 等字重方法（由宏生成），
 // 不导入 trait 就会报 "no method named font_bold"。
-use gpui_kit::component::{Disableable, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::component::input::InputState;
+use gpui_kit::component::{Disableable, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 
 use wslc_core::Wslc;

@@ -174,11 +174,7 @@ pub fn default_base() -> Option<PathBuf> {
 /// 按 `storagePath` 的语义拼出各个路径。
 ///
 /// 不碰文件系统，纯粹是路径拼接，方便单测。
-pub fn layout(
-    configured: Option<&str>,
-    base: PathBuf,
-    session: Option<&str>,
-) -> StorageInfo {
+pub fn layout(configured: Option<&str>, base: PathBuf, session: Option<&str>) -> StorageInfo {
     let sessions_dir = base.join("wslc").join("sessions");
     let vhd = session.map(|s| sessions_dir.join(s).join(VHD_FILE_NAME));
 
@@ -257,7 +253,10 @@ pub fn inspect(configured_raw: Option<&str>, session: Option<&str>) -> Option<St
 fn volume_root(path: &Path) -> Option<PathBuf> {
     use std::path::Component;
     match path.components().next()? {
-        Component::Prefix(prefix) => Some(PathBuf::from(format!("{}\\", prefix.as_os_str().to_string_lossy()))),
+        Component::Prefix(prefix) => Some(PathBuf::from(format!(
+            "{}\\",
+            prefix.as_os_str().to_string_lossy()
+        ))),
         Component::RootDir => Some(PathBuf::from("\\")),
         _ => None,
     }
@@ -367,7 +366,11 @@ mod tests {
     fn layout_follows_the_documented_rule() {
         // 规则来自 settings.yaml 注释：
         // <storagePath>\wslc\sessions\<session>\storage.vhdx
-        let info = layout(None, PathBuf::from(r"C:\Users\me\AppData\Local"), Some("wslc-cli-1"));
+        let info = layout(
+            None,
+            PathBuf::from(r"C:\Users\me\AppData\Local"),
+            Some("wslc-cli-1"),
+        );
         assert_eq!(info.origin, StoragePathOrigin::Default);
         assert_eq!(
             info.sessions_dir,
@@ -399,7 +402,10 @@ mod tests {
             volume_root(Path::new(r"C:\Users\me\AppData\Local")).unwrap(),
             PathBuf::from(r"C:\")
         );
-        assert_eq!(volume_root(Path::new(r"D:\data")).unwrap(), PathBuf::from(r"D:\"));
+        assert_eq!(
+            volume_root(Path::new(r"D:\data")).unwrap(),
+            PathBuf::from(r"D:\")
+        );
     }
 
     #[test]

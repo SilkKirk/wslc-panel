@@ -364,9 +364,7 @@ fn format_bytes(bytes: u64) -> String {
 /// 而不是"（默认：%LOCALAPPDATA%）"这种等于没说的字符串。
 fn storage_rows(state: &AppState, entity: &Entity<Shell>) -> Vec<AnyElement> {
     let Some(storage) = state.snapshot.storage.as_ref() else {
-        return vec![
-            kv("storagePath", "无法确定（LOCALAPPDATA 未设置）").into_any_element(),
-        ];
+        return vec![kv("storagePath", "无法确定（LOCALAPPDATA 未设置）").into_any_element()];
     };
 
     let configured_text = match &storage.configured {
@@ -474,9 +472,7 @@ fn disk_usage_card(state: &AppState) -> AnyElement {
         .into_any_element(),
     );
 
-    rows.push(
-        kv("容器可写层", "无法单独统计（与镜像共用同一个 VHD）").into_any_element(),
-    );
+    rows.push(kv("容器可写层", "无法单独统计（与镜像共用同一个 VHD）").into_any_element());
     rows.push(kv("卷", "无法单独统计（同上）").into_any_element());
 
     if let Some(volume) = storage.volume {
@@ -791,18 +787,15 @@ pub fn images(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                             entity.update(cx, |shell, cx| shell.open_pull_dialog(window, cx));
                         })
                 })
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme::text_muted())
-                        .child(match &state.pulling {
-                            Some(image) => format!("正在拉取 {image} …"),
-                            None => format!(
-                                "共 {} 条镜像记录（同一镜像可能对应多个仓库引用）",
-                                state.snapshot.images.len()
-                            ),
-                        }),
-                ),
+                .child(div().text_sm().text_color(theme::text_muted()).child(
+                    match &state.pulling {
+                        Some(image) => format!("正在拉取 {image} …"),
+                        None => format!(
+                            "共 {} 条镜像记录（同一镜像可能对应多个仓库引用）",
+                            state.snapshot.images.len()
+                        ),
+                    },
+                )),
         )
         .child(
             v_flex()
@@ -1364,10 +1357,9 @@ pub fn pull_dialog_overlay(input: &Entity<InputState>, entity: &Entity<Shell>) -
                         .child("拉取镜像"),
                 )
                 .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme::text_muted())
-                        .child("镜像引用，例如 nginx:latest 或 docker.1ms.run/library/nginx:latest"),
+                    div().text_sm().text_color(theme::text_muted()).child(
+                        "镜像引用，例如 nginx:latest 或 docker.1ms.run/library/nginx:latest",
+                    ),
                 )
                 .child(Input::new(input).id("pull-reference").w_full())
                 .child(
@@ -1377,15 +1369,10 @@ pub fn pull_dialog_overlay(input: &Entity<InputState>, entity: &Entity<Shell>) -
                         .rounded_md()
                         .bg(theme::bg())
                         .p_3()
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme::warning())
-                                .child(
-                                    "实测本机直连 Docker Hub 会超时（registry-1.docker.io 不可达），\
+                        .child(div().text_xs().text_color(theme::warning()).child(
+                            "实测本机直连 Docker Hub 会超时（registry-1.docker.io 不可达），\
                                      建议填写镜像加速地址。",
-                                ),
-                        )
+                        ))
                         .child(
                             div()
                                 .text_xs()
