@@ -1,0 +1,18 @@
+# Rust
+/target
+**/*.rs.bk
+*.pdb
+
+# 打包产物
+/dist
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 本项目的参考源码（crates.io 解包出来的 gpui-kit / gpui-component，仅用于查阅 API）
+/.refs
+
+# wslc settings 的备份文件（运行时会生成在用户目录，此处兜底）
+*.yaml.bak-*

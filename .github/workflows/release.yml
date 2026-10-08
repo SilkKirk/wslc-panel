@@ -1,0 +1,100 @@
+name: Release
+
+# 触发方式：
+#   - 推一个 v* 标签（例如 v0.1.0）→ 编译 + 打包 + 建 Release
+#   - 手动 workflow_dispatch → 只编译 + 上传 Artifact（不开 Release），
+#     用来在不打标签的情况下验证"exe 能不能真的产出"
+#
+# 产物是**单文件 exe**：GPUI 走 D3D11，不依赖 WebView2 或任何运行时。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      upload_artifact:
+        description: "是否上传编译产物（默认 true）"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  BIN_NAME: wslc-panel
+
+jobs:
+  package:
+    name: 编译并打包 Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 cargo 与 target
+        uses: Swatinem/rust-cache@v2
+        with:
+          # release 与 debug 的缓存分开，避免互相挤掉。
+          key: release
+
+      - name: 环境信息
+        run: |
+          rustc --version
+          cargo --version
+          where.exe rc.exe || echo "rc.exe 不在 PATH（Windows SDK 通常已装）"
+
+      - name: 编译 release
+        run: cargo build -p wslc-panel --release
+
+      - name: 确认 exe 存在
+        shell: pwsh
+        run: |
+          $exe = "target/release/$env:BIN_NAME.exe"
+          if (-not (Test-Path $exe)) { throw "没有产出 $exe" }
+          $item = Get-Item $exe
+          "exe 大小：{0:N2} MB" -f ($item.Length / 1MB)
+          # 记录大小到日志，便于对比不同版本
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| 项目 | 值 |`n|---|---|`n| exe | ``$exe`` |`n| 大小 | $([math]::Round($item.Length/1MB,2)) MB |"
+
+      - name: 打包 zip
+        shell: pwsh
+        run: |
+          $tag = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}" } else { "dev-$("${{ github.sha }}".Substring(0,7))" }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $zip = "dist/$env:BIN_NAME-$tag-windows-x64.zip"
+          Compress-Archive -Path "target/release/$env:BIN_NAME.exe", "README.md", "docs" -DestinationPath $zip -Force
+          "ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Get-Item $zip | Select-Object Name, Length
+
+      - name: 上传 Artifact
+        if: github.ref_type != 'tag' || inputs.upload_artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wslc-panel-windows-x64
+          path: dist/*.zip
+          if-no-files-found: error
+
+      - name: 创建 Release
+        # 用 runner 自带的 gh CLI，避免引入第三方 action。
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $notes = @'
+          Windows x64 单文件可执行程序，直接运行 `wslc-panel.exe`。
+
+          **前置条件**：Windows 上装有 WSL 3.0 以上版本（提供 `wslc.exe`）。
+          若安装在非默认路径，请设置环境变量 `WSLC_PATH` 指向它。
+
+          **数据来源**：全部通过 `wslc.exe` 子进程 + `--format json`，
+          不依赖 Docker Desktop，也不需要 WebView2。
+          '@
+          $notes | Out-File -FilePath NOTES.md -Encoding utf8
+          gh release create "$env:TAG" "$env:ZIP" --title "$env:TAG" --notes-file NOTES.md

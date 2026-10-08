@@ -1,0 +1,18 @@
+[package]
+name = "wslc-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "wslc (WSL container) CLI 封装与数据模型"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2"
+tracing = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+
+[dev-dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }

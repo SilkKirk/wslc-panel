@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = ["crates/wslc-core", "crates/wslc-panel"]
+
+[workspace.package]
+version = "0.1.0"
+license = "Apache-2.0"
+repository = ""
+publish = false
+
+[workspace.dependencies]
+wslc-core = { path = "crates/wslc-core" }
+gpui-kit = "0.7.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# GPUI 本身在 debug 下非常吃 CPU（每帧要跑布局 + 光栅化）。
+# 下面的设置让"自己的代码"保持可调试的优化级别，同时把依赖编译到最高优化，
+# 这是 Zed 官方推荐的开发配置，能显著改善 debug 构建下的交互流畅度。
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

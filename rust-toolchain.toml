@@ -1,0 +1,5 @@
+# gpui-pre / gpui-kit 使用 edition 2024，需要 Rust 1.85 以上。
+# 这里跟随 stable，不锁死小版本，避免和 GPUI 生态的更新节奏脱节。
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

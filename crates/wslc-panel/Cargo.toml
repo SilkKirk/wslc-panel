@@ -1,0 +1,22 @@
+[package]
+name = "wslc-panel"
+version.workspace = true
+license.workspace = true
+publish = false
+description = "WSL 容器（wslc）管理面板 —— Rust + GPUI"
+# gpui-kit 依赖的 gpui-pre 是 edition 2024。
+edition = "2024"
+rust-version = "1.85"
+default-run = "wslc-panel"
+
+[[bin]]
+name = "wslc-panel"
+path = "src/main.rs"
+
+[dependencies]
+wslc-core = { workspace = true }
+# 一个依赖即包含 GPUI + gpui-base + gpui-component + 默认图标集。
+gpui-kit = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

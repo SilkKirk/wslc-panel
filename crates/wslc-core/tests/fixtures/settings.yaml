@@ -1,0 +1,32 @@
+# wslc user settings
+# https://aka.ms/wslc-settings
+# All settings support string value "default" which uses built-in defaults.
+
+session:
+  # Number of virtual CPUs allocated to the session (e.g. 4 default: all available CPUs)
+  # cpuCount: default
+
+  # Memory limit for the session (e.g. 2GB default: half of available memory)
+  # memorySize: default
+
+  # Maximum disk image size (e.g. 500GB default: 1TB)
+  # maxStorageSize: default
+
+  # Base directory for the default session's storage; the session VHD is created at
+  # <storagePath>\wslc\sessions\<session>\storage.vhdx. Must be an absolute path (e.g. D:\data default: %LOCALAPPDATA%). Changing this after a session already exists does not move existing storage, containers, or
+  # images; the previous location is left in place and a new empty session is created at the new path.
+  # storagePath: default
+
+  # Default host address that published ports bind to when 'container run -p' is
+  # used without an explicit address (default: 127.0.0.1)
+  # defaultBindingAddress: default
+
+  # DNS name that resolves to the host loopback address (default: host.wslc.internal).
+  # Set to "none" to disable the entry.
+  # hostLoopback: default
+
+  # Seconds an idle session VM stays running before it is torn down (default: 30)
+  # idleTimeout: default
+
+# Credential storage backend: "wincred" or "file" (default: wincred)
+# credentialStore: wincred

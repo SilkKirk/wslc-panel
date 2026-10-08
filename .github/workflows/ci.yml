@@ -1,0 +1,89 @@
+name: CI
+
+# 本机没有 Rust 工具链，所以 CI 是唯一的编译验证通道。
+#
+# 设计要点：
+# 1. `core` 任务先跑 —— 它不需要 GPU、不需要显示环境，2 分钟内就能给出
+#    数据层的真实结论（UTF-16LE 解码、JSON Lines 解析、settings 注释保留……）。
+# 2. `ui` 任务跑 `cargo check` 而不是 `cargo build` —— 依赖树才是耗时大头，
+#    check 能拿到全部类型错误却省掉代码生成与链接，反馈快得多。
+# 3. `fmt` / `clippy` 目前是**建议性**的（continue-on-error）：
+#    代码是手写的、本机无法执行 rustfmt，先别让格式问题掩盖真正的编译错误。
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  core:
+    name: wslc-core 测试（纯逻辑，无需 GPU）
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: 缓存 cargo 与 target
+        uses: Swatinem/rust-cache@v2
+
+      - name: 版本信息
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: 跑数据层测试
+        # 真机冒烟测试在没有 wslc 的 runner 上会自动跳过（见 tests/wslc_smoke.rs）。
+        run: cargo test -p wslc-core -- --nocapture
+
+  ui:
+    name: wslc-panel 编译检查（GPUI）
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 cargo 与 target
+        uses: Swatinem/rust-cache@v2
+
+      - name: 检查整个 workspace
+        # 这是本项目的关键验证：GPUI 的 API 假设（异步闭包、ButtonVariants、
+        # Styled 方法名……）只有真正编译过才算数。见 docs/SPIKE.md §2。
+        run: cargo check --workspace --all-targets
+
+      - name: 检查默认启动是否可用
+        run: cargo check -p wslc-panel --bins
+
+  lint:
+    name: 格式与 clippy（建议性，不阻塞）
+    runs-on: windows-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: 缓存 cargo 与 target
+        uses: Swatinem/rust-cache@v2
+
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings

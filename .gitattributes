@@ -1,0 +1,15 @@
+# 源码统一用 LF：项目里有大量手写文件，
+# 如果让 Windows 上的 core.autocrlf 介入，checkout 会把整份文件改写一遍，
+# 造成"只改了换行符"的伪 diff，也会干扰 rustfmt。
+* text=auto eol=lf
+
+# 二进制不要动
+*.exe binary
+*.png binary
+*.ico binary
+*.vhdx binary
+
+# Windows 脚本保持 CRLF
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
