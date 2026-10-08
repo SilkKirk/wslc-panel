@@ -1034,56 +1034,69 @@ fn interval_switcher(state: &AppState, entity: &Entity<Shell>) -> impl IntoEleme
 mod tests {
     use super::*;
 
-    #[test]
-    fn table_columns_have_positive_widths() {
-        for set in [
+    /// 汇总所有表格的列定义，方便逐个检查。
+    fn all_column_sets() -> Vec<&'static [(&'static str, f32)]> {
+        vec![
             RUNNING_COLUMNS,
             ALL_COLUMNS,
             IMAGE_COLUMNS,
             NETWORK_COLUMNS,
             VOLUME_COLUMNS,
-        ] {
-            for (name, width) in set {
-                assert!(!name.is_empty());
-                assert!(*width > 0.0);
+        ]
+    }
+
+    #[test]
+    fn table_columns_have_names_and_positive_widths() {
+        for columns in all_column_sets() {
+            for &(name, width) in columns {
+                assert!(!name.is_empty(), "列名不能为空");
+                assert!(width > 0.0, "列宽必须为正数：{name}");
             }
         }
     }
 
     #[test]
-    fn every_table_row_matches_its_column_count() {
+    fn every_table_has_the_expected_column_count() {
         // 行内的 cell 数量少于列数只会留下空白，多出来则会被丢弃；
         // 这里把"必须一一对应"的约束固化下来，避免改表头时忘记改行。
-        assert_eq!(RUNNING_COLUMNS.len(), 10);
-        assert_eq!(ALL_COLUMNS.len(), 7);
-        assert_eq!(IMAGE_COLUMNS.len(), 5);
-        assert_eq!(NETWORK_COLUMNS.len(), 6);
-        assert_eq!(VOLUME_COLUMNS.len(), 5);
+        let counts: Vec<usize> = all_column_sets().iter().map(|c| c.len()).collect();
+        assert_eq!(counts, vec![10, 7, 5, 6, 5]);
     }
 
     #[test]
-    fn presets_are_non_empty_strings() {
+    fn presets_are_non_empty_for_every_key() {
         for key in SETTING_KEYS {
-            assert!(presets_for(key).iter().all(|p| !p.is_empty()));
+            for preset in presets_for(key) {
+                assert!(!preset.is_empty(), "{} 的预设值不能为空", key.key);
+            }
         }
     }
 
     #[test]
-    fn enum_setting_uses_choices_not_presets() {
+    fn enum_setting_uses_choices_instead_of_presets() {
         let cred = SETTING_KEYS
             .iter()
             .find(|k| k.key == "credentialStore")
             .expect("应存在 credentialStore");
         assert_eq!(cred.kind, SettingKind::Enum);
         assert!(presets_for(cred).is_empty());
-        assert_eq!(cred.choices, &["wincred", "file"]);
+
+        // 注意：不要写成 `assert_eq!(cred.choices, &["wincred", "file"])`。
+        // `&[&str]` 与 `&[&str; N]` 的比较会让编译器展开出一大堆引用/去 Sized 强制转换，
+        // 在 `#[test]` 里表现为 "recursion limit reached while expanding #[test]"。
+        // 统一转成 `Vec` 再比，类型简单、诊断也清楚。
+        let choices: Vec<&str> = cred.choices.to_vec();
+        assert_eq!(choices, vec!["wincred", "file"]);
     }
 
     #[test]
     fn numeric_settings_offer_presets() {
         let cpu = SETTING_KEYS.iter().find(|k| k.key == "cpuCount").unwrap();
-        assert_eq!(presets_for(cpu), &["4", "8", "16"]);
+        let cpu_presets: Vec<&str> = presets_for(cpu).to_vec();
+        assert_eq!(cpu_presets, vec!["4", "8", "16"]);
+
         let idle = SETTING_KEYS.iter().find(|k| k.key == "idleTimeout").unwrap();
-        assert_eq!(presets_for(idle), &["30", "60", "300"]);
+        let idle_presets: Vec<&str> = presets_for(idle).to_vec();
+        assert_eq!(idle_presets, vec!["30", "60", "300"]);
     }
 }

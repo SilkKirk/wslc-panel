@@ -519,9 +519,10 @@ fn insert_line(text: &mut String, at: usize, new_line: &str) {
 fn join_lines(lines: &[String], original: &str) -> String {
     let eol = if original.contains("\r\n") { "\r\n" } else { "\n" };
     let mut out = lines.join(eol);
-    // 原文本以换行结尾时保持一致。
+    // 原文本以换行结尾时保持一致 —— 注意这里也要用**推断出来的**换行符。
+    // 如果硬写 `'\n'`，CRLF 文件被改写后最后一行会变成裸 LF。
     if original.ends_with('\n') || original.is_empty() {
-        out.push('\n');
+        out.push_str(eol);
     }
     out
 }
@@ -690,9 +691,28 @@ mod tests {
         let text = "session:\r\n  # cpuCount: default\r\n";
         let mut d = SettingsDoc::from_text("s.yaml", text);
         d.set(Some("session"), "cpuCount", Some("4"));
-        assert!(d.raw().contains("\r\n"));
+
+        // 整份文件必须全是 CRLF —— 包括最后一行。
+        // 早先在 join_lines 里硬写 '\n'，导致末尾变成裸 LF。
+        assert_eq!(d.raw(), "session:\r\n  cpuCount: 4\r\n");
         assert!(!d.raw().contains("\n\n"));
         assert_eq!(d.get(Some("session"), "cpuCount").as_deref(), Some("4"));
+    }
+
+    #[test]
+    fn lf_files_stay_lf() {
+        let text = "session:\n  # cpuCount: default\n";
+        let mut d = SettingsDoc::from_text("s.yaml", text);
+        d.set(Some("session"), "cpuCount", Some("4"));
+        assert_eq!(d.raw(), "session:\n  cpuCount: 4\n");
+        assert!(!d.raw().contains('\r'));
+    }
+
+    #[test]
+    fn file_without_trailing_newline_stays_without_one() {
+        let mut d = SettingsDoc::from_text("s.yaml", "session:\n  # cpuCount: default");
+        d.set(Some("session"), "cpuCount", Some("4"));
+        assert_eq!(d.raw(), "session:\n  cpuCount: 4");
     }
 
     #[test]

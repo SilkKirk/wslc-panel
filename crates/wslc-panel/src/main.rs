@@ -13,9 +13,10 @@
 //! theme.rs  配色
 //! ```
 
-// `views.rs` 里的 `assert_eq!` 嵌套比较会超出默认的宏展开递归上限（128）。
+// 手写代码里嵌套的 `assert_eq!` 会超出默认的宏展开递归上限（128）。
 // 这是 CI 抓到的：`error: recursion limit reached while expanding #[test]`。
-#![recursion_limit = "256"]
+// 512 是够用的余量；真正的问题片段已经改写成类型更简单的比较（见 views.rs 测试）。
+#![recursion_limit = "512"]
 
 mod app;
 mod state;

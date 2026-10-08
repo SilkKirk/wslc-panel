@@ -1,0 +1,59 @@
+name: Format
+
+# 为什么要单独一个手动工作流：
+#   开发这台机器上没有 Rust 工具链（也就没有 rustfmt），
+#   唯一能拿到权威格式化结果的地方就是 CI。
+#   这里跑 `cargo fmt --all` 并把结果提交回来，等价于"在本地跑一次 cargo fmt"。
+#
+# 用法：Actions → Format → Run workflow。
+#   把 commit 关掉可以只查看会改什么（不改仓库）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: "是否把格式化结果提交回仓库"
+        type: boolean
+        default: true
+
+# 需要写权限才能推回去。
+# 注意：用 GITHUB_TOKEN 推送**不会**再触发其它工作流，所以不会形成循环。
+permissions:
+  contents: write
+
+jobs:
+  fmt:
+    name: cargo fmt
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust（只要 rustfmt）
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: 运行 cargo fmt
+        run: cargo fmt --all
+
+      - name: 查看改动
+        shell: pwsh
+        run: |
+          git --no-pager diff --stat
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## cargo fmt 改动`n`n``````n$((git --no-pager diff --stat | Out-String))`n``````"
+
+      - name: 提交并推送
+        if: inputs.commit
+        shell: pwsh
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if (git diff --cached --quiet) {
+            Write-Output "没有需要格式化的改动"
+          } else {
+            git commit -m "style: cargo fmt"
+            git push
+            Write-Output "已提交格式化结果"
+          }
