@@ -17,6 +17,9 @@ path = "src/main.rs"
 wslc-core = { workspace = true }
 # 一个依赖即包含 GPUI + gpui-base + gpui-component + 默认图标集。
 gpui-kit = { workspace = true }
+# 偏好文件是 JSON（prefs.rs）；serde 本来就在依赖树里。
+serde = { workspace = true }
+serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

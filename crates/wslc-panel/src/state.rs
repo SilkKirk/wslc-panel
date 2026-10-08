@@ -283,48 +283,8 @@ impl PendingAction {
     }
 }
 
-/// 刷新间隔。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RefreshInterval {
-    /// 关闭自动刷新。
-    Off,
-    /// 1 秒。
-    Fast,
-    /// 3 秒。
-    Normal,
-    /// 10 秒。
-    Slow,
-}
-
-impl RefreshInterval {
-    /// 全部档位。
-    pub const ALL: [RefreshInterval; 4] = [
-        RefreshInterval::Off,
-        RefreshInterval::Fast,
-        RefreshInterval::Normal,
-        RefreshInterval::Slow,
-    ];
-
-    /// 对应的 `Duration`；关闭时返回 `None`。
-    pub fn duration(self) -> Option<Duration> {
-        match self {
-            RefreshInterval::Off => None,
-            RefreshInterval::Fast => Some(Duration::from_secs(1)),
-            RefreshInterval::Normal => Some(Duration::from_secs(3)),
-            RefreshInterval::Slow => Some(Duration::from_secs(10)),
-        }
-    }
-
-    /// 按钮文案。
-    pub fn label(self) -> &'static str {
-        match self {
-            RefreshInterval::Off => "暂停",
-            RefreshInterval::Fast => "1s",
-            RefreshInterval::Normal => "3s",
-            RefreshInterval::Slow => "10s",
-        }
-    }
-}
+// 自动刷新间隔不再是界面上的档位开关，而是 `prefs.rs` 里的持久化偏好。
+// 界面只负责在"设置"页里改它。
 
 /// 提示条的类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -385,8 +345,10 @@ pub struct AppState {
     pub settings: Option<SettingsDoc>,
     /// 配置文件加载失败的原因。
     pub settings_error: Option<String>,
-    /// 自动刷新间隔。
-    pub interval: RefreshInterval,
+    /// 应用自己的偏好（自动刷新间隔等）。
+    ///
+    /// **不是** `wslc` 的配置 —— 见 `prefs.rs` 的说明。
+    pub prefs: crate::prefs::Prefs,
     /// 是否正在后台采集。
     pub busy: bool,
     /// 待用户确认的危险操作。
@@ -404,11 +366,18 @@ impl AppState {
             snapshot: Snapshot::default(),
             settings: None,
             settings_error: None,
-            interval: RefreshInterval::Normal,
+            prefs: crate::prefs::Prefs::load(),
             busy: false,
             confirm: None,
             toast: None,
         }
+    }
+
+    /// 自动刷新间隔。
+    ///
+    /// 固定由偏好决定，界面上不再提供"暂停"之类的档位开关。
+    pub fn refresh_interval(&self) -> Duration {
+        Duration::from_secs(self.prefs.refresh_secs)
     }
 
     /// 当前会话的可读标签。
@@ -476,19 +445,22 @@ mod tests {
     }
 
     #[test]
-    fn refresh_intervals_map_to_durations() {
-        assert_eq!(RefreshInterval::Off.duration(), None);
+    fn refresh_interval_comes_from_prefs() {
+        let mut state = AppState::new(Wslc::new());
+        state.prefs.refresh_secs = 10;
+        assert_eq!(state.refresh_interval(), Duration::from_secs(10));
+
+        state.prefs.refresh_secs = 1;
+        assert_eq!(state.refresh_interval(), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn default_refresh_interval_is_three_seconds() {
+        // 默认必须是 3s —— 这是产品决定，界面不再暴露这个开关。
         assert_eq!(
-            RefreshInterval::Fast.duration(),
-            Some(Duration::from_secs(1))
-        );
-        assert_eq!(
-            RefreshInterval::Normal.duration(),
-            Some(Duration::from_secs(3))
-        );
-        assert_eq!(
-            RefreshInterval::Slow.duration(),
-            Some(Duration::from_secs(10))
+            crate::prefs::Prefs::default().refresh_secs,
+            3,
+            "默认刷新间隔应为 3 秒"
         );
     }
 
@@ -538,7 +510,9 @@ mod tests {
         assert!(state.confirm.is_none());
         assert!(state.toast.is_none());
         assert!(state.settings.is_none());
-        assert_eq!(state.interval, RefreshInterval::Normal);
+        // `prefs` 是从磁盘读的，这里只断言它落在合法范围内。
+        assert!(state.prefs.refresh_secs >= crate::prefs::MIN_REFRESH_SECS);
+        assert!(state.prefs.refresh_secs <= crate::prefs::MAX_REFRESH_SECS);
         assert_eq!(state.session_label(), "（无活动会话）");
     }
 

@@ -15,7 +15,7 @@ use wslc_core::model::ContainerState;
 use wslc_core::settings::{SETTING_KEYS, SettingKey, SettingKind};
 
 use crate::app::Shell;
-use crate::state::{AppState, Page, PendingAction, RefreshInterval};
+use crate::state::{AppState, Page, PendingAction};
 use crate::theme;
 
 // ---------------------------------------------------------------------------
@@ -334,15 +334,9 @@ pub fn dashboard(state: &AppState) -> impl IntoElement {
                         )),
                 ),
         )
-        .child(card(
-            "刷新",
-            v_flex()
-                .w_full()
-                .gap_2()
-                .child(kv("上次耗时", format!("{} ms", snap.elapsed_ms)))
-                .child(kv("自动刷新", state.interval.label().to_owned())),
-        ))
 }
+// 这里曾经还有一张"刷新"卡片（上次耗时 / 自动刷新档位）。
+// 刷新属于实现细节：耗时写日志，间隔在"设置"页里改，概览页不再展示。
 
 // ---------------------------------------------------------------------------
 // ② 当前运行 container
@@ -447,8 +441,7 @@ pub fn running(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                         .text_sm()
                         .text_color(theme::text_muted())
                         .child(format!("{} 个容器正在运行", items.len())),
-                )
-                .child(interval_switcher(state, entity)),
+                ),
         )
         .child(
             v_flex()
@@ -804,20 +797,25 @@ pub fn config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
             .settings_error
             .clone()
             .unwrap_or_else(|| "尚未加载配置文件".to_owned());
-        return card(
-            "wlsc 配置",
-            v_flex()
-                .w_full()
-                .gap_3()
-                .child(div().text_sm().text_color(theme::danger()).child(message))
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(open_in_editor_button(entity))
-                        .child(reload_button(entity)),
-                ),
-        )
-        .into_any_element();
+        return v_flex()
+            .w_full()
+            .gap_4()
+            .child(card(
+                "wlsc 配置",
+                v_flex()
+                    .w_full()
+                    .gap_3()
+                    .child(div().text_sm().text_color(theme::danger()).child(message))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(open_in_editor_button(entity))
+                            .child(reload_button(entity)),
+                    ),
+            ))
+            // 即使 wslc 配置读不出来，"界面"偏好仍然可用。
+            .child(interface_card(state, entity))
+            .into_any_element();
     };
 
     let values = doc.values();
@@ -862,6 +860,8 @@ pub fn config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                 ),
         ))
         .child(card("配置项", v_flex().w_full().gap_2().children(rows)))
+        // 应用自己的偏好放在最后，和上面那些 settings.yaml 的条目区分开。
+        .child(interface_card(state, entity))
         .child(card(
             "原始 YAML",
             // 同 app.rs：滚动容器必须先有 id。
@@ -1046,38 +1046,81 @@ fn reload_button(entity: &Entity<Shell>) -> impl IntoElement {
         })
 }
 
-/// 刷新间隔切换器。
-fn interval_switcher(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
-    let buttons: Vec<AnyElement> = RefreshInterval::ALL
+/// "界面"卡片：**应用自己的偏好**，与 `wslc` 的配置无关。
+///
+/// 界面上不再到处显示刷新间隔 —— 只在这一处设置。
+fn interface_card(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+    let path_text = crate::prefs::Prefs::path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "（无法确定偏好文件位置）".to_owned());
+
+    card(
+        "界面",
+        v_flex()
+            .w_full()
+            .gap_3()
+            .child(kv(
+                "自动刷新间隔",
+                format!("{} 秒", state.prefs.refresh_secs),
+            ))
+            .child(refresh_secs_picker(state, entity))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child(format!("立即生效，并写入 {path_text}")),
+            ),
+    )
+    .into_any_element()
+}
+
+/// 自动刷新间隔选择器（只出现在"设置"页）。
+///
+/// 这是**应用自己的偏好**，不是 `wslc` 的配置 —— 所以它和上面那些
+/// `settings.yaml` 的条目在视觉上分开，用的是本地 `prefs` 而不是 `SettingsDoc`。
+fn refresh_secs_picker(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
+    let current = state.prefs.refresh_secs;
+
+    let mut buttons: Vec<AnyElement> = crate::prefs::REFRESH_PRESETS
         .iter()
-        .map(|interval| {
-            let interval = *interval;
+        .map(|secs| {
+            let secs = *secs;
             let entity = entity.clone();
-            let mut button =
-                Button::new(SharedString::from(format!("interval-{}", interval.label())))
-                    .label(interval.label())
-                    .small()
-                    .on_click(move |_, _, cx| {
-                        entity.update(cx, |shell, cx| {
-                            shell.set_interval(interval, cx);
-                        });
+            let mut button = Button::new(SharedString::from(format!("refresh-{secs}")))
+                .label(format!("{secs} 秒"))
+                .small()
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |shell, cx| {
+                        shell.set_refresh_secs(secs, cx);
                     });
-            if state.interval == interval {
+                });
+            if current == secs {
                 button = button.primary();
             }
             button.into_any_element()
         })
         .collect();
 
-    h_flex()
-        .gap_2()
-        .child(
+    // 手动改过 prefs.json、值不在预设里时，补一个只读提示，
+    // 免得用户看到"一个都没选中"而困惑。
+    let extra = if crate::prefs::REFRESH_PRESETS.contains(&current) {
+        None
+    } else {
+        Some(
             div()
                 .text_xs()
-                .text_color(theme::text_dim())
-                .child("自动刷新"),
+                .text_color(theme::text_muted())
+                .child(format!("当前：{current} 秒（不在预设中）"))
+                .into_any_element(),
         )
+    };
+
+    h_flex()
+        .w_full()
+        .gap_2()
+        .flex_wrap()
         .children(buttons)
+        .children(extra)
 }
 
 #[cfg(test)]

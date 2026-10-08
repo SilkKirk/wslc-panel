@@ -99,7 +99,8 @@ crates.io 上目前有三条 GPUI 线：
 ### 4.2 当前运行 container
 - 由 `wslc list` + `wslc stats --format json` 合并而成
 - 列：ID、名称、镜像、状态、运行时长、端口、CPU%、内存（已用/上限）、网络 I/O、块 I/O、PID
-- 顶部实时资源条，刷新间隔 1 / 3 / 5 秒可调，窗口失焦自动暂停
+- 顶部实时资源条；**自动刷新间隔默认 3 秒**，在「设置」页的「界面」卡片里改
+  （持久化到 `%LOCALAPPDATA%\wslc-panel\prefs.json`，**不**写进 wslc 的 settings.yaml）
 - 行内操作：停止 / 重启 / 强制终止 / 日志 / exec / attach
 - 合并规则：`stats.ID`（64 位）与 `list.ID`（12 位）按**前缀**匹配
 

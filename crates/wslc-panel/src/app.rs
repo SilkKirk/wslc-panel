@@ -15,8 +15,6 @@
 //! 这是整个项目里**唯一**接触 GPUI 异步 API 的地方，
 //! 因此如果上游 API 有变动，只需要改这一个文件。
 
-use std::time::Duration;
-
 // 注意：`primary()` / `danger()` 这些样式方法来自 trait `ButtonVariants`，
 // 光导入 `Button` 是不够的 —— 这里用 glob 把 button 模块全带上。
 use gpui_kit::component::button::*;
@@ -28,7 +26,7 @@ use gpui_kit::*;
 use wslc_core::Wslc;
 use wslc_core::settings::SettingKey;
 
-use crate::state::{self, AppState, Page, PendingAction, RefreshInterval, Toast, ToastKind};
+use crate::state::{self, AppState, Page, PendingAction, Toast, ToastKind};
 use crate::theme;
 use crate::views;
 
@@ -70,6 +68,13 @@ impl Shell {
 
             let _ = this.update(cx, |shell, cx| {
                 shell.state.busy = false;
+                // 耗时只写日志，不在界面上显示。
+                tracing::debug!(
+                    "采集完成：{} ms，{} 个容器，{} 处错误",
+                    snapshot.elapsed_ms,
+                    snapshot.all.len(),
+                    snapshot.errors.len()
+                );
                 shell.state.snapshot = snapshot;
                 // 首次拿到 `wslc info` 之后才能确定 settings.yaml 的真实位置。
                 // 只加载一次，避免把用户没保存的编辑覆盖掉。
@@ -82,23 +87,20 @@ impl Shell {
         .detach();
     }
 
-    /// 按固定间隔自动刷新；间隔由 `state.interval` 决定，暂停时不刷新。
+    /// 按固定间隔自动刷新。
+    ///
+    /// 间隔由偏好（`prefs.refresh_secs`，默认 3 秒）决定，用户可以在"设置"页改；
+    /// 每轮都重新读一次，所以改完立即生效，不需要重启。
     fn start_auto_refresh(&self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             loop {
-                let interval = match this.update(cx, |shell, _| shell.state.interval) {
+                let interval = match this.update(cx, |shell, _| shell.state.refresh_interval()) {
                     Ok(interval) => interval,
                     // 实体已销毁 → 退出循环，避免泄漏。
                     Err(_) => break,
                 };
 
-                // 暂停时也要周期性醒来，才能感知"用户把自动刷新打开了"。
-                let wait = interval.duration().unwrap_or(Duration::from_secs(2));
-                cx.background_executor().timer(wait).await;
-
-                if interval.duration().is_none() {
-                    continue;
-                }
+                cx.background_executor().timer(interval).await;
 
                 if this.update(cx, |shell, cx| shell.refresh(cx)).is_err() {
                     break;
@@ -232,9 +234,30 @@ impl Shell {
         }
     }
 
-    /// 切换自动刷新间隔。
-    pub fn set_interval(&mut self, interval: RefreshInterval, cx: &mut Context<Self>) {
-        self.state.interval = interval;
+    /// 设置自动刷新间隔（秒），并立即写入偏好文件。
+    ///
+    /// 自动刷新循环每轮都会重新读 `state.prefs`，所以改完下一轮就生效，
+    /// 不需要重启，也不需要通知循环。
+    pub fn set_refresh_secs(&mut self, secs: u64, cx: &mut Context<Self>) {
+        let prefs = crate::prefs::Prefs { refresh_secs: secs }.normalized();
+        if self.state.prefs == prefs {
+            return;
+        }
+        let secs = prefs.refresh_secs;
+        self.state.prefs = prefs;
+
+        match self.state.prefs.save() {
+            Ok(()) => {
+                tracing::info!("自动刷新间隔已改为 {secs} 秒");
+                self.state.notify(Toast::success(format!("刷新间隔已改为 {secs} 秒")));
+            }
+            Err(e) => {
+                tracing::warn!("保存偏好失败：{e}");
+                // 内存里的值仍然生效，只是重启后会丢。
+                self.state
+                    .notify(Toast::error(format!("已改为 {secs} 秒，但保存失败：{e}")));
+            }
+        }
         cx.notify();
     }
 
@@ -279,11 +302,9 @@ impl Render for Shell {
             nav.push(nav_item(page, state.page, &entity));
         }
 
-        let subtitle = format!(
-            "会话 {} · 刷新 {} ms",
-            state.session_label(),
-            state.snapshot.elapsed_ms
-        );
+        // 副标题只显示当前会话。刷新耗时/间隔属于实现细节，
+        // 不进界面（耗时写日志，间隔在"设置"页里改）。
+        let subtitle = format!("会话 {}", state.session_label());
 
         let refresh_button = {
             let entity = entity.clone();

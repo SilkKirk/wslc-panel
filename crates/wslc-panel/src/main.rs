@@ -25,6 +25,7 @@
 // 完整说明见 views.rs 的测试模块。
 
 mod app;
+mod prefs;
 mod state;
 mod theme;
 mod views;
@@ -113,13 +114,7 @@ fn fit_to_display(usable: f32, desired: f32, min: f32) -> f32 {
 /// 发布版没有控制台，这个文件是**唯一**能看到日志的地方，
 /// 所以出问题时要让用户先看这里。
 fn log_file_path() -> Option<PathBuf> {
-    let base = std::env::var_os("LOCALAPPDATA")?;
-    Some(
-        PathBuf::from(base)
-            .join("wslc-panel")
-            .join("logs")
-            .join("wslc-panel.log"),
-    )
+    Some(crate::prefs::app_dir()?.join("logs").join("wslc-panel.log"))
 }
 
 /// 按需打开日志文件并追加写入。

@@ -36,13 +36,27 @@
 | 页面 | 内容 | 数据来源 |
 |---|---|---|
 | **基本信息** | WSL/内核/Windows/Direct3D 版本、活动会话、`settings.yaml` 路径与 `storagePath`、容器/镜像/网络/卷统计 | `wslc info`、`wslc system session list` |
-| **当前运行** | 运行中容器 + **实时资源**（CPU%、内存、网络 I/O、块 I/O、PID），刷新间隔 1s/3s/10s 可调 | `wslc list`、`wslc stats` |
+| **当前运行** | 运行中容器 + **实时资源**（CPU%、内存、网络 I/O、块 I/O、PID） | `wslc list`、`wslc stats` |
 | **全部容器** | 含已退出容器、状态徽标、端口映射、批量停止/删除/`prune` | `wslc list -a`、`wslc stats -a` |
 | **镜像 / 网络 / 卷** | 镜像（同一 ID 多仓库引用会标注）、网络（内置网络禁止删除）、卷 | `wslc images` / `network list` / `volume list` |
 | **wlsc 配置** | 8 个配置项的当前生效值与默认值、快捷写入、原始 YAML 查看、**带时间戳备份保存**、调用系统编辑器 | 直接读写 `settings.yaml` |
 
 安全设计：**停止 / 强杀 / 删除容器 / 删除镜像 / 清理 / 删除网络 / 删除卷** 全部走二次确认弹窗，
 并显示不可撤销的提示。
+
+### 自动刷新
+
+默认 **3 秒**一次，在「wlsc 配置」页最下方的**「界面」**卡片里改（预设 1/3/5/10/30 秒），
+改完立即生效并写入：
+
+```
+%LOCALAPPDATA%\wslc-panel\prefs.json
+```
+
+这是**应用自己的偏好**，刻意不写进 `wslc` 的 `settings.yaml` ——
+那个文件归 `wslc` 所有，塞自定义键既可能被它重置，也会让人误以为改的是 `wslc` 的行为。
+
+刷新间隔和耗时都不在界面上展示：耗时写进日志，间隔只在这一处设置。
 
 ---
 
@@ -104,10 +118,11 @@ crates/
 │  └─ tests/         fixtures 驱动的集成测试 + 真机冒烟测试
 │
 └─ wslc-panel/       GPUI 应用
-   ├─ main.rs        窗口与生命周期
+   ├─ main.rs        窗口与生命周期、日志（发布版写文件）
    ├─ app.rs         Shell：导航、异步刷新、确认弹窗（唯一接触 GPUI 异步 API 的文件）
    ├─ views.rs       各页面渲染（纯函数）
    ├─ state.rs       状态与数据采集（不依赖 GPUI）
+   ├─ prefs.rs       应用自己的偏好（%LOCALAPPDATA%\wslc-panel\prefs.json）
    └─ theme.rs       配色
 ```
 
