@@ -11,11 +11,6 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      upload_artifact:
-        description: "是否上传编译产物（默认 true）"
-        type: boolean
-        default: true
 
 permissions:
   contents: write
@@ -73,7 +68,10 @@ jobs:
           Get-Item $zip | Select-Object Name, Length
 
       - name: 上传 Artifact
-        if: github.ref_type != 'tag' || inputs.upload_artifact
+        # 无条件上传：打标签时它和 Release 并存，
+        # 手动触发时它就是唯一的产物出口。
+        # （早先这里写了 `github.ref_type != 'tag' || inputs.upload_artifact`，
+        #   结果打标签时反而拿不到 artifact。）
         uses: actions/upload-artifact@v4
         with:
           name: wslc-panel-windows-x64

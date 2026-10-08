@@ -116,8 +116,12 @@ wslc volume remove -f spike-vol
 
 ## 4. 验证结果
 
-> 本机没有工具链，因此**改由 GitHub Actions 承担编译验证**（见 §6）。
+> 本机没有工具链，因此**改由 GitHub Actions 承担编译验证**（见 §5）。
 > 每次 push 都会跑 `ci.yml`。
+>
+> **当前状态：CI 全绿**（[run 5](https://github.com/SilkKirk/wslc-panel/actions/runs/37761082677)）
+> —— `cargo test -p wslc-core` 全部通过，`cargo check --workspace --all-targets`
+> 编译通过（含整个 GPUI UI 层）。
 
 | 假设 | 结果 | 备注 |
 |---|---|---|
@@ -152,15 +156,62 @@ wslc volume remove -f spike-vol
 | `wslc-panel` × 9 | `no method named font_bold / font_semibold` —— 字重方法来自 `StyledExt` trait，未导入 | `use gpui_kit::component::StyledExt` |
 | `wslc-panel` × 2 | `no method named overflow_y_scroll` —— 它属于 `StatefulInteractiveElement`，**只对带 `.id()` 的元素可用**；GPUI 的 overflow 宏只提供 `overflow_hidden` / `overflow_x_hidden` / `overflow_y_hidden` | 滚动容器加 `.id(...)` |
 | `main.rs` | `no method named new found for &mut App` —— `cx.new` 来自 `AppContext` trait | `use gpui_kit::AppContext;` |
-| `views.rs` | `error: recursion limit reached while expanding #[test]` | crate 级加 `#![recursion_limit = "256"]` |
+| `views.rs` | `error: recursion limit reached while expanding #[test]` | 见下面单独一节 —— 调大上限是**错的**修法；根因是 `#[test]` 被 GPUI 的同名宏遮蔽 |
 
 > 这些都是"本机无法编译"才会拖到 CI 才暴露的典型问题：
-> 自动解引用层级、固有方法遮蔽标准方法、serde 对序列的宽容、trait 不在作用域。
+> 自动解引用层级、固有方法遮蔽标准方法、serde 对序列的宽容、trait 不在作用域、
+> 属性宏被同名遮蔽。
 
+### 单独说一个坑：`#[test]` 被 GPUI 的同名宏遮蔽
+
+这是整个项目里最迷惑人的一个错误，值得单独记下来。
+
+`gpui-pre/src/gpui.rs` 里**无条件**再导出了 gpui_macros 的 `test` 属性宏：
+
+```rust
+pub use gpui_macros::{
+    AppContext, IntoElement, Render, VisualContext, bench, property_test, register_action, test,
+    ...
+};
+```
+
+而 `views.rs` 模块里有 `use gpui_kit::*;`。测试模块一旦写成 `use super::*;`，
+就会把父模块里那个 glob 导入的名字**一并继承进来**，于是模块内的 `#[test]`
+解析到 **GPUI 的 test 宏**而不是 Rust 内建的那个，展开时自我递归。
+
+症状极具误导性：
+
+```
+error: recursion limit reached while expanding `#[test]`
+  = help: consider increasing the recursion limit by adding a
+          `#![recursion_limit = "1024"]` attribute to your crate
+```
+
+把上限从默认 128 调到 256、再调到 512，**报错依旧**，只是提示值跟着涨到 1024
+—— 因为问题不是"深度不够"，而是宏被同名遮蔽，调多大都会烧穿。
+
+**正确修法**（gpui-kit 的 lib.rs 注释里其实写了：
+*"Test modules should import their Kit types explicitly to avoid shadowing Rust's `#[test]`."*）：
+测试模块**显式导入**需要的类型：
+
+```rust
+#[cfg(test)]
+mod tests {
+    // 不要写 `use super::*;`
+    use super::{ALL_COLUMNS, RUNNING_COLUMNS, presets_for};
+    use wslc_core::settings::{SETTING_KEYS, SettingKind};
+    // ...
+}
+```
+
+> **推论**：只要测试所在模块（或它的祖先）glob 导入了 `gpui_kit`，
+> 就不能用 `use super::*;`。
+> `wslc-core` 不受影响（不依赖 GPUI）；`wslc-panel` 的 `state.rs` 也不受影响
+> （只导入 `wslc_core`）；只有 `views.rs` / `app.rs` 这类带 gpui glob 的模块要当心。
 
 ---
 
-## 6. CI 作为编译验证通道
+## 5. CI 作为编译验证通道
 
 本机没有 Rust 工具链，所以把编译验证交给 GitHub Actions（Windows runner 自带 Rust + MSVC）：
 
@@ -169,6 +220,9 @@ wslc volume remove -f spike-vol
   - `ui`：`cargo check --workspace --all-targets` —— 这是 GPUI API 假设的唯一权威验证
   - `lint`：rustfmt / clippy，**只报告不阻塞**，输出写进 Step Summary
 - **`release.yml`**：推 `v*` 标签或手动触发，编译 release 并打包 exe
+  （打标签时同时建 Release；手动触发时只出 Artifact）
+- **`fmt.yml`**：**手动触发**，跑 `cargo fmt --all` 并把结果提交回仓库。
+  开发机上没有 rustfmt，这是唯一能拿到权威格式化结果的地方。
 
 本地能在没有工具链的情况下做的两项静态检查（脚本在 `%TEMP%`，未入库）：
 
@@ -181,7 +235,7 @@ wslc volume remove -f spike-vol
 
 ---
 
-## 5. 回退方案
+## 6. 回退方案
 
 如果 GPUI 在本机无法正常工作（A/B/C 失败），按以下顺序回退，
 **每一次回退都只动 `crates/wslc-panel`，`wslc-core` 原样保留**：
