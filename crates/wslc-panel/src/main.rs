@@ -30,7 +30,9 @@ mod state;
 mod theme;
 mod views;
 
-use std::io::Write as _;
+// 具名导入（而不是 `as _`）：下面 `impl Write for LogWriter` 直接用这个名字，
+// 顺便让 `file.write_all(...)` 的 trait 方法解析有据可依。
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -144,7 +146,7 @@ struct LogWriter {
     mirror_stderr: bool,
 }
 
-impl std::io::Write for LogWriter {
+impl Write for LogWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         if self.mirror_stderr {
             // 尽力而为：没有控制台时写 stderr 会失败，但不该因此中断日志。

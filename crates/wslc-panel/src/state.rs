@@ -154,7 +154,8 @@ pub fn load_snapshot(wslc: &Wslc) -> Snapshot {
     // 存储占用：`storagePath` 来自 settings.yaml，会话名来自 `wslc info`。
     // 这一步纯文件系统，不会失败到需要报错 —— 拿不到就是 None。
     let configured = settings_storage_path(snap.info.as_ref());
-    let session = snap.sessions.first().map(|s| s.name.clone());
+    // `Session` 的字段是 `id` / `creator_pid` / `display_name`（中文表头解析来的）
+    let session = snap.sessions.first().map(|s| s.display_name.clone());
     snap.storage = wslc_core::storage::inspect(configured.as_deref(), session.as_deref());
 
     snap.elapsed_ms = started.elapsed().as_millis();

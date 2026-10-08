@@ -195,7 +195,7 @@ fn danger_button(
 /// 渲染当前页面。
 pub fn page(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     match state.page {
-        Page::Dashboard => dashboard(state).into_any_element(),
+        Page::Dashboard => dashboard(state, entity).into_any_element(),
         Page::Running => running(state, entity).into_any_element(),
         Page::Containers => containers(state, entity).into_any_element(),
         Page::Images => images(state, entity).into_any_element(),
@@ -210,7 +210,7 @@ pub fn page(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
 // ---------------------------------------------------------------------------
 
 /// 总览页：`wslc info` + 统计 + 会话。
-pub fn dashboard(state: &AppState) -> impl IntoElement {
+pub fn dashboard(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
     let snap = &state.snapshot;
 
     let running = snap.all.iter().filter(|c| c.is_running()).count();
