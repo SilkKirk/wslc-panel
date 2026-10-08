@@ -21,6 +21,7 @@ use gpui_kit::component::button::*;
 // `StyledExt` 提供 `font_bold` / `font_semibold` 等字重方法（由宏生成），
 // 不导入 trait 就会报 "no method named font_bold"。
 use gpui_kit::component::{Disableable, Sizable, StyledExt, h_flex, v_flex};
+use gpui_kit::component::input::InputState;
 use gpui_kit::*;
 
 use wslc_core::Wslc;
@@ -34,6 +35,14 @@ use crate::views;
 pub struct Shell {
     /// 全部状态。
     pub state: AppState,
+    /// 「拉取镜像」弹窗的输入框；弹窗关闭时为 `None`。
+    ///
+    /// 放在 `Shell` 而**不是** `AppState`：`AppState` 刻意完全不碰 GPUI
+    /// （换渲染层时数据层能原样复用），而 `InputState` 是 GPUI 的类型。
+    ///
+    /// 另外 `InputState::new` 需要一个 `&mut Window`，而 `Shell::new` 拿不到
+    /// window —— 所以只能**懒创建**：用户点按钮时（事件回调里有 window）才建。
+    pull_input: Option<Entity<InputState>>,
 }
 
 impl Shell {
@@ -41,10 +50,92 @@ impl Shell {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let mut shell = Self {
             state: AppState::new(Wslc::new()),
+            pull_input: None,
         };
         shell.refresh(cx);
         shell.start_auto_refresh(cx);
         shell
+    }
+
+    // -- 拉取镜像弹窗 --------------------------------------------------------
+
+    /// 打开「拉取镜像」弹窗，并把焦点交给输入框。
+    pub fn open_pull_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(image) = self.state.pulling.clone() {
+            self.state
+                .notify(Toast::error(format!("{image} 正在拉取中，请等它结束")));
+            cx.notify();
+            return;
+        }
+
+        let input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("docker.1ms.run/library/nginx:latest")
+        });
+
+        // 打开就把焦点给输入框，用户可以直接开始打字。
+        let handle = input.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+
+        self.pull_input = Some(input);
+        cx.notify();
+    }
+
+    /// 关闭弹窗（取消）。
+    pub fn close_pull_dialog(&mut self, cx: &mut Context<Self>) {
+        self.pull_input = None;
+        cx.notify();
+    }
+
+    /// 读取输入框内容，发起 `wslc pull`。
+    ///
+    /// 拉取是**长任务**（`wslc pull` 的超时设的是 600 秒），所以：
+    /// 关掉弹窗 → 记下 `pulling` → 丢到后台执行器 → 完成后弹提示并刷新。
+    /// 界面上会显示"正在拉取"，期间不允许重复发起。
+    pub fn confirm_pull(&mut self, cx: &mut Context<Self>) {
+        let Some(input) = self.pull_input.clone() else {
+            return;
+        };
+        let reference = input.read(cx).value(cx).trim().to_owned();
+
+        if reference.is_empty() {
+            self.state.notify(Toast::error("请先填写镜像引用"));
+            cx.notify();
+            return;
+        }
+        if self.state.pulling.is_some() {
+            return;
+        }
+
+        self.pull_input = None;
+        self.state.pulling = Some(reference.clone());
+        self.state
+            .notify(Toast::info(format!("开始拉取 {reference}，可能需要几分钟")));
+        cx.notify();
+
+        let wslc = self.state.wslc.clone();
+        let for_task = reference.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { wslc_core::cmd::image::pull(&wslc, &for_task) })
+                .await;
+
+            let _ = this.update(cx, |shell, cx| {
+                shell.state.pulling = None;
+                match result {
+                    Ok(_) => shell
+                        .state
+                        .notify(Toast::success(format!("{reference} 拉取完成"))),
+                    Err(e) => shell
+                        .state
+                        .notify(Toast::error(format!("{reference} 拉取失败：{e}"))),
+                }
+                cx.notify();
+                // 拉完立刻刷一次，让新镜像出现在列表里。
+                shell.refresh(cx);
+            });
+        })
+        .detach();
     }
 
     // -- 数据刷新 ----------------------------------------------------------
@@ -457,6 +548,12 @@ impl Render for Shell {
             Some(action) => confirm_overlay(action, &entity),
         };
 
+        // 拉取镜像弹窗。`pull_input` 是 `Shell` 的字段，不在 `state` 里。
+        let pull_dialog: AnyElement = match &self.pull_input {
+            None => div().into_any_element(),
+            Some(input) => views::pull_dialog_overlay(input, &entity),
+        };
+
         let page_body = views::page(state, &entity);
 
         div()
@@ -555,6 +652,7 @@ impl Render for Shell {
             )
             .child(toast)
             .child(confirm)
+            .child(pull_dialog)
     }
 }
 

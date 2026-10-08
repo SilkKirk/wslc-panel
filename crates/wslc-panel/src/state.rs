@@ -379,6 +379,11 @@ pub struct AppState {
     pub prefs: crate::prefs::Prefs,
     /// 是否正在后台采集。
     pub busy: bool,
+    /// 正在拉取的镜像引用；空闲时为 `None`。
+    ///
+    /// 拉取可能要几分钟（`wslc pull` 的超时设的是 600 秒），
+    /// 期间界面要能显示"正在进行"，也要防止重复发起。
+    pub pulling: Option<String>,
     /// 待用户确认的危险操作。
     pub confirm: Option<PendingAction>,
     /// 提示条。
@@ -396,6 +401,7 @@ impl AppState {
             settings_error: None,
             prefs: crate::prefs::Prefs::load(),
             busy: false,
+            pulling: None,
             confirm: None,
             toast: None,
         }

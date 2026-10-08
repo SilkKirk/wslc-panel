@@ -8,6 +8,7 @@
 // 光导入 `Button` 是不够的 —— 这里用 glob 把 button 模块全带上。
 use gpui_kit::component::button::*;
 // `StyledExt` 提供 `font_bold` / `font_semibold` 等字重方法（由宏生成）。
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Disableable, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 
@@ -774,13 +775,34 @@ pub fn images(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
         .w_full()
         .gap_3()
         .child(
-            div()
-                .text_sm()
-                .text_color(theme::text_muted())
-                .child(format!(
-                    "共 {} 条镜像记录（同一镜像可能对应多个仓库引用）",
-                    state.snapshot.images.len()
-                )),
+            h_flex()
+                .w_full()
+                .justify_between()
+                .child({
+                    let entity = entity.clone();
+                    let busy = state.pulling.is_some();
+                    Button::new("pull-image")
+                        .label("拉取镜像")
+                        .small()
+                        .disabled(busy)
+                        .on_click(move |_, window, cx| {
+                            // 注意：`InputState` 只能在有 `window` 的地方创建，
+                            // 这里正好有 —— 所以弹窗是懒创建的。
+                            entity.update(cx, |shell, cx| shell.open_pull_dialog(window, cx));
+                        })
+                })
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme::text_muted())
+                        .child(match &state.pulling {
+                            Some(image) => format!("正在拉取 {image} …"),
+                            None => format!(
+                                "共 {} 条镜像记录（同一镜像可能对应多个仓库引用）",
+                                state.snapshot.images.len()
+                            ),
+                        }),
+                ),
         )
         .child(
             v_flex()
@@ -1280,6 +1302,106 @@ fn refresh_secs_picker(state: &AppState, entity: &Entity<Shell>) -> impl IntoEle
         .flex_wrap()
         .children(buttons)
         .children(extra)
+}
+
+/// 「拉取镜像」弹窗（覆盖层）。
+///
+/// 这是项目里**第一次**使用 GPUI 的输入控件（`InputState` + `Input`）。
+/// 接入的四个关键点：
+///
+/// 1. **构造** —— `cx.new(|cx| InputState::new(window, cx).placeholder(..))`，
+///    必须在有 `&mut Window` 的地方（见 `Shell::open_pull_dialog`）；
+/// 2. **持有** —— `Shell::pull_input: Option<Entity<InputState>>`；
+/// 3. **渲染** —— 就是这里的 `Input::new(input)`；
+/// 4. **读值** —— `input.read(cx).value(cx)`（见 `Shell::confirm_pull`）。
+///
+/// 焦点在打开弹窗时由 `window.focus(&handle, cx)` 交给输入框，
+/// 用的是公开的 `InputState::focus_handle`（`InputState::focus` 是
+/// `pub(crate)`，外部调不到）。
+pub fn pull_dialog_overlay(input: &Entity<InputState>, entity: &Entity<Shell>) -> AnyElement {
+    let cancel = {
+        let entity = entity.clone();
+        Button::new("pull-cancel")
+            .label("取消")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.close_pull_dialog(cx));
+            })
+    };
+
+    let confirm = {
+        let entity = entity.clone();
+        Button::new("pull-ok")
+            .label("开始拉取")
+            .primary()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.confirm_pull(cx));
+            })
+    };
+
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme::scrim())
+        .child(
+            v_flex()
+                .w(px(560.))
+                .gap_4()
+                .p_5()
+                .rounded_lg()
+                .bg(theme::bg_card())
+                .border_1()
+                .border_color(theme::border())
+                .child(
+                    div()
+                        .text_lg()
+                        .font_bold()
+                        .text_color(theme::text())
+                        .child("拉取镜像"),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme::text_muted())
+                        .child("镜像引用，例如 nginx:latest 或 docker.1ms.run/library/nginx:latest"),
+                )
+                .child(Input::new(input).id("pull-reference").w_full())
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap_1()
+                        .rounded_md()
+                        .bg(theme::bg())
+                        .p_3()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::warning())
+                                .child(
+                                    "实测本机直连 Docker Hub 会超时（registry-1.docker.io 不可达），\
+                                     建议填写镜像加速地址。",
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::text_dim())
+                                .child("拉取期间界面保持可用；单次超时上限 10 分钟。"),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .w_full()
+                        .justify_end()
+                        .gap_2()
+                        .child(cancel)
+                        .child(confirm),
+                ),
+        )
+        .into_any_element()
 }
 
 #[cfg(test)]
