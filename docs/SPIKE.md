@@ -268,3 +268,85 @@ mod tests {
 
 **判定依据**：只要 `cargo test -p wslc-core` 全绿，
 项目就保住了全部数据能力，UI 换实现不会造成返工。
+
+---
+
+## 7. v0.2 调研结论（存储与输入控件）
+
+### 7.1 `storagePath` 显示不出来，是因为出厂全是注释
+
+`settings.yaml` 把所有键都写成注释：
+
+```yaml
+  # storagePath: default
+```
+
+所以读到的永远是"未设置"。而 `wslc info` **不报**解析后的路径，只报
+`Client.SettingsFile`。真实语义要读 settings.yaml 自己的注释：
+
+> Base directory for the default session's storage; the session VHD is created at
+> `<storagePath>\wslc\sessions\<session>\storage.vhdx`.
+> default: `%LOCALAPPDATA%`
+
+实测本机：
+
+```
+%LOCALAPPDATA%\wslc\sessions\wslc-cli-76434\storage.vhdx    612 MB
+```
+
+两个来源的会话名一致（`info.Server.Sessions[0].Name` 与
+`system session list` 的显示名称都是 `wslc-cli-76434`），和磁盘目录名也对得上。
+
+> ⚠️ 类型陷阱：`Session` 在不同地方字段名不同 ——
+> `ServerInfo::sessions`（来自 `wslc info`）是 `name`，
+> `Vec<Session>`（来自 `wslc system session list`）是 `display_name`。
+> CI 抓过一次。
+
+### 7.2 磁盘占用：`wslc` 没有 `system df`
+
+`wslc system` 只有 `events` / `info` / `session`。逐项可得性：
+
+| 指标 | 来源 | 结论 |
+|---|---|---|
+| 会话 VHD 占用 | 文件系统 | ✅ 精确 |
+| 卷容量/可用 | `GetDiskFreeSpaceExW` | ✅ 精确 |
+| 镜像合计 | `wslc images` 的 `Size` 求和 | ✅ 精确（含共享层重复计算） |
+| 容器可写层 / 卷 | —— | ❌ 与镜像共用同一个 VHD，分不出来 |
+
+拿卷容量的三条路都试过：
+
+- `wslc` 没有对应命令；
+- `fsutil volume diskfree` → **Error 5: Access is denied**（要管理员）；
+- 起 PowerShell 查要 300ms+，刷新一次多一倍耗时；
+- 最终用 `windows` crate 0.58（对齐 GPUI 依赖树里已有的版本，零额外编译成本）
+  调 `GetDiskFreeSpaceExW`，微秒级。
+
+### 7.3 GPUI `InputState` 的接入要点（第一次用输入控件）
+
+API 全部在依赖源码里核对过：
+
+| 事项 | 正确写法 | 出处 |
+|---|---|---|
+| 构造 | `cx.new(\|cx\| InputState::new(window, cx).placeholder(..))` | `gpui-component/src/list/list.rs:96` |
+| 预制值 | `.default_value("..")` | `gpui-component/src/input/input.rs:1078` |
+| 渲染 | `Input::new(&entity).id("..").w_full()` | `gpui-component/src/input/input.rs:213` |
+| 读值 | `entity.read(cx).value()` —— **不带参数** | `gpui-base/src/input/base/state.rs:1257` |
+| 焦点 | `let h = entity.read(cx).focus_handle(cx); window.focus(&h, cx);` | 两者都是公开 API |
+
+两个坑：
+
+1. **`value` 不带参数**。`gpui-component/src/input/state.rs:294` 里另有一个
+   `value(&self, cx)` —— 那是**别的类型**的同名方法，照抄会报
+   `E0061: this method takes 0 arguments`。CI 抓到了。
+2. **`InputState::new` 要 `&mut Window`**，而 `Shell::new(cx)` 拿不到 window。
+   所以只能**懒创建**：用户点按钮时（事件回调里有 `window`）才建。
+   另外 `InputState::focus` 是 `pub(crate)`，外部只能用 `focus_handle` + `window.focus`。
+
+### 7.4 分层没有破
+
+`AppState` 依然**完全不碰 GPUI**。输入框是 GPUI 类型，所以放在
+`Shell::pull_input: Option<Entity<InputState>>`，而"是否正在拉取"这种
+纯数据状态（`AppState::pulling`）留在数据层。
+
+这样做的好处已经在 CI 上体现：`cargo test -p wslc-core` 从始至终
+不需要 GPU、不需要窗口，一直能跑。
