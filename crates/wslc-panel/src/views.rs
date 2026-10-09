@@ -20,8 +20,8 @@ use wslc_core::settings::{SETTING_KEYS, SettingKey, SettingKind};
 
 use crate::app::{CreateDialog, Shell};
 use crate::state::{
-    AppState, DistroAction, ImmediateAction, InstallSourceKind, Page, PendingAction, PullProgress,
-    format_bytes,
+    AppState, DistroAction, ImmediateAction, InstallSourceKind, Page, PendingAction, PromptKind,
+    PullProgress, format_bytes,
 };
 use crate::theme;
 
@@ -241,6 +241,31 @@ fn danger_button_distro(
                 shell.request_distro(action.clone(), cx);
             });
         })
+}
+
+/// 打开「单输入框提示弹窗」的按钮（移动位置 / 调整大小 / 设置默认用户）。
+///
+/// 和 [`danger_button_distro`] 的区别：那个弹**确认**，这个弹**输入框**。
+fn prompt_button(
+    id: &str,
+    label: &'static str,
+    kind: PromptKind,
+    distro: &str,
+    entity: &Entity<Shell>,
+) -> AnyElement {
+    let entity = entity.clone();
+    let distro = distro.to_owned();
+    Button::new(SharedString::from(id.to_owned()))
+        .label(label)
+        .small()
+        .on_click(move |_, window, cx| {
+            // `window` 是必需的：`InputState::new` 要 `&mut Window`。
+            let distro = distro.clone();
+            entity.update(cx, |shell, cx| {
+                shell.open_prompt(kind, distro, window, cx);
+            });
+        })
+        .into_any_element()
 }
 
 /// 即时操作按钮（启动 / 重启）。
@@ -2722,6 +2747,61 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
         );
     }
 
+    // -- `wsl --manage` 的另外四项（P4）--
+    //
+    // 全是**低频**操作，所以只出现在详情里，不塞进列表行。
+    if !transitional {
+        actions.push(prompt_button(
+            "distro-detail-move",
+            "移动位置",
+            PromptKind::MoveDistro,
+            name,
+            entity,
+        ));
+        actions.push(prompt_button(
+            "distro-detail-resize",
+            "调整大小",
+            PromptKind::ResizeDistro,
+            name,
+            entity,
+        ));
+        actions.push(prompt_button(
+            "distro-detail-user",
+            "默认用户",
+            PromptKind::SetDefaultUser,
+            name,
+            entity,
+        ));
+
+        // 稀疏是两个**明确方向**的按钮，而不是一个"切换"：
+        // 界面不显示当前状态（注册表 `Flags` 里哪一位是稀疏**没有实测确认**），
+        // 与其猜，不如让用户自己说清要开还是要关。
+        actions.push(
+            danger_button_distro(
+                "distro-detail-sparse-on",
+                "启用稀疏",
+                DistroAction::SetSparse {
+                    name: name.to_owned(),
+                    sparse: true,
+                },
+                entity,
+            )
+            .into_any_element(),
+        );
+        actions.push(
+            danger_button_distro(
+                "distro-detail-sparse-off",
+                "关闭稀疏",
+                DistroAction::SetSparse {
+                    name: name.to_owned(),
+                    sparse: false,
+                },
+                entity,
+            )
+            .into_any_element(),
+        );
+    }
+
     // 改版本：只在 1 ↔ 2 之间切。版本读不出来时不给按钮 ——
     // 不知道当前是几，就不知道该往哪转。
     if !transitional {
@@ -2870,6 +2950,129 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
                         .child(h_flex().w_full().gap_2().flex_wrap().children(buttons)),
                 )
                 .child(h_flex().w_full().justify_end().child(close)),
+        )
+        .into_any_element()
+}
+
+/// 单输入框提示弹窗（移动位置 / 调整大小 / 设置默认用户）。
+///
+/// 弹窗**本身就是确认**：里面带着这个动作的代价说明和**实时**等效命令，
+/// 提交后直接执行 —— 所以没有再叠一层二次确认。
+/// 连续弹两个窗比一个信息充分的窗更烦人。
+///
+/// 要 `cx` 才能从输入框里读数：底部那行命令是随打字变化的。
+pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyElement {
+    let Some(prompt) = shell.prompt.as_ref() else {
+        return div().into_any_element();
+    };
+
+    let kind = prompt.kind;
+    let typed = prompt.input.read(cx).value().trim().to_owned();
+    // 没填时给个占位符，别让预览行变成一条断掉的命令
+    let shown = if typed.is_empty() {
+        "<待填>".to_owned()
+    } else {
+        typed
+    };
+    let flag = match kind {
+        PromptKind::MoveDistro => "--move",
+        PromptKind::ResizeDistro => "--resize",
+        PromptKind::SetDefaultUser => "--set-default-user",
+    };
+
+    let cancel = {
+        let entity = entity.clone();
+        Button::new("prompt-cancel")
+            .label("取消")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.close_prompt(cx));
+            })
+    };
+
+    let confirm = {
+        let entity = entity.clone();
+        Button::new("prompt-confirm")
+            .label(kind.confirm_label())
+            .small()
+            .primary()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.submit_prompt(cx));
+            })
+    };
+
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme::scrim())
+        .child(
+            v_flex()
+                .w(px(620.))
+                .gap_4()
+                .p_5()
+                .rounded_lg()
+                .bg(theme::bg_card())
+                .border_1()
+                .border_color(theme::border())
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_lg()
+                                .font_bold()
+                                .text_color(theme::text())
+                                .child(kind.title()),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::text_dim())
+                                .child(format!("发行版：{}", prompt.distro)),
+                        ),
+                )
+                .child(form_field(
+                    "prompt-input",
+                    kind.label(),
+                    &prompt.input,
+                    cx,
+                    true,
+                ))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child(kind.note()),
+                )
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::text_dim())
+                                .child("等效命令"),
+                        )
+                        .child(
+                            div()
+                                .font_family("Consolas")
+                                .text_xs()
+                                .text_color(theme::text())
+                                .child(format!("wsl --manage {} {flag} {shown}", prompt.distro)),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .w_full()
+                        .justify_end()
+                        .gap_2()
+                        .child(cancel)
+                        .child(confirm),
+                ),
         )
         .into_any_element()
 }

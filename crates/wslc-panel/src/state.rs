@@ -536,6 +536,17 @@ pub enum DistroAction {
     },
     /// 压缩发行版的虚拟磁盘。
     Compact(String),
+    /// 开关稀疏 VHD（开启后 WSL 会自动回收已释放的空间）。
+    ///
+    /// 单独一个动作而不是"切换"：界面不显示当前状态
+    /// （注册表的 `Flags` 里哪一位是稀疏**没有实测确认**），
+    /// 所以给两个明确的入口，让用户自己说清要开还是要关。
+    SetSparse {
+        /// 发行版名。
+        name: String,
+        /// `true` = 开启稀疏。
+        sparse: bool,
+    },
 }
 
 impl DistroAction {
@@ -547,6 +558,13 @@ impl DistroAction {
             DistroAction::SetVersion { .. } => "更改 WSL 版本",
             DistroAction::Unregister { .. } => "删除发行版",
             DistroAction::Compact(_) => "压缩虚拟磁盘",
+            DistroAction::SetSparse { sparse, .. } => {
+                if *sparse {
+                    "开启稀疏磁盘"
+                } else {
+                    "关闭稀疏磁盘"
+                }
+            }
         }
     }
 
@@ -581,6 +599,19 @@ impl DistroAction {
                  这个动作**不会删除任何数据**，但发行版必须处于已停止状态；\
                  大磁盘可能要几分钟。"
             ),
+            DistroAction::SetSparse { name, sparse } => {
+                if *sparse {
+                    format!(
+                        "将把 {name} 的虚拟磁盘标记为**稀疏**：WSL 之后会自动回收\
+                         已释放的块，相当于持续做压缩。不会删除任何数据。"
+                    )
+                } else {
+                    format!(
+                        "将关闭 {name} 的稀疏标志。磁盘不会再自动回收空间，\
+                         之后只能手动压缩。不会删除任何数据。"
+                    )
+                }
+            }
         }
     }
 
@@ -592,6 +623,13 @@ impl DistroAction {
             DistroAction::SetVersion { .. } => "开始转换",
             DistroAction::Unregister { .. } => "删除",
             DistroAction::Compact(_) => "压缩",
+            DistroAction::SetSparse { sparse, .. } => {
+                if *sparse {
+                    "开启"
+                } else {
+                    "关闭"
+                }
+            }
         }
     }
 
@@ -617,6 +655,13 @@ impl DistroAction {
             DistroAction::Compact(name) => {
                 cmd::distro::compact(wsl, name)?;
                 Ok(format!("{name} 的虚拟磁盘已压缩"))
+            }
+            DistroAction::SetSparse { name, sparse } => {
+                cmd::distro::set_sparse(wsl, name, *sparse)?;
+                Ok(format!(
+                    "{name} 的稀疏磁盘已{}",
+                    if *sparse { "开启" } else { "关闭" }
+                ))
             }
         }
     }
@@ -663,6 +708,79 @@ impl ConfirmAction {
         match self {
             ConfirmAction::Container(action) => action.execute(wslc),
             ConfirmAction::Distro(action) => action.execute(wsl),
+        }
+    }
+}
+
+/// 「单输入框提示弹窗」要做什么。
+///
+/// 这三种动作都需要一个**文本参数**（位置 / 大小 / 用户名），
+/// 所以共用一个弹窗 —— 标签、占位、说明和提交后调用的命令各不相同。
+///
+/// 弹窗本身**就是确认**（表单里带着说明和等效命令），提交后直接执行，
+/// 不再叠一个二次确认 —— 连续两个弹窗比一个信息充分的弹窗更烦人。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptKind {
+    /// 移动安装位置。
+    MoveDistro,
+    /// 调整磁盘大小。
+    ResizeDistro,
+    /// 设置默认用户。
+    SetDefaultUser,
+}
+
+impl PromptKind {
+    /// 弹窗标题。
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::MoveDistro => "移动安装位置",
+            Self::ResizeDistro => "调整磁盘大小",
+            Self::SetDefaultUser => "设置默认用户",
+        }
+    }
+
+    /// 输入框标签。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::MoveDistro => "新的安装目录（绝对路径）",
+            Self::ResizeDistro => "新的磁盘大小",
+            Self::SetDefaultUser => "用户名",
+        }
+    }
+
+    /// 输入框占位提示。
+    pub fn placeholder(self) -> &'static str {
+        match self {
+            Self::MoveDistro => r"D:\wsl\MyDistro",
+            Self::ResizeDistro => "50GB",
+            Self::SetDefaultUser => "myuser",
+        }
+    }
+
+    /// 一句说明，讲清这个动作的代价或前提。
+    pub fn note(self) -> &'static str {
+        match self {
+            Self::MoveDistro => {
+                "跨盘移动是真的在拷数据，18 GB 的盘可能要几分钟到几十分钟；\
+                 同盘则只是改路径，很快。期间请勿关机。"
+            }
+            Self::ResizeDistro => {
+                "只认 B / KB / MB / GB / TB，例如 50GB。\
+                 缩小磁盘不一定被 WSL 支持，具体以它的判断为准。"
+            }
+            Self::SetDefaultUser => {
+                "这是发行版内**已经存在**的用户名。用户不存在时 wsl 会报错 ——\
+                 本程序不会替你创建用户。"
+            }
+        }
+    }
+
+    /// 提交按钮文案。
+    pub fn confirm_label(self) -> &'static str {
+        match self {
+            Self::MoveDistro => "开始移动",
+            Self::ResizeDistro => "调整大小",
+            Self::SetDefaultUser => "设为默认用户",
         }
     }
 }
@@ -1063,11 +1181,52 @@ mod tests {
                 vhdx_bytes: Some(19_666_042_880),
             },
             DistroAction::Compact("Ubuntu".into()),
+            DistroAction::SetSparse {
+                name: "Ubuntu".into(),
+                sparse: true,
+            },
+            DistroAction::SetSparse {
+                name: "Ubuntu".into(),
+                sparse: false,
+            },
         ];
         for action in actions {
             assert!(!action.title().is_empty(), "{action:?}");
             assert!(!action.body().is_empty(), "{action:?}");
             assert!(!action.confirm_label().is_empty(), "{action:?}");
+        }
+    }
+
+    #[test]
+    fn sparse_toggle_says_which_way_it_goes() {
+        // 两个方向的文案必须不一样，否则用户分不清点了会开还是关
+        let on = DistroAction::SetSparse {
+            name: "U".into(),
+            sparse: true,
+        };
+        let off = DistroAction::SetSparse {
+            name: "U".into(),
+            sparse: false,
+        };
+        assert_eq!(on.title(), "开启稀疏磁盘");
+        assert_eq!(off.title(), "关闭稀疏磁盘");
+        assert_eq!(on.confirm_label(), "开启");
+        assert_eq!(off.confirm_label(), "关闭");
+        assert_ne!(on.body(), off.body());
+    }
+
+    #[test]
+    fn every_prompt_kind_has_copy() {
+        for kind in [
+            PromptKind::MoveDistro,
+            PromptKind::ResizeDistro,
+            PromptKind::SetDefaultUser,
+        ] {
+            assert!(!kind.title().is_empty(), "{kind:?}");
+            assert!(!kind.label().is_empty(), "{kind:?}");
+            assert!(!kind.placeholder().is_empty(), "{kind:?}");
+            assert!(!kind.note().is_empty(), "{kind:?}");
+            assert!(!kind.confirm_label().is_empty(), "{kind:?}");
         }
     }
 
