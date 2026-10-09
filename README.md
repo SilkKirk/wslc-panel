@@ -187,7 +187,7 @@ base, component, and assets, so a Rust application lists a single dependency.」
 正常启动时它长这样：
 
 ```text
-INFO wslc_panel: wslc-panel 启动（版本 0.1.0）
+INFO wslc_panel: wslc-panel 启动（版本 0.3.0，构建 bd1fdd1）
 INFO gpui_windows::direct_write: Use Microsoft YaHei UI as UI font.
 INFO gpui_windows::directx_devices: Using GPU: Intel(R) UHD Graphics
 INFO gpui_windows::directx_devices: Created device with Direct3D 11.1 feature level.
