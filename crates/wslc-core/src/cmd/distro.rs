@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::cli::{self, Wsl};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::model::distro::{parse_distro_list, Distro, WslStatus};
 
 /// 注册表根键：发行版元数据都在这里。
@@ -74,6 +74,144 @@ pub fn snapshot(wsl: &Wsl) -> Result<DistroList> {
     let mut list = list(wsl)?;
     enrich(&mut list.distros);
     Ok(list)
+}
+
+// ---------------------------------------------------------------------------
+// 动作（P2）
+// ---------------------------------------------------------------------------
+
+/// 快速动作的超时（终止 / 设为默认）。
+const QUICK_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// `--shutdown` 要等所有发行版里的进程退出，可能比单终止慢。
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// 会动磁盘的动作（删除 / 压缩）。
+///
+/// 实测本机 18 GB 的 VHDX 上 `--compact` 只要 **10.2 秒**，
+/// 但碎片多的盘可能到分钟级，所以给得宽松。
+const DISK_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// WSL1 ↔ WSL2 的版本转换。
+///
+/// 这个动作要把整个根文件系统搬一遍，**几十分钟是正常的**。
+const CONVERT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
+/// 过滤掉 `wsl.exe` 打在 stderr 上、**与本操作无关**的配置告警。
+///
+/// 实测：只要命令会进发行版（`-d X -e ...` / `--manage`），`wsl.exe` 就会
+/// 重复打印 `%USERPROFILE%\.wslconfig` 的告警：
+///
+/// ```text
+/// wsl: interop.appendWindowsPath:C:\Users\76434\.wslconfig 中的键"12"未知
+/// wsl: user.default:C:\Users\76434\.wslconfig 中的键"15"未知
+/// ```
+///
+/// 它们**不影响退出码**，但会把错误消息污染得看不出真正的原因 ——
+/// 用户看到"操作失败：键12未知"只会更迷惑。
+fn strip_config_warnings(text: &str) -> String {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with("wsl: "))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_owned()
+}
+
+/// 跑一个发行版动作，成功返回 `Ok(())`，失败给出**干净**的错误。
+fn run_action(wsl: &Wsl, args: &[&str], timeout: Duration) -> Result<()> {
+    let out = wsl.run_with_timeout(args, timeout)?;
+    if out.success() {
+        return Ok(());
+    }
+
+    let detail = strip_config_warnings(&out.combined());
+    Err(Error::NonZeroExit {
+        program: "wsl",
+        args: out.args.join(" "),
+        // 实测 `wsl.exe` 用的是 -1，不是 1 —— 原样透传
+        code: out.code.unwrap_or(-1),
+        stderr: if detail.is_empty() {
+            "（wsl 没有给出任何输出）".to_owned()
+        } else {
+            detail
+        },
+    })
+}
+
+/// 终止一个发行版（`wsl --terminate <name>`）。
+///
+/// ⚠️ 会丢掉发行版里**没有保存**的东西。调用方必须二次确认。
+pub fn terminate(wsl: &Wsl, name: &str) -> Result<()> {
+    run_action(wsl, &["--terminate", name], QUICK_TIMEOUT)
+}
+
+/// 关停**所有**发行版和 WSL2 轻量工具虚拟机（`wsl --shutdown`）。
+///
+/// 影响面比终止单个发行版大得多，调用方必须二次确认。
+pub fn shutdown(wsl: &Wsl) -> Result<()> {
+    run_action(wsl, &["--shutdown"], SHUTDOWN_TIMEOUT)
+}
+
+/// 把某个发行版设为默认（`wsl --set-default <name>`）。
+///
+/// 不破坏数据、可逆，所以**不需要**二次确认。
+pub fn set_default(wsl: &Wsl, name: &str) -> Result<()> {
+    run_action(wsl, &["--set-default", name], QUICK_TIMEOUT)
+}
+
+/// 改发行版的 WSL 版本（`wsl --set-version <name> <1|2>`）。
+///
+/// ⚠️ 慢（要搬整个根文件系统），且中途失败可能让发行版不可用。
+pub fn set_version(wsl: &Wsl, name: &str, version: u8) -> Result<()> {
+    // 先在本地挡掉非法值：与其让 wsl 报一句用法错误，
+    // 不如自己给一条清楚的消息（也不会白起一个进程）。
+    if version != 1 && version != 2 {
+        return Err(Error::InvalidArgument(format!(
+            "WSL 版本只能是 1 或 2，收到 {version}"
+        )));
+    }
+
+    let version = version.to_string();
+    // 用 `as_str()` 而不是 `&version`：数组字面量里 `&String -> &str`
+    // 虽然能靠强制转换过，但显式写出来读着更稳。
+    run_action(
+        wsl,
+        &["--set-version", name, version.as_str()],
+        CONVERT_TIMEOUT,
+    )
+}
+
+/// 注销发行版：**删除**它的根文件系统（`wsl --unregister <name>`）。
+///
+/// 不可撤销。调用方必须二次确认，并把 [`Distro::vhdx_bytes`] 一起展示出来，
+/// 让用户知道自己要删掉多少东西。
+pub fn unregister(wsl: &Wsl, name: &str) -> Result<()> {
+    run_action(wsl, &["--unregister", name], DISK_TIMEOUT)
+}
+
+/// 压缩发行版的 VHDX，回收已释放的块（`wsl --manage <name> --compact`）。
+///
+/// 实测本机 18 GB 的盘耗时 **10.2 秒**、回收 20 MB —— 所以用
+/// 「提示 + 完成后刷新」就够，不需要单独的进度弹窗。
+pub fn compact(wsl: &Wsl, name: &str) -> Result<()> {
+    run_action(wsl, &["--manage", name, "--compact"], DISK_TIMEOUT)
+}
+
+/// 在新控制台窗口里打开发行版的终端（`wsl -d <name>`）。
+///
+/// # 这就是「启动」该有的样子
+///
+/// 实测（WSL 3.0.1.0）：`wsl -d <name> -e true` 能让发行版变成 Running，
+/// 但**约 20 秒后它会自己回到 Stopped**；连
+/// `setsid nohup sleep 900 &` 这种真正的后台常驻进程也留不住它
+/// （最后一个 `wsl.exe` 会话退出后，发行版就被回收了）。
+///
+/// 所以**不做**一个裸的「启动」按钮 —— 点完看着是"运行中"、
+/// 20 秒后变回"已停止"，用户只会以为程序坏了。
+/// 打开终端是诚实且有用的等价物：终端开着，发行版就一直是运行中。
+pub fn open_terminal(wsl: &Wsl, name: &str) -> Result<()> {
+    wsl.spawn_in_new_console(&["-d", name])
 }
 
 // ---------------------------------------------------------------------------
@@ -449,5 +587,48 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{ccc}\r
         ];
         assert_eq!(default_distro(&distros), Some("Ubuntu"));
         assert_eq!(default_distro(&[]), None);
+    }
+
+    // -- 动作 --------------------------------------------------------------
+
+    #[test]
+    fn set_version_rejects_anything_but_1_and_2_before_spawning() {
+        // 用一个必然不存在的可执行文件：如果校验没挡住，就会先报 ExecutableNotFound。
+        // 断言拿到 InvalidArgument，就说明**根本没起进程**。
+        let wsl = Wsl::with_program("definitely-not-a-real-binary");
+
+        for bad in [0u8, 3, 255] {
+            match set_version(&wsl, "Ubuntu", bad) {
+                Err(Error::InvalidArgument(msg)) => {
+                    assert!(msg.contains(&bad.to_string()), "{msg}");
+                }
+                other => panic!("版本 {bad} 应该被本地挡下，实际：{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn config_warnings_are_stripped_from_error_text() {
+        // 实测形态：两行 .wslconfig 告警 + 一行真正的错误
+        let raw = concat!(
+            "wsl: interop.appendWindowsPath:C:\\Users\\76434\\.wslconfig 中的键\"12\"未知\n",
+            "wsl: user.default:C:\\Users\\76434\\.wslconfig 中的键\"15\"未知\n",
+            "不存在具有所提供名称的分发。"
+        );
+        let cleaned = strip_config_warnings(raw);
+        assert_eq!(cleaned, "不存在具有所提供名称的分发。");
+        assert!(!cleaned.contains("wsl:"), "{cleaned}");
+    }
+
+    #[test]
+    fn config_warning_filter_keeps_everything_else() {
+        // 没有告警时不该改动任何东西
+        assert_eq!(strip_config_warnings("操作成功完成。"), "操作成功完成。");
+        // 只想去掉行首的 `wsl: ` 前缀行，正文里的 "wsl" 不受影响
+        let text = "wsl: 某条告警\n真正的错误：wsl 拒绝了这个参数";
+        assert_eq!(strip_config_warnings(text), "真正的错误：wsl 拒绝了这个参数");
+        // 全被过滤掉时是空串，调用方据此给兜底文案
+        assert!(strip_config_warnings("wsl: a\nwsl: b").is_empty());
+        assert!(strip_config_warnings("").is_empty());
     }
 }

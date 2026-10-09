@@ -33,7 +33,10 @@ use wslc_core::settings::SettingKey;
 // `Wsl` 是发行版（实例）的调用器，和容器的 `Wslc` 并列。
 use wslc_core::{Wsl, Wslc};
 
-use crate::state::{self, AppState, ImmediateAction, Page, PendingAction, Toast, ToastKind};
+use crate::state::{
+    self, AppState, ConfirmAction, DistroAction, ImmediateAction, Page, PendingAction, Toast,
+    ToastKind,
+};
 use crate::theme;
 use crate::views;
 
@@ -139,6 +142,12 @@ pub struct Shell {
     create_dialog: Option<CreateDialog>,
     /// 正在查看详情的容器名；关闭时为 None。
     detail: Option<String>,
+    /// 正在查看详情的**发行版名**；关闭时为 None。
+    ///
+    /// 和容器的 `detail` 分成两个字段（而不是共用一个）：
+    /// 两者的详情弹窗内容完全不同，共用一个字符串还得额外判断
+    /// "这个名字是容器还是发行版"。
+    distro_detail: Option<String>,
     /// 采集期间又有刷新请求进来；跑完要补一次。
     refresh_again: bool,
     /// 已经跑过多少轮刷新。
@@ -165,6 +174,7 @@ impl Shell {
             pull_cancel: None,
             create_dialog: None,
             detail: None,
+            distro_detail: None,
             refresh_again: false,
             status_tick: 0,
         };
@@ -391,7 +401,83 @@ impl Shell {
         match action {
             ImmediateAction::StartContainer(name) => self.start_container(name, cx),
             ImmediateAction::RestartContainer(name) => self.restart_container(name, cx),
+            ImmediateAction::OpenDistroTerminal(name) => self.open_distro_terminal(name, cx),
+            ImmediateAction::SetDefaultDistro(name) => self.set_default_distro(name, cx),
         }
+    }
+
+    // -- WSL 发行版（实例）动作 --------------------------------------------
+
+    /// 打开发行版的终端（新控制台窗口）。
+    ///
+    /// 这是**同步**的：`spawn_in_new_console` 只负责把窗口拉起来就返回，
+    /// 不会等终端关闭（也不该等 —— 用户可能在里面待几个小时）。
+    pub fn open_distro_terminal(&mut self, name: String, cx: &mut Context<Self>) {
+        let wsl = self.state.wsl.clone();
+        let toast = match wslc_core::cmd::distro::open_terminal(&wsl, &name) {
+            Ok(()) => Toast::success(format!("已打开 {name} 的终端")),
+            Err(e) => Toast::error(format!("打开终端失败：{e}")),
+        };
+        self.state.notify(toast);
+        cx.notify();
+        // 终端一起来发行版就变成运行中，刷新让状态跟上。
+        self.refresh(cx);
+    }
+
+    /// 设为默认发行版（不破坏数据，所以不弹确认）。
+    pub fn set_default_distro(&mut self, name: String, cx: &mut Context<Self>) {
+        let wsl = self.state.wsl.clone();
+        let toast = match wslc_core::cmd::distro::set_default(&wsl, &name) {
+            Ok(()) => Toast::success(format!("{name} 已设为默认发行版")),
+            Err(e) => Toast::error(format!("设为默认失败：{e}")),
+        };
+        self.state.notify(toast);
+        cx.notify();
+        self.refresh(cx);
+    }
+
+    /// 在资源管理器里定位发行版的安装目录。
+    ///
+    /// 和 `reveal_storage` 一样是**只读**操作：只打开窗口，不动文件。
+    pub fn reveal_distro_path(&mut self, name: String, cx: &mut Context<Self>) {
+        let base = self
+            .state
+            .snapshot
+            .distros
+            .iter()
+            .find(|d| d.name == name)
+            .and_then(|d| d.base_path.clone());
+
+        let Some(base) = base else {
+            self.state.notify(Toast::error(format!(
+                "读不到 {name} 的安装位置（注册表里没有 BasePath）"
+            )));
+            cx.notify();
+            return;
+        };
+
+        if !base.is_dir() {
+            self.state.notify(Toast::error(format!(
+                "目录不存在：{}",
+                base.display()
+            )));
+            cx.notify();
+            return;
+        }
+
+        // `explorer.exe` 即使成功也常返回非 0，所以只看能否启动。
+        match std::process::Command::new("explorer.exe").arg(&base).spawn() {
+            Ok(_) => {
+                tracing::info!("已在资源管理器中打开 {}", base.display());
+                self.state
+                    .notify(Toast::info(format!("已打开 {}", base.display())));
+            }
+            Err(e) => {
+                tracing::warn!("打开资源管理器失败：{e}");
+                self.state.notify(Toast::error(format!("打开失败：{e}")));
+            }
+        }
+        cx.notify();
     }
 
     /// 启动/重启的公共实现：后台跑一条 `wslc <verb> <name>`，完了刷新。
@@ -542,6 +628,21 @@ impl Shell {
     /// 关闭容器详情弹窗。
     pub fn close_detail(&mut self, cx: &mut Context<Self>) {
         self.detail = None;
+        cx.notify();
+    }
+
+    /// 打开**发行版**详情弹窗。
+    ///
+    /// 低频但重要的动作（改版本 / 压缩 / 打开安装位置）都收在这里，
+    /// 列表行里只留高频的那几个 —— 和容器页同一套取舍。
+    pub fn open_distro_detail(&mut self, name: String, cx: &mut Context<Self>) {
+        self.distro_detail = Some(name);
+        cx.notify();
+    }
+
+    /// 关闭发行版详情弹窗。
+    pub fn close_distro_detail(&mut self, cx: &mut Context<Self>) {
+        self.distro_detail = None;
         cx.notify();
     }
 
@@ -746,9 +847,15 @@ impl Shell {
 
     // -- 危险操作确认 ------------------------------------------------------
 
-    /// 请求执行一个危险操作（先弹确认框）。
+    /// 请求执行一个**容器域**危险操作（先弹确认框）。
     pub fn request(&mut self, action: PendingAction, cx: &mut Context<Self>) {
         self.state.request_confirm(action);
+        cx.notify();
+    }
+
+    /// 请求执行一个**发行版域**危险操作（先弹确认框）。
+    pub fn request_distro(&mut self, action: DistroAction, cx: &mut Context<Self>) {
+        self.state.request_distro_confirm(action);
         cx.notify();
     }
 
@@ -759,17 +866,30 @@ impl Shell {
     }
 
     /// 确认并执行。
+    ///
+    /// 两个域共用这一个入口：[`ConfirmAction::execute`] 内部按域分派到
+    /// 各自的调用器（`wslc` / `wsl`）。
     pub fn confirm_pending(&mut self, cx: &mut Context<Self>) {
         let Some(action) = self.state.confirm.take() else {
             return;
         };
 
         let wslc = self.state.wslc.clone();
-        let toast = match action.execute(&wslc) {
+        let wsl = self.state.wsl.clone();
+        let toast = match action.execute(&wslc, &wsl) {
             Ok(message) => Toast::success(message),
             Err(e) => Toast::error(format!("{}失败：{e}", action.title())),
         };
         self.state.notify(toast);
+
+        // 发行版被删掉之后，它的详情弹窗就没有对象了 —— 顺手关掉，
+        // 免得它继续对着一个已经不存在的名字渲染。
+        if let ConfirmAction::Distro(DistroAction::Unregister { name, .. }) = &action {
+            if self.distro_detail.as_deref() == Some(name.as_str()) {
+                self.distro_detail = None;
+            }
+        }
+
         cx.notify();
         // 立即刷新，让列表反映最新状态。
         self.refresh(cx);
@@ -1069,6 +1189,12 @@ impl Render for Shell {
             Some(name) => views::container_detail_overlay(name, state, &entity),
         };
 
+        // 发行版详情弹窗。
+        let distro_detail_dialog: AnyElement = match &self.distro_detail {
+            None => div().into_any_element(),
+            Some(name) => views::distro_detail_overlay(name, state, &entity),
+        };
+
         let page_body = views::page(state, &entity);
 
         div()
@@ -1170,6 +1296,7 @@ impl Render for Shell {
             .child(pull_dialog)
             .child(create_dialog)
             .child(detail_dialog)
+            .child(distro_detail_dialog)
     }
 }
 
@@ -1218,7 +1345,10 @@ fn nav_id(page: Page) -> &'static str {
 }
 
 /// 危险操作的确认浮层。
-fn confirm_overlay(action: &PendingAction, entity: &Entity<Shell>) -> AnyElement {
+///
+/// 容器域和发行版域共用这一个浮层 —— 文案由 [`ConfirmAction`] 自己给，
+/// 所以这里不需要知道是哪个域。
+fn confirm_overlay(action: &ConfirmAction, entity: &Entity<Shell>) -> AnyElement {
     let cancel = {
         let entity = entity.clone();
         Button::new("confirm-cancel")
