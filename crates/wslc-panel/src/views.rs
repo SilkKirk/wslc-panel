@@ -20,7 +20,8 @@ use wslc_core::settings::{SETTING_KEYS, SettingKey, SettingKind};
 
 use crate::app::{CreateDialog, Shell};
 use crate::state::{
-    AppState, DistroAction, ImmediateAction, Page, PendingAction, PullProgress, format_bytes,
+    AppState, DistroAction, ImmediateAction, InstallSourceKind, Page, PendingAction, PullProgress,
+    format_bytes,
 };
 use crate::theme;
 
@@ -267,11 +268,20 @@ fn immediate_button(
 // ---------------------------------------------------------------------------
 
 /// 渲染当前页面。
-pub fn page(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+///
+/// 收的是 `&Shell` 而不是 `&AppState`：从 P3 起有了**带输入框的页面**
+/// （「添加实例」），而 `InputState` 住在 `Shell` 里 ——
+/// `AppState` 刻意完全不碰 GPUI，这是那条分层约束的代价，也是它的价值。
+///
+/// `cx` 只有「添加实例」页用得上（要从输入框里实时读值做命令预览），
+/// 但签名统一收着更省事 —— 免得每加一个需要它的页面就改一次分发。
+pub fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
+    let state = &shell.state;
     match state.page {
         Page::Dashboard => dashboard(state, entity).into_any_element(),
-        // 这两个和 `config` 一样直接返回 `AnyElement`，不再多套一层转换。
+        // 这几个直接返回 `AnyElement`，不再多套一层转换。
         Page::Instances => instances(state, entity),
+        Page::AddInstance => add_instance(shell, cx, entity),
         Page::Containers => containers(state, entity).into_any_element(),
         Page::Images => images(state, entity).into_any_element(),
         Page::Networks => networks(state, entity).into_any_element(),
@@ -1028,7 +1038,9 @@ const DISTRO_COLUMNS: &[(&str, f32)] = &[
     ("默认", 40.),
     ("安装位置", 170.),
     ("磁盘（虚拟）", 84.),
-    ("操作", 300.),
+    // 「操作」列要放最多 5 个按钮（打开终端 / 启动 / 终止 / 设为默认 / 删除），
+    // 所以给得比别的列宽。
+    ("操作", 340.),
 ];
 
 /// WSL 实例（发行版）列表。
@@ -1039,10 +1051,10 @@ const DISTRO_COLUMNS: &[(&str, f32)] = &[
 /// 低频但重要的（改版本 / 压缩 / 打开安装位置）收进详情弹窗 ——
 /// 和容器页同一套取舍。
 ///
-/// ⚠️ **没有「启动」按钮**：实测 WSL 3.x 在最后一个会话退出约 20 秒后
-/// 会把发行版收回 Stopped（后台常驻进程也留不住），所以那个按钮会
-/// "看着生效、20 秒后自己变回去"。用「打开终端」代替 —— 终端开着，
-/// 发行版就一直是运行中。
+/// ⚠️ 「启动」按钮**只是唤醒**：实测 WSL 3.x 在最后一个会话退出约 20 秒后
+/// 会把发行版收回 Stopped（后台常驻进程也留不住），所以它看起来像
+/// "启动了又自己停了"。想让它持续运行请用「打开终端」——
+/// 终端开着，发行版就一直是运行中。页面上有这一行说明，提示条里也会再讲一次。
 ///
 /// # 为什么"没有实例"不是错误
 ///
@@ -1059,12 +1071,14 @@ pub fn instances(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                 "WSL 实例",
                 v_flex()
                     .w_full()
-                    .gap_2()
+                    .gap_3()
                     .child(empty_state("没有检测到任何 WSL 发行版"))
                     .child(div().text_xs().text_color(theme::text_dim()).child(
                         "若确实安装过，请确认 wsl.exe 可用：程序会自动在 \
                          C:\\Program Files\\WSL\\ 下查找，也可以用环境变量 WSL_PATH 指定。",
-                    )),
+                    ))
+                    // 一个实例都没有的时候，最该看到的就是"怎么装一个"
+                    .child(h_flex().child(add_instance_button(entity))),
             ))
             .into_any_element();
     }
@@ -1105,11 +1119,21 @@ pub fn instances(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
             h_flex()
                 .w_full()
                 .justify_between()
-                .child(div().text_sm().text_color(theme::text_muted()).child(format!(
-                    "共 {} 个发行版，{} 个在运行",
-                    distros.len(),
-                    running
-                )))
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .child(add_instance_button(entity))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(theme::text_muted())
+                                .child(format!(
+                                    "共 {} 个发行版，{} 个在运行",
+                                    distros.len(),
+                                    running
+                                )),
+                        ),
+                )
                 .child(shutdown_all),
         )
         .child(
@@ -1229,12 +1253,27 @@ fn distro_name_link(name: &str, entity: &Entity<Shell>) -> AnyElement {
         .into_any_element()
 }
 
+/// 「添加实例」入口按钮 —— 跳到「添加实例」页。
+///
+/// 跳转走 `set_page`（需要 `window`）：那一页的输入框必须在点击时创建。
+fn add_instance_button(entity: &Entity<Shell>) -> AnyElement {
+    let entity = entity.clone();
+    Button::new("goto-add-instance")
+        .label("添加实例")
+        .small()
+        .primary()
+        .on_click(move |_, window, cx| {
+            entity.update(cx, |shell, cx| {
+                shell.set_page(Page::AddInstance, window, cx);
+            });
+        })
+        .into_any_element()
+}
+
 /// 发行版行内操作：**只放高频的**。
 ///
 /// 低频但重要的（改版本 / 压缩 / 打开安装位置）都在详情弹窗里 ——
 /// 列表里塞满按钮，常用的那个反而找不到。
-///
-/// ⚠️ 这里**没有「启动」**，理由见 [`instances`] 的说明。
 fn distro_row_actions(distro: &Distro, is_default: bool, entity: &Entity<Shell>) -> AnyElement {
     let name = distro.name.as_str();
     let mut actions: Vec<AnyElement> = Vec::new();
@@ -1249,6 +1288,21 @@ fn distro_row_actions(distro: &Distro, is_default: bool, entity: &Entity<Shell>)
         )
         .into_any_element(),
     );
+
+    // ⚠️ 「启动」只是**唤醒**：实测 WSL 3.x 在最后一个会话退出约 20 秒后
+    // 会把发行版收回 Stopped（后台常驻进程也留不住）。这一点在页面顶部
+    // 有一行说明，提示条里也会再讲一次 —— 否则用户会以为是程序坏了。
+    if !distro.state.is_running() && !distro.state.is_transitional() {
+        actions.push(
+            immediate_button(
+                &format!("start-{name}"),
+                "启动",
+                ImmediateAction::StartDistro(name.to_owned()),
+                entity,
+            )
+            .into_any_element(),
+        );
+    }
 
     // 只有运行中才谈得上"终止"。
     if distro.state.is_running() {
@@ -1300,6 +1354,220 @@ fn distro_row_actions(distro: &Distro, is_default: bool, entity: &Entity<Shell>)
 fn cell_distro_badge(state: DistroState) -> AnyElement {
     let (fg, bg) = theme::distro_state_colors(&state);
     badge(state.label().to_owned(), fg, bg).into_any_element()
+}
+
+// ---------------------------------------------------------------------------
+// ④b 添加实例
+// ---------------------------------------------------------------------------
+
+/// 「添加实例」页。
+///
+/// 三条安装路径**共用一套表单**，靠 [`InstallSourceKind`] 切换 ——
+/// 它们只是参数不同，没必要做成三个页面。
+///
+/// # 表单是懒创建的
+///
+/// `InputState::new` 需要 `&mut Window`，所以表单在**点击导航时**才建
+/// （见 `Shell::ensure_install_form`）。正常路径下进得来就一定有表单；
+/// 万一没有（比如程序内部跳过来），给一句提示而不是 panic。
+pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
+    let Some(form) = shell.install_form.as_ref() else {
+        return card(
+            "添加实例",
+            v_flex()
+                .w_full()
+                .gap_2()
+                .child(empty_state("表单还没准备好"))
+                .child(div().text_xs().text_color(theme::text_dim()).child(
+                    "从左侧导航再点一次「添加实例」即可 —— 输入框必须在点击时创建。",
+                )),
+        )
+        .into_any_element();
+    };
+
+    let source = form.source;
+
+    // -- 来源三选一 --
+    let source_buttons: Vec<AnyElement> = InstallSourceKind::ALL
+        .iter()
+        .map(|kind| {
+            let kind = *kind;
+            let entity = entity.clone();
+            // id 用 `{:?}`（ASCII）而不是 label（中文）：元素 id 要稳定、
+            // 且不该随显示文案变。
+            let mut button = Button::new(SharedString::from(format!("src-{kind:?}")))
+                .label(kind.label())
+                .small()
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |shell, cx| shell.set_install_source(kind, cx));
+                });
+            if source == kind {
+                button = button.primary();
+            }
+            button.into_any_element()
+        })
+        .collect();
+
+    // -- 输入框 --
+    let mut fields: Vec<AnyElement> = vec![form_field(
+        "install-name",
+        "发行版名",
+        &form.name,
+        cx,
+        true,
+    )];
+
+    if source.needs_path() {
+        fields.push(form_field(
+            "install-path",
+            source.path_label(),
+            &form.source_path,
+            cx,
+            true,
+        ));
+    }
+
+    fields.push(form_field(
+        "install-dir",
+        if source.requires_install_dir() {
+            "安装目录（必填）"
+        } else {
+            "安装目录（可留空）"
+        },
+        &form.install_dir,
+        cx,
+        true,
+    ));
+
+    // -- 选项 --
+    let mut options: Vec<AnyElement> = Vec::new();
+
+    if source.supports_version() {
+        let buttons: Vec<AnyElement> = [
+            ("ver-default", "跟随默认", None),
+            ("ver-1", "WSL 1", Some(1u8)),
+            ("ver-2", "WSL 2", Some(2u8)),
+        ]
+        .into_iter()
+        .map(|(id, label, value)| {
+            let entity = entity.clone();
+            let mut button = Button::new(id)
+                .label(label)
+                .small()
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |shell, cx| shell.set_install_version(value, cx));
+                });
+            if form.version == value {
+                button = button.primary();
+            }
+            button.into_any_element()
+        })
+        .collect();
+
+        options.push(
+            v_flex()
+                .gap_1()
+                .child(div().text_xs().text_color(theme::text_dim()).child("WSL 版本"))
+                .child(h_flex().gap_2().flex_wrap().children(buttons))
+                .into_any_element(),
+        );
+    }
+
+    // 开关用**按钮**而不是复选框：全项目都是这个路子
+    // （复选框样式在深色主题下对比度很差）。
+    if source.supports_launch() {
+        let entity = entity.clone();
+        let mut button = Button::new("toggle-launch")
+            .label(if form.launch {
+                "装完立即启动：是"
+            } else {
+                "装完立即启动：否"
+            })
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.toggle_install_launch(cx));
+            });
+        if form.launch {
+            button = button.primary();
+        }
+        options.push(button.into_any_element());
+    }
+
+    {
+        let entity = entity.clone();
+        let mut button = Button::new("toggle-default")
+            .label(if form.set_default {
+                "装完设为默认发行版：是"
+            } else {
+                "装完设为默认发行版：否"
+            })
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.toggle_install_default(cx));
+            });
+        if form.set_default {
+            button = button.primary();
+        }
+        options.push(button.into_any_element());
+    }
+
+    // -- 等效命令预览（实时）--
+    let preview = form.to_spec(cx).preview_lines();
+
+    // -- 提交 --
+    let install = {
+        let entity = entity.clone();
+        Button::new("do-install")
+            .label("开始安装")
+            .primary()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.confirm_install(cx));
+            })
+    };
+
+    v_flex()
+        .w_full()
+        .gap_4()
+        .child(card(
+            "安装来源",
+            v_flex()
+                .w_full()
+                .gap_3()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .flex_wrap()
+                        .children(source_buttons),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child(source.hint()),
+                ),
+        ))
+        .child(card("参数", v_flex().w_full().gap_3().children(fields)))
+        .child(card("选项", v_flex().w_full().gap_3().children(options)))
+        .child(card(
+            "等效命令",
+            v_flex()
+                .w_full()
+                .gap_2()
+                .children(preview.into_iter().map(|line| {
+                    div()
+                        .font_family("Consolas")
+                        .text_xs()
+                        .text_color(theme::text())
+                        .child(line)
+                }))
+                .child(div().text_xs().text_color(theme::text_dim()).child(
+                    "「设为默认」不是安装命令的选项（wsl 的 --import / --install 都没有它），\
+                     所以它是装完之后**再跑一条**命令 —— 上面会显示成两行。",
+                )),
+        ))
+        .child(h_flex().w_full().justify_end().child(install))
+        .into_any_element()
 }
 
 // ---------------------------------------------------------------------------

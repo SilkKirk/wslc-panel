@@ -36,6 +36,8 @@ pub enum Page {
     /// 命名刻意用「WSL 实例」而不是裸「实例」：`wslc` 的 **session**
     /// 在中文语境里也常被叫"实例"，裸「实例」会和现有概念打架。
     Instances,
+    /// 添加实例（装一个新发行版）。
+    AddInstance,
     /// 全部 container（含运行中与已退出）。
     ///
     /// 曾经有个单独的「当前运行」页，去掉了 —— 同一个列表用状态筛一下就够了，
@@ -62,9 +64,10 @@ impl Page {
     ///
     /// ⚠️ 同组的页面必须**连续** —— 侧边栏靠"组名变了就插一条标题"
     /// 来分组（见 `app.rs` 的 `render`）。
-    pub const ALL: [Page; 8] = [
+    pub const ALL: [Page; 9] = [
         Page::Dashboard,
         Page::Instances,
+        Page::AddInstance,
         Page::Containers,
         Page::Images,
         Page::Networks,
@@ -78,6 +81,7 @@ impl Page {
         match self {
             Page::Dashboard => "基本信息",
             Page::Instances => "实例列表",
+            Page::AddInstance => "添加实例",
             Page::Containers => "容器",
             Page::Images => "镜像",
             Page::Networks => "网络",
@@ -91,11 +95,116 @@ impl Page {
     pub fn group(self) -> &'static str {
         match self {
             Page::Dashboard => "概览",
-            Page::Instances => "WSL 实例",
+            Page::Instances | Page::AddInstance => "WSL 实例",
             Page::Containers => "容器",
             Page::Images | Page::Networks | Page::Volumes => "资源",
             Page::AppSettings | Page::Config => "设置",
         }
+    }
+
+    /// 这一页是不是需要 `&mut Window` 才能进去。
+    ///
+    /// 「添加实例」有输入框，而 `InputState::new` 需要 `&mut Window` ——
+    /// 所以它必须在**点击导航时**（有 window）把表单建好，
+    /// 不能在渲染时建（那会每帧重建一次输入框，打字都打不进去）。
+    pub fn needs_window_to_enter(self) -> bool {
+        matches!(self, Page::AddInstance)
+    }
+}
+
+/// 「添加实例」页里选中的**来源类型**。
+///
+/// 只记"用户选了哪一种"；带值的路径 / 名字在输入框里，
+/// 拼成 [`wslc_core::cmd::distro::InstallSpec`] 是 `app.rs` 的事。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InstallSourceKind {
+    /// 从本地 tar 导入（`wsl --import`）。
+    #[default]
+    Tar,
+    /// 从本地文件安装（`wsl --install --from-file`）。
+    File,
+    /// 在线安装（`wsl --install -d`）。
+    Online,
+}
+
+impl InstallSourceKind {
+    /// 全部可选值（决定界面上的按钮顺序）。
+    ///
+    /// 顺序刻意是 **tar → 文件 → 在线**：越靠前越不依赖网络。
+    /// 本机实测 `wsl --list --online` 是坏的（解析不了
+    /// `raw.githubusercontent.com`），所以在线那条最不该当默认。
+    pub const ALL: [InstallSourceKind; 3] = [
+        InstallSourceKind::Tar,
+        InstallSourceKind::File,
+        InstallSourceKind::Online,
+    ];
+
+    /// 按钮文案。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Tar => "从 tar 导入",
+            Self::File => "从文件安装",
+            Self::Online => "在线安装",
+        }
+    }
+
+    /// 一句话说明（显示在按钮下面）。
+    pub fn hint(self) -> &'static str {
+        match self {
+            Self::Tar => "最可靠：本地 tar 文件，不需要联网。只是把文件系统铺开。",
+            Self::File => "交给 WSL 自己的安装器，会做首次启动初始化（建默认用户）。",
+            Self::Online => "从微软的源下载。发行版名要手输 —— 本机拉不到在线列表。",
+        }
+    }
+
+    /// 需不需要让用户填一个**文件路径**。
+    pub fn needs_path(self) -> bool {
+        !matches!(self, Self::Online)
+    }
+
+    /// 路径输入框的标签。
+    pub fn path_label(self) -> &'static str {
+        match self {
+            Self::Tar => "tar 文件路径",
+            Self::File => "安装文件路径",
+            Self::Online => "",
+        }
+    }
+
+    /// 路径输入框的占位提示。
+    pub fn path_placeholder(self) -> &'static str {
+        match self {
+            Self::Tar => r"D:\img\ubuntu-rootfs.tar",
+            Self::File => r"D:\img\Ubuntu-24.04-rootfs.tar.gz",
+            Self::Online => "",
+        }
+    }
+
+    /// 发行版名输入框的占位提示。
+    pub fn name_placeholder(self) -> &'static str {
+        match self {
+            Self::Online => "Ubuntu-24.04（要手输，本机拉不到在线列表）",
+            _ => "MyDistro",
+        }
+    }
+
+    /// 安装目录是不是必填。
+    ///
+    /// 在线安装可以留空（WSL 有自己的默认位置），另两条必须给。
+    pub fn requires_install_dir(self) -> bool {
+        !matches!(self, Self::Online)
+    }
+
+    /// 支不支持"装完启动"（只有在线安装有 `--no-launch`）。
+    pub fn supports_launch(self) -> bool {
+        matches!(self, Self::Online)
+    }
+
+    /// 支不支持选 WSL 版本。
+    ///
+    /// `--install --from-file` 没有 `--version` 选项（实测 `wsl.exe --help`）。
+    pub fn supports_version(self) -> bool {
+        !matches!(self, Self::File)
     }
 }
 
@@ -613,11 +722,15 @@ pub enum ImmediateAction {
     StartContainer(String),
     /// 重启一个运行中的容器。
     RestartContainer(String),
+    /// 唤醒一个已停止的发行版。
+    ///
+    /// ⚠️ 这是**会自己失效**的动作：实测 WSL 3.x 在约 20 秒后会把发行版
+    /// 收回 Stopped（后台常驻进程也留不住）。界面上必须写明这一点，
+    /// 详见 [`wslc_core::cmd::distro::start`]。
+    StartDistro(String),
     /// 打开发行版的终端（`wsl -d <name>`，会开一个新的控制台窗口）。
     ///
-    /// 这**就是**发行版该有的"启动"入口 —— 详见
-    /// [`wslc_core::cmd::distro::open_terminal`] 的说明：
-    /// 裸的"启动"按钮会骗人（约 20 秒后发行版自己就停了）。
+    /// 这才是"让它持续运行"的正确入口 —— 终端开着，发行版就一直是运行中。
     OpenDistroTerminal(String),
     /// 把发行版设为默认。
     SetDefaultDistro(String),
@@ -793,14 +906,61 @@ mod tests {
             assert!(!page.label().is_empty());
             assert!(!page.group().is_empty());
         }
-        // v0.3 加了「实例列表」和「应用设置」，从 6 个变成 8 个。
+        // v0.3 加了「实例列表」「添加实例」「应用设置」，从 6 个变成 9 个。
         //
         // 这个断言存在的意义就是**逼人改它**：加页面时忘了同步导航分组，
         // 侧边栏会出现重复的组标题。历史上 commit 552a91c 就是被它抓到的。
         //
         // ⚠️ 注意 `cargo check --all-targets` 只编译不执行，
         // 所以它真的被跑到要靠 CI 里的 `cargo test -p wslc-panel --bins`（见 SPIKE 7.8）。
-        assert_eq!(Page::ALL.len(), 8);
+        assert_eq!(Page::ALL.len(), 9);
+    }
+
+    #[test]
+    fn only_the_add_instance_page_needs_a_window_to_enter() {
+        // 有输入框的页面必须在点击时（有 window）把表单建好。
+        // 哪天给别的页面加了输入框，这个测试会提醒你一起改。
+        for page in Page::ALL {
+            assert_eq!(
+                page.needs_window_to_enter(),
+                page == Page::AddInstance,
+                "{page:?} 的 needs_window_to_enter 不对"
+            );
+        }
+    }
+
+    #[test]
+    fn install_sources_are_listed_and_described() {
+        for kind in InstallSourceKind::ALL {
+            assert!(!kind.label().is_empty(), "{kind:?}");
+            assert!(!kind.hint().is_empty(), "{kind:?}");
+        }
+        assert!(InstallSourceKind::ALL.contains(&InstallSourceKind::default()));
+        // 默认必须是最不依赖网络的那条
+        assert_eq!(InstallSourceKind::default(), InstallSourceKind::Tar);
+    }
+
+    #[test]
+    fn install_source_capabilities_are_consistent() {
+        // 只有在线安装有「装完启动」，也只有它不需要文件路径
+        assert!(InstallSourceKind::Online.supports_launch());
+        assert!(!InstallSourceKind::Online.needs_path());
+        for kind in [InstallSourceKind::Tar, InstallSourceKind::File] {
+            assert!(!kind.supports_launch(), "{kind:?}");
+            assert!(kind.needs_path(), "{kind:?}");
+            assert!(!kind.path_label().is_empty(), "{kind:?}");
+            assert!(!kind.path_placeholder().is_empty(), "{kind:?}");
+        }
+
+        // `--install --from-file` 没有 --version，所以只有它不支持选版本
+        assert!(!InstallSourceKind::File.supports_version());
+        assert!(InstallSourceKind::Tar.supports_version());
+        assert!(InstallSourceKind::Online.supports_version());
+
+        // 只有在线安装允许留空安装目录
+        assert!(InstallSourceKind::Tar.requires_install_dir());
+        assert!(InstallSourceKind::File.requires_install_dir());
+        assert!(!InstallSourceKind::Online.requires_install_dir());
     }
 
     #[test]
