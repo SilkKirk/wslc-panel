@@ -466,6 +466,103 @@ pub fn install(wsl: &Wsl, spec: &InstallSpec) -> Result<String> {
 }
 
 // ---------------------------------------------------------------------------
+// `wsl --manage`（P4）
+//
+// 四个选项都挂在 `--manage <Distro>` 下面（实测 `wsl.exe --help`）：
+//
+//     --move <Location>            移动安装位置
+//     --set-sparse <true|false>    开关稀疏 VHD
+//     --resize <MemoryString>      调整磁盘大小
+//     --set-default-user <Name>    设置默认用户
+// ---------------------------------------------------------------------------
+
+/// 校验并规范化一个"大小"字符串（`--resize` 用）。
+///
+/// WSL 的 `MemoryString` 形如 `50GB`：大小写不敏感，数字可以是小数。
+/// 这里只做**格式**校验 —— 具体数值合不合理（比当前盘还小？）交给 WSL 判断，
+/// 我们不猜。
+///
+/// 返回规范化后的写法（`50gb` → `50GB`），这样命令预览和日志里是统一的。
+pub fn normalize_size(text: &str) -> std::result::Result<String, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("大小不能为空".to_owned());
+    }
+
+    // 数字部分：允许数字和小数点
+    let split_at = text
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(text.len());
+    let (number, unit) = text.split_at(split_at);
+    let unit = unit.trim().to_ascii_uppercase();
+
+    if number.is_empty() || number.parse::<f64>().is_err() {
+        return Err(format!("「{text}」里没有有效的数字"));
+    }
+
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    if !UNITS.contains(&unit.as_str()) {
+        return Err(format!(
+            "单位只认 {}（例如 50GB），收到「{unit}」",
+            UNITS.join(" / ")
+        ));
+    }
+
+    Ok(format!("{number}{unit}"))
+}
+
+/// 移动发行版到新位置（`wsl --manage <name> --move <dir>`）。
+///
+/// ⚠️ 跨盘移动是**真的在拷数据**，18 GB 的盘可能要几分钟到几十分钟；
+/// 同盘则是改路径，很快。
+pub fn move_distro(wsl: &Wsl, name: &str, location: &str) -> Result<()> {
+    let location = location.trim();
+    if location.is_empty() {
+        return Err(Error::InvalidArgument("目标位置不能为空".to_owned()));
+    }
+    if !is_absolute_windows_path(location) {
+        return Err(Error::InvalidArgument(format!(
+            "目标位置必须是绝对路径（如 D:\\wsl\\{name}）：{location}"
+        )));
+    }
+    run_action(wsl, &["--manage", name, "--move", location], DISK_TIMEOUT)
+}
+
+/// 开关稀疏 VHD（`wsl --manage <name> --set-sparse <true|false>`）。
+///
+/// 开启后 WSL 会自动回收已释放的块 —— 相当于自动做压缩。
+/// ⚠️ 切换这个标志**可能触发一次压缩**，所以给的是磁盘级超时。
+pub fn set_sparse(wsl: &Wsl, name: &str, sparse: bool) -> Result<()> {
+    let flag = if sparse { "true" } else { "false" };
+    run_action(
+        wsl,
+        &["--manage", name, "--set-sparse", flag],
+        DISK_TIMEOUT,
+    )
+}
+
+/// 调整发行版磁盘大小（`wsl --manage <name> --resize <size>`）。
+///
+/// `size` 会先过 [`normalize_size`]。
+pub fn resize(wsl: &Wsl, name: &str, size: &str) -> Result<()> {
+    let size = normalize_size(size).map_err(Error::InvalidArgument)?;
+    run_action(wsl, &["--manage", name, "--resize", &size], DISK_TIMEOUT)
+}
+
+/// 设置发行版的默认用户（`wsl --manage <name> --set-default-user <user>`）。
+pub fn set_default_user(wsl: &Wsl, name: &str, user: &str) -> Result<()> {
+    let user = user.trim();
+    if user.is_empty() {
+        return Err(Error::InvalidArgument("用户名不能为空".to_owned()));
+    }
+    run_action(
+        wsl,
+        &["--manage", name, "--set-default-user", user],
+        QUICK_TIMEOUT,
+    )
+}
+
+// ---------------------------------------------------------------------------
 // 注册表
 // ---------------------------------------------------------------------------
 
@@ -1150,6 +1247,63 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{ccc}\r
         );
         assert!(matches!(
             install(&wsl, &spec),
+            Err(Error::InvalidArgument(_))
+        ));
+    }
+
+    // -- wsl --manage ------------------------------------------------------
+
+    #[test]
+    fn size_is_normalized_and_validated() {
+        assert_eq!(normalize_size("50GB").unwrap(), "50GB");
+        assert_eq!(normalize_size(" 50gb ").unwrap(), "50GB");
+        assert_eq!(normalize_size("1.5TB").unwrap(), "1.5TB");
+        assert_eq!(normalize_size("512MB").unwrap(), "512MB");
+        // 数字和单位之间的空格会被吃掉，命令里就是紧凑写法
+        assert_eq!(normalize_size("100 KB").unwrap(), "100KB");
+
+        // 没有数字
+        for bad in ["GB", "", "   "] {
+            assert!(normalize_size(bad).is_err(), "{bad:?}");
+        }
+
+        // 单位不认识 —— 注意 `50`（没有单位）也要拒掉
+        for bad in ["50", "50PB", "50GiB", "50g"] {
+            let err = normalize_size(bad).unwrap_err();
+            assert!(err.contains("单位只认"), "{bad} → {err}");
+        }
+    }
+
+    #[test]
+    fn move_requires_an_absolute_target() {
+        // 用一个必然不存在的可执行文件：校验要是没挡住，
+        // 拿到的会是 ExecutableNotFound 而不是 InvalidArgument。
+        let wsl = Wsl::with_program("definitely-not-a-real-binary");
+
+        assert!(matches!(
+            move_distro(&wsl, "X", r"wsl\X"),
+            Err(Error::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            move_distro(&wsl, "X", "   "),
+            Err(Error::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn resize_rejects_a_bad_size_before_spawning() {
+        let wsl = Wsl::with_program("definitely-not-a-real-binary");
+        assert!(matches!(
+            resize(&wsl, "X", "50PB"),
+            Err(Error::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn set_default_user_rejects_an_empty_name() {
+        let wsl = Wsl::with_program("definitely-not-a-real-binary");
+        assert!(matches!(
+            set_default_user(&wsl, "X", "  "),
             Err(Error::InvalidArgument(_))
         ));
     }

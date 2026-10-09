@@ -36,7 +36,7 @@ use wslc_core::{Wsl, Wslc};
 
 use crate::state::{
     self, AppState, ConfirmAction, DistroAction, ImmediateAction, InstallSourceKind, Page,
-    PendingAction, Toast, ToastKind,
+    PendingAction, PromptKind, Toast, ToastKind,
 };
 use crate::theme;
 use crate::views;
@@ -95,6 +95,23 @@ impl InstallForm {
         spec.set_default = self.set_default;
         spec
     }
+}
+
+/// 「单输入框提示弹窗」—— 移动位置 / 调整大小 / 设置默认用户**共用**。
+///
+/// 这三个动作都是"给一个文本参数、跑一条 `wsl --manage`"，
+/// 所以没必要做三个几乎一样的弹窗。
+///
+/// 和 [`CreateDialog`] 一样懒创建（`InputState::new` 要 `&mut Window`）。
+/// 弹窗**本身就是确认**：里面带着说明和等效命令，提交后直接执行 ——
+/// 连续弹两个窗比一个信息充分的窗更烦人。
+pub(crate) struct TextPrompt {
+    /// 要做什么。
+    pub(crate) kind: PromptKind,
+    /// 作用在哪个发行版上。
+    pub(crate) distro: String,
+    /// 唯一的输入框。
+    pub(crate) input: Entity<InputState>,
 }
 
 /// 「创建容器」弹窗的全部输入框。
@@ -213,6 +230,10 @@ pub struct Shell {
     /// `pub(crate)`：`views.rs` 要读它来渲染页面（`Shell` 的其余字段
     /// 只有 `app.rs` 自己用，所以是私有的）。
     pub(crate) install_form: Option<InstallForm>,
+    /// 单输入框提示弹窗（移动位置 / 调整大小 / 设置默认用户）；关闭时为 `None`。
+    ///
+    /// 同样是 `pub(crate)`：浮层在 `views.rs` 里渲染。
+    pub(crate) prompt: Option<TextPrompt>,
     /// 采集期间又有刷新请求进来；跑完要补一次。
     refresh_again: bool,
     /// 已经跑过多少轮刷新。
@@ -241,6 +262,7 @@ impl Shell {
             detail: None,
             distro_detail: None,
             install_form: None,
+            prompt: None,
             refresh_again: false,
             status_tick: 0,
         };
@@ -271,6 +293,108 @@ impl Shell {
             launch: false,
             set_default: false,
         });
+    }
+
+    // -- 单输入框提示弹窗（移动位置 / 调整大小 / 设置默认用户）---------------
+
+    /// 打开提示弹窗，并把焦点交给输入框。
+    pub fn open_prompt(
+        &mut self,
+        kind: PromptKind,
+        distro: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(kind.placeholder()));
+
+        // 打开就把焦点给输入框，用户可以直接开始打字。
+        let handle = input.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+
+        self.prompt = Some(TextPrompt {
+            kind,
+            distro,
+            input,
+        });
+        cx.notify();
+    }
+
+    /// 关闭提示弹窗。
+    pub fn close_prompt(&mut self, cx: &mut Context<Self>) {
+        self.prompt = None;
+        cx.notify();
+    }
+
+    /// 提交提示弹窗：按 `kind` 调对应的 `wsl --manage`。
+    ///
+    /// 移动和调整大小都可能是**分钟级**操作，所以走后台执行器。
+    pub fn submit_prompt(&mut self, cx: &mut Context<Self>) {
+        // 一次把需要的值全取出来，**结束对 `self` 的借用** ——
+        // 下面要 `&mut self` 去发提示条。
+        let (kind, distro, value) = match self.prompt.as_ref() {
+            Some(prompt) => (
+                prompt.kind,
+                prompt.distro.clone(),
+                prompt.input.read(cx).value().trim().to_owned(),
+            ),
+            None => return,
+        };
+
+        if value.is_empty() {
+            self.state.notify(Toast::error("请先填写内容"));
+            cx.notify();
+            return;
+        }
+
+        // 本地能挡的先挡掉，不白起一个进程。
+        if kind == PromptKind::ResizeDistro {
+            if let Err(e) = wslc_core::cmd::distro::normalize_size(&value) {
+                self.state.notify(Toast::error(format!("大小不合法：{e}")));
+                cx.notify();
+                return;
+            }
+        }
+
+        let title = kind.title();
+        self.prompt = None;
+        self.state
+            .notify(Toast::info(format!("正在{title}…（大磁盘可能要几分钟）")));
+        cx.notify();
+
+        let wsl = self.state.wsl.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    match kind {
+                        PromptKind::MoveDistro => {
+                            wslc_core::cmd::distro::move_distro(&wsl, &distro, &value)
+                                .map(|()| format!("{distro} 已移动到 {value}"))
+                        }
+                        PromptKind::ResizeDistro => {
+                            wslc_core::cmd::distro::resize(&wsl, &distro, &value)
+                                .map(|()| format!("{distro} 的磁盘已调整为 {value}"))
+                        }
+                        PromptKind::SetDefaultUser => {
+                            wslc_core::cmd::distro::set_default_user(&wsl, &distro, &value)
+                                .map(|()| format!("{distro} 的默认用户已设为 {value}"))
+                        }
+                    }
+                })
+                .await;
+
+            let _ = this.update(cx, |shell, cx| {
+                match result {
+                    Ok(message) => shell.state.notify(Toast::success(message)),
+                    Err(e) => shell
+                        .state
+                        .notify(Toast::error(format!("{title}失败：{e}"))),
+                }
+                shell.refresh(cx);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// 隔多少轮刷新采一次 `wsl --status`。
@@ -1429,6 +1553,10 @@ impl Render for Shell {
             Some(name) => views::distro_detail_overlay(name, state, &entity),
         };
 
+        // 单输入框提示弹窗（移动位置 / 调整大小 / 设置默认用户）。
+        // 要 `cx` 才能实时读输入框的值做等效命令预览。
+        let prompt_dialog: AnyElement = views::prompt_overlay(self, &entity, cx);
+
         // 页面渲染要 `&Shell`（不只是 `&AppState`）——「添加实例」页有输入框，
         // 而输入框的 `InputState` 住在 `Shell` 里。
         // `cx` 也只有那一页用得上（要实时读输入框的值做命令预览）。
@@ -1534,6 +1662,9 @@ impl Render for Shell {
             .child(create_dialog)
             .child(detail_dialog)
             .child(distro_detail_dialog)
+            // 提示弹窗放最后：它可能是从发行版详情里打开的，
+            // 后画的压在详情上面。
+            .child(prompt_dialog)
     }
 }
 
