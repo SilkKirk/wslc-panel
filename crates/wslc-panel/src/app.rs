@@ -29,16 +29,73 @@ use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 
 use wslc_core::cmd::container::{PullPolicy, RunSpec};
+use wslc_core::cmd::distro::{InstallSource, InstallSpec};
 use wslc_core::settings::SettingKey;
 // `Wsl` 是发行版（实例）的调用器，和容器的 `Wslc` 并列。
 use wslc_core::{Wsl, Wslc};
 
 use crate::state::{
-    self, AppState, ConfirmAction, DistroAction, ImmediateAction, Page, PendingAction, Toast,
-    ToastKind,
+    self, AppState, ConfirmAction, DistroAction, ImmediateAction, InstallSourceKind, Page,
+    PendingAction, Toast, ToastKind,
 };
 use crate::theme;
 use crate::views;
+
+/// 「添加实例」页的全部输入框与选项。
+///
+/// # 为什么它属于**页面**而不是弹窗
+///
+/// 这是本项目第一个"带输入框的页面"。和 [`CreateDialog`] 一样是
+/// "每个字段一个 `InputState`"，但生命周期跟着页面走：
+/// 进页面时**懒创建**（`InputState::new` 需要 `&mut Window`，
+/// 只有点击导航那一刻才有），离开时**不销毁** ——
+/// 用户很可能点错了又点回来，重建会把已经打进去的字清掉。
+pub(crate) struct InstallForm {
+    /// 发行版名。
+    pub(crate) name: Entity<InputState>,
+    /// 安装目录（在线安装可以留空）。
+    pub(crate) install_dir: Entity<InputState>,
+    /// 来源文件路径（tar / RootFS）。在线安装时用不到。
+    pub(crate) source_path: Entity<InputState>,
+    /// 选中的来源。
+    pub(crate) source: InstallSourceKind,
+    /// 目标 WSL 版本；`None` = 跟随 WSL 默认。
+    pub(crate) version: Option<u8>,
+    /// 装完是否启动（只有在线安装支持）。
+    pub(crate) launch: bool,
+    /// 装完是否设为默认。
+    pub(crate) set_default: bool,
+}
+
+impl InstallForm {
+    /// 把表单读成一个 [`InstallSpec`]。
+    ///
+    /// 需要 `cx` 才能从 `InputState` 里取值，所以它不是纯函数 ——
+    /// 这也是 `views::page` 要多收一个 `&Shell` 的原因
+    /// （页面底部要**实时**预览等效命令）。
+    pub(crate) fn to_spec(&self, cx: &App) -> InstallSpec {
+        let text = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
+
+        let source = match self.source {
+            InstallSourceKind::Tar => InstallSource::Tar {
+                path: text(&self.source_path),
+                version: self.version,
+            },
+            InstallSourceKind::File => InstallSource::File {
+                path: text(&self.source_path),
+            },
+            InstallSourceKind::Online => InstallSource::Online {
+                version: self.version,
+                launch: self.launch,
+            },
+        };
+
+        let mut spec = InstallSpec::new(text(&self.name), source);
+        spec.install_dir = text(&self.install_dir);
+        spec.set_default = self.set_default;
+        spec
+    }
+}
 
 /// 「创建容器」弹窗的全部输入框。
 ///
@@ -148,6 +205,14 @@ pub struct Shell {
     /// 两者的详情弹窗内容完全不同，共用一个字符串还得额外判断
     /// "这个名字是容器还是发行版"。
     distro_detail: Option<String>,
+    /// 「添加实例」页的表单。
+    ///
+    /// 和 `pull_input` / `create_dialog` 一样**懒创建**（`InputState::new`
+    /// 要 `&mut Window`），但**不随页面离开而销毁** —— 见 [`InstallForm`]。
+    ///
+    /// `pub(crate)`：`views.rs` 要读它来渲染页面（`Shell` 的其余字段
+    /// 只有 `app.rs` 自己用，所以是私有的）。
+    pub(crate) install_form: Option<InstallForm>,
     /// 采集期间又有刷新请求进来；跑完要补一次。
     refresh_again: bool,
     /// 已经跑过多少轮刷新。
@@ -175,12 +240,37 @@ impl Shell {
             create_dialog: None,
             detail: None,
             distro_detail: None,
+            install_form: None,
             refresh_again: false,
             status_tick: 0,
         };
         shell.refresh(cx);
         shell.start_auto_refresh(cx);
         shell
+    }
+
+    /// 建「添加实例」表单（幂等）。
+    ///
+    /// **必须**在有 `&mut Window` 的地方调用 —— `InputState::new` 要它。
+    fn ensure_install_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.install_form.is_some() {
+            return;
+        }
+
+        let default_source = InstallSourceKind::default();
+        self.install_form = Some(InstallForm {
+            name: cx.new(|cx| {
+                InputState::new(window, cx).placeholder(default_source.name_placeholder())
+            }),
+            install_dir: cx.new(|cx| InputState::new(window, cx).placeholder(r"D:\wsl\MyDistro")),
+            source_path: cx.new(|cx| {
+                InputState::new(window, cx).placeholder(default_source.path_placeholder())
+            }),
+            source: default_source,
+            version: None,
+            launch: false,
+            set_default: false,
+        });
     }
 
     /// 隔多少轮刷新采一次 `wsl --status`。
@@ -401,12 +491,33 @@ impl Shell {
         match action {
             ImmediateAction::StartContainer(name) => self.start_container(name, cx),
             ImmediateAction::RestartContainer(name) => self.restart_container(name, cx),
+            ImmediateAction::StartDistro(name) => self.start_distro(name, cx),
             ImmediateAction::OpenDistroTerminal(name) => self.open_distro_terminal(name, cx),
             ImmediateAction::SetDefaultDistro(name) => self.set_default_distro(name, cx),
         }
     }
 
     // -- WSL 发行版（实例）动作 --------------------------------------------
+
+    /// 唤醒一个已停止的发行版。
+    ///
+    /// ⚠️ **大约 20 秒后 WSL 会把它收回 Stopped** —— 这是 WSL 3.x 的行为
+    /// （最后一个会话退出就回收），不是本程序的 bug。所以：
+    ///
+    /// - 提示里**不写**"已启动"就完事，要带上这个前提；
+    /// - 想让它持续运行，界面上引导用户用「打开终端」。
+    pub fn start_distro(&mut self, name: String, cx: &mut Context<Self>) {
+        let wsl = self.state.wsl.clone();
+        let toast = match wslc_core::cmd::distro::start(&wsl, &name) {
+            Ok(()) => Toast::success(format!(
+                "{name} 已唤醒（WSL 在没有活动会话后约 20 秒会自动停止；要一直跑请用「打开终端」）"
+            )),
+            Err(e) => Toast::error(format!("启动 {name} 失败：{e}")),
+        };
+        self.state.notify(toast);
+        cx.notify();
+        self.refresh(cx);
+    }
 
     /// 打开发行版的终端（新控制台窗口）。
     ///
@@ -603,8 +714,10 @@ impl Shell {
                         shell
                             .state
                             .notify(Toast::success(format!("容器已创建：{short}")));
-                        // 建完直接跳到「当前运行」，让用户看到结果
-                        shell.set_page(Page::Containers, cx);
+                        // 建完直接跳到「容器」页，让用户看到结果。
+                        // 用 `goto_page` 而不是 `set_page`：这里没有 window，
+                        // 而「容器」页也不需要表单。
+                        shell.goto_page(Page::Containers, cx);
                     }
                     Err(e) => shell.state.notify(Toast::error(format!("创建失败：{e}"))),
                 }
@@ -897,12 +1010,133 @@ impl Shell {
 
     // -- 界面状态 ----------------------------------------------------------
 
-    /// 切换页面。
-    pub fn set_page(&mut self, page: Page, cx: &mut Context<Self>) {
+    /// 切换页面（导航点击走这里）。
+    ///
+    /// `window` 是给「添加实例」页准备的：那一页有输入框，而
+    /// `InputState::new` 需要 `&mut Window` —— 所以必须**在点击时**
+    /// 把表单建好。在渲染时建会每帧重建一次输入框，字都打不进去。
+    pub fn set_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+        if page.needs_window_to_enter() {
+            self.ensure_install_form(window, cx);
+        }
+        self.goto_page(page, cx);
+    }
+
+    /// 不碰表单的页面切换 —— 给**没有 window** 的场合用。
+    ///
+    /// 目前只有"容器创建完成后跳到「容器」页"这一处。
+    fn goto_page(&mut self, page: Page, cx: &mut Context<Self>) {
         if self.state.page != page {
             self.state.page = page;
             cx.notify();
         }
+    }
+
+    // -- 添加实例 ----------------------------------------------------------
+
+    /// 切换安装来源。
+    ///
+    /// 顺带把**新来源用不到的选项复位** —— 否则用户在"在线安装"里勾了
+    /// "装完启动"，再切到"从 tar 导入"，那个勾还留着但界面上看不见，
+    /// 一旦切回去又冒出来，很像 bug。
+    pub fn set_install_source(&mut self, source: InstallSourceKind, cx: &mut Context<Self>) {
+        let Some(form) = self.install_form.as_mut() else {
+            return;
+        };
+        if form.source == source {
+            return;
+        }
+
+        form.source = source;
+        if !source.supports_launch() {
+            form.launch = false;
+        }
+        if !source.supports_version() {
+            form.version = None;
+        }
+        cx.notify();
+    }
+
+    /// 设置目标 WSL 版本（`None` = 跟随 WSL 默认）。
+    pub fn set_install_version(&mut self, version: Option<u8>, cx: &mut Context<Self>) {
+        if let Some(form) = self.install_form.as_mut() {
+            if form.version != version {
+                form.version = version;
+                cx.notify();
+            }
+        }
+    }
+
+    /// 切换"装完启动"。
+    pub fn toggle_install_launch(&mut self, cx: &mut Context<Self>) {
+        if let Some(form) = self.install_form.as_mut() {
+            form.launch = !form.launch;
+            cx.notify();
+        }
+    }
+
+    /// 切换"装完设为默认"。
+    pub fn toggle_install_default(&mut self, cx: &mut Context<Self>) {
+        if let Some(form) = self.install_form.as_mut() {
+            form.set_default = !form.set_default;
+            cx.notify();
+        }
+    }
+
+    /// 按表单执行安装。
+    ///
+    /// 安装可能跑十几分钟到几十分钟（在线下载 / 铺开文件系统），
+    /// 所以走后台执行器 + 完成后再提示；期间界面照常可用。
+    pub fn confirm_install(&mut self, cx: &mut Context<Self>) {
+        // 先把 spec 取出来、**结束对 `self` 的借用** —— 下面要 `&mut self`
+        // 去发提示条，借用还活着的话编译器会拦。
+        let spec = match self.install_form.as_ref() {
+            Some(form) => form.to_spec(cx),
+            None => {
+                self.state.notify(Toast::error("表单尚未创建"));
+                cx.notify();
+                return;
+            }
+        };
+
+        if let Err(e) = spec.validate() {
+            self.state.notify(Toast::error(format!("参数有误：{e}")));
+            cx.notify();
+            return;
+        }
+
+        // 等效命令写进日志：出问题时能直接复制到终端复现。
+        tracing::info!("安装发行版：{}", spec.preview_lines().join("  &&  "));
+
+        self.state.notify(Toast::info(format!(
+            "正在安装 {}…（可能要十几分钟，期间界面可以继续用）",
+            spec.name.trim()
+        )));
+        cx.notify();
+
+        let wsl = self.state.wsl.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { wslc_core::cmd::distro::install(&wsl, &spec) })
+                .await;
+
+            let _ = this.update(cx, |shell, cx| {
+                match result {
+                    Ok(message) => {
+                        shell.state.notify(Toast::success(message));
+                        // 装完跳到列表，让用户直接看到新实例
+                        shell.goto_page(Page::Instances, cx);
+                    }
+                    Err(e) => shell
+                        .state
+                        .notify(Toast::error(format!("安装失败：{e}"))),
+                }
+                shell.refresh(cx);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// 设置自动刷新间隔（秒），并立即写入偏好文件。
@@ -1195,7 +1429,10 @@ impl Render for Shell {
             Some(name) => views::distro_detail_overlay(name, state, &entity),
         };
 
-        let page_body = views::page(state, &entity);
+        // 页面渲染要 `&Shell`（不只是 `&AppState`）——「添加实例」页有输入框，
+        // 而输入框的 `InputState` 住在 `Shell` 里。
+        // `cx` 也只有那一页用得上（要实时读输入框的值做命令预览）。
+        let page_body = views::page(self, cx, &entity);
 
         div()
             .relative()
@@ -1314,8 +1551,10 @@ fn nav_item(page: Page, current: Page, entity: &Entity<Shell>) -> AnyElement {
         .rounded_md()
         .cursor_pointer()
         .child(div().text_sm().child(page.label()))
-        .on_click(move |_, _, cx| {
-            entity.update(cx, |shell, cx| shell.set_page(page, cx));
+        .on_click(move |_, window, cx| {
+            // `window` 在这里是必需的：「添加实例」页要现场创建输入框，
+            // 而 `InputState::new` 需要 `&mut Window`。
+            entity.update(cx, |shell, cx| shell.set_page(page, window, cx));
         });
 
     item = if active {
@@ -1335,6 +1574,7 @@ fn nav_id(page: Page) -> &'static str {
     match page {
         Page::Dashboard => "nav-dashboard",
         Page::Instances => "nav-instances",
+        Page::AddInstance => "nav-add-instance",
         Page::Containers => "nav-containers",
         Page::Images => "nav-images",
         Page::Networks => "nav-networks",
