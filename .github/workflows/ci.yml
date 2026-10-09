@@ -9,10 +9,19 @@ name: CI
 #    check 能拿到全部类型错误却省掉代码生成与链接，反馈快得多。
 # 3. `fmt` / `clippy` 目前是**建议性**的（continue-on-error）：
 #    代码是手写的、本机无法执行 rustfmt，先别让格式问题掩盖真正的编译错误。
+# 4. `push` **只监听 `main`**（原先写的是 `["**"]`）。
+#
+#    原因：原来 `push: branches: ["**"]` 和 `pull_request:` 都在监听，
+#    于是「推功能分支 + 开 PR」这套流程会**跑两遍**同一个提交 ——
+#    push 一次、pull_request 一次，同样的 job 干两遍活。
+#
+#    功能分支现在只在开 PR 时跑。代价是"推上去就有反馈"没了，
+#    但换来的是不再重复烧 CI 分钟数，而 main 的每次推送仍然照跑。
 
 on:
   push:
-    branches: ["**"]
+    # 只有 main 的推送才跑；功能分支走 pull_request。
+    branches: ["main"]
   pull_request:
   workflow_dispatch:
 

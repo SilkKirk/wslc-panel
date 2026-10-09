@@ -379,6 +379,185 @@ impl PendingAction {
 // 自动刷新间隔不再是界面上的档位开关，而是 `prefs.rs` 里的持久化偏好。
 // 界面只负责在"设置"页里改它。
 
+/// 字节 → 人类可读（1024 进制）。
+///
+/// 放在状态层而不是 `views.rs`：确认弹窗的文案（"将删除约 18.32 GB"）
+/// 也要用它，而 `views.rs` 的函数是渲染私有的。
+pub fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0usize;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.2} {}", UNITS[unit])
+    }
+}
+
+/// 需要二次确认的 **WSL 发行版**动作。
+///
+/// 与 [`PendingAction`]（容器）并列，刻意**不合并成一个枚举**：
+/// 两者的执行器不同（`Wsl` vs `Wslc`）、危险级别与文案也不同，
+/// 硬塞进一个类型只会让 `execute` 长出两个参数、每个 match 都要写全两套。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DistroAction {
+    /// 终止发行版（丢未保存数据）。
+    Terminate(String),
+    /// 关停全部发行版。
+    ShutdownAll,
+    /// 改 WSL 版本（WSL1 ↔ WSL2，很慢）。
+    SetVersion {
+        /// 发行版名。
+        name: String,
+        /// 目标版本（1 或 2）。
+        version: u8,
+    },
+    /// 注销（删除）发行版及其根文件系统。
+    Unregister {
+        /// 发行版名。
+        name: String,
+        /// 将要删掉的虚拟磁盘大小（字节）；读不到时为 `None`。
+        ///
+        /// 带上它是为了让用户在点"删除"之前**知道要删掉多少东西**。
+        vhdx_bytes: Option<u64>,
+    },
+    /// 压缩发行版的虚拟磁盘。
+    Compact(String),
+}
+
+impl DistroAction {
+    /// 确认弹窗标题。
+    pub fn title(&self) -> &'static str {
+        match self {
+            DistroAction::Terminate(_) => "终止发行版",
+            DistroAction::ShutdownAll => "关停所有发行版",
+            DistroAction::SetVersion { .. } => "更改 WSL 版本",
+            DistroAction::Unregister { .. } => "删除发行版",
+            DistroAction::Compact(_) => "压缩虚拟磁盘",
+        }
+    }
+
+    /// 确认弹窗正文。
+    pub fn body(&self) -> String {
+        match self {
+            DistroAction::Terminate(name) => format!(
+                "将立即终止发行版 {name}。里面**没有保存**的东西会丢失，\
+                 正在跑的服务会中断。"
+            ),
+            DistroAction::ShutdownAll => {
+                "将关停**所有**发行版和 WSL2 轻量工具虚拟机。\
+                 所有发行版里没保存的东西都会丢失。"
+                    .to_owned()
+            }
+            DistroAction::SetVersion { name, version } => format!(
+                "将把 {name} 转换成 WSL {version}。这个动作要把整个根文件系统搬一遍，\
+                 **可能要几十分钟**，期间请勿关机。中途失败可能让发行版不可用。"
+            ),
+            DistroAction::Unregister { name, vhdx_bytes } => {
+                let size = match vhdx_bytes {
+                    Some(bytes) => format!("（虚拟磁盘约 {}）", format_bytes(*bytes)),
+                    None => String::new(),
+                };
+                format!(
+                    "将注销发行版 {name} 并**删除它的根文件系统**{size}。\
+                     此操作不可撤销，里面的数据无法找回。"
+                )
+            }
+            DistroAction::Compact(name) => format!(
+                "将压缩 {name} 的虚拟磁盘，回收已释放的空间。\
+                 这个动作**不会删除任何数据**，但发行版必须处于已停止状态；\
+                 大磁盘可能要几分钟。"
+            ),
+        }
+    }
+
+    /// 按钮文案。
+    pub fn confirm_label(&self) -> &'static str {
+        match self {
+            DistroAction::Terminate(_) => "终止",
+            DistroAction::ShutdownAll => "全部关停",
+            DistroAction::SetVersion { .. } => "开始转换",
+            DistroAction::Unregister { .. } => "删除",
+            DistroAction::Compact(_) => "压缩",
+        }
+    }
+
+    /// 执行操作，返回给用户看的结果摘要。
+    pub fn execute(&self, wsl: &Wsl) -> Result<String> {
+        match self {
+            DistroAction::Terminate(name) => {
+                cmd::distro::terminate(wsl, name)?;
+                Ok(format!("已终止：{name}"))
+            }
+            DistroAction::ShutdownAll => {
+                cmd::distro::shutdown(wsl)?;
+                Ok("已关停所有发行版".to_owned())
+            }
+            DistroAction::SetVersion { name, version } => {
+                cmd::distro::set_version(wsl, name, *version)?;
+                Ok(format!("{name} 已转换为 WSL {version}"))
+            }
+            DistroAction::Unregister { name, .. } => {
+                cmd::distro::unregister(wsl, name)?;
+                Ok(format!("已删除发行版：{name}"))
+            }
+            DistroAction::Compact(name) => {
+                cmd::distro::compact(wsl, name)?;
+                Ok(format!("{name} 的虚拟磁盘已压缩"))
+            }
+        }
+    }
+}
+
+/// 确认弹窗里可能出现的动作 —— 两个域的**统一入口**。
+///
+/// `AppState::confirm` 只存这一个类型，弹窗和"确认"按钮就不必各写两份。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfirmAction {
+    /// 容器 / 镜像 / 网络 / 卷。
+    Container(PendingAction),
+    /// WSL 发行版。
+    Distro(DistroAction),
+}
+
+impl ConfirmAction {
+    /// 确认弹窗标题。
+    pub fn title(&self) -> &'static str {
+        match self {
+            ConfirmAction::Container(action) => action.title(),
+            ConfirmAction::Distro(action) => action.title(),
+        }
+    }
+
+    /// 确认弹窗正文。
+    pub fn body(&self) -> String {
+        match self {
+            ConfirmAction::Container(action) => action.body(),
+            ConfirmAction::Distro(action) => action.body(),
+        }
+    }
+
+    /// 按钮文案。
+    pub fn confirm_label(&self) -> &'static str {
+        match self {
+            ConfirmAction::Container(action) => action.confirm_label(),
+            ConfirmAction::Distro(action) => action.confirm_label(),
+        }
+    }
+
+    /// 执行。两个域各用各的调用器。
+    pub fn execute(&self, wslc: &Wslc, wsl: &Wsl) -> Result<String> {
+        match self {
+            ConfirmAction::Container(action) => action.execute(wslc),
+            ConfirmAction::Distro(action) => action.execute(wsl),
+        }
+    }
+}
+
 /// 提示条的类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToastKind {
@@ -425,15 +604,23 @@ impl Toast {
 
 /// **不需要二次确认**的即时操作。
 ///
-/// 与 [`PendingAction`] 的区别：这些不破坏数据、可逆，而且是运维里
-/// 最高频的动作 —— 每次都弹确认反而碍事。破坏性的停止/强杀/删除
-/// 仍然走 [`PendingAction`]。
+/// 与 [`PendingAction`] / [`DistroAction`] 的区别：这些不破坏数据、可逆，
+/// 而且是运维里最高频的动作 —— 每次都弹确认反而碍事。
+/// 破坏性的停止/强杀/删除仍然走那两个。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImmediateAction {
     /// 启动一个已停止的容器。
     StartContainer(String),
     /// 重启一个运行中的容器。
     RestartContainer(String),
+    /// 打开发行版的终端（`wsl -d <name>`，会开一个新的控制台窗口）。
+    ///
+    /// 这**就是**发行版该有的"启动"入口 —— 详见
+    /// [`wslc_core::cmd::distro::open_terminal`] 的说明：
+    /// 裸的"启动"按钮会骗人（约 20 秒后发行版自己就停了）。
+    OpenDistroTerminal(String),
+    /// 把发行版设为默认。
+    SetDefaultDistro(String),
 }
 
 /// 拉取镜像的实时进度。
@@ -517,8 +704,8 @@ pub struct AppState {
     ///
     /// 拉取可能几分钟到几十分钟，期间界面显示**实时输出**并允许取消。
     pub pulling: Option<PullProgress>,
-    /// 待用户确认的危险操作。
-    pub confirm: Option<PendingAction>,
+    /// 待用户确认的危险操作（容器域或发行版域）。
+    pub confirm: Option<ConfirmAction>,
     /// 提示条。
     pub toast: Option<Toast>,
 }
@@ -577,9 +764,17 @@ impl AppState {
         self.toast = Some(toast);
     }
 
-    /// 记录一次危险操作的确认请求。
+    /// 记录一次**容器域**危险操作的确认请求。
+    ///
+    /// 保留这个名字（而不是改成 `request_container_confirm`）是为了让
+    /// 容器那 20 多处调用点一个字都不用改。
     pub fn request_confirm(&mut self, action: PendingAction) {
-        self.confirm = Some(action);
+        self.confirm = Some(ConfirmAction::Container(action));
+    }
+
+    /// 记录一次**发行版域**危险操作的确认请求。
+    pub fn request_distro_confirm(&mut self, action: DistroAction) {
+        self.confirm = Some(ConfirmAction::Distro(action));
     }
 
     /// 取消确认。
@@ -695,6 +890,73 @@ mod tests {
     }
 
     #[test]
+    fn every_distro_action_has_copy_too() {
+        let actions = [
+            DistroAction::Terminate("Ubuntu".into()),
+            DistroAction::ShutdownAll,
+            DistroAction::SetVersion {
+                name: "Ubuntu".into(),
+                version: 2,
+            },
+            DistroAction::Unregister {
+                name: "Ubuntu".into(),
+                vhdx_bytes: Some(19_666_042_880),
+            },
+            DistroAction::Compact("Ubuntu".into()),
+        ];
+        for action in actions {
+            assert!(!action.title().is_empty(), "{action:?}");
+            assert!(!action.body().is_empty(), "{action:?}");
+            assert!(!action.confirm_label().is_empty(), "{action:?}");
+        }
+    }
+
+    #[test]
+    fn confirm_action_delegates_to_the_right_domain() {
+        // 包装层只是转发，不能把两边的文案搞混
+        let container = ConfirmAction::Container(PendingAction::RemoveVolume("v".into()));
+        assert_eq!(container.title(), "删除卷");
+        assert_eq!(container.confirm_label(), "删除卷");
+
+        let distro = ConfirmAction::Distro(DistroAction::Terminate("Ubuntu".into()));
+        assert_eq!(distro.title(), "终止发行版");
+        assert_eq!(distro.confirm_label(), "终止");
+        assert!(distro.body().contains("Ubuntu"));
+    }
+
+    #[test]
+    fn unregister_body_shows_how_much_is_about_to_be_deleted() {
+        // 用户在点"删除"之前必须知道自己要删掉多少东西
+        let with_size = DistroAction::Unregister {
+            name: "Ubuntu".into(),
+            vhdx_bytes: Some(19_666_042_880),
+        };
+        let body = with_size.body();
+        assert!(body.contains("18.32 GB"), "{body}");
+        assert!(body.contains("不可撤销"), "{body}");
+
+        // 读不到大小时也要能正常出文案（只是没有那句括号）
+        let without_size = DistroAction::Unregister {
+            name: "Ubuntu".into(),
+            vhdx_bytes: None,
+        };
+        let body = without_size.body();
+        assert!(!body.contains("虚拟磁盘约"), "{body}");
+        assert!(body.contains("Ubuntu"), "{body}");
+    }
+
+    #[test]
+    fn set_version_body_warns_that_it_is_slow() {
+        let body = DistroAction::SetVersion {
+            name: "Ubuntu".into(),
+            version: 1,
+        }
+        .body();
+        assert!(body.contains("WSL 1"), "{body}");
+        assert!(body.contains("几十分钟"), "{body}");
+    }
+
+    #[test]
     fn prune_warns_about_being_irreversible() {
         assert!(PendingAction::PruneContainers.body().contains("不可撤销"));
         assert!(
@@ -702,6 +964,14 @@ mod tests {
                 .body()
                 .contains("不可撤销")
         );
+    }
+
+    #[test]
+    fn format_bytes_is_1024_based_and_stable() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(1024), "1.00 KB");
+        assert_eq!(format_bytes(19_666_042_880), "18.32 GB");
     }
 
     #[test]
@@ -731,8 +1001,22 @@ mod tests {
     #[test]
     fn confirm_can_be_requested_and_cancelled() {
         let mut state = AppState::new(Wslc::new(), Wsl::new());
+
         state.request_confirm(PendingAction::PruneContainers);
-        assert_eq!(state.confirm, Some(PendingAction::PruneContainers));
+        assert_eq!(
+            state.confirm,
+            Some(ConfirmAction::Container(PendingAction::PruneContainers))
+        );
+        state.cancel_confirm();
+        assert!(state.confirm.is_none());
+
+        // 发行版域走同一个槽位 —— 两个域不能各有一个 confirm，
+        // 否则同时触发时会出现两个叠在一起的确认框。
+        state.request_distro_confirm(DistroAction::ShutdownAll);
+        assert_eq!(
+            state.confirm,
+            Some(ConfirmAction::Distro(DistroAction::ShutdownAll))
+        );
         state.cancel_confirm();
         assert!(state.confirm.is_none());
     }

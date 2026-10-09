@@ -19,7 +19,9 @@ use wslc_core::model::{ContainerState, ContainerSummary, Distro, DistroState};
 use wslc_core::settings::{SETTING_KEYS, SettingKey, SettingKind};
 
 use crate::app::{CreateDialog, Shell};
-use crate::state::{AppState, ImmediateAction, Page, PendingAction, PullProgress};
+use crate::state::{
+    AppState, DistroAction, ImmediateAction, Page, PendingAction, PullProgress, format_bytes,
+};
 use crate::theme;
 
 // ---------------------------------------------------------------------------
@@ -218,6 +220,28 @@ fn danger_button(
         })
 }
 
+/// 危险操作按钮（**发行版域**，点击后弹出二次确认）。
+///
+/// 和 [`danger_button`] 分开写，而不是合并成一个泛型函数：
+/// 两个动作类型（[`PendingAction`] / [`DistroAction`]）没有任何共同方法，
+/// 合并就得引入 trait 或枚举包装，调用点反而更长。
+fn danger_button_distro(
+    id: &str,
+    label: &'static str,
+    action: DistroAction,
+    entity: &Entity<Shell>,
+) -> impl IntoElement {
+    let entity = entity.clone();
+    Button::new(SharedString::from(id.to_owned()))
+        .label(label)
+        .small()
+        .on_click(move |_, _, cx| {
+            entity.update(cx, |shell, cx| {
+                shell.request_distro(action.clone(), cx);
+            });
+        })
+}
+
 /// 即时操作按钮（启动 / 重启）。
 ///
 /// 与 [`danger_button`] 的区别：不弹二次确认，点了就跑。
@@ -390,21 +414,8 @@ pub fn dashboard(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
 // 存储与磁盘占用（概览页用）
 // ---------------------------------------------------------------------------
 
-/// 字节 → 人类可读（1024 进制）。
-fn format_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut value = bytes as f64;
-    let mut unit = 0usize;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.2} {}", UNITS[unit])
-    }
-}
+// `format_bytes` 现在住在 `state.rs` —— 确认弹窗的文案也要用它，
+// 而那里不该反过来依赖渲染层。
 
 /// "存储"卡片里 `storagePath` 那几行。
 ///
@@ -1002,30 +1013,42 @@ pub fn volumes(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
 // ④ WSL 实例（发行版）
 // ---------------------------------------------------------------------------
 
-/// 实例列表的列（名称 / 状态 / 版本 / 默认 / 安装位置 / 磁盘）。
+/// 实例列表的列（名称 / 状态 / 版本 / 默认 / 安装位置 / 磁盘 / 操作）。
 ///
 /// 「磁盘」是 VHDX 的**虚拟大小**，不是实际占用 —— 见 [`instances`] 的说明。
+///
+/// 列宽是**压着算的**：加上「操作」这一列之后总和约 860px，
+/// 刚好放得进主区域（窗口 1280 减去侧边栏 216 再减去内边距）。
+/// 所以「安装位置」从 330 缩到 170 —— 长路径会被截断，
+/// 完整路径在详情弹窗里看（那里用 `kv_block`，不截断）。
 const DISTRO_COLUMNS: &[(&str, f32)] = &[
-    ("名称", 190.),
-    ("状态", 84.),
-    ("版本", 62.),
-    ("默认", 48.),
-    ("安装位置", 330.),
-    ("磁盘（虚拟）", 110.),
+    ("名称", 150.),
+    ("状态", 70.),
+    ("版本", 50.),
+    ("默认", 40.),
+    ("安装位置", 170.),
+    ("磁盘（虚拟）", 84.),
+    ("操作", 300.),
 ];
 
 /// WSL 实例（发行版）列表。
 ///
-/// # v0.3 是**只读**的
+/// # 能干什么
 ///
-/// 只展示，不给动作。生命周期动作（终止 / 设默认 / 删除 / 压缩）是 P2
-/// （见 `docs/PLAN-v0.3.md` §8）—— 先把"看得见"做对，再让它"能干活"。
+/// 行内放**高频**动作（打开终端 / 终止 / 设为默认 / 删除），
+/// 低频但重要的（改版本 / 压缩 / 打开安装位置）收进详情弹窗 ——
+/// 和容器页同一套取舍。
+///
+/// ⚠️ **没有「启动」按钮**：实测 WSL 3.x 在最后一个会话退出约 20 秒后
+/// 会把发行版收回 Stopped（后台常驻进程也留不住），所以那个按钮会
+/// "看着生效、20 秒后自己变回去"。用「打开终端」代替 —— 终端开着，
+/// 发行版就一直是运行中。
 ///
 /// # 为什么"没有实例"不是错误
 ///
 /// 一台机器上没装发行版是完全正常的状态，所以这里给的是引导文案
 /// （怎么让 `wsl.exe` 被找到），而不是一条红色错误。
-pub fn instances(state: &AppState, _entity: &Entity<Shell>) -> AnyElement {
+pub fn instances(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     let distros = &state.snapshot.distros;
 
     if distros.is_empty() {
@@ -1049,21 +1072,57 @@ pub fn instances(state: &AppState, _entity: &Entity<Shell>) -> AnyElement {
     let default_name = state.default_distro().map(|name| name.to_owned());
     let rows: Vec<AnyElement> = distros
         .iter()
-        .map(|distro| distro_row(distro, default_name.as_deref()))
+        .map(|distro| distro_row(distro, default_name.as_deref(), entity))
         .collect();
+
+    let running = distros.iter().filter(|d| d.state.is_running()).count();
+
+    // 「关停全部」是**页面级**动作（影响所有发行版），所以放工具栏，
+    // 不放进任何一行 —— 放行里会让人以为只影响那一行。
+    //
+    // 一个都没在跑时干脆不显示：`--shutdown` 虽然不会失败，
+    // 但让用户确认一个没有效果的动作是没意义的。
+    let shutdown_all: AnyElement = if running == 0 {
+        div().into_any_element()
+    } else {
+        let entity = entity.clone();
+        Button::new("shutdown-all")
+            .label("关停全部")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| {
+                    shell.request_distro(DistroAction::ShutdownAll, cx);
+                });
+            })
+            .into_any_element()
+    };
 
     v_flex()
         .w_full()
-        .gap_4()
+        .gap_3()
         .child(distro_summary_card(state, distros))
-        .child(card(
-            "WSL 实例",
+        .child(
+            h_flex()
+                .w_full()
+                .justify_between()
+                .child(div().text_sm().text_color(theme::text_muted()).child(format!(
+                    "共 {} 个发行版，{} 个在运行",
+                    distros.len(),
+                    running
+                )))
+                .child(shutdown_all),
+        )
+        .child(
             v_flex()
                 .w_full()
-                .gap_1()
+                .rounded_lg()
+                .bg(theme::bg_card())
+                .border_1()
+                .border_color(theme::border())
+                .overflow_hidden()
                 .child(table_header(DISTRO_COLUMNS))
-                .children(rows),
-        ))
+                .child(v_flex().w_full().children(rows)),
+        )
         .into_any_element()
 }
 
@@ -1116,7 +1175,7 @@ fn distro_summary_card(state: &AppState, distros: &[Distro]) -> AnyElement {
 }
 
 /// 一行实例。
-fn distro_row(distro: &Distro, default_name: Option<&str>) -> AnyElement {
+fn distro_row(distro: &Distro, default_name: Option<&str>, entity: &Entity<Shell>) -> AnyElement {
     let is_default = default_name == Some(distro.name.as_str());
 
     let location = distro
@@ -1133,7 +1192,7 @@ fn distro_row(distro: &Distro, default_name: Option<&str>) -> AnyElement {
     table_row(
         DISTRO_COLUMNS,
         vec![
-            cell_text(distro.name.clone()),
+            distro_name_link(&distro.name, entity),
             cell_distro_badge(distro.state),
             cell_muted(distro.version_label()),
             if is_default {
@@ -1143,9 +1202,98 @@ fn distro_row(distro: &Distro, default_name: Option<&str>) -> AnyElement {
             },
             cell_muted(location),
             cell_muted(disk),
+            distro_row_actions(distro, is_default, entity),
         ],
     )
     .into_any_element()
+}
+
+/// 发行版名字 —— 点击打开详情弹窗。
+///
+/// 和容器页一样：名字就是入口，低频动作都收在详情里。
+fn distro_name_link(name: &str, entity: &Entity<Shell>) -> AnyElement {
+    let entity = entity.clone();
+    let for_click = name.to_owned();
+    div()
+        .id(SharedString::from(format!("distro-detail-{name}")))
+        .cursor_pointer()
+        .text_sm()
+        .text_color(theme::primary())
+        .overflow_hidden()
+        .truncate()
+        .child(name.to_owned())
+        .on_click(move |_, _, cx| {
+            let target = for_click.clone();
+            entity.update(cx, |shell, cx| shell.open_distro_detail(target, cx));
+        })
+        .into_any_element()
+}
+
+/// 发行版行内操作：**只放高频的**。
+///
+/// 低频但重要的（改版本 / 压缩 / 打开安装位置）都在详情弹窗里 ——
+/// 列表里塞满按钮，常用的那个反而找不到。
+///
+/// ⚠️ 这里**没有「启动」**，理由见 [`instances`] 的说明。
+fn distro_row_actions(distro: &Distro, is_default: bool, entity: &Entity<Shell>) -> AnyElement {
+    let name = distro.name.as_str();
+    let mut actions: Vec<AnyElement> = Vec::new();
+
+    // 打开终端同时就把发行版启动了，所以它既是"启动"也是"进去干活"。
+    actions.push(
+        immediate_button(
+            &format!("term-{name}"),
+            "打开终端",
+            ImmediateAction::OpenDistroTerminal(name.to_owned()),
+            entity,
+        )
+        .into_any_element(),
+    );
+
+    // 只有运行中才谈得上"终止"。
+    if distro.state.is_running() {
+        actions.push(
+            danger_button_distro(
+                &format!("terminate-{name}"),
+                "终止",
+                DistroAction::Terminate(name.to_owned()),
+                entity,
+            )
+            .into_any_element(),
+        );
+    }
+
+    // 已经是默认了就不必再显示这个按钮（详情里会写明"当前是默认"）。
+    if !is_default {
+        actions.push(
+            immediate_button(
+                &format!("default-{name}"),
+                "设为默认",
+                ImmediateAction::SetDefaultDistro(name.to_owned()),
+                entity,
+            )
+            .into_any_element(),
+        );
+    }
+
+    // 过渡态（安装中 / 卸载中 / 转换中）下 `wsl` 会拒绝写操作，
+    // 所以不给删除按钮 —— 与其让用户点出一个错误，不如先不给。
+    if !distro.state.is_transitional() {
+        actions.push(
+            danger_button_distro(
+                &format!("unregister-{name}"),
+                "删除",
+                DistroAction::Unregister {
+                    name: name.to_owned(),
+                    vhdx_bytes: distro.vhdx_bytes,
+                },
+                entity,
+            )
+            .into_any_element(),
+        );
+    }
+
+    h_flex().gap_2().children(actions).into_any_element()
 }
 
 /// 发行版状态徽标单元格。
@@ -2239,6 +2387,225 @@ pub fn container_detail_overlay(
         .into_any_element()
 }
 
+/// 发行版详情弹窗。
+///
+/// 低频但重要的动作都在这儿：设为默认 / 改版本 / 压缩 / 打开安装位置。
+/// 列表行里只留高频的 —— 和容器页同一套取舍。
+///
+/// 「安装位置」「虚拟磁盘」用 `kv_block`（换行不截断）：
+/// `D:\linux\Ubuntu-26.04` 这种路径在列表里被截成 `D:\linux\Ubu...`，
+/// 等于没显示，而这里正是要看清它。
+pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+    let Some(distro) = state.snapshot.distros.iter().find(|d| d.name == name) else {
+        // 发行版刚被删掉 —— 弹窗自己消失，别留一个空壳
+        return div().into_any_element();
+    };
+
+    let is_default = state.default_distro() == Some(distro.name.as_str());
+    let running = distro.state.is_running();
+    // 过渡态（安装 / 卸载 / 转换中）下 `wsl` 会拒绝写操作，
+    // 所以那几种状态下干脆不显示写操作按钮。
+    let transitional = distro.state.is_transitional();
+
+    // -- 动作 --------------------------------------------------------------
+
+    let mut actions: Vec<AnyElement> = vec![immediate_button(
+        "distro-detail-term",
+        "打开终端",
+        ImmediateAction::OpenDistroTerminal(name.to_owned()),
+        entity,
+    )
+    .into_any_element()];
+
+    if !is_default {
+        actions.push(
+            immediate_button(
+                "distro-detail-default",
+                "设为默认",
+                ImmediateAction::SetDefaultDistro(name.to_owned()),
+                entity,
+            )
+            .into_any_element(),
+        );
+    }
+
+    if running {
+        actions.push(
+            danger_button_distro(
+                "distro-detail-terminate",
+                "终止",
+                DistroAction::Terminate(name.to_owned()),
+                entity,
+            )
+            .into_any_element(),
+        );
+    }
+
+    // `--compact` 要求发行版处于**已停止**状态；运行中给出这个按钮是误导。
+    if !running && !transitional {
+        actions.push(
+            danger_button_distro(
+                "distro-detail-compact",
+                "压缩磁盘",
+                DistroAction::Compact(name.to_owned()),
+                entity,
+            )
+            .into_any_element(),
+        );
+    }
+
+    // 改版本：只在 1 ↔ 2 之间切。版本读不出来时不给按钮 ——
+    // 不知道当前是几，就不知道该往哪转。
+    if !transitional {
+        let target = match distro.version {
+            Some(1) => Some(2u8),
+            Some(2) => Some(1u8),
+            _ => None,
+        };
+        if let Some(target) = target {
+            actions.push(
+                danger_button_distro(
+                    "distro-detail-setver",
+                    if target == 2 {
+                        "转为 WSL 2"
+                    } else {
+                        "转为 WSL 1"
+                    },
+                    DistroAction::SetVersion {
+                        name: name.to_owned(),
+                        version: target,
+                    },
+                    entity,
+                )
+                .into_any_element(),
+            );
+        }
+    }
+
+    if !transitional {
+        actions.push(
+            danger_button_distro(
+                "distro-detail-unregister",
+                "删除",
+                DistroAction::Unregister {
+                    name: name.to_owned(),
+                    vhdx_bytes: distro.vhdx_bytes,
+                },
+                entity,
+            )
+            .into_any_element(),
+        );
+    }
+
+    // 「打开安装位置」是**只读**操作，所以和其他动作分开摆到左边。
+    let reveal = {
+        let entity = entity.clone();
+        let target = name.to_owned();
+        Button::new("distro-detail-reveal")
+            .label("打开安装位置")
+            .small()
+            .on_click(move |_, _, cx| {
+                let target = target.clone();
+                entity.update(cx, |shell, cx| shell.reveal_distro_path(target, cx));
+            })
+    };
+
+    let close = {
+        let entity = entity.clone();
+        Button::new("distro-detail-close")
+            .label("关闭")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.close_distro_detail(cx));
+            })
+    };
+
+    // -- 信息 --------------------------------------------------------------
+
+    let location = distro
+        .base_path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "—".to_owned());
+    let vhdx = distro
+        .vhdx_path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "—".to_owned());
+    let disk = distro
+        .vhdx_bytes
+        .map(format_bytes)
+        .unwrap_or_else(|| "—".to_owned());
+    let uid = distro
+        .default_uid
+        .map(|u| u.to_string())
+        .unwrap_or_else(|| "—".to_owned());
+
+    let rows: Vec<AnyElement> = vec![
+        kv("状态", distro.state.label()).into_any_element(),
+        kv("WSL 版本", distro.version_label()).into_any_element(),
+        kv("默认发行版", if is_default { "是" } else { "否" }).into_any_element(),
+        kv("默认用户 UID", uid).into_any_element(),
+        kv("磁盘（虚拟）", disk).into_any_element(),
+        kv_block("安装位置", location).into_any_element(),
+        kv_block("虚拟磁盘", vhdx).into_any_element(),
+    ];
+
+    let mut buttons: Vec<AnyElement> = vec![reveal.into_any_element()];
+    buttons.extend(actions);
+
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme::scrim())
+        .child(
+            v_flex()
+                .id("distro-detail-card")
+                .w(px(760.))
+                .max_h(px(860.))
+                .overflow_y_scroll()
+                .gap_4()
+                .p_5()
+                .rounded_lg()
+                .bg(theme::bg_card())
+                .border_1()
+                .border_color(theme::border())
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_lg()
+                                .font_bold()
+                                .text_color(theme::text())
+                                .child(name.to_owned()),
+                        )
+                        .child(div().text_xs().text_color(theme::text_dim()).child(
+                            "低频动作都收在这里；列表行里只留了最常用的几个。",
+                        )),
+                )
+                .child(v_flex().w_full().gap_2().children(rows))
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_semibold()
+                                .text_color(theme::text_dim())
+                                .child("操作"),
+                        )
+                        .child(h_flex().w_full().gap_2().flex_wrap().children(buttons)),
+                )
+                .child(h_flex().w_full().justify_end().child(close)),
+        )
+        .into_any_element()
+}
+
 #[cfg(test)]
 mod tests {
     // ⚠️ 这里**故意不用 `use super::*;`** —— 这是个很难查的坑，记下来：
@@ -2288,19 +2655,20 @@ mod tests {
         // 行内的 cell 数量少于列数只会留下空白，多出来则会被丢弃；
         // 这里把"必须一一对应"的约束固化下来，避免改表头时忘记改行。
         //
-        // `DISTRO_COLUMNS` 是 6 列，和 `distro_row` 里 push 的 6 个 cell 对应 ——
+        // `DISTRO_COLUMNS` 是 7 列（P2 加了「操作」），
+        // 和 `distro_row` 里 push 的 7 个 cell 对应 ——
         // 改一边就必须改另一边，这个断言就是盯着这件事的。
         let counts: Vec<usize> = all_column_sets().iter().map(|c| c.len()).collect();
-        assert_eq!(counts, vec![6, 5, 6, 5, 6]);
+        assert_eq!(counts, vec![6, 5, 6, 5, 7]);
     }
 
     #[test]
     fn distro_row_cells_match_the_column_count() {
         // 上面那个测试只保证"列定义"本身没问题，管不到行里塞了几个 cell。
-        // 这里直接把列数钉死，配合 `distro_row` 的 6 个 cell 使用。
+        // 这里直接把列数钉死，配合 `distro_row` 的 7 个 cell 使用。
         assert_eq!(
             DISTRO_COLUMNS.len(),
-            6,
+            7,
             "distro_row 里的 cell 数量必须与之同步"
         );
     }
