@@ -199,13 +199,6 @@ impl InstallSourceKind {
     pub fn supports_launch(self) -> bool {
         matches!(self, Self::Online)
     }
-
-    /// 支不支持选 WSL 版本。
-    ///
-    /// `--install --from-file` 没有 `--version` 选项（实测 `wsl.exe --help`）。
-    pub fn supports_version(self) -> bool {
-        !matches!(self, Self::File)
-    }
 }
 
 /// 一次刷新得到的全部数据。
@@ -518,13 +511,6 @@ pub enum DistroAction {
     Terminate(String),
     /// 关停全部发行版。
     ShutdownAll,
-    /// 改 WSL 版本（WSL1 ↔ WSL2，很慢）。
-    SetVersion {
-        /// 发行版名。
-        name: String,
-        /// 目标版本（1 或 2）。
-        version: u8,
-    },
     /// 注销（删除）发行版及其根文件系统。
     Unregister {
         /// 发行版名。
@@ -555,7 +541,6 @@ impl DistroAction {
         match self {
             DistroAction::Terminate(_) => "终止发行版",
             DistroAction::ShutdownAll => "关停所有发行版",
-            DistroAction::SetVersion { .. } => "更改 WSL 版本",
             DistroAction::Unregister { .. } => "删除发行版",
             DistroAction::Compact(_) => "压缩虚拟磁盘",
             DistroAction::SetSparse { sparse, .. } => {
@@ -580,10 +565,6 @@ impl DistroAction {
                  所有发行版里没保存的东西都会丢失。"
                     .to_owned()
             }
-            DistroAction::SetVersion { name, version } => format!(
-                "将把 {name} 转换成 WSL {version}。这个动作要把整个根文件系统搬一遍，\
-                 **可能要几十分钟**，期间请勿关机。中途失败可能让发行版不可用。"
-            ),
             DistroAction::Unregister { name, vhdx_bytes } => {
                 let size = match vhdx_bytes {
                     Some(bytes) => format!("（虚拟磁盘约 {}）", format_bytes(*bytes)),
@@ -620,7 +601,6 @@ impl DistroAction {
         match self {
             DistroAction::Terminate(_) => "终止",
             DistroAction::ShutdownAll => "全部关停",
-            DistroAction::SetVersion { .. } => "开始转换",
             DistroAction::Unregister { .. } => "删除",
             DistroAction::Compact(_) => "压缩",
             DistroAction::SetSparse { sparse, .. } => {
@@ -643,10 +623,6 @@ impl DistroAction {
             DistroAction::ShutdownAll => {
                 cmd::distro::shutdown(wsl)?;
                 Ok("已关停所有发行版".to_owned())
-            }
-            DistroAction::SetVersion { name, version } => {
-                cmd::distro::set_version(wsl, name, *version)?;
-                Ok(format!("{name} 已转换为 WSL {version}"))
             }
             DistroAction::Unregister { name, .. } => {
                 cmd::distro::unregister(wsl, name)?;
@@ -1070,10 +1046,8 @@ mod tests {
             assert!(!kind.path_placeholder().is_empty(), "{kind:?}");
         }
 
-        // `--install --from-file` 没有 --version，所以只有它不支持选版本
-        assert!(!InstallSourceKind::File.supports_version());
-        assert!(InstallSourceKind::Tar.supports_version());
-        assert!(InstallSourceKind::Online.supports_version());
+        // 版本**不给用户选**：本项目只支持 WSL 2，安装命令里固定 `--version 2`
+        // （`InstallSourceKind` 上再也没有 `supports_version` 这种东西了）。
 
         // 只有在线安装允许留空安装目录
         assert!(InstallSourceKind::Tar.requires_install_dir());
@@ -1172,10 +1146,6 @@ mod tests {
         let actions = [
             DistroAction::Terminate("Ubuntu".into()),
             DistroAction::ShutdownAll,
-            DistroAction::SetVersion {
-                name: "Ubuntu".into(),
-                version: 2,
-            },
             DistroAction::Unregister {
                 name: "Ubuntu".into(),
                 vhdx_bytes: Some(19_666_042_880),
@@ -1262,17 +1232,6 @@ mod tests {
         let body = without_size.body();
         assert!(!body.contains("虚拟磁盘约"), "{body}");
         assert!(body.contains("Ubuntu"), "{body}");
-    }
-
-    #[test]
-    fn set_version_body_warns_that_it_is_slow() {
-        let body = DistroAction::SetVersion {
-            name: "Ubuntu".into(),
-            version: 1,
-        }
-        .body();
-        assert!(body.contains("WSL 1"), "{body}");
-        assert!(body.contains("几十分钟"), "{body}");
     }
 
     #[test]

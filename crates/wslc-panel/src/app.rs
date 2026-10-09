@@ -59,8 +59,6 @@ pub(crate) struct InstallForm {
     pub(crate) source_path: Entity<InputState>,
     /// 选中的来源。
     pub(crate) source: InstallSourceKind,
-    /// 目标 WSL 版本；`None` = 跟随 WSL 默认。
-    pub(crate) version: Option<u8>,
     /// 装完是否启动（只有在线安装支持）。
     pub(crate) launch: bool,
     /// 装完是否设为默认。
@@ -73,19 +71,20 @@ impl InstallForm {
     /// 需要 `cx` 才能从 `InputState` 里取值，所以它不是纯函数 ——
     /// 这也是 `views::page` 要多收一个 `&Shell` 的原因
     /// （页面底部要**实时**预览等效命令）。
+    ///
+    /// **没有版本这一项**：本项目只支持 WSL 2，装出来的固定是 WSL 2
+    /// （见 `wslc_core::cmd::distro::WSL_VERSION`）。
     pub(crate) fn to_spec(&self, cx: &App) -> InstallSpec {
         let text = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
 
         let source = match self.source {
             InstallSourceKind::Tar => InstallSource::Tar {
                 path: text(&self.source_path),
-                version: self.version,
             },
             InstallSourceKind::File => InstallSource::File {
                 path: text(&self.source_path),
             },
             InstallSourceKind::Online => InstallSource::Online {
-                version: self.version,
                 launch: self.launch,
             },
         };
@@ -289,7 +288,6 @@ impl Shell {
                 InputState::new(window, cx).placeholder(default_source.path_placeholder())
             }),
             source: default_source,
-            version: None,
             launch: false,
             set_default: false,
         });
@@ -1175,20 +1173,7 @@ impl Shell {
         if !source.supports_launch() {
             form.launch = false;
         }
-        if !source.supports_version() {
-            form.version = None;
-        }
         cx.notify();
-    }
-
-    /// 设置目标 WSL 版本（`None` = 跟随 WSL 默认）。
-    pub fn set_install_version(&mut self, version: Option<u8>, cx: &mut Context<Self>) {
-        if let Some(form) = self.install_form.as_mut() {
-            if form.version != version {
-                form.version = version;
-                cx.notify();
-            }
-        }
     }
 
     /// 切换"装完启动"。
