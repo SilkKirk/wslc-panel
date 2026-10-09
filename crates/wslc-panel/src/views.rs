@@ -15,7 +15,7 @@ use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 
 use wslc_core::cmd::container::{PullPolicy, RunSpec};
-use wslc_core::model::{ContainerState, ContainerSummary};
+use wslc_core::model::{ContainerState, ContainerSummary, Distro, DistroState};
 use wslc_core::settings::{SETTING_KEYS, SettingKey, SettingKind};
 
 use crate::app::{CreateDialog, Shell};
@@ -246,10 +246,13 @@ fn immediate_button(
 pub fn page(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     match state.page {
         Page::Dashboard => dashboard(state, entity).into_any_element(),
+        // 这两个和 `config` 一样直接返回 `AnyElement`，不再多套一层转换。
+        Page::Instances => instances(state, entity),
         Page::Containers => containers(state, entity).into_any_element(),
         Page::Images => images(state, entity).into_any_element(),
         Page::Networks => networks(state, entity).into_any_element(),
         Page::Volumes => volumes(state, entity).into_any_element(),
+        Page::AppSettings => app_settings(state, entity),
         Page::Config => config(state, entity),
     }
 }
@@ -767,7 +770,7 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
         )
 }
 // ---------------------------------------------------------------------------
-// ④ 镜像 / 网络 / 卷
+// ③ 镜像 / 网络 / 卷
 // ---------------------------------------------------------------------------
 
 const IMAGE_COLUMNS: &[(&str, f32)] = &[
@@ -996,7 +999,256 @@ pub fn volumes(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
 }
 
 // ---------------------------------------------------------------------------
-// ⑤ wlsc 配置
+// ④ WSL 实例（发行版）
+// ---------------------------------------------------------------------------
+
+/// 实例列表的列（名称 / 状态 / 版本 / 默认 / 安装位置 / 磁盘）。
+///
+/// 「磁盘」是 VHDX 的**虚拟大小**，不是实际占用 —— 见 [`instances`] 的说明。
+const DISTRO_COLUMNS: &[(&str, f32)] = &[
+    ("名称", 190.),
+    ("状态", 84.),
+    ("版本", 62.),
+    ("默认", 48.),
+    ("安装位置", 330.),
+    ("磁盘（虚拟）", 110.),
+];
+
+/// WSL 实例（发行版）列表。
+///
+/// # v0.3 是**只读**的
+///
+/// 只展示，不给动作。生命周期动作（终止 / 设默认 / 删除 / 压缩）是 P2
+/// （见 `docs/PLAN-v0.3.md` §8）—— 先把"看得见"做对，再让它"能干活"。
+///
+/// # 为什么"没有实例"不是错误
+///
+/// 一台机器上没装发行版是完全正常的状态，所以这里给的是引导文案
+/// （怎么让 `wsl.exe` 被找到），而不是一条红色错误。
+pub fn instances(state: &AppState, _entity: &Entity<Shell>) -> AnyElement {
+    let distros = &state.snapshot.distros;
+
+    if distros.is_empty() {
+        return v_flex()
+            .w_full()
+            .gap_4()
+            .child(card(
+                "WSL 实例",
+                v_flex()
+                    .w_full()
+                    .gap_2()
+                    .child(empty_state("没有检测到任何 WSL 发行版"))
+                    .child(div().text_xs().text_color(theme::text_dim()).child(
+                        "若确实安装过，请确认 wsl.exe 可用：程序会自动在 \
+                         C:\\Program Files\\WSL\\ 下查找，也可以用环境变量 WSL_PATH 指定。",
+                    )),
+            ))
+            .into_any_element();
+    }
+
+    let default_name = state.default_distro().map(|name| name.to_owned());
+    let rows: Vec<AnyElement> = distros
+        .iter()
+        .map(|distro| distro_row(distro, default_name.as_deref()))
+        .collect();
+
+    v_flex()
+        .w_full()
+        .gap_4()
+        .child(distro_summary_card(state, distros))
+        .child(card(
+            "WSL 实例",
+            v_flex()
+                .w_full()
+                .gap_1()
+                .child(table_header(DISTRO_COLUMNS))
+                .children(rows),
+        ))
+        .into_any_element()
+}
+
+/// 实例概览卡：运行中 / 全部 / 磁盘合计 / 默认发行版。
+fn distro_summary_card(state: &AppState, distros: &[Distro]) -> AnyElement {
+    let running = distros.iter().filter(|d| d.state.is_running()).count();
+
+    // 只把**读到了大小**的那些加起来。读不到的（注册表被挡、磁盘文件不在）
+    // 按 0 算，但要在文案里如实说明有几个 —— 不能让用户以为合计是准的。
+    let known = distros.iter().filter(|d| d.vhdx_bytes.is_some()).count();
+    let total_bytes: u64 = distros.iter().filter_map(|d| d.vhdx_bytes).sum();
+
+    let default = state
+        .default_distro()
+        .map(|name| name.to_owned())
+        .unwrap_or_else(|| "（未设置）".to_owned());
+
+    let disk_note = if known == distros.len() {
+        "磁盘合计是 VHDX 的**虚拟大小**，不是磁盘实际占用。".to_owned()
+    } else {
+        format!(
+            "磁盘合计是 VHDX 的**虚拟大小**；{} / {} 个实例没读到大小\
+             （注册表读不到，或磁盘文件不在）。",
+            distros.len() - known,
+            distros.len()
+        )
+    };
+
+    card(
+        "实例概览",
+        v_flex()
+            .w_full()
+            .gap_3()
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_3()
+                    .child(stat_tile("运行中", running.to_string(), theme::success()))
+                    .child(stat_tile("全部", distros.len().to_string(), theme::primary()))
+                    .child(stat_tile(
+                        "磁盘合计",
+                        format_bytes(total_bytes),
+                        theme::warning(),
+                    )),
+            )
+            .child(kv("默认发行版", default))
+            .child(div().text_xs().text_color(theme::text_dim()).child(disk_note)),
+    )
+    .into_any_element()
+}
+
+/// 一行实例。
+fn distro_row(distro: &Distro, default_name: Option<&str>) -> AnyElement {
+    let is_default = default_name == Some(distro.name.as_str());
+
+    let location = distro
+        .base_path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "—".to_owned());
+
+    let disk = match distro.vhdx_bytes {
+        Some(bytes) => format_bytes(bytes),
+        None => "—".to_owned(),
+    };
+
+    table_row(
+        DISTRO_COLUMNS,
+        vec![
+            cell_text(distro.name.clone()),
+            cell_distro_badge(distro.state),
+            cell_muted(distro.version_label()),
+            if is_default {
+                badge("是", theme::primary(), theme::primary_soft()).into_any_element()
+            } else {
+                cell_muted("—")
+            },
+            cell_muted(location),
+            cell_muted(disk),
+        ],
+    )
+    .into_any_element()
+}
+
+/// 发行版状态徽标单元格。
+fn cell_distro_badge(state: DistroState) -> AnyElement {
+    let (fg, bg) = theme::distro_state_colors(&state);
+    badge(state.label().to_owned(), fg, bg).into_any_element()
+}
+
+// ---------------------------------------------------------------------------
+// ⑤ 应用设置
+// ---------------------------------------------------------------------------
+
+/// 应用设置页。
+///
+/// 这里管的是**本程序自己的偏好**
+/// （`%LOCALAPPDATA%\wslc-panel\prefs.json`），
+/// 和「wlsc 配置」页管的 `wslc` 的 `settings.yaml` 是两回事 ——
+/// 分开放是刻意的，见 `prefs.rs` 的模块说明。
+///
+/// v0.3 只做两项（都是"简单且立刻见效"的）：自动刷新间隔、界面主题。
+pub fn app_settings(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+    v_flex()
+        .w_full()
+        .gap_4()
+        .child(interface_card(state, entity))
+        .child(theme_card(state, entity))
+        .child(card(
+            "关于",
+            v_flex()
+                .w_full()
+                .gap_2()
+                .child(kv("版本", env!("CARGO_PKG_VERSION")))
+                .child(kv("构建", crate::short_build_sha()))
+                .child(div().text_xs().text_color(theme::text_dim()).child(
+                    "偏好文件只属于本程序，刻意不写进 wslc 的 settings.yaml —— \
+                     那个文件由 wslc 拥有，塞自定义键既可能被它重置，也会让人误会。",
+                )),
+        ))
+        .into_any_element()
+}
+
+/// 主题选择卡。
+///
+/// ⚠️ 点击回调里必须**同时**做两件事：
+///
+/// 1. `Theme::change(...)` —— 切 gpui-component 自己的主题。
+///    不做这一步的话，`Input` / `Button` 这些控件仍是浅色的
+///    （白底浅灰字），在深色界面上根本看不清；
+/// 2. `Shell::set_theme(...)` —— 持久化到 `prefs.json`。
+///
+/// 第 1 步只能在**回调**里做：`Theme::change` 要 `&mut App`，
+/// 而 `Shell` 的方法拿到的是 `Context<Self>`。
+fn theme_card(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+    let current = state.prefs.theme;
+
+    let buttons: Vec<AnyElement> = crate::prefs::ThemePref::ALL
+        .iter()
+        .map(|theme| {
+            let theme = *theme;
+            let entity = entity.clone();
+            // 用 `{:?}` 而不是 `label()` 拼 id：id 要稳定且与显示语言无关。
+            let mut button = Button::new(SharedString::from(format!("theme-{theme:?}")))
+                .label(theme.label())
+                .small()
+                .on_click(move |_, _, cx| {
+                    // 传 `None` 而不是 `Some(window)`：`main.rs` 启动时就是
+                    // 这么调的，是本项目**已经编译通过**的那个形式。
+                    // 界面刷新由随后的 `cx.notify()` 触发。
+                    gpui_kit::component::Theme::change(theme_mode(theme), None, cx);
+                    entity.update(cx, |shell, cx| shell.set_theme(theme, cx));
+                });
+            if current == theme {
+                button = button.primary();
+            }
+            button.into_any_element()
+        })
+        .collect();
+
+    card(
+        "界面",
+        v_flex()
+            .w_full()
+            .gap_3()
+            .child(kv("主题", current.label()))
+            .child(h_flex().w_full().gap_2().flex_wrap().children(buttons))
+            .child(div().text_xs().text_color(theme::text_dim()).child(
+                "主题要同时作用于自绘的界面和组件库的控件（输入框、按钮……），\
+                 所以两个主题都得显式切换，不能只改配色常量。",
+            )),
+    )
+    .into_any_element()
+}
+
+/// 偏好里的主题 → 组件库的主题。
+fn theme_mode(theme: crate::prefs::ThemePref) -> gpui_kit::component::ThemeMode {
+    match theme {
+        crate::prefs::ThemePref::Dark => gpui_kit::component::ThemeMode::Dark,
+        crate::prefs::ThemePref::Light => gpui_kit::component::ThemeMode::Light,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ⑥ wlsc 配置
 // ---------------------------------------------------------------------------
 
 /// 配置页。
@@ -1028,8 +1280,6 @@ pub fn config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                             .child(reload_button(entity)),
                     ),
             ))
-            // 即使 wslc 配置读不出来，"界面"偏好仍然可用。
-            .child(interface_card(state, entity))
             .into_any_element();
     };
 
@@ -1075,8 +1325,6 @@ pub fn config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                 ),
         ))
         .child(card("配置项", v_flex().w_full().gap_2().children(rows)))
-        // 应用自己的偏好放在最后，和上面那些 settings.yaml 的条目区分开。
-        .child(interface_card(state, entity))
         .child(card(
             "原始 YAML",
             // 同 app.rs：滚动容器必须先有 id。
@@ -1274,16 +1522,19 @@ fn reload_button(entity: &Entity<Shell>) -> impl IntoElement {
         })
 }
 
-/// "界面"卡片：**应用自己的偏好**，与 `wslc` 的配置无关。
+/// "刷新"卡片：**应用自己的偏好**，与 `wslc` 的配置无关。
 ///
 /// 界面上不再到处显示刷新间隔 —— 只在这一处设置。
+///
+/// 卡片标题刻意叫「刷新」而不是「界面」：主题卡也叫「界面」，
+/// 两张同名卡片挨在一起会让人分不清哪个是哪个。
 fn interface_card(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     let path_text = crate::prefs::Prefs::path()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "（无法确定偏好文件位置）".to_owned());
 
     card(
-        "界面",
+        "刷新",
         v_flex()
             .w_full()
             .gap_3()
@@ -1302,7 +1553,7 @@ fn interface_card(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     .into_any_element()
 }
 
-/// 自动刷新间隔选择器（只出现在"设置"页）。
+/// 自动刷新间隔选择器（只出现在「应用设置」页）。
 ///
 /// 这是**应用自己的偏好**，不是 `wslc` 的配置 —— 所以它和上面那些
 /// `settings.yaml` 的条目在视觉上分开，用的是本地 `prefs` 而不是 `SettingsDoc`。
@@ -2007,7 +2258,7 @@ mod tests {
     //
     // 正确做法（gpui-kit 的 lib.rs 注释里也写了）：测试模块**显式导入**需要的类型。
     use super::{
-        ALL_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS, presets_for,
+        ALL_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS, presets_for,
     };
     use wslc_core::settings::{SETTING_KEYS, SettingKind};
 
@@ -2018,6 +2269,7 @@ mod tests {
             IMAGE_COLUMNS,
             NETWORK_COLUMNS,
             VOLUME_COLUMNS,
+            DISTRO_COLUMNS,
         ]
     }
 
@@ -2035,8 +2287,22 @@ mod tests {
     fn every_table_has_the_expected_column_count() {
         // 行内的 cell 数量少于列数只会留下空白，多出来则会被丢弃；
         // 这里把"必须一一对应"的约束固化下来，避免改表头时忘记改行。
+        //
+        // `DISTRO_COLUMNS` 是 6 列，和 `distro_row` 里 push 的 6 个 cell 对应 ——
+        // 改一边就必须改另一边，这个断言就是盯着这件事的。
         let counts: Vec<usize> = all_column_sets().iter().map(|c| c.len()).collect();
-        assert_eq!(counts, vec![6, 5, 6, 5]);
+        assert_eq!(counts, vec![6, 5, 6, 5, 6]);
+    }
+
+    #[test]
+    fn distro_row_cells_match_the_column_count() {
+        // 上面那个测试只保证"列定义"本身没问题，管不到行里塞了几个 cell。
+        // 这里直接把列数钉死，配合 `distro_row` 的 6 个 cell 使用。
+        assert_eq!(
+            DISTRO_COLUMNS.len(),
+            6,
+            "distro_row 里的 cell 数量必须与之同步"
+        );
     }
 
     #[test]

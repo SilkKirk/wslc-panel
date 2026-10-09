@@ -1,9 +1,12 @@
-//! wslc 输出的数据模型。
+//! 数据模型。
 //!
-//! 所有字段都带 `#[serde(default)]`：`wslc` 的 JSON 字段类型不稳定
-//! （数字可能是字符串、可空字段可能整个缺失），**解析失败绝不能 panic**。
+//! 两个域：
 //!
-//! 字段字典见 `docs/wslc-schema.md`。
+//! - **`wslc`（容器）** —— 来自 `--format json`，所有字段都带
+//!   `#[serde(default)]`：字段类型不稳定（数字可能是字符串、可空字段可能整个缺失），
+//!   **解析失败绝不能 panic**。字段字典见 `docs/wslc-schema.md`。
+//! - **`wsl`（发行版）** —— 来自给人看的**表格**（没有 JSON 输出），
+//!   解析规则见 [`distro`] 的模块文档。
 
 mod container;
 mod image;
@@ -13,10 +16,15 @@ pub mod session;
 mod system;
 mod volume;
 
+// `pub` 是因为解析函数（`parse_distro_list` / `parse_registry`）
+// 需要被 `cmd::distro` 复用，而且它们**不依赖 Windows**，可以独立跑单测。
+pub mod distro;
+
 pub use container::{
     parse_wsl_metadata, ContainerInspect, ContainerListItem, ContainerState, ContainerStats,
     ContainerSummary, Platform, PortMapping, WslPortSpec,
 };
+pub use distro::{parse_distro_list, Distro, DistroState, WslStatus};
 pub use image::ImageListItem;
 pub use network::NetworkListItem;
 pub use session::{parse_session_table, Session};

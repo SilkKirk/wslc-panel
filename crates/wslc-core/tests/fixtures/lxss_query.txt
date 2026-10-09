@@ -1,0 +1,22 @@
+
+HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss
+    DefaultVersion    REG_DWORD    0x2
+    NatIpAddress    REG_SZ    172.17.90.114
+    OOBEComplete    REG_DWORD    0x1
+    DefaultDistribution    REG_SZ    {856a6800-7118-4a80-b013-a88c95dc788f}
+
+HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{856a6800-7118-4a80-b013-a88c95dc788f}
+    State    REG_DWORD    0x1
+    DistributionName    REG_SZ    Ubuntu-26.04
+    Version    REG_DWORD    0x2
+    BasePath    REG_SZ    D:\linux\Ubuntu-26.04
+    Flags    REG_DWORD    0xf
+    DefaultUid    REG_DWORD    0x0
+    RunOOBE    REG_DWORD    0x0
+    VhdFileName    REG_SZ    ext4.vhdx
+    Flavor    REG_SZ    ubuntu
+    OsVersion    REG_SZ    26.04
+    Modern    REG_DWORD    0x1
+    ShortcutPath    REG_SZ    C:\Users\76434\AppData\Roaming\Microsoft\Windows\Start Menu\Ubuntu-26.04.lnk
+    TerminalProfilePath    REG_SZ    C:\Users\76434\AppData\Local\Microsoft\Windows Terminal\Fragments\Microsoft.WSL\{2de1d826-83f1-52f5-aaff-3d23acceb952}.json
+

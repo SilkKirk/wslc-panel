@@ -2,22 +2,40 @@
 //!
 //! 这一层**完全不碰 GPUI**，只依赖 `wslc-core`，
 //! 因此未来换渲染层（或加 CLI 模式）时这里可以原样复用。
+//!
+//! # 两个域
+//!
+//! 面板同时管两样东西，命令也不同：
+//!
+//! | 域 | 命令 | 对象 |
+//! |---|---|---|
+//! | 容器 | `wslc.exe` | container / image / network / volume |
+//! | 实例 | `wsl.exe` | WSL 发行版（distro） |
+//!
+//! 两者的采集**频率不同**（见 [`load_distro_status`] 的说明）：
+//! 列表跟随自动刷新（默认 3 秒），`wsl --status` 单独降到 30 秒。
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use wslc_core::model::{
-    ContainerSummary, ImageListItem, NetworkListItem, Session, SystemInfo, VolumeListItem,
+    ContainerSummary, Distro, ImageListItem, NetworkListItem, Session, SystemInfo, VolumeListItem,
+    WslStatus,
 };
 use wslc_core::settings::SettingsDoc;
 use wslc_core::storage::StorageInfo;
-use wslc_core::{Result, Wslc, cmd};
+use wslc_core::{Result, Wsl, Wslc, cmd};
 
 /// 左侧导航的页面。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     /// 总览 / 基本信息。
     Dashboard,
+    /// WSL 实例（发行版）列表。
+    ///
+    /// 命名刻意用「WSL 实例」而不是裸「实例」：`wslc` 的 **session**
+    /// 在中文语境里也常被叫"实例"，裸「实例」会和现有概念打架。
+    Instances,
     /// 全部 container（含运行中与已退出）。
     ///
     /// 曾经有个单独的「当前运行」页，去掉了 —— 同一个列表用状态筛一下就够了，
@@ -29,18 +47,29 @@ pub enum Page {
     Networks,
     /// 卷。
     Volumes,
+    /// 应用自己的设置（刷新间隔、主题……）。
+    ///
+    /// 和 [`Page::Config`] 的区别：这里存的是**本程序的偏好**
+    /// （`%LOCALAPPDATA%\wslc-panel\prefs.json`），
+    /// 而 `Config` 管的是 `wslc` 自己的 `settings.yaml`。
+    AppSettings,
     /// wlsc 配置。
     Config,
 }
 
 impl Page {
     /// 全部页面（决定导航顺序）。
-    pub const ALL: [Page; 6] = [
+    ///
+    /// ⚠️ 同组的页面必须**连续** —— 侧边栏靠"组名变了就插一条标题"
+    /// 来分组（见 `app.rs` 的 `render`）。
+    pub const ALL: [Page; 8] = [
         Page::Dashboard,
+        Page::Instances,
         Page::Containers,
         Page::Images,
         Page::Networks,
         Page::Volumes,
+        Page::AppSettings,
         Page::Config,
     ];
 
@@ -48,10 +77,12 @@ impl Page {
     pub fn label(self) -> &'static str {
         match self {
             Page::Dashboard => "基本信息",
+            Page::Instances => "实例列表",
             Page::Containers => "容器",
             Page::Images => "镜像",
             Page::Networks => "网络",
             Page::Volumes => "卷",
+            Page::AppSettings => "应用设置",
             Page::Config => "wlsc 配置",
         }
     }
@@ -60,9 +91,10 @@ impl Page {
     pub fn group(self) -> &'static str {
         match self {
             Page::Dashboard => "概览",
+            Page::Instances => "WSL 实例",
             Page::Containers => "容器",
             Page::Images | Page::Networks | Page::Volumes => "资源",
-            Page::Config => "设置",
+            Page::AppSettings | Page::Config => "设置",
         }
     }
 }
@@ -87,6 +119,10 @@ pub struct Snapshot {
     pub networks: Vec<NetworkListItem>,
     /// 卷
     pub volumes: Vec<VolumeListItem>,
+    /// WSL 实例（发行版）列表 —— 来自 `wsl.exe`，不是 `wslc.exe`。
+    ///
+    /// 已合并注册表信息（安装位置）与磁盘虚拟大小。
+    pub distros: Vec<Distro>,
     /// 会话存储的位置与占用（自行计算，`wslc` 不提供）。
     ///
     /// 解析不出来时为 `None`（例如 `LOCALAPPDATA` 没定义）。
@@ -104,14 +140,20 @@ impl Snapshot {
             || !self.all.is_empty()
             || !self.images.is_empty()
             || !self.networks.is_empty()
+            || !self.distros.is_empty()
     }
 }
 
 /// 阻塞式采集一次完整快照。
 ///
 /// 调用方必须在**后台线程/执行器**上调用（见 `app::Shell::refresh`）：
-/// 内部会串行跑 6 条 `wslc` 命令。
-pub fn load_snapshot(wslc: &Wslc) -> Snapshot {
+/// 内部会串行跑 7 条 `wslc` 命令 + 1 条 `wsl` 命令 + 1 条 `reg` 命令。
+///
+/// # 为什么 `--status` 不在这里
+///
+/// 它每轮都跑没必要（默认发行版/默认版本极少变），而且它的输出是**本地化**的。
+/// 单独放到 [`load_distro_status`]，由调用方按 30 秒的节奏调。
+pub fn load_snapshot(wslc: &Wslc, wsl: &Wsl) -> Snapshot {
     let started = std::time::Instant::now();
     let mut snap = Snapshot::default();
 
@@ -150,6 +192,19 @@ pub fn load_snapshot(wslc: &Wslc) -> Snapshot {
         Err(e) => snap.errors.push(format!("卷列表：{e}")),
     }
 
+    // WSL 实例：列表（3 秒级）+ 注册表与磁盘占用。
+    //
+    // 注册表走 `reg.exe`，实测只要 7~27 ms，所以**不必**降到 30 秒 ——
+    // 真正贵的是多起一个 `wsl.exe` 进程，也就是 `--status`（见上）。
+    match cmd::distro::snapshot(wsl) {
+        Ok(list) => {
+            snap.distros = list.distros;
+            // 没认出来的行是"如实告知"，不是致命错误，但也不该被吞掉
+            snap.errors.extend(list.warnings);
+        }
+        Err(e) => snap.errors.push(format!("WSL 实例列表：{e}")),
+    }
+
     // 存储占用：`storagePath` 来自 settings.yaml，会话名来自 `wslc info`。
     // 这一步纯文件系统，不会失败到需要报错 —— 拿不到就是 None。
     let configured = settings_storage_path(snap.info.as_ref());
@@ -159,6 +214,17 @@ pub fn load_snapshot(wslc: &Wslc) -> Snapshot {
 
     snap.elapsed_ms = started.elapsed().as_millis();
     snap
+}
+
+/// `wsl --status`（默认发行版 + 默认版本）。
+///
+/// **单独一个函数**，因为它的采集频率和列表不一样：
+/// 调用方每 30 秒才调一次（见 `app::Shell` 的 `STATUS_EVERY_N_TICKS`）。
+///
+/// 失败时返回 `Err`，由调用方决定是覆盖还是保留上一次的值 ——
+/// 通常应该**保留旧值**（一次瞬时失败不该让界面变成空白）。
+pub fn load_distro_status(wsl: &Wsl) -> Result<WslStatus> {
+    cmd::distro::status(wsl)
 }
 
 /// 只为了拿 `session.storagePath` 这一个值而读一次 `settings.yaml`。
@@ -422,12 +488,21 @@ impl PullProgress {
 /// 这是 [`crate::app::Shell`] 里唯一的字段，所有页面都是它的只读视图。
 #[derive(Debug)]
 pub struct AppState {
-    /// 子进程调用器。
+    /// 容器（`wslc.exe`）调用器。
     pub wslc: Wslc,
+    /// 发行版（`wsl.exe`）调用器。
+    pub wsl: Wsl,
     /// 当前页面。
     pub page: Page,
     /// 最近一次采集到的数据。
     pub snapshot: Snapshot,
+    /// `wsl --status` 的结果。
+    ///
+    /// **不在 [`Snapshot`] 里**，因为它 30 秒才采一次，
+    /// 而 `Snapshot` 每轮刷新都会整体重建 —— 放进去就会被清空。
+    pub distro_status: Option<WslStatus>,
+    /// `wsl --status` 最近一次的失败原因（成功时为 `None`）。
+    pub distro_status_error: Option<String>,
     /// 已加载的配置文件。
     pub settings: Option<SettingsDoc>,
     /// 配置文件加载失败的原因。
@@ -450,11 +525,14 @@ pub struct AppState {
 
 impl AppState {
     /// 新建初始状态。
-    pub fn new(wslc: Wslc) -> Self {
+    pub fn new(wslc: Wslc, wsl: Wsl) -> Self {
         Self {
             wslc,
+            wsl,
             page: Page::Dashboard,
             snapshot: Snapshot::default(),
+            distro_status: None,
+            distro_status_error: None,
             settings: None,
             settings_error: None,
             prefs: crate::prefs::Prefs::load(),
@@ -470,6 +548,18 @@ impl AppState {
     /// 固定由偏好决定，界面上不再提供"暂停"之类的档位开关。
     pub fn refresh_interval(&self) -> Duration {
         Duration::from_secs(self.prefs.refresh_secs)
+    }
+
+    /// 默认发行版的名字。
+    ///
+    /// 优先用列表里的 `*`（英文、好解析、且是权威来源），
+    /// 拿不到时才退到 `wsl --status`（本地化文本）。
+    pub fn default_distro(&self) -> Option<&str> {
+        cmd::distro::default_distro(&self.snapshot.distros).or_else(|| {
+            self.distro_status
+                .as_ref()
+                .and_then(|s| s.default_distro.as_deref())
+        })
     }
 
     /// 当前会话的可读标签。
@@ -508,7 +598,14 @@ mod tests {
             assert!(!page.label().is_empty());
             assert!(!page.group().is_empty());
         }
-        // 去掉「当前运行」页后是 6 个（这个断言以前从没跑过，\n        // 因为 cargo check --all-targets 只编译不执行 —— 见 SPIKE 7.8）\n        assert_eq!(Page::ALL.len(), 6);
+        // v0.3 加了「实例列表」和「应用设置」，从 6 个变成 8 个。
+        //
+        // 这个断言存在的意义就是**逼人改它**：加页面时忘了同步导航分组，
+        // 侧边栏会出现重复的组标题。历史上 commit 552a91c 就是被它抓到的。
+        //
+        // ⚠️ 注意 `cargo check --all-targets` 只编译不执行，
+        // 所以它真的被跑到要靠 CI 里的 `cargo test -p wslc-panel --bins`（见 SPIKE 7.8）。
+        assert_eq!(Page::ALL.len(), 8);
     }
 
     #[test]
@@ -526,7 +623,10 @@ mod tests {
         for g in &deduped {
             assert!(seen.insert(*g), "分组 {g} 在导航里被拆成了多段");
         }
-        assert_eq!(deduped, vec!["概览", "容器", "资源", "设置"]);
+        assert_eq!(
+            deduped,
+            vec!["概览", "WSL 实例", "容器", "资源", "设置"]
+        );
     }
 
     #[test]
@@ -538,7 +638,7 @@ mod tests {
 
     #[test]
     fn refresh_interval_comes_from_prefs() {
-        let mut state = AppState::new(Wslc::new());
+        let mut state = AppState::new(Wslc::new(), Wsl::new());
         state.prefs.refresh_secs = 10;
         assert_eq!(state.refresh_interval(), Duration::from_secs(10));
 
@@ -616,7 +716,7 @@ mod tests {
 
     #[test]
     fn new_state_starts_on_dashboard_and_is_idle() {
-        let state = AppState::new(Wslc::new());
+        let state = AppState::new(Wslc::new(), Wsl::new());
         assert_eq!(state.page, Page::Dashboard);
         assert!(!state.busy);
         assert!(state.confirm.is_none());
@@ -630,7 +730,7 @@ mod tests {
 
     #[test]
     fn confirm_can_be_requested_and_cancelled() {
-        let mut state = AppState::new(Wslc::new());
+        let mut state = AppState::new(Wslc::new(), Wsl::new());
         state.request_confirm(PendingAction::PruneContainers);
         assert_eq!(state.confirm, Some(PendingAction::PruneContainers));
         state.cancel_confirm();
@@ -648,7 +748,7 @@ mod tests {
     fn session_label_uses_the_first_active_session() {
         use wslc_core::jsonl;
         use wslc_core::model::SystemInfo;
-        let mut state = AppState::new(Wslc::new());
+        let mut state = AppState::new(Wslc::new(), Wsl::new());
         state.snapshot.info = Some(
             jsonl::parse_object::<SystemInfo>(include_str!(
                 "../../wslc-core/tests/fixtures/info.json"

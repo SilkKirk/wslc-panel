@@ -173,3 +173,20 @@ pub fn state_colors(state: &wslc_core::model::ContainerState) -> (Rgba, Rgba) {
         S::Unknown(_) => (text_dim(), dim_soft()),
     }
 }
+
+/// WSL **发行版**状态徽标的 `(前景, 底色)` 配色。
+///
+/// 刻意与 [`state_colors`] 分开：`ContainerState`（来自 `wslc`）和
+/// `DistroState`（来自 `wsl`）是两套独立枚举，
+/// 硬合成一个函数只会让两边都变难改。
+pub fn distro_state_colors(state: &wslc_core::model::DistroState) -> (Rgba, Rgba) {
+    use wslc_core::model::DistroState as S;
+    match state {
+        S::Running => (success(), success_soft()),
+        S::Stopped => (neutral(), neutral_soft()),
+        // 过渡态不是错误，只是"正在忙" —— 用主色
+        S::Installing | S::Converting => (primary(), primary_soft()),
+        // 卸载中确实是破坏性动作，用危险色
+        S::Uninstalling => (danger(), danger_soft()),
+    }
+}

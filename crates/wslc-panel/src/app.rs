@@ -28,9 +28,10 @@ use gpui_kit::component::input::InputState;
 use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 
-use wslc_core::Wslc;
 use wslc_core::cmd::container::{PullPolicy, RunSpec};
 use wslc_core::settings::SettingKey;
+// `Wsl` 是发行版（实例）的调用器，和容器的 `Wslc` 并列。
+use wslc_core::{Wsl, Wslc};
 
 use crate::state::{self, AppState, ImmediateAction, Page, PendingAction, Toast, ToastKind};
 use crate::theme;
@@ -140,22 +141,47 @@ pub struct Shell {
     detail: Option<String>,
     /// 采集期间又有刷新请求进来；跑完要补一次。
     refresh_again: bool,
+    /// 已经跑过多少轮刷新。
+    ///
+    /// 用来把 `wsl --status` 降到 30 秒一次（见 [`Shell::status_every_n_ticks`]）。
+    /// 放在 `Shell` 而不是 `AppState`：这是**调度细节**，不是界面要展示的状态。
+    status_tick: u32,
 }
+
+/// `wsl --status` 的采集周期（秒）。
+///
+/// 它每轮都跑没必要：默认发行版 / 默认版本极少变，而且它的输出是**本地化**的
+/// （中文系统是「默认分发:」），解析成本比列表高。
+///
+/// 列表（`wsl --list --verbose`）仍然跟随自动刷新 —— 状态变化要看得到。
+const DISTRO_STATUS_SECS: u64 = 30;
 
 impl Shell {
     /// 创建外壳：立刻触发一次采集、加载配置、启动自动刷新。
     pub fn new(cx: &mut Context<Self>) -> Self {
         let mut shell = Self {
-            state: AppState::new(Wslc::new()),
+            state: AppState::new(Wslc::new(), Wsl::new()),
             pull_input: None,
             pull_cancel: None,
             create_dialog: None,
             detail: None,
             refresh_again: false,
+            status_tick: 0,
         };
         shell.refresh(cx);
         shell.start_auto_refresh(cx);
         shell
+    }
+
+    /// 隔多少轮刷新采一次 `wsl --status`。
+    ///
+    /// **按秒换算而不是写死轮数**：刷新间隔是用户可以改的（1~600 秒），
+    /// 写死"每 10 轮"在间隔改成 30 秒时就变成 5 分钟一次了。
+    fn status_every_n_ticks(&self) -> u32 {
+        let secs = self.state.prefs.refresh_secs.max(1);
+        u32::try_from(DISTRO_STATUS_SECS.div_ceil(secs))
+            .unwrap_or(u32::MAX)
+            .max(1)
     }
 
     // -- 拉取镜像弹窗 --------------------------------------------------------
@@ -541,23 +567,50 @@ impl Shell {
         self.state.busy = true;
         cx.notify();
 
+        // `wsl --status` 降频到 30 秒一次；其余（含发行版列表）跟随本轮刷新。
+        let with_status = self.status_tick % self.status_every_n_ticks() == 0;
+        self.status_tick = self.status_tick.wrapping_add(1);
+
         let wslc = self.state.wslc.clone();
+        let wsl = self.state.wsl.clone();
         cx.spawn(async move |this, cx| {
-            let snapshot = cx
+            let (snapshot, status) = cx
                 .background_executor()
-                .spawn(async move { state::load_snapshot(&wslc) })
+                .spawn(async move {
+                    let snapshot = state::load_snapshot(&wslc, &wsl);
+                    // 同一轮里串行跑，避免并发起两个 wsl.exe
+                    let status = with_status.then(|| state::load_distro_status(&wsl));
+                    (snapshot, status)
+                })
                 .await;
 
             let _ = this.update(cx, |shell, cx| {
                 shell.state.busy = false;
                 // 耗时只写日志，不在界面上显示。
                 tracing::debug!(
-                    "采集完成：{} ms，{} 个容器，{} 处错误",
+                    "采集完成：{} ms，{} 个容器，{} 个发行版，{} 处错误",
                     snapshot.elapsed_ms,
                     snapshot.all.len(),
+                    snapshot.distros.len(),
                     snapshot.errors.len()
                 );
                 shell.state.snapshot = snapshot;
+
+                // 30 秒一次的那部分：失败时**保留旧值**。
+                // 一次瞬时失败不该让界面变成空白（那看起来像"数据丢了"）。
+                if let Some(result) = status {
+                    match result {
+                        Ok(s) => {
+                            shell.state.distro_status = Some(s);
+                            shell.state.distro_status_error = None;
+                        }
+                        Err(e) => {
+                            tracing::warn!("wsl --status 失败：{e}");
+                            shell.state.distro_status_error = Some(e.to_string());
+                        }
+                    }
+                }
+
                 // 首次拿到 `wslc info` 之后才能确定 settings.yaml 的真实位置。
                 // 只加载一次，避免把用户没保存的编辑覆盖掉。
                 if shell.state.settings.is_none() {
@@ -737,7 +790,13 @@ impl Shell {
     /// 自动刷新循环每轮都会重新读 `state.prefs`，所以改完下一轮就生效，
     /// 不需要重启，也不需要通知循环。
     pub fn set_refresh_secs(&mut self, secs: u64, cx: &mut Context<Self>) {
-        let prefs = crate::prefs::Prefs { refresh_secs: secs }.normalized();
+        // ⚠️ 必须**带上当前的 theme**：`Prefs` 是要整体写回磁盘的，
+        // 这里要是只填 `refresh_secs`，改一次刷新间隔就会把主题重置掉。
+        let prefs = crate::prefs::Prefs {
+            refresh_secs: secs,
+            theme: self.state.prefs.theme,
+        }
+        .normalized();
         if self.state.prefs == prefs {
             return;
         }
@@ -755,6 +814,36 @@ impl Shell {
                 // 内存里的值仍然生效，只是重启后会丢。
                 self.state
                     .notify(Toast::error(format!("已改为 {secs} 秒，但保存失败：{e}")));
+            }
+        }
+        cx.notify();
+    }
+
+    /// 记住界面主题（并写回偏好文件）。
+    ///
+    /// ⚠️ **这里不切换组件库的主题** —— 那一步必须在**点击回调里**做，
+    /// 因为 `gpui_kit::component::Theme::change` 需要一个 `&mut App`，
+    /// 而 `Context<Self>` 给不出来。
+    ///
+    /// 所以调用顺序是：点击回调先 `Theme::change(...)`，再调本方法持久化。
+    /// 见 `views.rs` 的 `theme_card`。
+    pub fn set_theme(&mut self, theme: crate::prefs::ThemePref, cx: &mut Context<Self>) {
+        if self.state.prefs.theme == theme {
+            return;
+        }
+
+        self.state.prefs.theme = theme;
+        match self.state.prefs.save() {
+            Ok(()) => {
+                tracing::info!("主题已改为{}", theme.label());
+                self.state
+                    .notify(Toast::success(format!("主题已改为{}", theme.label())));
+            }
+            Err(e) => {
+                tracing::warn!("保存偏好失败：{e}");
+                // 内存里的值仍然生效，只是重启后会丢。
+                self.state
+                    .notify(Toast::error(format!("已改为{}，但保存失败：{e}", theme.label())));
             }
         }
         cx.notify();
@@ -1118,10 +1207,12 @@ fn nav_item(page: Page, current: Page, entity: &Entity<Shell>) -> AnyElement {
 fn nav_id(page: Page) -> &'static str {
     match page {
         Page::Dashboard => "nav-dashboard",
+        Page::Instances => "nav-instances",
         Page::Containers => "nav-containers",
         Page::Images => "nav-images",
         Page::Networks => "nav-networks",
         Page::Volumes => "nav-volumes",
+        Page::AppSettings => "nav-app-settings",
         Page::Config => "nav-config",
     }
 }

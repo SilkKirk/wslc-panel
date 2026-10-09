@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 /// 默认自动刷新间隔（秒）。
 pub const DEFAULT_REFRESH_SECS: u64 = 3;
 
-/// 允许的最小刷新间隔。再快没有意义 —— 一次采集要串行跑 6 条 `wslc` 命令。
+/// 允许的最小刷新间隔。再快没有意义 ——
+/// 一次采集要串行跑 7 条 `wslc` 命令 + 1 条 `wsl` + 1 条 `reg`。
 pub const MIN_REFRESH_SECS: u64 = 1;
 
 /// 允许的最大刷新间隔。
@@ -30,12 +31,48 @@ pub fn app_dir() -> Option<PathBuf> {
     Some(PathBuf::from(base).join("wslc-panel"))
 }
 
+/// 界面主题。
+///
+/// ⚠️ 这不只是"我们自己画的那些 `div` 用什么颜色"。
+/// gpui-component 的控件（`Input` / `Button` / `Select`…）**只认它自己的主题**，
+/// 所以切换时必须同时调用 `gpui_kit::component::Theme::change` ——
+/// 光改 `theme.rs` 里的颜色，输入框还是浅色的白底浅灰字，根本看不清
+/// （`main.rs` 里那段注释记的就是这个坑）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemePref {
+    /// 深色（默认）。
+    #[default]
+    Dark,
+    /// 浅色。
+    Light,
+}
+
+impl ThemePref {
+    /// 全部可选值（决定界面上的按钮顺序）。
+    pub const ALL: [ThemePref; 2] = [ThemePref::Dark, ThemePref::Light];
+
+    /// 界面标签。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Dark => "深色",
+            Self::Light => "浅色",
+        }
+    }
+}
+
 /// 持久化的偏好。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Prefs {
     /// 自动刷新间隔（秒）。
     #[serde(default = "default_refresh_secs")]
     pub refresh_secs: u64,
+    /// 界面主题。
+    ///
+    /// 老版本的 `prefs.json` 里没有这个键 —— `#[serde(default)]`
+    /// 让它平滑升级到深色（和以前的行为一致）。
+    #[serde(default)]
+    pub theme: ThemePref,
 }
 
 fn default_refresh_secs() -> u64 {
@@ -46,6 +83,7 @@ impl Default for Prefs {
     fn default() -> Self {
         Self {
             refresh_secs: DEFAULT_REFRESH_SECS,
+            theme: ThemePref::default(),
         }
     }
 }
@@ -113,11 +151,34 @@ mod tests {
         // 手工写了个 `{}` 也不该炸。
         let p: Prefs = serde_json::from_str("{}").unwrap();
         assert_eq!(p.refresh_secs, DEFAULT_REFRESH_SECS);
+        assert_eq!(p.theme, ThemePref::Dark);
+    }
+
+    #[test]
+    fn old_prefs_without_theme_upgrade_to_dark() {
+        // v0.2 写的 prefs.json 只有 refresh_secs —— 升级后行为必须不变
+        let p: Prefs = serde_json::from_str(r#"{"refresh_secs":10}"#).unwrap();
+        assert_eq!(p.refresh_secs, 10);
+        assert_eq!(p.theme, ThemePref::Dark, "老文件应平滑升级到深色");
+    }
+
+    #[test]
+    fn theme_round_trips_as_lowercase() {
+        let p = Prefs {
+            refresh_secs: 5,
+            theme: ThemePref::Light,
+        };
+        let text = serde_json::to_string(&p).unwrap();
+        assert!(text.contains(r#""theme":"light""#), "{text}");
+        assert_eq!(serde_json::from_str::<Prefs>(&text).unwrap(), p);
     }
 
     #[test]
     fn round_trips_through_json() {
-        let p = Prefs { refresh_secs: 10 };
+        let p = Prefs {
+            refresh_secs: 10,
+            theme: ThemePref::Light,
+        };
         let text = serde_json::to_string(&p).unwrap();
         let back: Prefs = serde_json::from_str(&text).unwrap();
         assert_eq!(back, p);
@@ -126,18 +187,50 @@ mod tests {
     #[test]
     fn normalized_clamps_out_of_range_values() {
         assert_eq!(
-            Prefs { refresh_secs: 0 }.normalized().refresh_secs,
+            Prefs {
+                refresh_secs: 0,
+                ..Prefs::default()
+            }
+            .normalized()
+            .refresh_secs,
             MIN_REFRESH_SECS
         );
         assert_eq!(
             Prefs {
-                refresh_secs: 99999
+                refresh_secs: 99999,
+                ..Prefs::default()
             }
             .normalized()
             .refresh_secs,
             MAX_REFRESH_SECS
         );
-        assert_eq!(Prefs { refresh_secs: 7 }.normalized().refresh_secs, 7);
+        assert_eq!(
+            Prefs {
+                refresh_secs: 7,
+                ..Prefs::default()
+            }
+            .normalized()
+            .refresh_secs,
+            7
+        );
+    }
+
+    #[test]
+    fn normalized_does_not_touch_the_theme() {
+        let prefs = Prefs {
+            refresh_secs: 99999,
+            theme: ThemePref::Light,
+        }
+        .normalized();
+        assert_eq!(prefs.theme, ThemePref::Light);
+    }
+
+    #[test]
+    fn every_theme_has_a_label_and_is_listed() {
+        for theme in ThemePref::ALL {
+            assert!(!theme.label().is_empty());
+        }
+        assert!(ThemePref::ALL.contains(&ThemePref::default()));
     }
 
     #[test]

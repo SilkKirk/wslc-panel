@@ -88,7 +88,7 @@ fn main() {
             // 必须在打开任何窗口之前初始化组件层。
             gpui_kit::init(cx);
 
-            // ★ 必须**显式**切到深色主题。
+            // ★ 必须**显式**切主题，不能靠默认值。
             //
             // gpui-component 的默认主题是**浅色**，于是它渲染出来的
             // `Input` 是白底浅灰字 —— 在深色界面上完全看不清
@@ -97,7 +97,14 @@ fn main() {
             // 我们自己画的 div 由 `theme.rs` 定色，但组件库的控件
             // （`Input` / `Button` / `Select` …）只认它自己的主题，
             // 两套配色必须在这里对齐。
-            gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, cx);
+            //
+            // 用**上次保存的偏好**：没有偏好文件时 `Prefs::default()` 是深色，
+            // 和 v0.2 的行为一致。
+            let mode = match crate::prefs::Prefs::load().theme {
+                crate::prefs::ThemePref::Dark => gpui_kit::component::ThemeMode::Dark,
+                crate::prefs::ThemePref::Light => gpui_kit::component::ThemeMode::Light,
+            };
+            gpui_kit::component::Theme::change(mode, None, cx);
 
             let options = initial_window_options(cx);
             tracing::info!("窗口尺寸：{:?}", options.window_bounds);
