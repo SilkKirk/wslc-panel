@@ -92,10 +92,12 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(180);
 /// 但碎片多的盘可能到分钟级，所以给得宽松。
 const DISK_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
-/// WSL1 ↔ WSL2 的版本转换。
+/// **本项目只支持 WSL 2。**
 ///
-/// 这个动作要把整个根文件系统搬一遍，**几十分钟是正常的**。
-const CONVERT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// 所有"新建发行版"的路径都**显式**传 `--version 2`，而不是依赖 WSL 的默认值 ——
+/// 默认值（`wsl --set-default-version`）是可以被改成 1 的，
+/// 那样建出来的发行版本程序管不了，用户还会以为是程序坏了。
+pub const WSL_VERSION: u8 = 2;
 
 /// 过滤掉 `wsl.exe` 打在 stderr 上、**与本操作无关**的配置告警。
 ///
@@ -158,28 +160,6 @@ pub fn shutdown(wsl: &Wsl) -> Result<()> {
 /// 不破坏数据、可逆，所以**不需要**二次确认。
 pub fn set_default(wsl: &Wsl, name: &str) -> Result<()> {
     run_action(wsl, &["--set-default", name], QUICK_TIMEOUT)
-}
-
-/// 改发行版的 WSL 版本（`wsl --set-version <name> <1|2>`）。
-///
-/// ⚠️ 慢（要搬整个根文件系统），且中途失败可能让发行版不可用。
-pub fn set_version(wsl: &Wsl, name: &str, version: u8) -> Result<()> {
-    // 先在本地挡掉非法值：与其让 wsl 报一句用法错误，
-    // 不如自己给一条清楚的消息（也不会白起一个进程）。
-    if version != 1 && version != 2 {
-        return Err(Error::InvalidArgument(format!(
-            "WSL 版本只能是 1 或 2，收到 {version}"
-        )));
-    }
-
-    let version = version.to_string();
-    // 用 `as_str()` 而不是 `&version`：数组字面量里 `&String -> &str`
-    // 虽然能靠强制转换过，但显式写出来读着更稳。
-    run_action(
-        wsl,
-        &["--set-version", name, version.as_str()],
-        CONVERT_TIMEOUT,
-    )
 }
 
 /// 注销发行版：**删除**它的根文件系统（`wsl --unregister <name>`）。
@@ -247,32 +227,33 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 /// 新发行版的**来源**。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallSource {
-    /// 本地 tar 文件 → `wsl --import <name> <dir> <file>`。
+    /// 本地 tar 文件 → `wsl --import <name> <dir> <file> --version 2`。
     ///
     /// 最可靠的一条路：**不联网也能用**。
+    ///
+    /// 版本**不给用户选**：本项目只支持 WSL 2（见 [`WSL_VERSION`]）。
     Tar {
         /// tar 文件路径。
         path: String,
-        /// 目标 WSL 版本（`None` = 跟随 WSL 的默认）。
-        version: Option<u8>,
     },
     /// 本地文件，交给 WSL 自己的安装器 → `wsl --install --from-file`。
     ///
     /// 和 [`InstallSource::Tar`] 的区别不只是参数：`--import` 只是把文件系统
     /// 铺开，而 `--install` 走的是 Store 安装器那套，会做首次启动初始化
     /// （建默认用户等）。同一个 tar，两条路的结果不一样。
+    ///
+    /// ⚠️ 这条**没有** `--version` 选项（实测 `wsl.exe --help`），
+    /// 版本由安装器自己决定 —— 我们想显式指定也指定不了。
     File {
         /// 文件路径（RootFS 或 VHDX）。
         path: String,
     },
-    /// 在线安装 → `wsl --install -d <name>`。
+    /// 在线安装 → `wsl --install -d <name> --version 2`。
     ///
     /// ⚠️ 实测本机 `wsl --list --online` **不可用**
     /// （解析不了 `raw.githubusercontent.com`），所以发行版名只能**手输**，
     /// 不能做成一个"转圈等列表"的下拉框。
     Online {
-        /// 目标 WSL 版本。
-        version: Option<u8>,
         /// 装完是否立刻启动。
         ///
         /// 默认**不**启动：安装动辄十几分钟，装完自己弹一个终端出来很突兀。
@@ -325,11 +306,10 @@ impl InstallSpec {
         }
 
         match &self.source {
-            InstallSource::Tar { path, version } => {
+            InstallSource::Tar { path } => {
                 if path.trim().is_empty() {
                     return Err("tar 文件路径不能为空".to_owned());
                 }
-                check_version(*version)?;
                 if self.install_dir.trim().is_empty() {
                     return Err("从 tar 导入必须指定安装目录".to_owned());
                 }
@@ -339,7 +319,8 @@ impl InstallSpec {
                     return Err("文件路径不能为空".to_owned());
                 }
             }
-            InstallSource::Online { version, .. } => check_version(*version)?,
+            // 在线安装没有额外必填项：名字上面已经校验过了
+            InstallSource::Online { .. } => {}
         }
 
         let dir = self.install_dir.trim();
@@ -362,15 +343,15 @@ impl InstallSpec {
         let mut args: Vec<String> = Vec::new();
 
         match &self.source {
-            InstallSource::Tar { path, version } => {
+            InstallSource::Tar { path } => {
                 args.push("--import".to_owned());
                 args.push(name);
                 args.push(dir.to_owned());
                 args.push(path.trim().to_owned());
-                if let Some(version) = version {
-                    args.push("--version".to_owned());
-                    args.push(version.to_string());
-                }
+                // **显式**指定版本，不吃 WSL 的默认值 ——
+                // 默认值是能被用户改成 1 的，那样建出来的发行版本程序管不了。
+                args.push("--version".to_owned());
+                args.push(WSL_VERSION.to_string());
             }
             InstallSource::File { path } => {
                 args.push("--install".to_owned());
@@ -384,8 +365,9 @@ impl InstallSpec {
                     args.push("--location".to_owned());
                     args.push(dir.to_owned());
                 }
+                // 这条**没有** `--version` 选项，只能听安装器的
             }
-            InstallSource::Online { version, launch } => {
+            InstallSource::Online { launch } => {
                 args.push("--install".to_owned());
                 args.push("-d".to_owned());
                 args.push(name);
@@ -393,10 +375,8 @@ impl InstallSpec {
                     args.push("--location".to_owned());
                     args.push(dir.to_owned());
                 }
-                if let Some(version) = version {
-                    args.push("--version".to_owned());
-                    args.push(version.to_string());
-                }
+                args.push("--version".to_owned());
+                args.push(WSL_VERSION.to_string());
                 // 只有用户明确要求启动时才**不加** `--no-launch`。
                 if !launch {
                     args.push("--no-launch".to_owned());
@@ -417,14 +397,6 @@ impl InstallSpec {
             lines.push(format!("wsl --set-default {}", self.name.trim()));
         }
         lines
-    }
-}
-
-/// 版本只能是 1 或 2（`None` = 跟随 WSL 默认）。
-fn check_version(version: Option<u8>) -> std::result::Result<(), String> {
-    match version {
-        None | Some(1) | Some(2) => Ok(()),
-        Some(other) => Err(format!("WSL 版本只能是 1 或 2，收到 {other}")),
     }
 }
 
@@ -940,19 +912,11 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{ccc}\r
     // -- 动作 --------------------------------------------------------------
 
     #[test]
-    fn set_version_rejects_anything_but_1_and_2_before_spawning() {
-        // 用一个必然不存在的可执行文件：如果校验没挡住，就会先报 ExecutableNotFound。
-        // 断言拿到 InvalidArgument，就说明**根本没起进程**。
-        let wsl = Wsl::with_program("definitely-not-a-real-binary");
-
-        for bad in [0u8, 3, 255] {
-            match set_version(&wsl, "Ubuntu", bad) {
-                Err(Error::InvalidArgument(msg)) => {
-                    assert!(msg.contains(&bad.to_string()), "{msg}");
-                }
-                other => panic!("版本 {bad} 应该被本地挡下，实际：{other:?}"),
-            }
-        }
+    fn this_project_only_targets_wsl_2() {
+        // 这个常量是"只支持 WSL 2"这件事的**唯一**落点：
+        // 所有新建发行版的路径都从这里取版本号。
+        // 哪天要支持 WSL 1，改它之前先想清楚 `--manage` 那一批在 WSL 1 上还成不成立。
+        assert_eq!(WSL_VERSION, 2);
     }
 
     #[test]
@@ -993,7 +957,6 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{ccc}\r
             "Ubuntu",
             InstallSource::Tar {
                 path: r"D:\img\ubuntu.tar".to_owned(),
-                version: Some(2),
             },
         );
         spec.install_dir = r"D:\wsl\Ubuntu".to_owned();
@@ -1013,45 +976,65 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{ccc}\r
     }
 
     #[test]
-    fn tar_import_without_version_omits_the_flag() {
-        let mut spec = InstallSpec::new(
+    fn new_distros_are_always_created_as_wsl_2() {
+        // 显式传 `--version 2`，**不**吃 WSL 的默认值 ——
+        // 那个值能被用户改成 1，而建出来的 WSL 1 发行版本程序管不了。
+        let mut tar = InstallSpec::new(
             "Ubuntu",
             InstallSource::Tar {
                 path: r"D:\img\ubuntu.tar".to_owned(),
-                version: None,
             },
         );
-        spec.install_dir = r"D:\wsl\Ubuntu".to_owned();
+        tar.install_dir = r"D:\wsl\Ubuntu".to_owned();
+        let args = args_of(&tar);
+        let at = args
+            .iter()
+            .position(|a| a == "--version")
+            .expect("tar 导入应该带 --version");
+        assert_eq!(args.get(at + 1).map(String::as_str), Some("2"), "{args:?}");
 
-        let args = args_of(&spec);
+        let online = InstallSpec::new(
+            "Ubuntu-24.04",
+            InstallSource::Online { launch: false },
+        );
+        let args = args_of(&online);
+        assert!(args.iter().any(|a| a == "--version"), "{args:?}");
+        assert!(args.iter().any(|a| a == "2"), "{args:?}");
+
+        // ⚠️ 从文件安装**确实**给不了版本（`--from-file` 没有这个选项），
+        // 这一条要如实承认，不能假装我们也指定了。
+        let file = InstallSpec::new(
+            "X",
+            InstallSource::File {
+                path: r"D:\a.tar".to_owned(),
+            },
+        );
+        let args = args_of(&file);
         assert!(!args.iter().any(|a| a == "--version"), "{args:?}");
-        assert_eq!(args.len(), 4);
     }
 
     #[test]
     fn online_install_adds_no_launch_unless_asked() {
         let quiet = InstallSpec::new(
             "Ubuntu-24.04",
-            InstallSource::Online {
-                version: None,
-                launch: false,
-            },
+            InstallSource::Online { launch: false },
         );
         assert_eq!(
             args_of(&quiet),
-            vec!["--install", "-d", "Ubuntu-24.04", "--no-launch"]
+            vec![
+                "--install",
+                "-d",
+                "Ubuntu-24.04",
+                "--version",
+                "2",
+                "--no-launch"
+            ]
         );
         // 在线安装**不需要**安装目录（WSL 有自己的默认位置）
         assert!(quiet.validate().is_ok());
 
         // 要求装完启动时，`--no-launch` 就不该出现
-        let loud = InstallSpec::new(
-            "Ubuntu-24.04",
-            InstallSource::Online {
-                version: Some(2),
-                launch: true,
-            },
-        );
+        let loud = InstallSpec::new("Ubuntu-24.04", InstallSource::Online { launch: true });
         let args = args_of(&loud);
         assert!(!args.iter().any(|a| a == "--no-launch"), "{args:?}");
         assert_eq!(
@@ -1088,15 +1071,7 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{ccc}\r
 
     #[test]
     fn install_spec_rejects_bad_input() {
-        let online = |name: &str| {
-            InstallSpec::new(
-                name,
-                InstallSource::Online {
-                    version: None,
-                    launch: false,
-                },
-            )
-        };
+        let online = |name: &str| InstallSpec::new(name, InstallSource::Online { launch: false });
 
         // 名字空 / 全空白
         for bad in ["", "   "] {
@@ -1114,7 +1089,6 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{ccc}\r
             "X",
             InstallSource::Tar {
                 path: r"D:\a.tar".to_owned(),
-                version: None,
             },
         );
         assert!(no_dir.validate().unwrap_err().contains("安装目录"));
@@ -1124,7 +1098,6 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{ccc}\r
             "X",
             InstallSource::Tar {
                 path: r"D:\a.tar".to_owned(),
-                version: None,
             },
         );
         relative.install_dir = r"wsl\X".to_owned();
@@ -1135,7 +1108,6 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{ccc}\r
             "X",
             InstallSource::Tar {
                 path: "  ".to_owned(),
-                version: None,
             },
         );
         no_path.install_dir = r"D:\wsl\X".to_owned();
@@ -1149,34 +1121,6 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{ccc}\r
             },
         );
         assert!(empty_file.validate().is_err());
-    }
-
-    #[test]
-    fn version_must_be_1_or_2() {
-        for bad in [0u8, 3, 9] {
-            let spec = InstallSpec::new(
-                "X",
-                InstallSource::Online {
-                    version: Some(bad),
-                    launch: false,
-                },
-            );
-            assert!(
-                spec.validate().unwrap_err().contains("1 或 2"),
-                "版本 {bad} 应该被拒"
-            );
-        }
-
-        for ok in [None, Some(1u8), Some(2u8)] {
-            let spec = InstallSpec::new(
-                "X",
-                InstallSource::Online {
-                    version: ok,
-                    launch: false,
-                },
-            );
-            assert!(spec.validate().is_ok(), "{ok:?} 应该被接受");
-        }
     }
 
     #[test]
@@ -1201,7 +1145,6 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{ccc}\r
             "Ubuntu",
             InstallSource::Tar {
                 path: r"D:\a.tar".to_owned(),
-                version: None,
             },
         );
         spec.install_dir = r"D:\wsl\Ubuntu".to_owned();
@@ -1221,16 +1164,10 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{ccc}\r
 
     #[test]
     fn preview_is_a_single_line_when_not_setting_default() {
-        let spec = InstallSpec::new(
-            "X",
-            InstallSource::Online {
-                version: None,
-                launch: false,
-            },
-        );
+        let spec = InstallSpec::new("X", InstallSource::Online { launch: false });
         let lines = spec.preview_lines();
         assert_eq!(lines.len(), 1, "{lines:?}");
-        assert_eq!(lines[0], "wsl --install -d X --no-launch");
+        assert_eq!(lines[0], "wsl --install -d X --version 2 --no-launch");
     }
 
     #[test]
@@ -1238,13 +1175,7 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{ccc}\r
         // 用一个必然不存在的可执行文件：校验要是没挡住，
         // 拿到的会是 ExecutableNotFound 而不是 InvalidArgument。
         let wsl = Wsl::with_program("definitely-not-a-real-binary");
-        let spec = InstallSpec::new(
-            "  ",
-            InstallSource::Online {
-                version: None,
-                launch: false,
-            },
-        );
+        let spec = InstallSpec::new("  ", InstallSource::Online { launch: false });
         assert!(matches!(
             install(&wsl, &spec),
             Err(Error::InvalidArgument(_))

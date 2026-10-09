@@ -1467,36 +1467,9 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
     // -- 选项 --
     let mut options: Vec<AnyElement> = Vec::new();
 
-    if source.supports_version() {
-        let buttons: Vec<AnyElement> = [
-            ("ver-default", "跟随默认", None),
-            ("ver-1", "WSL 1", Some(1u8)),
-            ("ver-2", "WSL 2", Some(2u8)),
-        ]
-        .into_iter()
-        .map(|(id, label, value)| {
-            let entity = entity.clone();
-            let mut button = Button::new(id)
-                .label(label)
-                .small()
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |shell, cx| shell.set_install_version(value, cx));
-                });
-            if form.version == value {
-                button = button.primary();
-            }
-            button.into_any_element()
-        })
-        .collect();
-
-        options.push(
-            v_flex()
-                .gap_1()
-                .child(div().text_xs().text_color(theme::text_dim()).child("WSL 版本"))
-                .child(h_flex().gap_2().flex_wrap().children(buttons))
-                .into_any_element(),
-        );
-    }
+    // 这里**没有** WSL 版本选择器：本项目只支持 WSL 2，
+    // 装出来的固定是 WSL 2（`wslc_core::cmd::distro::WSL_VERSION`）。
+    // 给一个只有一个选项的下拉框不如不给。
 
     // 开关用**按钮**而不是复选框：全项目都是这个路子
     // （复选框样式在深色主题下对比度很差）。
@@ -2699,6 +2672,10 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
     // 过渡态（安装 / 卸载 / 转换中）下 `wsl` 会拒绝写操作，
     // 所以那几种状态下干脆不显示写操作按钮。
     let transitional = distro.state.is_transitional();
+    // 本项目**只支持 WSL 2**。正常的机器上这永远是 false；
+    // 但如果真有个 WSL 1 发行版，它的磁盘操作（VHDX 那套）全都不成立，
+    // 与其让用户点了看报错，不如不给按钮 + 明说原因。
+    let is_wsl1 = distro.version == Some(1);
 
     // -- 动作 --------------------------------------------------------------
 
@@ -2735,7 +2712,8 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
     }
 
     // `--compact` 要求发行版处于**已停止**状态；运行中给出这个按钮是误导。
-    if !running && !transitional {
+    // WSL 1 根本没有 VHDX，压缩无从谈起。
+    if !running && !transitional && !is_wsl1 {
         actions.push(
             danger_button_distro(
                 "distro-detail-compact",
@@ -2747,7 +2725,7 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
         );
     }
 
-    // -- `wsl --manage` 的另外四项（P4）--
+    // -- `wsl --manage` 的另外几项（P4）--
     //
     // 全是**低频**操作，所以只出现在详情里，不塞进列表行。
     if !transitional {
@@ -2758,13 +2736,18 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
             name,
             entity,
         ));
-        actions.push(prompt_button(
-            "distro-detail-resize",
-            "调整大小",
-            PromptKind::ResizeDistro,
-            name,
-            entity,
-        ));
+
+        // 调整大小和稀疏都是**VHDX 专属**的，WSL 1 上没有意义
+        if !is_wsl1 {
+            actions.push(prompt_button(
+                "distro-detail-resize",
+                "调整大小",
+                PromptKind::ResizeDistro,
+                name,
+                entity,
+            ));
+        }
+
         actions.push(prompt_button(
             "distro-detail-user",
             "默认用户",
@@ -2776,52 +2759,28 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
         // 稀疏是两个**明确方向**的按钮，而不是一个"切换"：
         // 界面不显示当前状态（注册表 `Flags` 里哪一位是稀疏**没有实测确认**），
         // 与其猜，不如让用户自己说清要开还是要关。
-        actions.push(
-            danger_button_distro(
-                "distro-detail-sparse-on",
-                "启用稀疏",
-                DistroAction::SetSparse {
-                    name: name.to_owned(),
-                    sparse: true,
-                },
-                entity,
-            )
-            .into_any_element(),
-        );
-        actions.push(
-            danger_button_distro(
-                "distro-detail-sparse-off",
-                "关闭稀疏",
-                DistroAction::SetSparse {
-                    name: name.to_owned(),
-                    sparse: false,
-                },
-                entity,
-            )
-            .into_any_element(),
-        );
-    }
-
-    // 改版本：只在 1 ↔ 2 之间切。版本读不出来时不给按钮 ——
-    // 不知道当前是几，就不知道该往哪转。
-    if !transitional {
-        let target = match distro.version {
-            Some(1) => Some(2u8),
-            Some(2) => Some(1u8),
-            _ => None,
-        };
-        if let Some(target) = target {
+        if !is_wsl1 {
             actions.push(
                 danger_button_distro(
-                    "distro-detail-setver",
-                    if target == 2 {
-                        "转为 WSL 2"
-                    } else {
-                        "转为 WSL 1"
-                    },
-                    DistroAction::SetVersion {
+                    "distro-detail-sparse-on",
+                    "启用稀疏",
+                    DistroAction::SetSparse {
                         name: name.to_owned(),
-                        version: target,
+                        sparse: true,
+                    },
+                    entity,
+                )
+                .into_any_element(),
+            );
+        }
+        if !is_wsl1 {
+            actions.push(
+                danger_button_distro(
+                    "distro-detail-sparse-off",
+                    "关闭稀疏",
+                    DistroAction::SetSparse {
+                        name: name.to_owned(),
+                        sparse: false,
                     },
                     entity,
                 )
@@ -2829,6 +2788,12 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
             );
         }
     }
+
+    // 这里**没有**「转为 WSL 1/2」：本项目只支持 WSL 2，
+    // 不做版本转换（也就没有那条要搬整个根文件系统、几十分钟的操作）。
+    //
+    // 但如果机器上真有个 WSL 1 发行版，得让用户明白**为什么**它的
+    // 磁盘操作是灰的 —— 那句说明在下面的「信息」区里。
 
     if !transitional {
         actions.push(
@@ -2889,7 +2854,7 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
         .map(|u| u.to_string())
         .unwrap_or_else(|| "—".to_owned());
 
-    let rows: Vec<AnyElement> = vec![
+    let mut rows: Vec<AnyElement> = vec![
         kv("状态", distro.state.label()).into_any_element(),
         kv("WSL 版本", distro.version_label()).into_any_element(),
         kv("默认发行版", if is_default { "是" } else { "否" }).into_any_element(),
@@ -2898,6 +2863,19 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
         kv_block("安装位置", location).into_any_element(),
         kv_block("虚拟磁盘", vhdx).into_any_element(),
     ];
+
+    if is_wsl1 {
+        rows.push(
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child(
+                    "⚠️ 这是 WSL 1 发行版。本程序只支持 WSL 2，\
+                     所以压缩 / 稀疏 / 调整大小这些磁盘操作对它不适用，已经隐藏。",
+                )
+                .into_any_element(),
+        );
+    }
 
     let mut buttons: Vec<AnyElement> = vec![reveal.into_any_element()];
     buttons.extend(actions);
