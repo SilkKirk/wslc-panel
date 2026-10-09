@@ -1,0 +1,4 @@
+  NAME               STATE           VERSION
+  Ubuntu 24.04 LTS   Running         2
+* Debian             Stopped         2
+  kali-linux         Installing      1

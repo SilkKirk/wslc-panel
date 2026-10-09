@@ -498,7 +498,7 @@ mod tests {
         ));
         assert!(matches!(
             prune(&wslc, None),
-            Err(Error::ExecutableNotFound(_))
+            Err(Error::ExecutableNotFound { .. })
         ));
     }
 

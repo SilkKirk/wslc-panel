@@ -1,0 +1,2 @@
+  NAME            STATE           VERSION
+* Ubuntu-26.04    Stopped         2
