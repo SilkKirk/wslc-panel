@@ -138,6 +138,8 @@ pub struct Shell {
     create_dialog: Option<CreateDialog>,
     /// 正在查看详情的容器名；关闭时为 None。
     detail: Option<String>,
+    /// 采集期间又有刷新请求进来；跑完要补一次。
+    refresh_again: bool,
 }
 
 impl Shell {
@@ -149,6 +151,7 @@ impl Shell {
             pull_cancel: None,
             create_dialog: None,
             detail: None,
+            refresh_again: false,
         };
         shell.refresh(cx);
         shell.start_auto_refresh(cx);
@@ -520,11 +523,21 @@ impl Shell {
 
     /// 后台采集一次完整快照。
     ///
-    /// 重复调用会被忽略（`busy` 保护），避免自动刷新和手动刷新叠加。
+    /// 已经在采的时候**不会并发再开一轮**，但也不会丢掉这次请求：
+    /// 记在 `refresh_again` 上，本轮结束后立刻补跑。
+    ///
+    /// 这一点很关键 —— 操作（启动/停止/创建/删除）完成后都会调它，
+    /// 如果正好撞上 3 秒的自动刷新就把这次请求丢掉，
+    /// 界面要等到下一个周期才变，用户会以为操作没生效。
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.state.busy {
+            // **不能丢**：正在跑的那轮采到的是操作**之前**的数据。
+            // 丢掉这次请求，界面就要等下一个周期才变 ——
+            // 用户看到的就是"点了停止，状态还是运行中"。
+            self.refresh_again = true;
             return;
         }
+        self.refresh_again = false;
         self.state.busy = true;
         cx.notify();
 
@@ -551,9 +564,25 @@ impl Shell {
                     shell.load_settings(cx);
                 }
                 cx.notify();
+
+                // 本轮采集期间被挡下的刷新请求 → 立刻补跑
+                if std::mem::take(&mut shell.refresh_again) {
+                    shell.refresh(cx);
+                }
             });
         })
         .detach();
+    }
+
+    /// 定时刷新（自动刷新用）。
+    ///
+    /// 与 [`Shell::refresh`] 的区别：**忙的时候直接跳过、不排队** ——
+    /// 下一个周期自然会再来一次，堆着没有意义。
+    pub fn tick(&mut self, cx: &mut Context<Self>) {
+        if self.state.busy {
+            return;
+        }
+        self.refresh(cx);
     }
 
     /// 按固定间隔自动刷新。
@@ -571,7 +600,7 @@ impl Shell {
 
                 cx.background_executor().timer(interval).await;
 
-                if this.update(cx, |shell, cx| shell.refresh(cx)).is_err() {
+                if this.update(cx, |shell, cx| shell.tick(cx)).is_err() {
                     break;
                 }
             }
