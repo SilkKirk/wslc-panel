@@ -831,7 +831,11 @@ impl Render for Shell {
 
         // 副标题只显示当前会话。刷新耗时/间隔属于实现细节，
         // 不进界面（耗时写日志，间隔在"设置"页里改）。
-        let subtitle = format!("会话 {}", state.session_label());
+        let subtitle = format!(
+            "会话 {} · 构建 {}",
+            state.session_label(),
+            crate::short_build_sha()
+        );
 
         let refresh_button = {
             let entity = entity.clone();

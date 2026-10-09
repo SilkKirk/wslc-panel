@@ -52,10 +52,35 @@ const MIN_WINDOW: (f32, f32) = (880.0, 620.0);
 /// 初始窗口占显示器可用区域的比例（留点边距，不让窗口贴边）。
 const WINDOW_RATIO: f32 = 0.92;
 
+/// 构建时注入的提交号（CI 通过 `WSLC_PANEL_BUILD_SHA` 传入）。
+///
+/// 本地构建时是 `"dev"`。
+///
+/// **为什么需要它**：crate 版本号一直是 `0.1.0`，用户下载了新 exe 也
+/// 分不清自己跑的是哪个构建 —— 实机就发生过"下了最新 release 但没看到
+/// 新功能"，最后没法判断到底是构建没更新还是下载到了旧文件。
+fn build_sha() -> &'static str {
+    option_env!("WSLC_PANEL_BUILD_SHA").unwrap_or("dev")
+}
+
+/// 提交号前 7 位（短号）。
+fn short_build_sha() -> &'static str {
+    let sha = build_sha();
+    if sha.len() >= 7 {
+        &sha[..7]
+    } else {
+        sha
+    }
+}
+
 fn main() {
     init_tracing();
 
-    tracing::info!("wslc-panel 启动（版本 {}）", env!("CARGO_PKG_VERSION"));
+    tracing::info!(
+        "wslc-panel 启动（版本 {}，构建 {}）",
+        env!("CARGO_PKG_VERSION"),
+        build_sha()
+    );
 
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)

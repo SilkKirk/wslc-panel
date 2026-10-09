@@ -67,6 +67,10 @@ jobs:
           exit 0
 
       - name: 编译 release
+        env:
+          # 注入提交号，让程序自己报出"构建自哪个提交" ——
+          # 用户据此确认下载到的到底是不是新版。
+          WSLC_PANEL_BUILD_SHA: ${{ github.sha }}
         run: cargo build -p wslc-panel --release
 
       - name: 确认 exe 存在
