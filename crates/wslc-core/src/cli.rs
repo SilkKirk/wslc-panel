@@ -340,6 +340,13 @@ const WSL_NOT_FOUND_HINT: &str =
 /// 它随 Windows 一起提供，所以只可能是 `PATH` 出了问题。
 const HELPER_NOT_FOUND_HINT: &str = "请确认它位于 PATH 中（它随 Windows 一起提供）";
 
+/// 找不到 `curl.exe` 时给用户的下一步。
+///
+/// 它从 Windows 10 1803 起随系统提供，所以"找不到"要么是被裁剪过的系统、
+/// 要么是被 EDR 拦了。不管哪种，用户该知道的是**还有一条不需要它的路**。
+pub const CURL_NOT_FOUND_HINT: &str =
+    "它随 Windows 10 1803 以上版本提供。也可以用「从 tar 导入」——那条路不联网、也不需要 curl。";
+
 /// `wsl.exe`（WSL **发行版** / 实例）调用器。
 ///
 /// # 为什么可以复用 `Wslc` 的实现
@@ -664,15 +671,38 @@ pub fn run_helper(
     args: &[&str],
     timeout: Duration,
 ) -> Result<CommandOutput> {
+    run_helper_with_hint(program, label, HELPER_NOT_FOUND_HINT, args, timeout)
+}
+
+/// 和 [`run_helper`] 一样，但**自定义**"找不到这个程序"时的提示。
+///
+/// `curl.exe` 需要它：它也随 Windows 提供，但"找不到"的补救方式和 `reg.exe`
+/// 完全不同 —— 用户该知道的是"别用镜像站了，改从本地 tar 导入"，
+/// 而不是"把它放回 PATH"。
+pub fn run_helper_with_hint(
+    program: &str,
+    label: &'static str,
+    hint: &'static str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<CommandOutput> {
     let owned = to_owned_args(args);
-    execute(
-        Path::new(program),
-        label,
-        HELPER_NOT_FOUND_HINT,
-        &owned,
-        timeout,
-        None,
-    )
+    execute(Path::new(program), label, hint, &owned, timeout, None)
+}
+
+/// 启动一个**边跑边读**的辅助进程（`curl.exe` 这类非 WSL 工具）。
+///
+/// 刻意复用 `spawn_streaming_impl`：并发读两个管道、`CREATE_NO_WINDOW`、
+/// UTF-8 解码这一套只该有一份实现 —— 单线程读管道会死锁这种坑，
+/// 不该在第二个程序上再踩一遍。
+pub fn spawn_streaming_program(
+    program: &str,
+    label: &'static str,
+    hint: &'static str,
+    args: &[String],
+    on_line: impl Fn(&str) + Send + Sync + 'static,
+) -> Result<StreamHandle> {
+    spawn_streaming_impl(Path::new(program), label, hint, args, on_line)
 }
 
 /// 启动一个**边跑边读**的子进程。

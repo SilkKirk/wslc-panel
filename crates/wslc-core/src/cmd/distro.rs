@@ -21,6 +21,9 @@ use std::time::Duration;
 use crate::cli::{self, StreamHandle, Wsl};
 use crate::error::{Error, Result};
 use crate::model::distro::{parse_distro_list, Distro, WslStatus};
+// 绝对路径校验只在 `model::install` 里实现一次（它和"安装目录推导"一起被单测），
+// 本模块的 `--move` / `--export` 直接复用它。
+use crate::model::install::is_absolute_windows_path;
 
 /// 注册表根键：发行版元数据都在这里。
 pub const LXSS_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss";
@@ -92,12 +95,8 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(180);
 /// 但碎片多的盘可能到分钟级，所以给得宽松。
 const DISK_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
-/// **本项目只支持 WSL 2。**
-///
-/// 所有"新建发行版"的路径都**显式**传 `--version 2`，而不是依赖 WSL 的默认值 ——
-/// 默认值（`wsl --set-default-version`）是可以被改成 1 的，
-/// 那样建出来的发行版本程序管不了，用户还会以为是程序坏了。
-pub const WSL_VERSION: u8 = 2;
+// ⚠️ `WSL_VERSION` 的定义在 `model::install`（它是"新建发行版"这件事的一部分），
+// 这里通过上面那条 `pub use` 转出去 —— 值仍然是 2，语义见那边的文档。
 
 /// 过滤掉 `wsl.exe` 打在 stderr 上、**与本操作无关**的配置告警。
 ///
@@ -249,225 +248,151 @@ pub fn start(wsl: &Wsl, name: &str) -> Result<std::process::Child> {
 }
 
 // ---------------------------------------------------------------------------
-// 添加实例（P3）
+// 添加实例（P4）
 // ---------------------------------------------------------------------------
 
-/// 安装新发行版的超时。
+// ⚠️ 安装相关的**模型与纯逻辑**已经搬到 [`crate::model::install`]：
+// 对齐参考实现之后，安装不再是一两条命令（在线安装要改名的话是 8 步、
+// 镜像站还要先下载），而"一条命令"这个抽象撑不住多步流程；
+// 更要紧的是 `model/` 里的东西**能脱离 Windows 单测** ——
+// 本机没有 Rust 工具链，CI 的 `core` 任务才是唯一跑得到测试的地方
+// （见 `AGENTS.md` §1、§2）。
+//
+// 这里只留"起进程"的那部分，并把类型转出去，免得调用方到处改 import。
+pub use crate::model::install::{parse_online_list, InstallSource, InstallSpec, OnlineDistro};
+pub use crate::model::install::WSL_VERSION;
+use crate::model::install::{OnlineListSource, OnlineListing, parse_distribution_info};
+
+/// `wsl --list --online` 的超时。
 ///
-/// 在线安装要下载几百 MB 到几 GB，从 tar 导入要铺开整个文件系统 ——
-/// 按**量级**给，不按"感觉"给。
-const INSTALL_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// 它要联网：正常几秒，本机实测是**连接被重置**（也在几秒内失败）。
+/// 给 30 秒是为了慢网络下不至于误判成"没有列表"。
+const ONLINE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// 新发行版的**来源**。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InstallSource {
-    /// 本地 tar 文件 → `wsl --import <name> <dir> <file> --version 2`。
-    ///
-    /// 最可靠的一条路：**不联网也能用**。
-    ///
-    /// 版本**不给用户选**：本项目只支持 WSL 2（见 [`WSL_VERSION`]）。
-    Tar {
-        /// tar 文件路径。
-        path: String,
-    },
-    /// 本地文件，交给 WSL 自己的安装器 → `wsl --install --from-file`。
-    ///
-    /// 和 [`InstallSource::Tar`] 的区别不只是参数：`--import` 只是把文件系统
-    /// 铺开，而 `--install` 走的是 Store 安装器那套，会做首次启动初始化
-    /// （建默认用户等）。同一个 tar，两条路的结果不一样。
-    ///
-    /// ⚠️ 这条**没有** `--version` 选项（实测 `wsl.exe --help`），
-    /// 版本由安装器自己决定 —— 我们想显式指定也指定不了。
-    File {
-        /// 文件路径（RootFS 或 VHDX）。
-        path: String,
-    },
-    /// 在线安装 → `wsl --install -d <name> --version 2`。
-    ///
-    /// ⚠️ 实测本机 `wsl --list --online` **不可用**
-    /// （解析不了 `raw.githubusercontent.com`），所以发行版名只能**手输**，
-    /// 不能做成一个"转圈等列表"的下拉框。
-    Online {
-        /// 装完是否立刻启动。
-        ///
-        /// 默认**不**启动：安装动辄十几分钟，装完自己弹一个终端出来很突兀。
-        launch: bool,
-    },
-}
-
-/// 「添加实例」的全部参数。
+/// 取在线可安装的发行版清单。
 ///
-/// 和容器的 [`crate::cmd::container::RunSpec`] 一个套路：
-/// [`InstallSpec::validate`] 先挡住明显错的输入，[`InstallSpec::to_args`]
-/// 负责拼命令行 —— 界面据此做**等效命令预览**，用户随时知道我们要跑什么。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InstallSpec {
-    /// 发行版名。
-    pub name: String,
-    /// 安装目录。留空表示交给 WSL 决定。
-    pub install_dir: String,
-    /// 来源。
-    pub source: InstallSource,
-    /// 装完是否设为默认。
-    ///
-    /// ⚠️ 这**不是**一个命令行选项 —— `--import` 和 `--install` 都不接受
-    /// `--set-default`（实测 `wsl.exe --help`）。所以它对应的是安装成功后
-    /// **再跑一条** `wsl --set-default <name>`，见 [`install`]。
-    pub set_default: bool,
-}
-
-impl InstallSpec {
-    /// 新建（只给名字和来源，其余字段用默认值）。
-    pub fn new(name: impl Into<String>, source: InstallSource) -> Self {
-        Self {
-            name: name.into(),
-            install_dir: String::new(),
-            source,
-            set_default: false,
-        }
-    }
-
-    /// 校验；返回**可以直接给用户看**的错误。
-    pub fn validate(&self) -> std::result::Result<(), String> {
-        let name = self.name.trim();
-        if name.is_empty() {
-            return Err("发行版名不能为空".to_owned());
-        }
-        // 发行版名会变成注册表键和安装目录的一部分；
-        // 含路径分隔符会让它和安装路径混淆，直接挡掉。
-        if name.contains(['\\', '/']) {
-            return Err("发行版名里不能有 \\ 或 /".to_owned());
-        }
-
-        match &self.source {
-            InstallSource::Tar { path } => {
-                if path.trim().is_empty() {
-                    return Err("tar 文件路径不能为空".to_owned());
-                }
-                if self.install_dir.trim().is_empty() {
-                    return Err("从 tar 导入必须指定安装目录".to_owned());
-                }
-            }
-            InstallSource::File { path } => {
-                if path.trim().is_empty() {
-                    return Err("文件路径不能为空".to_owned());
-                }
-            }
-            // 在线安装没有额外必填项：名字上面已经校验过了
-            InstallSource::Online { .. } => {}
-        }
-
-        let dir = self.install_dir.trim();
-        if !dir.is_empty() && !is_absolute_windows_path(dir) {
-            return Err(format!(
-                "安装目录必须是绝对路径（如 D:\\wsl\\{name}）：{dir}"
-            ));
-        }
-
-        Ok(())
-    }
-
-    /// 拼成 `wsl.exe` 的参数（**不含** `wsl` 本身）。
-    ///
-    /// 注意**不包含** `--set-default` —— 它不是安装命令的选项，
-    /// 见 [`InstallSpec::preview_lines`]。
-    pub fn to_args(&self) -> Vec<String> {
-        let name = self.name.trim().to_owned();
-        let dir = self.install_dir.trim();
-        let mut args: Vec<String> = Vec::new();
-
-        match &self.source {
-            InstallSource::Tar { path } => {
-                args.push("--import".to_owned());
-                args.push(name);
-                args.push(dir.to_owned());
-                args.push(path.trim().to_owned());
-                // **显式**指定版本，不吃 WSL 的默认值 ——
-                // 默认值是能被用户改成 1 的，那样建出来的发行版本程序管不了。
-                args.push("--version".to_owned());
-                args.push(WSL_VERSION.to_string());
-            }
-            InstallSource::File { path } => {
-                args.push("--install".to_owned());
-                args.push("--from-file".to_owned());
-                args.push(path.trim().to_owned());
-                // `--name` 显式给：不给的话 WSL 会自己猜一个名字，
-                // 而用户在表单里明确填了。
-                args.push("--name".to_owned());
-                args.push(name);
-                if !dir.is_empty() {
-                    args.push("--location".to_owned());
-                    args.push(dir.to_owned());
-                }
-                // 这条**没有** `--version` 选项，只能听安装器的
-            }
-            InstallSource::Online { launch } => {
-                args.push("--install".to_owned());
-                args.push("-d".to_owned());
-                args.push(name);
-                if !dir.is_empty() {
-                    args.push("--location".to_owned());
-                    args.push(dir.to_owned());
-                }
-                args.push("--version".to_owned());
-                args.push(WSL_VERSION.to_string());
-                // 只有用户明确要求启动时才**不加** `--no-launch`。
-                if !launch {
-                    args.push("--no-launch".to_owned());
-                }
-            }
-        }
-
-        args
-    }
-
-    /// 等效命令预览。
-    ///
-    /// 返回的是**多行**：勾了"设为默认"时是两条命令 ——
-    /// 界面上要如实展示，别让用户以为一条命令就搞定了。
-    pub fn preview_lines(&self) -> Vec<String> {
-        let mut lines = vec![format!("wsl {}", self.to_args().join(" "))];
-        if self.set_default {
-            lines.push(format!("wsl --set-default {}", self.name.trim()));
-        }
-        lines
-    }
-}
-
-/// 是不是 Windows 绝对路径：`D:\...`、`D:/...` 或 UNC `\\server\share`。
+/// 返回 `(解析出来的清单, 失败原因)`：**两个都可能非空**（比如 wsl 退出码 0
+/// 却一条也没解析出来）。调用方据此决定要不要换一个来源兜底。
 ///
-/// 刻意**不用** `Path::is_absolute()`：它在非 Windows 上对 `D:\wsl` 返回
-/// `false`，而这条校验的结论不该随编译平台变。
-fn is_absolute_windows_path(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    // 盘符形式：`D:\` / `D:/`
-    if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
-        return matches!(bytes[2], b'\\' | b'/');
+/// # 本机这条命令是**坏的**（实测，见 `tests/fixtures/wsl_list_online_failed.txt`）
+///
+/// `wsl -l -o` 去 `raw.githubusercontent.com` 取清单，连接被重置、退出码 `-1`。
+/// 所以它失败**不是异常，而是常态**：界面会接着去拉微软那份
+/// `DistributionInfo.json`（`cdn.jsdelivr.net` 能通），
+/// 见 [`crate::model::install::parse_distribution_info`]。
+///
+/// 原始输出原样带回去：那句"与服务器的连接被重置"本身就能解释
+/// 为什么列表是空的 —— 比一句"拉取失败"有用得多。
+pub fn list_online(wsl: &Wsl) -> Result<(Vec<OnlineDistro>, String)> {
+    let out = wsl.run_with_timeout(&["--list", "--online"], ONLINE_TIMEOUT)?;
+    let text = strip_config_warnings(&out.combined());
+    let distros = parse_online_list(&text);
+
+    if out.success() && !distros.is_empty() {
+        return Ok((distros, String::new()));
     }
-    // UNC 形式：`\\server\share`
-    text.starts_with("\\\\")
-}
-
-/// 按 [`InstallSpec`] 装一个新发行版。
-///
-/// 可能跑**一到两条**命令：先安装，需要的话再 `--set-default`
-/// （`--import` / `--install` 都没有这个选项，只能分两步）。
-///
-/// **阻塞调用**，必须在后台执行器上跑 —— 在线安装可能要几十分钟。
-pub fn install(wsl: &Wsl, spec: &InstallSpec) -> Result<String> {
-    // 再校验一次：调用方（界面）本来就会先校验，但数据层不该依赖这件事。
-    spec.validate().map_err(Error::InvalidArgument)?;
-
-    let args = spec.to_args();
-    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    run_action(wsl, &refs, INSTALL_TIMEOUT)?;
-
-    let name = spec.name.trim();
-    if spec.set_default {
-        run_action(wsl, &["--set-default", name], QUICK_TIMEOUT)?;
-        Ok(format!("{name} 已安装，并设为默认发行版"))
+    let reason = if text.trim().is_empty() {
+        "wsl 没有给出任何输出".to_owned()
     } else {
-        Ok(format!("{name} 已安装"))
+        text
+    };
+    Ok((distros, reason))
+}
+
+/// 微软那份发行版清单的地址（`wsl -l -o` 的**兜底来源**）。
+///
+/// 顺序是"先试快的、再试能通的"：
+///
+/// 1. jsDelivr 的 CDN —— 本机实测 200，18481 字节，国内通常可达；
+/// 2. `ghproxy.net` 转发 `raw.githubusercontent.com` —— 本机实测也 200，
+///    留作 CDN 被挡时的第二条。
+///
+/// 两个都拿不到时界面会如实报错（并把 `wsl -l -o` 的原话一起显示）——
+/// 那时候用户还剩"手输发行版名"这一条路。
+pub const ONLINE_LIST_FALLBACK_URLS: [&str; 2] = [
+    "https://cdn.jsdelivr.net/gh/microsoft/WSL@master/distributions/DistributionInfo.json",
+    "https://ghproxy.net/https://raw.githubusercontent.com/microsoft/WSL/master/distributions/DistributionInfo.json",
+];
+
+/// 拉在线可安装的发行版清单：**先问 `wsl`，不行就自己拉微软那份 JSON**。
+///
+/// # 为什么要兜底
+///
+/// 本机（WSL 3.0.1.0）`wsl -l -o` 直接失败：它去 `raw.githubusercontent.com`
+/// 取清单，连接被重置、退出码 `-1`（原始输出见
+/// `tests/fixtures/wsl_list_online_failed.txt`）。也就是说**失败是常态**，
+/// 不兜底的话"在线安装"永远只能手输发行版名。
+///
+/// 兜底走的是同一个数据源（微软仓库里的 `DistributionInfo.json`），
+/// 只是换了一条能通的网络路径，用 `curl.exe` 下（理由见 [`crate::mirrors`]：
+/// 本仓库不能新增 HTTP 依赖）。
+///
+/// # 返回值里两个字段都可能非空
+///
+/// `items` 有值不代表 `error` 就是空 —— 本机的实际情况正是
+/// "wsl 报错 + 兜底拿到了列表"。错误信息留着给用户看，
+/// 界面自己决定要不要显示。这样调用方不必区分"完全成功"和"兜底成功"。
+pub fn online_distros(wsl: &Wsl) -> OnlineListing {
+    let mut wsl_error = String::new();
+
+    match list_online(wsl) {
+        Ok((items, reason)) => {
+            if !items.is_empty() {
+                return OnlineListing {
+                    items,
+                    error: String::new(),
+                    source: OnlineListSource::Wsl,
+                };
+            }
+            wsl_error = reason;
+        }
+        Err(e) => wsl_error = e.to_string(),
+    }
+
+    tracing::info!("wsl --list --online 没拿到清单（{wsl_error}），改走微软那份 JSON");
+
+    let mut fallback_error = String::new();
+    for url in ONLINE_LIST_FALLBACK_URLS {
+        let args = ["-s", "-L", "--max-time", "20", "--retry", "1", url];
+        match cli::run_helper_with_hint(
+            "curl.exe",
+            "curl.exe",
+            cli::CURL_NOT_FOUND_HINT,
+            &args,
+            Duration::from_secs(30),
+        ) {
+            Ok(out) if out.success() => match parse_distribution_info(&out.stdout) {
+                Ok(items) if !items.is_empty() => {
+                    return OnlineListing {
+                        items,
+                        // 如实保留 wsl 的报错：用户点开"为什么是这份列表"要看的就是它
+                        error: wsl_error,
+                        source: OnlineListSource::FallbackJson,
+                    };
+                }
+                Ok(_) => fallback_error = format!("{url} 里一个发行版都没有"),
+                Err(e) => fallback_error = format!("{url}：{e}"),
+            },
+            Ok(out) => {
+                fallback_error = format!(
+                    "{url} 返回退出码 {:?}：{}",
+                    out.code,
+                    out.combined().trim()
+                )
+            }
+            Err(e) => fallback_error = format!("{url}：{e}"),
+        }
+        tracing::warn!("兜底来源失败：{fallback_error}");
+    }
+
+    OnlineListing {
+        items: Vec::new(),
+        error: if wsl_error.trim().is_empty() {
+            fallback_error
+        } else {
+            format!("wsl --list --online：{wsl_error}；兜底来源：{fallback_error}")
+        },
+        source: OnlineListSource::Unknown,
     }
 }
 
@@ -1178,244 +1103,6 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{ccc}\r
         // 全被过滤掉时是空串，调用方据此给兜底文案
         assert!(strip_config_warnings("wsl: a\nwsl: b").is_empty());
         assert!(strip_config_warnings("").is_empty());
-    }
-
-    // -- 添加实例 ----------------------------------------------------------
-
-    /// `Vec<String>` → `Vec<&str>`，方便断言。
-    fn args_of(spec: &InstallSpec) -> Vec<String> {
-        spec.to_args()
-    }
-
-    #[test]
-    fn tar_import_args_are_exact() {
-        let mut spec = InstallSpec::new(
-            "Ubuntu",
-            InstallSource::Tar {
-                path: r"D:\img\ubuntu.tar".to_owned(),
-            },
-        );
-        spec.install_dir = r"D:\wsl\Ubuntu".to_owned();
-
-        assert_eq!(
-            args_of(&spec),
-            vec![
-                "--import",
-                "Ubuntu",
-                r"D:\wsl\Ubuntu",
-                r"D:\img\ubuntu.tar",
-                "--version",
-                "2"
-            ]
-        );
-        assert!(spec.validate().is_ok());
-    }
-
-    #[test]
-    fn new_distros_are_always_created_as_wsl_2() {
-        // 显式传 `--version 2`，**不**吃 WSL 的默认值 ——
-        // 那个值能被用户改成 1，而建出来的 WSL 1 发行版本程序管不了。
-        let mut tar = InstallSpec::new(
-            "Ubuntu",
-            InstallSource::Tar {
-                path: r"D:\img\ubuntu.tar".to_owned(),
-            },
-        );
-        tar.install_dir = r"D:\wsl\Ubuntu".to_owned();
-        let args = args_of(&tar);
-        let at = args
-            .iter()
-            .position(|a| a == "--version")
-            .expect("tar 导入应该带 --version");
-        assert_eq!(args.get(at + 1).map(String::as_str), Some("2"), "{args:?}");
-
-        let online = InstallSpec::new(
-            "Ubuntu-24.04",
-            InstallSource::Online { launch: false },
-        );
-        let args = args_of(&online);
-        assert!(args.iter().any(|a| a == "--version"), "{args:?}");
-        assert!(args.iter().any(|a| a == "2"), "{args:?}");
-
-        // ⚠️ 从文件安装**确实**给不了版本（`--from-file` 没有这个选项），
-        // 这一条要如实承认，不能假装我们也指定了。
-        let file = InstallSpec::new(
-            "X",
-            InstallSource::File {
-                path: r"D:\a.tar".to_owned(),
-            },
-        );
-        let args = args_of(&file);
-        assert!(!args.iter().any(|a| a == "--version"), "{args:?}");
-    }
-
-    #[test]
-    fn online_install_adds_no_launch_unless_asked() {
-        let quiet = InstallSpec::new(
-            "Ubuntu-24.04",
-            InstallSource::Online { launch: false },
-        );
-        assert_eq!(
-            args_of(&quiet),
-            vec![
-                "--install",
-                "-d",
-                "Ubuntu-24.04",
-                "--version",
-                "2",
-                "--no-launch"
-            ]
-        );
-        // 在线安装**不需要**安装目录（WSL 有自己的默认位置）
-        assert!(quiet.validate().is_ok());
-
-        // 要求装完启动时，`--no-launch` 就不该出现
-        let loud = InstallSpec::new("Ubuntu-24.04", InstallSource::Online { launch: true });
-        let args = args_of(&loud);
-        assert!(!args.iter().any(|a| a == "--no-launch"), "{args:?}");
-        assert_eq!(
-            args,
-            vec!["--install", "-d", "Ubuntu-24.04", "--version", "2"]
-        );
-    }
-
-    #[test]
-    fn file_install_passes_name_and_optional_location() {
-        let mut spec = InstallSpec::new(
-            "MyDistro",
-            InstallSource::File {
-                path: r"D:\img\rootfs.tar.gz".to_owned(),
-            },
-        );
-        assert_eq!(
-            args_of(&spec),
-            vec![
-                "--install",
-                "--from-file",
-                r"D:\img\rootfs.tar.gz",
-                "--name",
-                "MyDistro"
-            ]
-        );
-
-        // 给了安装目录就补上 --location
-        spec.install_dir = r"E:\wsl\MyDistro".to_owned();
-        let args = args_of(&spec);
-        assert!(args.iter().any(|a| a == "--location"), "{args:?}");
-        assert!(spec.validate().is_ok());
-    }
-
-    #[test]
-    fn install_spec_rejects_bad_input() {
-        let online = |name: &str| InstallSpec::new(name, InstallSource::Online { launch: false });
-
-        // 名字空 / 全空白
-        for bad in ["", "   "] {
-            assert!(online(bad).validate().is_err(), "{bad:?} 应该被拒");
-        }
-
-        // 名字含路径分隔符
-        for bad in [r"a\b", "a/b"] {
-            let err = online(bad).validate().unwrap_err();
-            assert!(err.contains('\\') || err.contains('/'), "{err}");
-        }
-
-        // tar 导入必须给安装目录
-        let no_dir = InstallSpec::new(
-            "X",
-            InstallSource::Tar {
-                path: r"D:\a.tar".to_owned(),
-            },
-        );
-        assert!(no_dir.validate().unwrap_err().contains("安装目录"));
-
-        // 安装目录必须是绝对路径
-        let mut relative = InstallSpec::new(
-            "X",
-            InstallSource::Tar {
-                path: r"D:\a.tar".to_owned(),
-            },
-        );
-        relative.install_dir = r"wsl\X".to_owned();
-        assert!(relative.validate().unwrap_err().contains("绝对路径"));
-
-        // tar 文件路径空
-        let mut no_path = InstallSpec::new(
-            "X",
-            InstallSource::Tar {
-                path: "  ".to_owned(),
-            },
-        );
-        no_path.install_dir = r"D:\wsl\X".to_owned();
-        assert!(no_path.validate().is_err());
-
-        // 从文件安装也要求路径非空
-        let empty_file = InstallSpec::new(
-            "X",
-            InstallSource::File {
-                path: String::new(),
-            },
-        );
-        assert!(empty_file.validate().is_err());
-    }
-
-    #[test]
-    fn absolute_path_check_does_not_depend_on_the_build_platform() {
-        assert!(is_absolute_windows_path(r"D:\wsl"));
-        assert!(is_absolute_windows_path("D:/wsl"));
-        assert!(is_absolute_windows_path(r"\\server\share"));
-        assert!(is_absolute_windows_path(r"c:\x"));
-
-        assert!(!is_absolute_windows_path(r"wsl\X"));
-        assert!(!is_absolute_windows_path("wsl"));
-        assert!(!is_absolute_windows_path("D:"));
-        assert!(!is_absolute_windows_path(r"D:relative"));
-        assert!(!is_absolute_windows_path(""));
-    }
-
-    #[test]
-    fn set_default_becomes_a_second_command_not_an_option() {
-        // `--import` / `--install` 都不接受 `--set-default`（实测 --help），
-        // 所以它必须是**第二条命令**，预览里也要如实显示两行。
-        let mut spec = InstallSpec::new(
-            "Ubuntu",
-            InstallSource::Tar {
-                path: r"D:\a.tar".to_owned(),
-            },
-        );
-        spec.install_dir = r"D:\wsl\Ubuntu".to_owned();
-        spec.set_default = true;
-
-        let args = args_of(&spec);
-        assert!(
-            !args.iter().any(|a| a == "--set-default"),
-            "安装命令里不该出现 --set-default：{args:?}"
-        );
-
-        let lines = spec.preview_lines();
-        assert_eq!(lines.len(), 2, "{lines:?}");
-        assert!(lines[0].starts_with("wsl --import"), "{lines:?}");
-        assert_eq!(lines[1], "wsl --set-default Ubuntu");
-    }
-
-    #[test]
-    fn preview_is_a_single_line_when_not_setting_default() {
-        let spec = InstallSpec::new("X", InstallSource::Online { launch: false });
-        let lines = spec.preview_lines();
-        assert_eq!(lines.len(), 1, "{lines:?}");
-        assert_eq!(lines[0], "wsl --install -d X --version 2 --no-launch");
-    }
-
-    #[test]
-    fn install_rejects_an_invalid_spec_before_spawning() {
-        // 用一个必然不存在的可执行文件：校验要是没挡住，
-        // 拿到的会是 ExecutableNotFound 而不是 InvalidArgument。
-        let wsl = Wsl::with_program("definitely-not-a-real-binary");
-        let spec = InstallSpec::new("  ", InstallSource::Online { launch: false });
-        assert!(matches!(
-            install(&wsl, &spec),
-            Err(Error::InvalidArgument(_))
-        ));
     }
 
     // -- wsl --manage ------------------------------------------------------

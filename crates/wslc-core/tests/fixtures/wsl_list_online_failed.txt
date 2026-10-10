@@ -1,0 +1,3 @@
+未能从“https://raw.githubusercontent.com/microsoft/WSL/master/distributions/DistributionInfo.json”提取分发列表。与服务器的连接被重置 
+错误代码： Wsl/WININET_E_CONNECTION_RESET
+如果此错误是意外错误，请考虑搜索现有问题或在 https://github.com/microsoft/WSL/issues 提交新问题。
