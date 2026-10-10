@@ -1,0 +1,14 @@
+[package]
+name = "wslc-panel-core"
+version.workspace = true
+license.workspace = true
+publish = false
+description = "wslc-panel 里不依赖 GPUI 的那一半（偏好 / 状态 / 纯数据与纯函数）"
+edition = "2024"
+rust-version = "1.85"
+
+[dependencies]
+wslc-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }

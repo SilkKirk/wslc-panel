@@ -3,8 +3,9 @@ name: CI
 # 本机没有 Rust 工具链，所以 CI 是唯一的编译验证通道。
 #
 # 设计要点：
-# 1. `core` 任务先跑 —— 它不需要 GPU、不需要显示环境，2 分钟内就能给出
-#    数据层的真实结论（UTF-16LE 解码、JSON Lines 解析、settings 注释保留……）。
+# 1. `core` 任务先跑 —— 它不需要 GPU、不需要显示环境，1 分钟内就能给出
+#    数据层与面板纯逻辑的真实结论（UTF-16LE 解码、JSON Lines 解析、
+#    settings 注释保留、列宽、预设值……）。
 # 2. `ui` 任务跑 `cargo check` 而不是 `cargo build` —— 依赖树才是耗时大头，
 #    check 能拿到全部类型错误却省掉代码生成与链接，反馈快得多。
 # 3. `fmt` / `clippy` 目前是**建议性**的（continue-on-error）：
@@ -17,13 +18,38 @@ name: CI
 #
 #    功能分支现在只在开 PR 时跑。代价是"推上去就有反馈"没了，
 #    但换来的是不再重复烧 CI 分钟数，而 main 的每次推送仍然照跑。
+# 5. **面板的单测不再跑 `--bins`**（本轮改）。
+#
+#    原先那一步是 `cargo test -p wslc-panel --bins`，实测 **763 秒**，
+#    占掉一整轮 CI 的 72%。原因是它必须把整棵 GPUI 依赖树 codegen 并
+#    **链接**一遍，才能跑几个字符串切分和列宽的断言；而 `cargo check`
+#    产出的只是元数据，对那一步一点用都没有 —— 缓存再热也得从头再来。
+#
+#    那些测试全是纯逻辑，现在跟着 `prefs.rs` / `state.rs` / 列宽 / 预设值
+#    一起搬进了 **`wslc-panel-core`**（不依赖 GPUI），
+#    由 `core` 任务里的 `cargo test -p wslc-panel-core` 跑，十几秒完事。
+#    **测试一条没少**，只是不再为了它们去链接 GPUI。
+#
+#    所以 `ui` 任务现在只做类型检查，不再执行任何测试。
 
 on:
   push:
     # 只有 main 的推送才跑；功能分支走 pull_request。
     branches: ["main"]
   pull_request:
+    # 只改文档的 PR 不必跑十几分钟 —— 编译验证对它们没有任何意义。
+    #
+    # ⚠️ 如果哪天给 main 设了「必需状态检查」，这段会让纯文档 PR 卡在
+    # "Expected — Waiting for status to be reported"。到时候删掉它即可。
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
   workflow_dispatch:
+
+# 同一个分支连推两次时，取消上一次还没跑完的：它验证的是旧提交，没有意义。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -31,7 +57,7 @@ env:
 
 jobs:
   core:
-    name: wslc-core 测试（纯逻辑，无需 GPU）
+    name: 纯逻辑测试（wslc-core + wslc-panel-core，无需 GPU）
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -39,11 +65,18 @@ jobs:
 
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
 
       - name: 缓存 cargo 与 target
         uses: Swatinem/rust-cache@v2
+        with:
+          # v1：面板拆出 `wslc-panel-core` 之后换代一次。
+          #
+          # 顺带治一个老毛病 —— 原先那个 key 从不变化，而 actions/cache
+          # 命中主 key 就**不再覆盖**，于是缓存内容永远停在第一次保存时
+          # 的样子（实测 Post 那一步都是 0 秒）。换代一次让它重新生成。
+          prefix-key: "v1-rust"
+          # 失败时也存：编到一半的依赖对下一次运行照样有用。
+          cache-on-failure: true
 
       - name: 版本信息
         run: |
@@ -52,7 +85,15 @@ jobs:
 
       - name: 跑数据层测试
         # 真机冒烟测试在没有 wslc 的 runner 上会自动跳过（见 tests/wslc_smoke.rs）。
-        run: cargo test -p wslc-core -- --nocapture
+        #
+        # `--profile ci`（见根 Cargo.toml）：不优化、不带调试信息 ——
+        # dev 里那个 `opt-level = 3` 是给本地跑 GPUI 用的，CI 不需要。
+        run: cargo test -p wslc-core --profile ci -- --nocapture
+
+      - name: 跑面板纯逻辑测试
+        # 面板的**全部**单测都在这里：偏好、状态、列宽、预设值、纯函数。
+        # 它们不碰 GPUI，所以这一步只要十几秒 —— 对比原先 `--bins` 的 763 秒。
+        run: cargo test -p wslc-panel-core --profile ci -- --nocapture
 
   ui:
     name: wslc-panel 编译检查（GPUI）
@@ -66,23 +107,20 @@ jobs:
 
       - name: 缓存 cargo 与 target
         uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-rust"
+          cache-on-failure: true
 
       - name: 检查整个 workspace
         # 这是本项目的关键验证：GPUI 的 API 假设（异步闭包、ButtonVariants、
         # Styled 方法名……）只有真正编译过才算数。见 docs/SPIKE.md §2。
+        #
+        # 刻意**不加** `--profile ci`：check 不产出机器码，opt-level 对它没有意义，
+        # 加了只会白搭一份冷缓存（见根 Cargo.toml 的说明）。
         run: cargo check --workspace --all-targets
 
       - name: 检查默认启动是否可用
         run: cargo check -p wslc-panel --bins
-
-      - name: 跑 wslc-panel 自己的测试
-        # ⚠️ 这一步不能省：`views.rs` / `app.rs` / `state.rs` 里的单测属于
-        # **bin 的 test target**，而 `cargo check --all-targets` 只做类型检查、
-        # **不会执行**。少了这一步，那些测试等于从没跑过。
-        #
-        # 这些测试都是纯逻辑（表格列宽、预设值、输入切分……），
-        # 不创建窗口也不需要 GPU，所以能在 CI 上直接跑。
-        run: cargo test -p wslc-panel --bins -- --nocapture
 
   lint:
     name: 格式与 clippy（只报告，不阻塞）
@@ -99,6 +137,9 @@ jobs:
 
       - name: 缓存 cargo 与 target
         uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-rust"
+          cache-on-failure: true
 
       # 本机没有 Rust 工具链，所以这里是唯一能拿到 rustfmt diff 的地方。
       # 输出同时进日志和 Step Summary，方便直接照抄回去。

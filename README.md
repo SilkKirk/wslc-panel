@@ -88,8 +88,9 @@ winget install --id Microsoft.VisualStudio.2022.BuildTools `
 # 重开一个终端后确认：
 rustc --version ; cargo --version
 
-# 1) 先验证数据层（不需要 GPU / 窗口，最快）
+# 1) 先验证纯逻辑（不需要 GPU / 窗口，最快）
 cargo test -p wslc-core
+cargo test -p wslc-panel-core
 
 # 2) 编译并运行界面（首次会拉取并编译 GPUI，耗时较长）
 cargo run -p wslc-panel
@@ -101,7 +102,7 @@ cargo run -p wslc-panel
 
 | Workflow | 触发 | 作用 |
 |---|---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | 任意 push / PR | `wslc-core` 测试 + 整个 workspace 的 `cargo check` |
+| [`ci.yml`](.github/workflows/ci.yml) | 任意 push / PR | `wslc-core` + `wslc-panel-core` 测试（纯逻辑）+ 整个 workspace 的 `cargo check` |
 | [`release.yml`](.github/workflows/release.yml) | 推 `v*` 标签，或手动触发 | 编译 release、打包 zip、建 Release |
 
 在 Actions 页手动触发 `release.yml`，就能在不打标签的情况下验证"exe 能不能产出"。
@@ -121,19 +122,27 @@ crates/
 │  ├─ settings.rs    settings.yaml 读写（**保留注释**的定点改写）
 │  └─ tests/         fixtures 驱动的集成测试 + 真机冒烟测试
 │
+├─ wslc-panel-core/  同样不依赖 GPUI：面板里"不是界面"的那一半
+│  ├─ state.rs       状态与数据采集
+│  ├─ prefs.rs       应用自己的偏好（%LOCALAPPDATA%\wslc-panel\prefs.json）
+│  ├─ columns.rs     各页表格的列定义（表头 + 宽度）
+│  ├─ presets.rs     配置项的常用预设值
+│  └─ util.rs        纯函数助手（切分、刷新按钮文案……）
+│
 └─ wslc-panel/       GPUI 应用
-   ├─ main.rs        窗口与生命周期、日志（发布版写文件）
+   ├─ main.rs        窗口与生命周期、日志（发布版写文件）+ 对 core 的 re-export 垫片
    ├─ app.rs         Shell：导航、异步刷新、确认弹窗（唯一接触 GPUI 异步 API 的文件）
    ├─ views.rs       各页面渲染（纯函数）
-   ├─ state.rs       状态与数据采集（不依赖 GPUI）
-   ├─ prefs.rs       应用自己的偏好（%LOCALAPPDATA%\wslc-panel\prefs.json）
    └─ theme.rs       配色
 ```
 
-**分层原则**：`wslc-core` 不知道 GPUI 的存在。这意味着
+**分层原则**：`wslc-core` 与 `wslc-panel-core` 都不知道 GPUI 的存在。这意味着
 
-- 数据层可以在没有 GPU / 没有窗口的环境里跑完整测试；
-- 万一 GPUI 在本机有问题，**换渲染层不会造成数据层返工**。
+- 数据层与纯逻辑可以在没有 GPU / 没有窗口的环境里跑完整测试；
+- 万一 GPUI 在本机有问题，**换渲染层不会造成数据层返工**；
+- CI 也不必为了跑几个断言去编译并链接整棵 GPUI 依赖树 ——
+  原先 `cargo test -p wslc-panel --bins` 要 **763 秒**，现在面板的测试
+  全在 `wslc-panel-core` 里，十几秒跑完。
 
 ---
 
@@ -173,9 +182,11 @@ base, component, and assets, so a Rust application lists a single dependency.」
   会开一个独立的 Windows 控制台窗口。
 - **本机直连 Docker Hub 会超时**：`run` 表单默认 `--pull missing`，
   并提供"使用本地已有镜像"的输入方式；离线环境请用 `--pull never`。
-- **界面尚未接入 GPUI 的 `InputState`**：`views.rs` 的测试模块不能写
-  `use super::*;`，因为那会把 gpui 再导出的 `test` 属性宏带进来、
-  遮蔽 Rust 的 `#[test]`（详见 [`docs/SPIKE.md`](docs/SPIKE.md)）。
+- **GPUI 文件里写测试模块要小心**：`app.rs` / `views.rs` 里有 `use gpui_kit::*;`，
+  而 gpui 会再导出 `gpui_macros` 的 `test` **属性宏** —— 测试模块里写
+  `use super::*;` 会把它继承进来、遮蔽 Rust 的 `#[test]`，报
+  `recursion limit reached while expanding #[test]`（详见 [`docs/SPIKE.md`](docs/SPIKE.md)）。
+  面板的测试现在都在 `wslc-panel-core` 里，那边没有 gpui，不存在这个坑。
 
 ---
 

@@ -1,0 +1,47 @@
+name: gen-lock
+
+# 一次性工具，用完即删。
+#
+# 这个仓库一直没有 `Cargo.lock`（作者本机没有 Rust 工具链，从没生成过），
+# 于是 rust-cache 的 key 里 `hashFiles('**/Cargo.lock')` 永远是空字符串 ——
+# 依赖实际漂移时，缓存既不会失效、也不会更新，构建也不可复现。
+#
+# 这里只做一件事：在 runner 上 `cargo generate-lockfile`，把结果提交回分支。
+#
+# 刻意只监听 `ci/gen-lock` 这一个分支名，避免误触发。
+
+on:
+  push:
+    branches: ["ci/gen-lock"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  gen-lock:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ci/gen-lock
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: 生成 Cargo.lock
+        run: cargo generate-lockfile
+
+      - name: 提交回去
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+            Write-Output "Cargo.lock 没有变化，跳过提交"
+            exit 0
+          }
+          git commit -m "chore: 提交 Cargo.lock（缓存 key 与可复现构建）"
+          git push origin HEAD:ci/gen-lock

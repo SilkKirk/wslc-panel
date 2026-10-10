@@ -9,9 +9,14 @@
 //! main.rs   窗口与生命周期
 //! app.rs    Shell：导航、异步刷新、确认弹窗（唯一接触 GPUI 异步 API 的文件）
 //! views.rs  各页面渲染（纯函数）
-//! state.rs  状态与数据采集（不依赖 GPUI）
 //! theme.rs  配色
 //! ```
+//!
+//! 不依赖 GPUI 的那一半在 **`wslc-panel-core`** 里：状态与数据采集、应用偏好、
+//! 表格列宽、配置预设值、几个纯函数。拆出去纯粹是为了 CI ——
+//! 那些东西的单测不该为了跑起来去编译并链接整棵 GPUI 依赖树
+//! （见那个 crate 的顶层说明）。下面有一层 re-export 垫片，
+//! 所以 `app.rs` / `views.rs` 里的 `crate::state::…` 这些路径照旧能用。
 
 // 发布版不给它配控制台窗口 —— 这是个 GUI 程序，双击运行时多弹一个黑框很突兀
 // （第一次实机运行就暴露了这个问题）。
@@ -25,10 +30,31 @@
 // 完整说明见 views.rs 的测试模块。
 
 mod app;
-mod prefs;
-mod state;
 mod theme;
 mod views;
+
+// 纯逻辑层（偏好 / 状态 / 列宽 / 预设 / 纯函数）搬去了 `wslc-panel-core` ——
+// 那一半不依赖 GPUI，单测因此不必再编译并**链接**整棵 GPUI 依赖树
+// （实测那一步要 763 秒，见那个 crate 的顶层说明）。
+//
+// 这里放一层 re-export 垫片，而不是把 `app.rs` / `views.rs` 里那 50 多处
+// `crate::state::…` / `crate::prefs::…` 全改成 `wslc_panel_core::…`：
+// 那种改动只有噪音，垫片让调用点原样能用。
+mod columns {
+    pub use wslc_panel_core::columns::*;
+}
+mod prefs {
+    pub use wslc_panel_core::prefs::*;
+}
+mod presets {
+    pub use wslc_panel_core::presets::*;
+}
+mod state {
+    pub use wslc_panel_core::state::*;
+}
+mod util {
+    pub use wslc_panel_core::util::*;
+}
 
 // 具名导入（而不是 `as _`）：下面 `impl Write for LogWriter` 直接用这个名字，
 // 顺便让 `file.write_all(...)` 的 trait 方法解析有据可依。
