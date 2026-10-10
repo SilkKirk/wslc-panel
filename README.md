@@ -104,6 +104,7 @@ cargo run -p wslc-panel
 |---|---|---|
 | [`ci.yml`](.github/workflows/ci.yml) | 任意 push / PR | `wslc-core` + `wslc-panel-core` 测试（纯逻辑）+ 整个 workspace 的 `cargo check` |
 | [`release.yml`](.github/workflows/release.yml) | 推 `v*` 标签，或手动触发 | 编译 release、打包 zip、建 Release |
+| [`gen-lock.yml`](.github/workflows/gen-lock.yml) | 推 `ci/gen-lock` 分支，或手动触发 | 生成 / 更新 `Cargo.lock` 并提交回分支 —— 本机没有 Rust 工具链时，这是唯一能更新锁文件的办法 |
 
 在 Actions 页手动触发 `release.yml`，就能在不打标签的情况下验证"exe 能不能产出"。
 

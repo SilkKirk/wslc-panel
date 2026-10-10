@@ -1,14 +1,19 @@
 name: gen-lock
 
-# 一次性工具，用完即删。
+# 生成 / 更新 `Cargo.lock`，并把结果提交回当前分支。
 #
-# 这个仓库一直没有 `Cargo.lock`（作者本机没有 Rust 工具链，从没生成过），
-# 于是 rust-cache 的 key 里 `hashFiles('**/Cargo.lock')` 永远是空字符串 ——
-# 依赖实际漂移时，缓存既不会失效、也不会更新，构建也不可复现。
+# 为什么需要它：作者本机没有 Rust 工具链，`Cargo.lock` 一直没被生成过 ——
+# 于是 rust-cache 的 key 里 `hashFiles('**/Cargo.lock')` 永远是空字符串，
+# 依赖实际漂移时缓存既不会失效、也不会更新，构建也不可复现。
 #
-# 这里只做一件事：在 runner 上 `cargo generate-lockfile`，把结果提交回分支。
+# 用法（两种都行）：
 #
-# 刻意只监听 `ci/gen-lock` 这一个分支名，避免误触发。
+# 1. 推一个 `ci/gen-lock` 分支 —— 它会在这个分支上生成并提交，然后你走 PR；
+# 2. 在 Actions 页手动 dispatch（默认分支上才会有这个按钮），它会直接提交。
+#
+# 手动触发时要选一个分支：选功能分支就不会动到 `main`。
+#
+# 平时不用管它：依赖没有变化时，那一步只会输出"Cargo.lock 没有变化"。
 
 on:
   push:
@@ -25,7 +30,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ci/gen-lock
+          # push 触发时是 `ci/gen-lock`；手动触发时是你在界面上选的那个分支。
+          ref: ${{ github.ref_name }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -44,4 +50,4 @@ jobs:
             exit 0
           }
           git commit -m "chore: 提交 Cargo.lock（缓存 key 与可复现构建）"
-          git push origin HEAD:ci/gen-lock
+          git push origin "HEAD:${{ github.ref_name }}"
