@@ -35,8 +35,8 @@ use wslc_core::settings::SettingKey;
 use wslc_core::{Wsl, Wslc};
 
 use crate::state::{
-    self, AppState, ConfirmAction, DistroAction, ImmediateAction, InstallSourceKind, Page,
-    PendingAction, PromptKind, Toast, ToastKind,
+    self, AppState, ConfirmAction, DistroAction, ExportProgress, ImmediateAction,
+    InstallSourceKind, Page, PendingAction, PromptKind, Toast, ToastKind,
 };
 use crate::theme;
 use crate::views;
@@ -211,6 +211,11 @@ pub struct Shell {
     /// `AppState::pulling` 里，因为 `views.rs` 只拿得到 `&AppState`。
     // 拉取策略。
     pull_cancel: Option<wslc_core::CancelToken>,
+    /// 正在进行的**导出**任务的取消令牌。
+    ///
+    /// 和 `pull_cancel` 并列：两者都是长任务，都能取消，但一个走 `wslc.exe`、
+    /// 一个走 `wsl.exe`，句柄类型也不同，合并只会让这个字段变成 `enum`。
+    export_cancel: Option<wslc_core::CancelToken>,
     /// 「创建容器」弹窗；关闭时为 `None`。
     create_dialog: Option<CreateDialog>,
     /// 正在查看详情的容器名；关闭时为 None。
@@ -257,6 +262,7 @@ impl Shell {
             state: AppState::new(Wslc::new(), Wsl::new()),
             pull_input: None,
             pull_cancel: None,
+            export_cancel: None,
             create_dialog: None,
             detail: None,
             distro_detail: None,
@@ -353,6 +359,14 @@ impl Shell {
             }
         }
 
+        // 导出是**长任务**（要进度条、要能取消），走的是完全不同的一条路 ——
+        // 它和上面三个只是共用了"让用户填一个文本参数"这个外形。
+        if kind == PromptKind::ExportDistro {
+            self.prompt = None;
+            self.start_export(distro, value, cx);
+            return;
+        }
+
         let title = kind.title();
         self.prompt = None;
         self.state
@@ -377,6 +391,12 @@ impl Shell {
                             wslc_core::cmd::distro::set_default_user(&wsl, &distro, &value)
                                 .map(|()| format!("{distro} 的默认用户已设为 {value}"))
                         }
+                        // 导出在上面就分流到 `start_export` 了，到不了这里。
+                        // 不用 `unreachable!()`：真要漏进来，宁可给一条能读的错误，
+                        // 也不要在用户的机器上 panic。
+                        PromptKind::ExportDistro => Err(wslc_core::Error::InvalidArgument(
+                            "导出不走这条同步路径".to_owned(),
+                        )),
                     }
                 })
                 .await;
@@ -591,6 +611,155 @@ impl Shell {
             None => self.state.notify(Toast::error("当前没有正在进行的拉取")),
         }
         cx.notify();
+    }
+
+    /// 取消正在进行的导出（kill 子进程）。
+    ///
+    /// ⚠️ 取消会留下一个**不完整**的 tar —— 提示里要说明，
+    /// 免得用户把它当成一个能用的备份。
+    pub fn cancel_export(&mut self, cx: &mut Context<Self>) {
+        match &self.export_cancel {
+            Some(token) => {
+                token.cancel();
+                tracing::info!("已请求取消导出");
+                self.state.notify(Toast::info("正在取消导出…"));
+            }
+            None => self.state.notify(Toast::error("当前没有正在进行的导出")),
+        }
+        cx.notify();
+    }
+
+    /// 开始导出发行版（长任务：流式 + 轮询目标文件大小 + 可取消）。
+    ///
+    /// # 为什么进度不用 `wsl --export` 的输出
+    ///
+    /// 它**不打百分比**，只偶尔打几行状态。但导出的产物是一个文件，
+    /// 而**文件大小是真实且连续增长的** —— 直接量它比解析输出靠谱得多，
+    /// 用户看到的也是"还要写多少"这种能估算的信息。
+    ///
+    /// 输出回调只用来在失败时留一句原因。
+    pub fn start_export(&mut self, name: String, path: String, cx: &mut Context<Self>) {
+        if self.state.exporting.is_some() {
+            self.state.notify(Toast::error("已经有一个导出在跑了"));
+            cx.notify();
+            return;
+        }
+        // 拉取和导出在界面上占的是同一个位置（都是居中的长任务浮层），
+        // 不让它们同时跑，否则浮层会打架。
+        if self.state.pulling.is_some() {
+            self.state.notify(Toast::error("正在拉取镜像，等它结束再导出"));
+            cx.notify();
+            return;
+        }
+
+        // 输出只保留最后一行：失败时它就是原因。
+        let last: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let sink = last.clone();
+
+        let handle = match wslc_core::cmd::distro::export_streaming(
+            &self.state.wsl,
+            &name,
+            &path,
+            move |line| {
+                if let Ok(mut slot) = sink.lock() {
+                    *slot = line.to_owned();
+                }
+            },
+        ) {
+            Ok(handle) => handle,
+            Err(e) => {
+                self.state.notify(Toast::error(format!("导出失败：{e}")));
+                cx.notify();
+                return;
+            }
+        };
+
+        self.state.exporting = Some(ExportProgress::new(name.clone(), path.clone()));
+        self.export_cancel = Some(handle.cancel_token());
+        cx.notify();
+
+        let probe = std::path::PathBuf::from(&path);
+        let target = path;
+        let started = std::time::Instant::now();
+
+        cx.spawn(async move |this, cx| {
+            let mut handle = handle;
+            let code = loop {
+                // 1) 目标文件长到多大了（`metadata` 是微秒级，不会卡界面）
+                let written = std::fs::metadata(&probe).ok().map(|m| m.len());
+                let secs = started.elapsed().as_secs();
+                let line = last.lock().ok().map(|s| s.clone()).unwrap_or_default();
+
+                let _ = this.update(cx, |shell, cx| {
+                    if let Some(progress) = shell.state.exporting.as_mut() {
+                        // 只在这两个数字真的变了才重绘 ——
+                        // 每 500 ms 无脑重绘一遍是浪费。
+                        let changed =
+                            progress.written != written || progress.elapsed_secs != secs;
+                        progress.written = written;
+                        progress.elapsed_secs = secs;
+                        progress.last_line = line;
+                        if changed {
+                            cx.notify();
+                        }
+                    }
+                });
+
+                // 2) 进程结束了吗（非阻塞）
+                match handle.try_wait() {
+                    Ok(Some(code)) => break code,
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::warn!("检查导出进程失败：{e}");
+                        break -1;
+                    }
+                }
+
+                cx.background_executor()
+                    .timer(Duration::from_millis(500))
+                    .await;
+            };
+
+            let cancelled = handle.was_cancelled();
+            // 进程已退出，这里只是等读取线程把剩余输出读完。
+            let _ = handle.finish();
+
+            let _ = this.update(cx, |shell, cx| {
+                let detail = shell
+                    .state
+                    .exporting
+                    .take()
+                    .map(|p| p.last_line)
+                    .unwrap_or_default();
+                shell.export_cancel = None;
+
+                if cancelled {
+                    shell.state.notify(Toast::info(format!(
+                        "已取消导出 —— {target} 是个**不完整**的文件，需要自己删掉"
+                    )));
+                } else if code == 0 {
+                    let size = std::fs::metadata(&target)
+                        .ok()
+                        .map(|m| state::format_bytes(m.len()))
+                        .unwrap_or_else(|| "大小未知".to_owned());
+                    shell
+                        .state
+                        .notify(Toast::success(format!("{name} 已导出到 {target}（{size}）")));
+                } else {
+                    let detail = if detail.trim().is_empty() {
+                        format!("退出码 {code}")
+                    } else {
+                        detail
+                    };
+                    shell
+                        .state
+                        .notify(Toast::error(format!("导出 {name} 失败：{detail}")));
+                }
+
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     // -- 容器：启动 / 重启（不需要二次确认）--------------------------------
@@ -1608,9 +1777,12 @@ impl Render for Shell {
             Some(name) => views::distro_detail_overlay(name, state, &entity),
         };
 
-        // 单输入框提示弹窗（移动位置 / 调整大小 / 设置默认用户）。
+        // 单输入框提示弹窗（移动位置 / 调整大小 / 设置默认用户 / 导出）。
         // 要 `cx` 才能实时读输入框的值做等效命令预览。
         let prompt_dialog: AnyElement = views::prompt_overlay(self, &entity, cx);
+
+        // 导出进度浮层（长任务，可取消）。
+        let export_overlay: AnyElement = views::export_overlay(state, &entity);
 
         // 页面渲染要 `&Shell`（不只是 `&AppState`）——「添加实例」页有输入框，
         // 而输入框的 `InputState` 住在 `Shell` 里。
@@ -1720,6 +1892,7 @@ impl Render for Shell {
             // 提示弹窗放最后：它可能是从发行版详情里打开的，
             // 后画的压在详情上面。
             .child(prompt_dialog)
+            .child(export_overlay)
     }
 }
 

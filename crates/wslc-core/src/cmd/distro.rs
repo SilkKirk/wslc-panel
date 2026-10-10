@@ -18,7 +18,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::cli::{self, Wsl};
+use crate::cli::{self, StreamHandle, Wsl};
 use crate::error::{Error, Result};
 use crate::model::distro::{parse_distro_list, Distro, WslStatus};
 
@@ -532,6 +532,61 @@ pub fn set_default_user(wsl: &Wsl, name: &str, user: &str) -> Result<()> {
         &["--manage", name, "--set-default-user", user],
         QUICK_TIMEOUT,
     )
+}
+
+// ---------------------------------------------------------------------------
+// 导出（P3 遗留）
+// ---------------------------------------------------------------------------
+
+/// **流式**导出发行版（`wsl --export <name> <file>`）。
+///
+/// # 为什么这个要流式，而 `--manage` 那批不用
+///
+/// 导出要跑很久（18 GB 的盘几分钟到几十分钟），用户必须能看见进度、
+/// 也必须能取消。所以这里返回 [`StreamHandle`] 而不是跑完才返回。
+///
+/// # 进度怎么表达
+///
+/// `wsl --export` **不打百分比**，只偶尔打几行状态。所以界面的进度条
+/// 不用它的输出，而是**轮询目标文件长到多大了** —— 那个数字是真实且连续的。
+/// 这里的 `on_line` 只用来在出错时留下原因。
+///
+/// # 格式
+///
+/// 导出的是 **tar**（`wsl --export` 的默认格式），可以再用
+/// [`crate::cmd::distro::InstallSource::Tar`] 导回来，也能喂给人家的机器。
+/// 加 `--vhd` 会导出 VHDX，但那个格式只有 WSL 自己认，本程序不做。
+///
+/// 流式模式**没有内建超时** —— 免得把还在正常导出的任务误杀。
+pub fn export_streaming(
+    wsl: &Wsl,
+    name: &str,
+    path: &str,
+    on_line: impl Fn(&str) + Send + Sync + 'static,
+) -> Result<StreamHandle> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(Error::InvalidArgument("发行版名不能为空".to_owned()));
+    }
+
+    let path = path.trim();
+    if path.is_empty() {
+        return Err(Error::InvalidArgument("导出路径不能为空".to_owned()));
+    }
+    if !is_absolute_windows_path(path) {
+        return Err(Error::InvalidArgument(format!(
+            "导出路径必须是绝对路径（如 D:\\backup\\{name}.tar）：{path}"
+        )));
+    }
+    // 以分隔符结尾的是**目录**，而 `--export` 要的是文件名。
+    // 不挡的话 wsl 会报一句不好懂的错，而且可能先建出一个空文件。
+    if path.ends_with(['\\', '/']) {
+        return Err(Error::InvalidArgument(format!(
+            "导出路径要写成文件名（如 D:\\backup\\{name}.tar），不能只给目录：{path}"
+        )));
+    }
+
+    wsl.spawn_streaming(&["--export", name, path], on_line)
 }
 
 // ---------------------------------------------------------------------------
@@ -1237,5 +1292,42 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{ccc}\r
             set_default_user(&wsl, "X", "  "),
             Err(Error::InvalidArgument(_))
         ));
+    }
+
+    // -- 导出 --------------------------------------------------------------
+
+    #[test]
+    fn export_rejects_bad_input_before_spawning() {
+        // 用一个必然不存在的可执行文件：校验要是没挡住，
+        // 拿到的会是 ExecutableNotFound 而不是 InvalidArgument。
+        let wsl = Wsl::with_program("definitely-not-a-real-binary");
+        // 不捕获任何东西的闭包是 `Copy`，可以重复用
+        let noop = |_: &str| {};
+
+        for bad in [r"backup\a.tar", "   ", r"D:\backup\", "D:/backup/"] {
+            assert!(
+                matches!(
+                    export_streaming(&wsl, "Ubuntu", bad, noop),
+                    Err(Error::InvalidArgument(_))
+                ),
+                "路径 {bad:?} 应该被本地挡下"
+            );
+        }
+
+        // 发行版名不能为空
+        assert!(matches!(
+            export_streaming(&wsl, "  ", r"D:\backup\a.tar", noop),
+            Err(Error::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn export_walks_past_validation_and_tries_to_spawn() {
+        // 校验通过后就该真的去起进程。这里用不存在的 exe，
+        // 所以拿到 ExecutableNotFound 恰恰说明**已经走到起进程那一步了** ——
+        // 这正是这条测试想钉住的边界。
+        let wsl = Wsl::with_program("definitely-not-a-real-binary");
+        let result = export_streaming(&wsl, "Ubuntu", r"D:\backup\ubuntu.tar", |_: &str| {});
+        assert!(matches!(result, Err(Error::ExecutableNotFound { .. })));
     }
 }
