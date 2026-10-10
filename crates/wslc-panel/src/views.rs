@@ -1077,10 +1077,13 @@ const DISTRO_COLUMNS: &[(&str, f32)] = &[
 /// 低频但重要的（改版本 / 压缩 / 打开安装位置）收进详情弹窗 ——
 /// 和容器页同一套取舍。
 ///
-/// ⚠️ 「启动」按钮**只是唤醒**：实测 WSL 3.x 在最后一个会话退出约 20 秒后
-/// 会把发行版收回 Stopped（后台常驻进程也留不住），所以它看起来像
-/// "启动了又自己停了"。想让它持续运行请用「打开终端」——
-/// 终端开着，发行版就一直是运行中。页面上有这一行说明，提示条里也会再讲一次。
+/// ⚠️ 「启动」是**真的启动**：它从 Windows 这边吊住一个 `wsl.exe` 不放，
+/// WSL 就认为有活动会话，发行版会一直运行下去（机制和实测见
+/// [`wslc_core::cmd::distro::start`]）。
+///
+/// 代价是那个进程属于**本面板**：面板关掉它也不会退，发行版继续跑。
+/// 所以列表里会给这类发行版打一个「本面板保持」的标记 —— 用户有权知道
+/// 是谁在维持它、以及关掉面板之后它会怎样。
 ///
 /// # 为什么"没有实例"不是错误
 ///
@@ -1112,7 +1115,11 @@ pub fn instances(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     let default_name = state.default_distro().map(|name| name.to_owned());
     let rows: Vec<AnyElement> = distros
         .iter()
-        .map(|distro| distro_row(distro, default_name.as_deref(), entity))
+        .map(|distro| {
+            // 本面板正在吊着它吗？（决定要不要显示"本面板保持"标记）
+            let kept = state.kept_alive.iter().any(|n| n == &distro.name);
+            distro_row(distro, default_name.as_deref(), kept, entity)
+        })
         .collect();
 
     let running = distros.iter().filter(|d| d.state.is_running()).count();
@@ -1225,7 +1232,15 @@ fn distro_summary_card(state: &AppState, distros: &[Distro]) -> AnyElement {
 }
 
 /// 一行实例。
-fn distro_row(distro: &Distro, default_name: Option<&str>, entity: &Entity<Shell>) -> AnyElement {
+///
+/// `kept` = **本面板正吊着它**（见 [`KeepAlive`](crate::app)）。
+/// 有它的时候状态列会多一个标记 —— 用户得知道是谁在维持这个发行版。
+fn distro_row(
+    distro: &Distro,
+    default_name: Option<&str>,
+    kept: bool,
+    entity: &Entity<Shell>,
+) -> AnyElement {
     let is_default = default_name == Some(distro.name.as_str());
 
     let location = distro
@@ -1239,11 +1254,23 @@ fn distro_row(distro: &Distro, default_name: Option<&str>, entity: &Entity<Shell
         None => "—".to_owned(),
     };
 
+    // 状态 + （可选）"本面板保持"标记。标记放在状态右边而不是单独一列：
+    // 它只对少数几行出现，单独开一列会让其余所有行都空着。
+    let status = if kept {
+        h_flex()
+            .gap_1()
+            .child(cell_distro_badge(distro.state))
+            .child(badge("本面板保持", theme::primary(), theme::primary_soft()))
+            .into_any_element()
+    } else {
+        cell_distro_badge(distro.state)
+    };
+
     table_row(
         DISTRO_COLUMNS,
         vec![
             distro_name_link(&distro.name, entity),
-            cell_distro_badge(distro.state),
+            status,
             cell_muted(distro.version_label()),
             if is_default {
                 badge("是", theme::primary(), theme::primary_soft()).into_any_element()
@@ -1252,7 +1279,7 @@ fn distro_row(distro: &Distro, default_name: Option<&str>, entity: &Entity<Shell
             },
             cell_muted(location),
             cell_muted(disk),
-            distro_row_actions(distro, is_default, entity),
+            distro_row_actions(distro, is_default, kept, entity),
         ],
     )
     .into_any_element()
@@ -1300,7 +1327,14 @@ fn add_instance_button(entity: &Entity<Shell>) -> AnyElement {
 ///
 /// 低频但重要的（改版本 / 压缩 / 打开安装位置）都在详情弹窗里 ——
 /// 列表里塞满按钮，常用的那个反而找不到。
-fn distro_row_actions(distro: &Distro, is_default: bool, entity: &Entity<Shell>) -> AnyElement {
+///
+/// `kept` = 本面板正吊着它（见 [`distro_row`]）。
+fn distro_row_actions(
+    distro: &Distro,
+    is_default: bool,
+    kept: bool,
+    entity: &Entity<Shell>,
+) -> AnyElement {
     let name = distro.name.as_str();
     let mut actions: Vec<AnyElement> = Vec::new();
 
@@ -1315,10 +1349,10 @@ fn distro_row_actions(distro: &Distro, is_default: bool, entity: &Entity<Shell>)
         .into_any_element(),
     );
 
-    // ⚠️ 「启动」只是**唤醒**：实测 WSL 3.x 在最后一个会话退出约 20 秒后
-    // 会把发行版收回 Stopped（后台常驻进程也留不住）。这一点在页面顶部
-    // 有一行说明，提示条里也会再讲一次 —— 否则用户会以为是程序坏了。
-    if !distro.state.is_running() && !distro.state.is_transitional() {
+    // 「启动」是**真的**启动：本面板会吊住一个 `wsl.exe` 让发行版一直运行
+    // （见 `wslc_core::cmd::distro::start`）。
+    // 已经由本面板吊着的就不再给这个按钮 —— 再吊一个没有意义，只会多一个进程。
+    if !distro.state.is_running() && !distro.state.is_transitional() && !kept {
         actions.push(
             immediate_button(
                 &format!("start-{name}"),

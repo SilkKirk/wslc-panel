@@ -932,15 +932,18 @@ pub enum ImmediateAction {
     StartContainer(String),
     /// 重启一个运行中的容器。
     RestartContainer(String),
-    /// 唤醒一个已停止的发行版。
+    /// 启动一个发行版，并**让它一直保持运行**。
     ///
-    /// ⚠️ 这是**会自己失效**的动作：实测 WSL 3.x 在约 20 秒后会把发行版
-    /// 收回 Stopped（后台常驻进程也留不住）。界面上必须写明这一点，
-    /// 详见 [`wslc_core::cmd::distro::start`]。
+    /// 做法是从 Windows 这边吊住一个 `wsl.exe` 不放（WSL 认为有活动会话，
+    /// 就不会回收发行版）。细节和实测见 [`wslc_core::cmd::distro::start`]。
+    ///
+    /// ⚠️ 吊着它的那个进程属于**本面板**。面板关掉后它不会跟着退出，
+    /// 发行版会继续跑 —— 所以界面上要标出"由本面板保持运行中"。
     StartDistro(String),
     /// 打开发行版的终端（`wsl -d <name>`，会开一个新的控制台窗口）。
     ///
-    /// 这才是"让它持续运行"的正确入口 —— 终端开着，发行版就一直是运行中。
+    /// 和 [`ImmediateAction::StartDistro`] 的区别：那个由**面板**吊着，
+    /// 这个由**用户自己的终端窗口**吊着 —— 终端一关，发行版约 20 秒后就停了。
     OpenDistroTerminal(String),
     /// 把发行版设为默认。
     SetDefaultDistro(String),
@@ -1070,6 +1073,18 @@ pub struct AppState {
     /// 拉取走 `wslc.exe`，导出走 `wsl.exe`，但界面上的浮层位置是同一个，
     /// 所以启动前会互相检查。
     pub exporting: Option<ExportProgress>,
+    /// **本面板正在吊着**的发行版名（保持它们运行）。
+    ///
+    /// WSL 在最后一个活动会话结束约 20 秒后回收发行版；所谓"启动"，
+    /// 就是从 Windows 这边吊住一个 `wsl.exe` 不放
+    /// （见 [`wslc_core::cmd::distro::start`]）。
+    ///
+    /// 这里只放**名字**（纯数据，能进 `AppState`）；真正的进程句柄在
+    /// `Shell::keep_alive` 里 —— 那是"能力"，不是界面状态。
+    ///
+    /// 界面上要标出来，因为这是**我们**在维持它：用户有权知道
+    /// 关掉面板之后它还会继续跑。
+    pub kept_alive: Vec<String>,
     /// 待用户确认的危险操作（容器域或发行版域）。
     pub confirm: Option<ConfirmAction>,
     /// 提示条。
@@ -1092,6 +1107,7 @@ impl AppState {
             busy: false,
             pulling: None,
             exporting: None,
+            kept_alive: Vec::new(),
             confirm: None,
             toast: None,
         }

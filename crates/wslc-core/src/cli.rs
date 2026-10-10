@@ -457,6 +457,29 @@ impl Wsl {
             .map_err(|e| map_spawn_error(&self.program, WSL_LABEL, WSL_NOT_FOUND_HINT, e))
     }
 
+    /// 起一个**后台哨兵**进程：不等待、不显示窗口，并把句柄交回给调用方。
+    ///
+    /// 和 [`Wsl::spawn_in_new_console`] 的区别：那个开一个**可见的终端窗口**、
+    /// 而且不关心子进程；这个**不显示任何窗口**，并且必须把句柄留着 ——
+    /// 调用方要靠它知道哨兵还活着、以及发行版是不是还"挂"在它身上。
+    /// 用途见 [`crate::cmd::distro::start`]。
+    pub fn spawn_sentinel(&self, args: &[&str]) -> Result<std::process::Child> {
+        let owned = to_owned_args(args);
+        let mut cmd = build_command(&self.program, &owned);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        cmd.spawn()
+            .map_err(|e| map_spawn_error(&self.program, WSL_LABEL, WSL_NOT_FOUND_HINT, e))
+    }
+
     /// 边跑边读：导出 / 导入 / 安装这类长任务用（P2 起会用到）。
     pub fn spawn_streaming(
         &self,
