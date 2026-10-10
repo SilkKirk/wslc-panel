@@ -1062,7 +1062,13 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
                     PlannedStep::new(
                         format!("必要时把 {id} 重定位成 {name}（装到 {target_dir}）"),
                         PlanProgram::EnsureRelocated,
-                        vec![id.clone(), name.clone(), target_dir, temp_tar.clone()],
+                        // `target_dir` 下面那句 note 还要用，所以这里 clone 一份
+                        vec![
+                            id.clone(),
+                            name.clone(),
+                            target_dir.clone(),
+                            temp_tar.clone(),
+                        ],
                     )
                     .uncancellable(),
                 );
