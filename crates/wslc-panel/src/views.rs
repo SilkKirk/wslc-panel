@@ -16,16 +16,22 @@ use gpui_kit::*;
 
 use wslc_core::cmd::container::{PullPolicy, RunSpec};
 use wslc_core::model::{ContainerState, ContainerSummary, Distro, DistroState};
+// `/etc/wsl.conf` 的字段表与保序文档模型（纯逻辑，在 `wslc-core` 里）。
+use wslc_core::model::wslconf;
 use wslc_core::settings::{SETTING_KEYS, SettingKey, SettingKind};
 
-use crate::app::{CreateDialog, Shell};
+// 显式导入而不靠 `gpui_kit::*`：勾选框是这一页独有的组件，
+// 写明来源比"碰巧 glob 里有"可靠。
+use gpui_kit::component::checkbox::Checkbox;
+
+use crate::app::{CreateDialog, Shell, WslConfDialog};
 // 列宽定义与配置项预设值都是纯数据，住在不依赖 GPUI 的 `wslc-panel-core` 里
 // —— 这样它们的单测不必链接 GPUI（见那个 crate 的顶层说明）。
 use crate::columns::{ALL_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS};
 use crate::presets::presets_for;
 use crate::state::{
     AppState, DistroAction, ImmediateAction, InstallSourceKind, Page, PendingAction, PromptKind,
-    PullProgress, format_bytes,
+    PullProgress, WslConfState, format_bytes,
 };
 use crate::theme;
 
@@ -2996,6 +3002,24 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
             })
     };
 
+    // 「编辑配置」也是这一组：它读/写的是发行版**里面**的 `/etc/wsl.conf`，
+    // 不改发行版本身的注册信息。
+    //
+    // 注意：这个文件在 `.wslconfig`（`%USERPROFILE%`，整机一份）里**不存在**
+    // —— 见 `wslc_core::wslconfig` 的说明。所以入口摆在发行版详情里，
+    // 而不是「WSL 配置」页（那一页管的是前者）。
+    let edit_conf = {
+        let entity = entity.clone();
+        let target = name.to_owned();
+        Button::new("distro-detail-wslconf")
+            .label("编辑配置（/etc/wsl.conf）")
+            .small()
+            .on_click(move |_, window, cx| {
+                let target = target.clone();
+                entity.update(cx, |shell, cx| shell.open_wslconf(target, window, cx));
+            })
+    };
+
     let close = {
         let entity = entity.clone();
         Button::new("distro-detail-close")
@@ -3050,7 +3074,10 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
         );
     }
 
-    let mut buttons: Vec<AnyElement> = vec![reveal.into_any_element()];
+    let mut buttons: Vec<AnyElement> = vec![
+        reveal.into_any_element(),
+        edit_conf.into_any_element(),
+    ];
     buttons.extend(actions);
 
     div()
@@ -3335,6 +3362,331 @@ pub fn export_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                         )),
                 )
                 .child(h_flex().w_full().justify_end().child(cancel)),
+        )
+        .into_any_element()
+}
+
+// ---------------------------------------------------------------------------
+// ⑧ 发行版配置（/etc/wsl.conf）
+// ---------------------------------------------------------------------------
+
+/// 字段的稳定元素 id。
+///
+/// 用 `match` 而不是 `format!`：`Input::id` 要的是 `&'static str`
+/// （见 [`form_field`]），而且 GPUI 的交互元素本来就要求 id 稳定。
+fn wslconf_id(section: &str, key: &str) -> &'static str {
+    match (section, key) {
+        ("automount", "enabled") => "wslconf-automount-enabled",
+        ("automount", "mountFsTab") => "wslconf-automount-mountfstab",
+        ("automount", "root") => "wslconf-automount-root",
+        ("automount", "options") => "wslconf-automount-options",
+        ("network", "generateHosts") => "wslconf-network-generatehosts",
+        ("network", "generateResolvConf") => "wslconf-network-generateresolvconf",
+        ("network", "hostname") => "wslconf-network-hostname",
+        ("interop", "enabled") => "wslconf-interop-enabled",
+        ("interop", "appendWindowsPath") => "wslconf-interop-appendwindowspath",
+        ("user", "default") => "wslconf-user-default",
+        ("boot", "systemd") => "wslconf-boot-systemd",
+        ("boot", "command") => "wslconf-boot-command",
+        ("boot", "protectBinfmt") => "wslconf-boot-protectbinfmt",
+        ("gpu", "enabled") => "wslconf-gpu-enabled",
+        ("time", "useWindowsTimezone") => "wslconf-time-usewindowstimezone",
+        _ => "wslconf-unknown",
+    }
+}
+
+/// 「这一项显示的是 WSL 的默认值」的小标记。
+///
+/// 参考项目没有这个 —— 它的 UI 把每个字段都 `unwrap_or(默认值)` 再写回，
+/// 用户根本分不清"我看到的是默认"还是"明确设过"。
+fn default_tag(explicit: bool) -> Option<AnyElement> {
+    if explicit {
+        return None;
+    }
+    Some(badge("默认", theme::text_dim(), theme::bg()).into_any_element())
+}
+
+/// 表单里的一行。
+fn wslconf_row(
+    state: &WslConfState,
+    dialog: &WslConfDialog,
+    field: &'static wslconf::Field,
+    entity: &Entity<Shell>,
+    cx: &App,
+) -> AnyElement {
+    let explicit = state.doc.is_explicit(field.section, field.key);
+
+    // 只读字段（目前只有 `[boot] systemd`）：**不画勾选框**。
+    //
+    // 项目约定是不导入 `Disableable`、全项目不用 `.disabled()`；而且一个
+    // 灰掉的勾选框会让人以为"能点，只是暂时不能"。直接显示当前值 + 说明
+    // 更诚实 —— 这一项我们只负责**原样写回**，不负责改。
+    if field.read_only {
+        return v_flex()
+            .w_full()
+            .gap_1()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(theme::text_muted())
+                            .child(field.label),
+                    )
+                    .child(badge("只读", theme::text_dim(), theme::bg())),
+            )
+            .child(
+                div()
+                    .font_family("Consolas")
+                    .text_xs()
+                    .text_color(theme::text())
+                    .child(format!(
+                        "{} = {}",
+                        field.key,
+                        state.doc.effective(field.section, field.key)
+                    )),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child(field.hint),
+            )
+            .into_any_element();
+    }
+
+    match field.kind {
+        wslconf::FieldKind::Bool => {
+            let entity = entity.clone();
+            Checkbox::new(wslconf_id(field.section, field.key))
+                .label(field.label)
+                .checked(state.doc.effective_bool(field.section, field.key))
+                // `Checkbox` 是**受控**组件：`on_change` 给的是"请求的新值"，
+                // 由我们存下来再 notify（见 gpui-kit 的 checkbox 文档）。
+                .on_change(move |checked, _, cx| {
+                    let value = *checked;
+                    entity.update(cx, |shell, cx| {
+                        shell.set_wslconf_bool(field.section, field.key, value, cx);
+                    });
+                })
+                .into_any_element()
+        }
+        wslconf::FieldKind::Text => {
+            let mut row = v_flex().w_full().gap_1().child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_dim())
+                            .child(field.label),
+                    )
+                    .children(default_tag(explicit)),
+            );
+
+            if let Some(input) = dialog.inputs.get(&(field.section, field.key)) {
+                row = row.child(
+                    Input::new(input)
+                        .id(wslconf_id(field.section, field.key))
+                        .w_full(),
+                );
+            }
+
+            if !field.hint.is_empty() {
+                row = row.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child(field.hint),
+                );
+            }
+            let _ = cx;
+            row.into_any_element()
+        }
+    }
+}
+
+/// 「发行版配置（`/etc/wsl.conf`）」弹窗。
+///
+/// 表单是**表驱动**的：遍历 [`wslconf::SECTIONS`] / [`wslconf::FIELDS`] 画出来，
+/// 所以加字段不用改这里 —— 改 `wslc-core` 的那两张表就够了。
+pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyElement {
+    let (Some(state), Some(dialog)) = (
+        shell.state.wslconf.as_ref(),
+        shell.wslconf_dialog.as_ref(),
+    ) else {
+        return div().into_any_element();
+    };
+
+    // -- 表单正文：按节分组 --
+    let mut sections: Vec<AnyElement> = Vec::new();
+    for section in wslconf::SECTIONS {
+        // 版本门控：这一节要求的 WSL 版本够不够。
+        // 版本读不出来时 `section_supported` 返回 true —— 和参考项目相反，
+        // 理由见 `wslc_core::model::wslconf::section_supported`。
+        if !wslconf::section_supported(section.name, &state.wsl_version) {
+            continue;
+        }
+
+        let rows: Vec<AnyElement> = wslconf::FIELDS
+            .iter()
+            .filter(|f| f.section == section.name)
+            .map(|f| wslconf_row(state, dialog, f, entity, cx))
+            .collect();
+        if rows.is_empty() {
+            continue;
+        }
+
+        sections.push(
+            v_flex()
+                .w_full()
+                .gap_2()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_semibold()
+                        .text_color(theme::text())
+                        .child(section.label),
+                )
+                .children(rows)
+                .into_any_element(),
+        );
+    }
+
+    // -- 校验错误（用户不存在 / 启动命令不存在）--
+    let errors: Vec<AnyElement> = state
+        .errors
+        .iter()
+        .map(|e| {
+            div()
+                .text_xs()
+                .text_color(theme::danger())
+                .child(format!("⚠️ {e}"))
+                .into_any_element()
+        })
+        .collect();
+
+    // -- 预览：实际会写进去的内容 --
+    let preview: AnyElement = if state.show_preview {
+        v_flex()
+            // 滚动容器必须先有 id
+            .id("wslconf-preview")
+            .w_full()
+            .max_h(px(220.))
+            .overflow_y_scroll()
+            .rounded_md()
+            .bg(theme::bg())
+            .p_3()
+            .child(
+                div()
+                    .font_family("Consolas")
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child(state.doc.render()),
+            )
+            .into_any_element()
+    } else {
+        div().into_any_element()
+    };
+
+    let preview_btn = {
+        let entity = entity.clone();
+        Button::new("wslconf-preview")
+            .label(if state.show_preview {
+                "隐藏预览"
+            } else {
+                "预览内容"
+            })
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.toggle_wslconf_preview(cx));
+            })
+    };
+    let cancel = {
+        let entity = entity.clone();
+        Button::new("wslconf-cancel")
+            .label("取消")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.close_wslconf(cx));
+            })
+    };
+    let save = {
+        let entity = entity.clone();
+        Button::new("wslconf-save")
+            .label("保存")
+            .small()
+            .primary()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.save_wslconf(false, cx));
+            })
+    };
+    let save_restart = {
+        let entity = entity.clone();
+        Button::new("wslconf-save-restart")
+            .label("保存并重启发行版")
+            .small()
+            .primary()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.save_wslconf(true, cx));
+            })
+    };
+
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme::scrim())
+        .child(
+            v_flex()
+                .id("wslconf-card")
+                .w(px(760.))
+                .max_h(px(880.))
+                .overflow_y_scroll()
+                .gap_4()
+                .p_5()
+                .rounded_lg()
+                .bg(theme::bg_card())
+                .border_1()
+                .border_color(theme::border())
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_lg()
+                                .font_bold()
+                                .text_color(theme::text())
+                                .child(format!("{} 配置（/etc/wsl.conf）", state.distro)),
+                        )
+                        .child(div().text_xs().text_color(theme::text_dim()).child(format!(
+                            "{}　·　保存前会先备份到 /etc/wsl.conf.bak；\
+                             注释和本程序不认识的键都会原样保留。",
+                            if state.wsl_version.is_empty() {
+                                "WSL 版本未知".to_owned()
+                            } else {
+                                format!("WSL {}", state.wsl_version)
+                            }
+                        ))),
+                )
+                .child(v_flex().w_full().gap_4().children(sections))
+                .child(v_flex().w_full().gap_1().children(errors))
+                .child(preview)
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .justify_end()
+                        .child(preview_btn)
+                        .child(cancel)
+                        .child(save)
+                        .child(save_restart),
+                ),
         )
         .into_any_element()
 }
