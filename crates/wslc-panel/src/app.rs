@@ -129,6 +129,17 @@ struct KeepAlive {
     child: std::process::Child,
 }
 
+/// 「发行版配置（`/etc/wsl.conf`）」弹窗的输入框。
+///
+/// 每个**文本**字段一个 `InputState`，按 `(节, 键)` 索引。
+/// 布尔字段用勾选框（`gpui_kit::component::checkbox::Checkbox`），不需要输入框。
+///
+/// 键用字段表里的 `&'static str` —— 它们是 [`wslc_core::model::wslconf::FIELDS`]
+/// 里的常量，所以不用 `String`，也就不会有拼写不一致的问题。
+pub(crate) struct WslConfDialog {
+    pub(crate) inputs: std::collections::HashMap<(&'static str, &'static str), Entity<InputState>>,
+}
+
 impl KeepAlive {
     /// 哨兵还活着吗？
     ///
@@ -241,7 +252,9 @@ pub struct Shell {
     /// 那是"能力"，不是界面状态。
     keep_alive: Vec<KeepAlive>,
     /// 「发行版配置（`/etc/wsl.conf`）」弹窗的输入框；关闭时为 `None`。
-    wslconf_dialog: Option<WslConfDialog>,
+    ///
+    /// `views::wslconf_overlay` 要读它来画 `Input`，所以是 `pub(crate)`。
+    pub(crate) wslconf_dialog: Option<WslConfDialog>,
     /// 「创建容器」弹窗；关闭时为 `None`。
     create_dialog: Option<CreateDialog>,
     /// 正在查看详情的容器名；关闭时为 None。
