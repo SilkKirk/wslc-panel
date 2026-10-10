@@ -659,6 +659,57 @@ pub fn user_exists(wsl: &Wsl, name: &str, user: &str) -> Result<bool> {
     Ok(out.success())
 }
 
+/// 发行版里这个路径存不存在（保存 `[boot] command` 前挡一下）。
+pub fn path_exists(wsl: &Wsl, name: &str, path: &str) -> Result<bool> {
+    // 先 `test -e`（按路径找），找不到再 `command -v`（按 PATH 找）——
+    // `boot.command` 两种写法都常见。
+    let script = format!(
+        "test -e {p} || command -v {p} >/dev/null 2>&1",
+        p = shell_quote(path)
+    );
+    let out = wsl.run_with_timeout(&["-d", name, "-e", "sh", "-c", &script], QUICK_TIMEOUT)?;
+    Ok(out.success())
+}
+
+/// 从 `wsl --version` 的输出里抠出版本号（形如 `2.6.1.0`）。
+///
+/// ⚠️ 输出是**本地化**的 —— 中文系统上第一行是「WSL 版本: 2.6.1.0」，
+/// 英文是「WSL version: 2.6.1.0」。所以不能按固定前缀切，只能扫每一行、
+/// 取第一个形如 `数字(.数字)+` 的 token。
+///
+/// 纯函数，能单测。
+pub fn parse_version(text: &str) -> Option<String> {
+    for line in text.lines() {
+        for token in line.split(|c: char| !(c.is_ascii_digit() || c == '.')) {
+            // 至少要有一个点，而且每段都是非空数字 —— 否则 `2.` 或者
+            // 日期里的 `2024` 都会被当成版本号
+            if !token.contains('.') {
+                continue;
+            }
+            let parts: Vec<&str> = token.split('.').collect();
+            if parts.len() >= 2
+                && parts
+                    .iter()
+                    .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+            {
+                return Some(token.to_owned());
+            }
+        }
+    }
+    None
+}
+
+/// 拿 WSL 自己的版本号（拿不到时返回空串）。
+///
+/// 界面用它决定 `[boot]` / `[gpu]` / `[time]` 这几节显不显示 ——
+/// 见 [`crate::model::wslconf::section_supported`]。
+pub fn wsl_version(wsl: &Wsl) -> String {
+    wsl.version()
+        .ok()
+        .and_then(|text| parse_version(&text))
+        .unwrap_or_default()
+}
+
 // ---------------------------------------------------------------------------
 // 导出（P3 遗留）
 // ---------------------------------------------------------------------------
@@ -1513,5 +1564,31 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{ccc}\r
                 "原文 {original:?} 过了一遍 shell 之后变了"
             );
         }
+    }
+
+    #[test]
+    fn parses_the_version_out_of_a_localized_wsl_version_output() {
+        // 中文系统（实测本机就是这个形态）
+        let zh = "WSL 版本: 2.6.1.0\n内核版本: 6.6.87.2-1\nWSLg 版本: 1.0.66\n";
+        assert_eq!(parse_version(zh).as_deref(), Some("2.6.1.0"));
+
+        // 英文
+        let en = "WSL version: 2.6.1.0\nKernel version: 6.6.87.2-1\n";
+        assert_eq!(parse_version(en).as_deref(), Some("2.6.1.0"));
+
+        // 拿不到
+        assert_eq!(parse_version(""), None);
+        assert_eq!(parse_version("没有版本号的一行"), None);
+        // 纯数字（没有点）不算版本号 —— 否则日期/构建号会被当版本
+        assert_eq!(parse_version("构建 20241010"), None);
+    }
+
+    #[test]
+    fn version_parsing_rejects_malformed_tokens() {
+        // 结尾一个点：`["2", ""]` 里有空段，不算
+        assert_eq!(parse_version("版本 2."), None);
+        assert_eq!(parse_version("版本 .2"), None);
+        // 段落里有合法 token 时要跳过不合法的，而不是整个放弃
+        assert_eq!(parse_version("v. 然后 1.2.3"), Some("1.2.3".to_owned()));
     }
 }
