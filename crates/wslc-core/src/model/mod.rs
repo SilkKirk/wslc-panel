@@ -24,12 +24,20 @@ pub mod distro;
 // 所以能脱离 Windows 单测 —— 解析和"改哪几行"的逻辑都在这里。
 pub mod wslconf;
 
+// 「添加实例」的纯逻辑：名称/路径推导、装前检查、**执行计划**。
+// 同样不碰文件系统、不起进程，见模块自己的说明。
+pub mod install;
+
 pub use container::{
     parse_wsl_metadata, ContainerInspect, ContainerListItem, ContainerState, ContainerStats,
     ContainerSummary, Platform, PortMapping, WslPortSpec,
 };
 pub use distro::{parse_distro_list, Distro, DistroState, WslStatus};
 pub use image::ImageListItem;
+pub use install::{
+    plan, preflight, InstallPlan, InstallSource, InstallSpec, PlanContext, PlannedStep, PlanProgram,
+    Preflight, WSL_VERSION,
+};
 pub use network::NetworkListItem;
 pub use session::{parse_session_table, Session};
 pub use system::{ClientInfo, ServerInfo, SessionInfo, SystemInfo};

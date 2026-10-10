@@ -263,8 +263,12 @@ fn volume_root(path: &Path) -> Option<PathBuf> {
 }
 
 /// 查询卷的总容量与可用空间。
+///
+/// `pub` 是因为「添加实例」要用它做**空间检查**：在线安装改名时要先导出成一个
+/// 中转 tar、再导入，那一刻临时盘和目标盘都得放得下整个发行版 ——
+/// 与其让用户跑到一半才失败，不如开始前就说清"还差多少"。
 #[cfg(windows)]
-fn volume_space(path: &Path) -> Option<VolumeSpace> {
+pub fn volume_space(path: &Path) -> Option<VolumeSpace> {
     use windows::core::HSTRING;
     use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 
@@ -295,7 +299,7 @@ fn volume_space(path: &Path) -> Option<VolumeSpace> {
 
 /// 非 Windows 平台不做探测（本项目只面向 Windows，留着是为了能跨平台 `cargo check`）。
 #[cfg(not(windows))]
-fn volume_space(_path: &Path) -> Option<VolumeSpace> {
+pub fn volume_space(_path: &Path) -> Option<VolumeSpace> {
     None
 }
 

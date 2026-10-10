@@ -149,6 +149,49 @@ pub fn summary(misplaced: &[MisplacedKey]) -> Option<String> {
     ))
 }
 
+/// `.wslconfig` 里是不是要求新发行版用**稀疏 VHD**
+/// （`[experimental] sparseVhd=true`）。
+///
+/// 纯函数（不碰文件系统）。只认 `true`（大小写不敏感）；`false`、写错的值、
+/// 根本没写，全都是 `false` —— 它决定"装完要不要补一条
+/// `wsl --manage <name> --set-sparse true`"，猜错的代价是去动用户的磁盘配置，
+/// 所以**宁可不做**。
+///
+/// # 为什么新建发行版要在意它
+///
+/// WSL 不会回头把**已经存在**的发行版改成稀疏盘，这个开关的语义就是
+/// "新建的用稀疏盘"。我们新建发行版却不照做，等于用户配的意图没被兑现
+/// （参考实现也照着它做）。
+pub fn sparse_vhd(text: &str) -> bool {
+    let mut in_experimental = false;
+
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if line.starts_with('[') {
+            let section = line
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim();
+            in_experimental = section.eq_ignore_ascii_case("experimental");
+            continue;
+        }
+        if !in_experimental {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case("sparseVhd") {
+            return value.trim().eq_ignore_ascii_case("true");
+        }
+    }
+
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,5 +321,30 @@ autoMemoryReclaim=gradual
         ] {
             assert_eq!(check(text).len(), 1, "漏了：{text:?}");
         }
+    }
+
+    #[test]
+    fn sparse_vhd_reads_the_real_config() {
+        // 用户机器上那份真实配置里就有 `[experimental] sparseVhd=true`
+        assert!(sparse_vhd(REAL));
+        // 大小写与空格都不该影响结论
+        assert!(sparse_vhd("[experimental]\nsparseVhd = TRUE\n"));
+        assert!(sparse_vhd("[Experimental]\nSparseVhd=true\n"));
+    }
+
+    #[test]
+    fn sparse_vhd_defaults_to_false_and_never_guesses() {
+        assert!(!sparse_vhd(""));
+        assert!(!sparse_vhd("[wsl2]\nmemory=8GB\n"));
+        // 写在别的节里不算（WSL 只认 [experimental] 下这一个）
+        assert!(!sparse_vhd("[wsl2]\nsparseVhd=true\n"));
+        // 明确的 false
+        assert!(!sparse_vhd("[experimental]\nsparseVhd=false\n"));
+        // 不是 true 的写法一律当没开 —— 猜错会去动用户的磁盘配置
+        assert!(!sparse_vhd("[experimental]\nsparseVhd=1\n"));
+        assert!(!sparse_vhd("[experimental]\nsparseVhd=yes\n"));
+        // 注释掉的等于没写
+        assert!(!sparse_vhd("[experimental]\n# sparseVhd=true\n"));
+        assert!(!sparse_vhd("; sparseVhd=true\n"));
     }
 }

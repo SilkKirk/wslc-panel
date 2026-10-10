@@ -35,6 +35,7 @@ pub mod cmd;
 pub mod decode;
 pub mod error;
 pub mod jsonl;
+pub mod mirrors;
 pub mod model;
 pub mod settings;
 pub mod storage;
@@ -42,5 +43,6 @@ pub mod wslconfig;
 
 pub use cli::{CancelToken, CommandOutput, StreamHandle, Wsl, Wslc};
 pub use error::{Error, Result};
+pub use mirrors::{MirrorDistro, MirrorSite};
 pub use storage::{StorageInfo, StoragePathOrigin, VolumeSpace};
 pub use wslconfig::{MisplacedKey, config_path};

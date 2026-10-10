@@ -73,6 +73,12 @@ pub struct Prefs {
     /// 让它平滑升级到深色（和以前的行为一致）。
     #[serde(default)]
     pub theme: ThemePref,
+    /// 「新实例默认安装目录」（「添加实例」页预填 + 由名字推路径）。
+    ///
+    /// 老版本的 `prefs.json` 里没有这个键 —— `None` 表示"没设过"，
+    /// 那时安装目录要用户自己填（和以前的行为一致）。
+    #[serde(default)]
+    pub install_dir: Option<String>,
 }
 
 fn default_refresh_secs() -> u64 {
@@ -84,6 +90,7 @@ impl Default for Prefs {
         Self {
             refresh_secs: DEFAULT_REFRESH_SECS,
             theme: ThemePref::default(),
+            install_dir: None,
         }
     }
 }
@@ -152,6 +159,8 @@ mod tests {
         let p: Prefs = serde_json::from_str("{}").unwrap();
         assert_eq!(p.refresh_secs, DEFAULT_REFRESH_SECS);
         assert_eq!(p.theme, ThemePref::Dark);
+        // 没有「默认安装目录」这个键 = 没设过，而不是空字符串
+        assert_eq!(p.install_dir, None);
     }
 
     #[test]
@@ -160,6 +169,8 @@ mod tests {
         let p: Prefs = serde_json::from_str(r#"{"refresh_secs":10}"#).unwrap();
         assert_eq!(p.refresh_secs, 10);
         assert_eq!(p.theme, ThemePref::Dark, "老文件应平滑升级到深色");
+        // v0.4 的文件里也没有 install_dir
+        assert_eq!(p.install_dir, None);
     }
 
     #[test]
@@ -167,6 +178,7 @@ mod tests {
         let p = Prefs {
             refresh_secs: 5,
             theme: ThemePref::Light,
+            install_dir: Some(r"D:\wsl".to_owned()),
         };
         let text = serde_json::to_string(&p).unwrap();
         assert!(text.contains(r#""theme":"light""#), "{text}");
@@ -178,6 +190,7 @@ mod tests {
         let p = Prefs {
             refresh_secs: 10,
             theme: ThemePref::Light,
+            install_dir: Some(r"E:\wsl".to_owned()),
         };
         let text = serde_json::to_string(&p).unwrap();
         let back: Prefs = serde_json::from_str(&text).unwrap();
@@ -220,9 +233,23 @@ mod tests {
         let prefs = Prefs {
             refresh_secs: 99999,
             theme: ThemePref::Light,
+            install_dir: None,
         }
         .normalized();
         assert_eq!(prefs.theme, ThemePref::Light);
+    }
+
+    #[test]
+    fn normalized_does_not_touch_the_install_dir() {
+        // 归一化只管刷新间隔 —— 顺手"清理"别的字段是最容易埋进去的 bug
+        // （改一次刷新间隔就把安装目录抹掉，用户根本联想不到）。
+        let prefs = Prefs {
+            refresh_secs: 99999,
+            theme: ThemePref::Dark,
+            install_dir: Some(r"D:\wsl".to_owned()),
+        }
+        .normalized();
+        assert_eq!(prefs.install_dir.as_deref(), Some(r"D:\wsl"));
     }
 
     #[test]

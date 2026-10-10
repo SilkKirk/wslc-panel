@@ -18,6 +18,12 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use wslc_core::cmd::install::InstallEvent;
+use wslc_core::mirrors::{self, MirrorDistro};
+use wslc_core::model::install::{online_matches, InstallSpec, OnlineDistro, PlanContext, Preflight};
+// 「在线清单来自哪儿」是**数据**（`wsl -l -o` 还是兜底 JSON），
+// 定义在 `wslc-core` 里；这里转出去，界面按它显示那句说明。
+pub use wslc_core::model::install::OnlineListSource;
 use wslc_core::model::{
     ContainerSummary, Distro, ImageListItem, NetworkListItem, Session, SystemInfo, VolumeListItem,
     WslStatus,
@@ -135,14 +141,25 @@ impl Page {
 /// 「添加实例」页里选中的**来源类型**。
 ///
 /// 只记"用户选了哪一种"；带值的路径 / 名字在输入框里，
-/// 拼成 [`wslc_core::cmd::distro::InstallSpec`] 是 `app.rs` 的事。
+/// 拼成 [`wslc_core::model::install::InstallSpec`] 与执行计划是 `app.rs` 的事。
+///
+/// # 为什么是这五种
+///
+/// 对齐参考实现（`wsl-dashboard-ref` 的「添加实例」页）之后，来源从三条变五条：
+/// 它按"文件是 tar 还是 vhdx"分开，还多一条"镜像站下载 rootfs"。
+/// 我们另外**保留**了它没有的 `File`（`--install --from-file`）——
+/// `.wsl` 是新格式，`--import` 吃不了，现成的能力不该退。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InstallSourceKind {
     /// 从本地 tar 导入（`wsl --import`）。
     #[default]
     Tar,
-    /// 从本地文件安装（`wsl --install --from-file`）。
+    /// 从本地 VHDX 导入（`wsl --import --vhd`）。
+    Vhdx,
+    /// 从本地文件安装（`wsl --install --from-file`，`.wsl` / rootfs 都行）。
     File,
+    /// 从镜像站下载 rootfs 再导入（走 `curl.exe`）。
+    Mirror,
     /// 在线安装（`wsl --install -d`）。
     Online,
 }
@@ -150,12 +167,14 @@ pub enum InstallSourceKind {
 impl InstallSourceKind {
     /// 全部可选值（决定界面上的按钮顺序）。
     ///
-    /// 顺序刻意是 **tar → 文件 → 在线**：越靠前越不依赖网络。
+    /// 顺序刻意是 **本地三种 → 镜像站 → 在线**：越靠前越不依赖网络。
     /// 本机实测 `wsl --list --online` 是坏的（解析不了
     /// `raw.githubusercontent.com`），所以在线那条最不该当默认。
-    pub const ALL: [InstallSourceKind; 3] = [
+    pub const ALL: [InstallSourceKind; 5] = [
         InstallSourceKind::Tar,
+        InstallSourceKind::Vhdx,
         InstallSourceKind::File,
+        InstallSourceKind::Mirror,
         InstallSourceKind::Online,
     ];
 
@@ -163,7 +182,9 @@ impl InstallSourceKind {
     pub fn label(self) -> &'static str {
         match self {
             Self::Tar => "从 tar 导入",
+            Self::Vhdx => "从 VHDX 导入",
             Self::File => "从文件安装",
+            Self::Mirror => "镜像站下载",
             Self::Online => "在线安装",
         }
     }
@@ -172,22 +193,25 @@ impl InstallSourceKind {
     pub fn hint(self) -> &'static str {
         match self {
             Self::Tar => "最可靠：本地 tar 文件，不需要联网。只是把文件系统铺开。",
-            Self::File => "交给 WSL 自己的安装器，会做首次启动初始化（建默认用户）。",
-            Self::Online => "从微软的源下载。发行版名要手输 —— 本机拉不到在线列表。",
+            Self::Vhdx => "本地 ext4 虚拟磁盘（`.vhdx`）会被**拷贝**一份到安装目录，原始文件不动。",
+            Self::File => "交给 WSL 自己的安装器（`.wsl` 或 rootfs 都行），会做首次启动初始化（建默认用户）。",
+            Self::Mirror => "从国内镜像站下载官方 rootfs 再导入 —— 拉不动商店时用这条。",
+            Self::Online => "从微软商店/网络下载。清单拉不到时可以手输发行版名。",
         }
     }
 
     /// 需不需要让用户填一个**文件路径**。
     pub fn needs_path(self) -> bool {
-        !matches!(self, Self::Online)
+        matches!(self, Self::Tar | Self::Vhdx | Self::File)
     }
 
     /// 路径输入框的标签。
     pub fn path_label(self) -> &'static str {
         match self {
             Self::Tar => "tar 文件路径",
+            Self::Vhdx => "VHDX 文件路径",
             Self::File => "安装文件路径",
-            Self::Online => "",
+            Self::Mirror | Self::Online => "",
         }
     }
 
@@ -195,28 +219,59 @@ impl InstallSourceKind {
     pub fn path_placeholder(self) -> &'static str {
         match self {
             Self::Tar => r"D:\img\ubuntu-rootfs.tar",
-            Self::File => r"D:\img\Ubuntu-24.04-rootfs.tar.gz",
-            Self::Online => "",
+            Self::Vhdx => r"D:\img\ext4.vhdx",
+            Self::File => r"D:\img\Ubuntu-24.04.wsl",
+            Self::Mirror | Self::Online => "",
+        }
+    }
+
+    /// 文件选择器的类别名与后缀表。
+    ///
+    /// 返回 `None` 表示这条来源不需要选文件。
+    pub fn file_filter(self) -> Option<(&'static str, &'static [&'static str])> {
+        /// `.tar.gz` / `.tar.xz` 这类复合后缀在 WinForms 的过滤器里只能写成
+        /// 两个通配（`*.tar.gz` 其实也能匹配，写上更直观）。
+        const TAR: &[&str] = &["tar", "gz", "xz", "zst"];
+        const VHDX: &[&str] = &["vhdx"];
+        const WSL_FILES: &[&str] = &["wsl", "tar", "gz", "xz"];
+
+        match self {
+            Self::Tar => Some(("tar 文件", TAR)),
+            Self::Vhdx => Some(("VHDX 文件", VHDX)),
+            Self::File => Some(("安装文件", WSL_FILES)),
+            Self::Mirror | Self::Online => None,
         }
     }
 
     /// 发行版名输入框的占位提示。
     pub fn name_placeholder(self) -> &'static str {
         match self {
-            Self::Online => "Ubuntu-24.04（要手输，本机拉不到在线列表）",
+            Self::Online => "Ubuntu-24.04（选在线清单，或手输它的名字）",
+            Self::Mirror => "Ubuntu-24.04",
             _ => "MyDistro",
         }
     }
 
     /// 安装目录是不是必填。
     ///
-    /// 在线安装可以留空（WSL 有自己的默认位置），另两条必须给。
+    /// 只有在线安装可以留空（WSL 有自己的默认位置）—— 而且"留空"还有个前提：
+    /// 不改名。要改名的话重定位那一步必须知道装到哪儿，校验里单独管这件事。
     pub fn requires_install_dir(self) -> bool {
         !matches!(self, Self::Online)
     }
 
     /// 支不支持"装完启动"（只有在线安装有 `--no-launch`）。
     pub fn supports_launch(self) -> bool {
+        matches!(self, Self::Online)
+    }
+
+    /// 要不要显示「镜像站」那一块（选发行版 + 探测 + 自定义 URL）。
+    pub fn is_mirror(self) -> bool {
+        matches!(self, Self::Mirror)
+    }
+
+    /// 要不要显示「在线清单」那一块。
+    pub fn is_online(self) -> bool {
         matches!(self, Self::Online)
     }
 }
@@ -258,6 +313,16 @@ pub struct Snapshot {
     pub errors: Vec<String>,
     /// 本次刷新耗时（毫秒）
     pub elapsed_ms: u128,
+}
+
+/// 当前 Unix 时间戳（秒）。拿不到系统时间时给 0。
+///
+/// 只用来给临时文件名加一段"不会重复"的标记，精度不重要。
+fn unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// `.wslconfig` 的读取结果。
@@ -1044,6 +1109,376 @@ impl ExportProgress {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 添加实例：在线清单 / 镜像站 / 安装进度
+// ---------------------------------------------------------------------------
+
+/// 在线可安装发行版的清单状态。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OnlineDistroState {
+    /// 正在拉取。
+    pub loading: bool,
+    /// 拉取失败的原因（成功时为空串）。
+    ///
+    /// 刻意用 `String` 而不是 `Option`：界面要把它**原样**显示出来
+    /// （"与服务器的连接被重置"这种话本身就是解释），空串即无错误。
+    pub error: String,
+    /// 清单。
+    pub items: Vec<OnlineDistro>,
+    /// 这份清单是哪儿来的。
+    pub source: OnlineListSource,
+    /// 当前选中的发行版 id。
+    pub selected: Option<String>,
+}
+
+impl OnlineDistroState {
+    /// 新建（空清单）。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 按搜索词过滤后的清单（空词 = 全部）。
+    pub fn filtered(&self, query: &str) -> Vec<&OnlineDistro> {
+        self.items
+            .iter()
+            .filter(|item| online_matches(item, query))
+            .collect()
+    }
+
+    /// 选中一个（同时记下 id）。
+    pub fn select(&mut self, id: impl Into<String>) {
+        self.selected = Some(id.into());
+    }
+
+    /// 丢掉当前清单（拉取失败时用）。
+    pub fn clear(&mut self) {
+        self.items.clear();
+        self.selected = None;
+    }
+}
+
+/// 一个镜像候选的探测结果。
+#[derive(Debug, Clone, PartialEq)]
+pub struct MirrorProbeResult {
+    /// 镜像站名。
+    pub site: String,
+    /// 完整 URL。
+    pub url: String,
+    /// HTTP 状态码（连接失败时 0）。
+    pub code: u16,
+    /// 总耗时（秒）—— 排序与显示都用它。
+    pub secs: f64,
+    /// 文件大小（只有 200 才有值）。
+    pub bytes: Option<u64>,
+}
+
+impl MirrorProbeResult {
+    /// 这一个可用吗。
+    pub fn is_ok(&self) -> bool {
+        self.code == 200
+    }
+
+    /// 一句话结果（界面直接显示）。
+    pub fn summary(&self) -> String {
+        if self.is_ok() {
+            let size = self
+                .bytes
+                .map(mirrors::human_bytes)
+                .unwrap_or_else(|| "大小未知".to_owned());
+            format!("{size} · {:.2} 秒", self.secs)
+        } else if self.code == 0 {
+            format!("连不上（{:.1} 秒后放弃）", self.secs)
+        } else {
+            format!("HTTP {}（这个镜像上没有这个文件？）", self.code)
+        }
+    }
+}
+
+/// 已经选定的那个镜像。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MirrorChoice {
+    /// 镜像站名。
+    pub site: String,
+    /// rootfs 的完整 URL。
+    pub url: String,
+    /// 版本代号（计划里显示用）。
+    pub release: String,
+    /// 预期大小（下载进度条的分母）；未知时 `None`。
+    pub bytes: Option<u64>,
+}
+
+/// 「镜像站下载」那一块的状态。
+#[derive(Debug, Clone, PartialEq)]
+pub struct MirrorState {
+    /// 内置表里选中的那一条（默认第一条）。
+    pub distro_id: String,
+    /// 正在探测。
+    pub probing: bool,
+    /// 每个候选的探测结果（探测完成后按耗时排序）。
+    pub results: Vec<MirrorProbeResult>,
+    /// 选定的那一个。
+    pub chosen: Option<MirrorChoice>,
+    /// 失败原因（比如"这个镜像上没有这个文件"）。
+    pub error: Option<String>,
+}
+
+impl Default for MirrorState {
+    fn default() -> Self {
+        Self {
+            distro_id: mirrors::distros()
+                .first()
+                .map(|d| d.id.to_owned())
+                .unwrap_or_default(),
+            probing: false,
+            results: Vec::new(),
+            chosen: None,
+            error: None,
+        }
+    }
+}
+
+impl MirrorState {
+    /// 新建。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 内置表里当前选中的条目。
+    pub fn selected_distro(&self) -> Option<&'static MirrorDistro> {
+        mirrors::distros()
+            .iter()
+            .find(|distro| distro.id == self.distro_id)
+    }
+
+    /// 换一个发行版：清掉上一次的探测结果（否则会拿旧结果当新的）。
+    pub fn select_distro(&mut self, id: impl Into<String>) {
+        let id = id.into();
+        if self.distro_id == id {
+            return;
+        }
+        self.distro_id = id;
+        self.results.clear();
+        self.chosen = None;
+        self.error = None;
+    }
+}
+
+/// 计划里已经走完的一步。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FinishedStep {
+    /// 这一步在干什么。
+    pub label: String,
+    /// 成功了吗。
+    pub ok: bool,
+    /// 失败原因（成功时为空串）。
+    pub detail: String,
+}
+
+/// 安装是怎么结束的（还在跑时为 `None`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstallOutcome {
+    /// 装好了（消息里带名字）。
+    Success(String),
+    /// 失败。
+    Failed {
+        /// 失败原因。
+        detail: String,
+        /// 卡在哪一步。
+        step: Option<String>,
+    },
+    /// 被用户取消。
+    Cancelled,
+}
+
+/// 一次安装的实时状态。
+///
+/// # 为什么它和 [`PullProgress`] / [`ExportProgress`] 都不一样
+///
+/// 安装是**多步**的（在线安装改名要 8 步），所以除了日志和进度，
+/// 还要能画出"走到第几步、哪几步已经过了"。
+/// 这里存的就是那份**纯数据**：`wslc_core::cmd::install` 发事件，
+/// [`InstallProgress::apply`] 把它翻译成状态 —— 翻译逻辑是纯函数，能单测。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallProgress {
+    /// 发行版名。
+    pub name: String,
+    /// 计划里的步骤总数。
+    pub total: usize,
+    /// 当前第几步（从 1 开始；0 = 还没开始）。
+    pub index: usize,
+    /// 当前这步在干什么。
+    pub step_label: String,
+    /// 当前这步对应的命令行（没有命令的步骤是空串）。
+    pub step_line: String,
+    /// 当前这步能不能被取消。
+    ///
+    /// 重定位（导出 → 注销 → 导入）那一步是 `false`：中途停下等于把刚装好的删了。
+    /// 界面据此**不给**取消按钮，而不是让用户点了之后才发现没用。
+    pub cancellable: bool,
+    /// 已经走完的步骤。
+    pub finished: Vec<FinishedStep>,
+    /// 日志（环形截断）。
+    pub log: Vec<String>,
+    /// 最后一行输出（出错时它就是原因）。
+    pub last_line: String,
+    /// 已经产生多少字节（下载 / 导出）。
+    pub have: u64,
+    /// 预期总量；未知时 `None`。
+    pub total_bytes: Option<u64>,
+    /// **当前这一步**跑了多少秒（导出 / 下载那种有进度的步骤才有）。
+    ///
+    /// 和 [`InstallProgress::elapsed_secs`] 分开：那个是整场安装的用时
+    /// （界面每轮更新），而速度要按**这一步**的时间算 ——
+    /// 用整场时间去除下载量会把速度显示得偏小得离谱。
+    pub step_secs: u64,
+    /// 整场安装跑了多少秒。
+    pub elapsed_secs: u64,
+    /// 结束状态。
+    pub outcome: Option<InstallOutcome>,
+}
+
+impl InstallProgress {
+    /// 最多留多少行日志。
+    ///
+    /// 在线安装和镜像下载的输出都不少，全留着只会让内存一直涨；
+    /// 用户真正要看的是**最后几行**和"走到第几步"。
+    pub const MAX_LOG_LINES: usize = 2000;
+
+    /// 新建一个进度记录。
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            total: 0,
+            index: 0,
+            step_label: String::new(),
+            step_line: String::new(),
+            cancellable: true,
+            finished: Vec::new(),
+            log: Vec::new(),
+            last_line: String::new(),
+            have: 0,
+            total_bytes: None,
+            step_secs: 0,
+            elapsed_secs: 0,
+            outcome: None,
+        }
+    }
+
+    /// 还在跑吗。
+    pub fn is_running(&self) -> bool {
+        self.outcome.is_none()
+    }
+
+    /// 已经走完几步。
+    pub fn finished_count(&self) -> usize {
+        self.finished.len()
+    }
+
+    /// 结束掉（成功/失败/取消）。
+    ///
+    /// 会往日志里补一行结局 —— 用户回看日志时，最后一行就是结论。
+    /// 同一个结局重复设置不算变化（也**不会**重复写日志）。
+    pub fn finish(&mut self, outcome: InstallOutcome) -> bool {
+        if self.outcome.as_ref() == Some(&outcome) {
+            return false;
+        }
+        let line = match &outcome {
+            InstallOutcome::Success(message) => format!("✔ 完成：{message}"),
+            InstallOutcome::Failed { detail, .. } => format!("✘ 失败：{detail}"),
+            InstallOutcome::Cancelled => "✘ 已取消".to_owned(),
+        };
+        self.push_log(line);
+        self.outcome = Some(outcome);
+        true
+    }
+
+    /// 进度百分比（0~100）；拿不到总大小时 `None`。
+    pub fn percent(&self) -> Option<f64> {
+        let total = self.total_bytes?;
+        if total == 0 {
+            return None;
+        }
+        Some((self.have as f64 / total as f64 * 100.0).clamp(0.0, 100.0))
+    }
+
+    /// 平均速度（人话）；没在下载 / 时间还是 0 时为 `None`。
+    pub fn speed(&self) -> Option<String> {
+        if self.step_secs == 0 || self.have == 0 {
+            return None;
+        }
+        Some(mirrors::human_speed(
+            self.have as f64 / self.step_secs as f64,
+        ))
+    }
+
+    /// 追加一行日志（并裁掉超上限的旧行）。
+    fn push_log(&mut self, line: String) {
+        self.log.push(line);
+        if self.log.len() > Self::MAX_LOG_LINES {
+            let excess = self.log.len() - Self::MAX_LOG_LINES;
+            self.log.drain(..excess);
+        }
+    }
+
+    /// 吃一个事件，返回**状态是否真的变了**（界面据此决定要不要重绘）。
+    ///
+    /// 进度事件每 250 ms 就来一个，而其中大多数只是重复的数字 ——
+    /// 不比较就重绘等于让界面一直空转（导出那边是同样的处理）。
+    pub fn apply(&mut self, event: &InstallEvent) -> bool {
+        match event {
+            InstallEvent::Step {
+                index,
+                total,
+                label,
+                line,
+                cancellable,
+            } => {
+                self.index = *index;
+                self.total = *total;
+                self.step_label = label.clone();
+                self.step_line = line.clone();
+                self.cancellable = *cancellable;
+                // 换步骤了：进度归零（那是上一步的产物大小）
+                self.have = 0;
+                self.total_bytes = None;
+                self.step_secs = 0;
+                self.push_log(format!("▶ 第 {index}/{total} 步：{label}"));
+                if !line.is_empty() {
+                    self.push_log(format!("  {line}"));
+                }
+                true
+            }
+            InstallEvent::Line(text) => {
+                self.last_line = text.clone();
+                self.push_log(text.clone());
+                true
+            }
+            InstallEvent::Progress { have, total, secs } => {
+                let changed = self.have != *have
+                    || self.total_bytes != *total
+                    || self.step_secs != *secs;
+                self.have = *have;
+                self.total_bytes = *total;
+                self.step_secs = *secs;
+                changed
+            }
+            InstallEvent::StepDone { ok, detail, .. } => {
+                self.finished.push(FinishedStep {
+                    label: self.step_label.clone(),
+                    ok: *ok,
+                    detail: detail.clone(),
+                });
+                if *ok {
+                    self.push_log(format!("✔ {}", self.step_label));
+                } else {
+                    self.push_log(format!("✘ {}：{detail}", self.step_label));
+                }
+                true
+            }
+        }
+    }
+}
+
 /// 「发行版配置（`/etc/wsl.conf`）」弹窗的状态。
 ///
 /// **纯数据** —— 输入框（`Entity<InputState>`）在 `Shell::wslconf_dialog` 里，
@@ -1187,6 +1622,15 @@ pub struct AppState {
     pub confirm: Option<ConfirmAction>,
     /// 提示条。
     pub toast: Option<Toast>,
+    /// 正在安装的发行版（「添加实例」）；空闲时为 `None`。
+    ///
+    /// 安装可能几十分钟（下载 rootfs、铺开文件系统），期间界面显示
+    /// 步骤清单 + 日志 + 进度，并且可以取消。
+    pub installing: Option<InstallProgress>,
+    /// 在线可安装发行版的清单状态。
+    pub online: OnlineDistroState,
+    /// 镜像站那一块的状态（内置表 + 探测结果 + 选中的那个）。
+    pub mirrors: MirrorState,
 }
 
 impl AppState {
@@ -1210,7 +1654,54 @@ impl AppState {
             settings_tab: SettingsTab::default(),
             confirm: None,
             toast: None,
+            installing: None,
+            online: OnlineDistroState::new(),
+            mirrors: MirrorState::new(),
         }
+    }
+
+    /// 现有的发行版名（装前查重名用）。
+    pub fn distro_names(&self) -> Vec<String> {
+        self.snapshot
+            .distros
+            .iter()
+            .map(|distro| distro.name.clone())
+            .collect()
+    }
+
+    /// 拼一个"添加实例"用的计划上下文。
+    ///
+    /// `wslconfig_sparse` 取的是**最近一次采集**读到的 `.wslconfig`（见
+    /// [`Snapshot::wslconfig`]）—— 渲染和点击都不该去读文件：
+    /// 渲染每帧都可能发生，而这个值跟着刷新走完全够用。
+    pub fn plan_context(&self) -> PlanContext {
+        let sparse = self
+            .snapshot
+            .wslconfig
+            .text
+            .as_deref()
+            .is_some_and(wslc_core::wslconfig::sparse_vhd);
+
+        PlanContext {
+            default_dir: self.prefs.install_dir.clone(),
+            temp_dir: mirrors::temp_dir().to_string_lossy().into_owned(),
+            // 临时文件名要唯一：同一个发行版连装两次不能撞在同一个文件上。
+            stamp: format!("{}-{}", std::process::id(), unix_secs()),
+            wslconfig_sparse: sparse,
+        }
+    }
+
+    /// 装前检查（界面渲染与提交前用的是**同一套规则**）。
+    ///
+    /// `dir_non_empty` 由调用方查（要碰文件系统）：渲染时一律给 `false`
+    /// —— 每帧去 `read_dir` 是不行的，那个检查放到提交那一刻做。
+    pub fn preflight(&self, spec: &InstallSpec, dir_non_empty: bool) -> Preflight {
+        wslc_core::model::install::preflight(
+            spec,
+            &self.plan_context(),
+            &self.distro_names(),
+            dir_non_empty,
+        )
     }
 
     /// 自动刷新间隔。
@@ -1323,20 +1814,292 @@ mod tests {
         // 只有在线安装有「装完启动」，也只有它不需要文件路径
         assert!(InstallSourceKind::Online.supports_launch());
         assert!(!InstallSourceKind::Online.needs_path());
-        for kind in [InstallSourceKind::Tar, InstallSourceKind::File] {
+
+        // 本地三种都要选文件，而且都要有标签/占位/过滤器
+        for kind in [
+            InstallSourceKind::Tar,
+            InstallSourceKind::Vhdx,
+            InstallSourceKind::File,
+        ] {
             assert!(!kind.supports_launch(), "{kind:?}");
             assert!(kind.needs_path(), "{kind:?}");
             assert!(!kind.path_label().is_empty(), "{kind:?}");
             assert!(!kind.path_placeholder().is_empty(), "{kind:?}");
+            let (label, extensions) = kind.file_filter().expect("本地来源要能弹选择器");
+            assert!(!label.is_empty(), "{kind:?}");
+            assert!(!extensions.is_empty(), "{kind:?}");
+            assert!(kind.requires_install_dir(), "{kind:?}");
         }
+
+        // 两条"网络来源"不要文件路径，也不要文件选择器
+        for kind in [InstallSourceKind::Mirror, InstallSourceKind::Online] {
+            assert!(!kind.needs_path(), "{kind:?}");
+            assert!(kind.file_filter().is_none(), "{kind:?}");
+            assert!(kind.is_online() == (kind == InstallSourceKind::Online));
+        }
+        // 镜像站要安装目录（下载完要 --import），在线安装可以留空
+        assert!(InstallSourceKind::Mirror.is_mirror());
+        assert!(InstallSourceKind::Mirror.requires_install_dir());
+        assert!(!InstallSourceKind::Online.requires_install_dir());
 
         // 版本**不给用户选**：本项目只支持 WSL 2，安装命令里固定 `--version 2`
         // （`InstallSourceKind` 上再也没有 `supports_version` 这种东西了）。
 
-        // 只有在线安装允许留空安装目录
-        assert!(InstallSourceKind::Tar.requires_install_dir());
-        assert!(InstallSourceKind::File.requires_install_dir());
-        assert!(!InstallSourceKind::Online.requires_install_dir());
+        // 五种来源的标签不能重复（按钮上会分不清）
+        let labels: Vec<&str> = InstallSourceKind::ALL.iter().map(|k| k.label()).collect();
+        let unique: std::collections::HashSet<&&str> = labels.iter().collect();
+        assert_eq!(unique.len(), labels.len(), "{labels:?}");
+    }
+
+    #[test]
+    fn install_progress_follows_the_events() {
+        use wslc_core::cmd::install::InstallEvent;
+
+        let mut progress = InstallProgress::new("MyUbuntu");
+        assert!(progress.is_running());
+        assert_eq!(progress.percent(), None);
+
+        // 第一步开始
+        assert!(progress.apply(&InstallEvent::Step {
+            index: 1,
+            total: 3,
+            label: "创建安装目录".to_owned(),
+            line: "创建安装目录 D:\\wsl\\MyUbuntu".to_owned(),
+            cancellable: true,
+        }));
+        assert_eq!(progress.index, 1);
+        assert_eq!(progress.total, 3);
+        assert!(progress.cancellable);
+        assert!(progress.log.iter().any(|l| l.contains("第 1/3 步")));
+        assert!(progress.log.iter().any(|l| l.contains("创建安装目录 D:")));
+
+        // 进度事件：数字没变就不算变化（界面据此不重绘）
+        assert!(progress.apply(&InstallEvent::Progress {
+            have: 100,
+            total: Some(400),
+            secs: 5,
+        }));
+        assert!(!progress.apply(&InstallEvent::Progress {
+            have: 100,
+            total: Some(400),
+            secs: 5,
+        }));
+        assert_eq!(progress.percent(), Some(25.0));
+        assert!(progress.speed().is_some());
+
+        // 换步骤要把上一步的进度归零（那是上一步的产物大小）
+        progress.apply(&InstallEvent::Step {
+            index: 2,
+            total: 3,
+            label: "导入".to_owned(),
+            line: String::new(),
+            // 重定位那一步不可取消 —— 界面据此不给"取消"按钮
+            cancellable: false,
+        });
+        assert!(!progress.cancellable);
+        assert_eq!(progress.have, 0);
+        assert_eq!(progress.percent(), None);
+
+        // 一行的输出同时进日志和 last_line
+        progress.apply(&InstallEvent::Line("正在导入...".to_owned()));
+        assert_eq!(progress.last_line, "正在导入...");
+
+        // 步骤结束 → 记一笔
+        progress.apply(&InstallEvent::StepDone {
+            index: 2,
+            ok: false,
+            detail: "退出码 -1".to_owned(),
+        });
+        assert_eq!(progress.finished_count(), 1);
+        assert!(!progress.finished[0].ok);
+        assert!(progress.log.iter().any(|l| l.contains("✘")));
+
+        // 结束之后不算"还在跑"
+        assert!(progress.finish(InstallOutcome::Failed {
+            detail: "x".to_owned(),
+            step: Some("导入".to_owned()),
+        }));
+        assert!(!progress.is_running());
+        // 同一个结局重复设置 → 不算变化
+        assert!(!progress.finish(InstallOutcome::Failed {
+            detail: "x".to_owned(),
+            step: Some("导入".to_owned()),
+        }));
+    }
+
+    #[test]
+    fn install_progress_log_is_capped() {
+        use wslc_core::cmd::install::InstallEvent;
+
+        let mut progress = InstallProgress::new("X");
+        for i in 0..(InstallProgress::MAX_LOG_LINES + 50) {
+            progress.apply(&InstallEvent::Line(format!("第 {i} 行")));
+        }
+        assert_eq!(progress.log.len(), InstallProgress::MAX_LOG_LINES);
+        // 留下的是**最后**那些行（用户要看的是最新的）
+        assert!(progress.log.last().unwrap().contains(&format!(
+            "第 {} 行",
+            InstallProgress::MAX_LOG_LINES + 49
+        )));
+    }
+
+    #[test]
+    fn online_state_filters_and_selects() {
+        let mut online = OnlineDistroState::new();
+        assert!(online.filtered("").is_empty());
+        assert_eq!(online.source, OnlineListSource::Unknown);
+        assert!(online.source.label().is_empty());
+
+        online.items = vec![
+            OnlineDistro::new("Ubuntu", "Ubuntu"),
+            OnlineDistro::new("Ubuntu-24.04", "Ubuntu 24.04 LTS"),
+            OnlineDistro::new("Debian", "Debian GNU/Linux"),
+        ];
+        online.source = OnlineListSource::FallbackJson;
+        assert_eq!(online.filtered("").len(), 3);
+        assert_eq!(online.filtered("ubuntu").len(), 2);
+        assert_eq!(online.filtered("24").len(), 1);
+
+        online.select("Ubuntu-24.04");
+        assert_eq!(online.selected.as_deref(), Some("Ubuntu-24.04"));
+
+        // 拉取失败时要把旧清单清掉，否则用户会挑一个已经不成立的列表
+        online.clear();
+        assert!(online.items.is_empty());
+        assert!(online.selected.is_none());
+    }
+
+    #[test]
+    fn mirror_state_forgets_previous_probes_when_switching_distro() {
+        let mut state = MirrorState::new();
+        // 默认选中内置表的第一条
+        assert!(state.selected_distro().is_some());
+        let first = state.distro_id.clone();
+
+        state.results.push(MirrorProbeResult {
+            site: "清华 TUNA".to_owned(),
+            url: "https://x/y.tar.xz".to_owned(),
+            code: 200,
+            secs: 0.5,
+            bytes: Some(100),
+        });
+        state.chosen = Some(MirrorChoice {
+            site: "清华 TUNA".to_owned(),
+            url: "https://x/y.tar.xz".to_owned(),
+            release: "noble".to_owned(),
+            bytes: Some(100),
+        });
+
+        let other = wslc_core::mirrors::distros()
+            .iter()
+            .find(|d| d.id != first)
+            .map(|d| d.id.to_owned())
+            .expect("内置表里应该不止一条");
+        state.select_distro(other.clone());
+        assert_eq!(state.distro_id, other);
+        // 换了发行版就不该留着上一条的探测结果（那会拿着 A 的 URL 去装 B）
+        assert!(state.results.is_empty());
+        assert!(state.chosen.is_none());
+        assert!(state.error.is_none());
+
+        // 选同一个不算换
+        state.results.push(MirrorProbeResult {
+            site: "a".to_owned(),
+            url: "b".to_owned(),
+            code: 200,
+            secs: 1.0,
+            bytes: None,
+        });
+        state.select_distro(state.distro_id.clone());
+        assert_eq!(state.results.len(), 1);
+    }
+
+    #[test]
+    fn mirror_probe_summary_says_something_useful_for_every_outcome() {
+        let ok = MirrorProbeResult {
+            site: "清华 TUNA".to_owned(),
+            url: "https://x".to_owned(),
+            code: 200,
+            secs: 1.234,
+            bytes: Some(229_623_728),
+        };
+        assert!(ok.is_ok());
+        let text = ok.summary();
+        assert!(text.contains("229.6 MB"), "{text}");
+        assert!(text.contains("1.23"), "{text}");
+
+        // 连不上（curl 给 000）
+        let dead = MirrorProbeResult {
+            code: 0,
+            secs: 8.0,
+            ..ok.clone()
+        };
+        assert!(!dead.is_ok());
+        assert!(dead.summary().contains("连不上"), "{}", dead.summary());
+
+        // 404：文件可能改名了，这是最常见的一种失败
+        let missing = MirrorProbeResult {
+            code: 404,
+            secs: 0.1,
+            bytes: None,
+            ..ok.clone()
+        };
+        assert!(missing.summary().contains("404"), "{}", missing.summary());
+
+        // 200 但拿不到大小时也要能显示
+        let unknown = MirrorProbeResult {
+            bytes: None,
+            ..ok.clone()
+        };
+        assert!(unknown.summary().contains("大小未知"), "{}", unknown.summary());
+    }
+
+    #[test]
+    fn plan_context_reads_prefs_and_the_sparse_flag() {
+        let mut state = AppState::new(wslc_core::Wslc::new(), wslc_core::Wsl::new());
+        state.prefs.install_dir = Some(r"D:\wsl".to_owned());
+
+        // 没读过 .wslconfig → 不开稀疏
+        let ctx = state.plan_context();
+        assert_eq!(ctx.default_dir.as_deref(), Some(r"D:\wsl"));
+        assert!(!ctx.wslconfig_sparse);
+        assert!(!ctx.temp_dir.is_empty());
+        assert!(!ctx.stamp.is_empty());
+
+        // 采集里读到的真实配置要求稀疏 → 跟着它走
+        state.snapshot.wslconfig.text = Some("[experimental]\nsparseVhd=true\n".to_owned());
+        assert!(state.plan_context().wslconfig_sparse);
+    }
+
+    #[test]
+    fn app_state_preflight_uses_the_current_distro_list() {
+        use wslc_core::model::install::{InstallSource, InstallSpec};
+
+        let mut state = AppState::new(wslc_core::Wslc::new(), wslc_core::Wsl::new());
+        // 有默认安装目录 → tar 导入的必填项能由"默认目录 + 名字"推出来
+        state.prefs.install_dir = Some(r"D:\wsl".to_owned());
+        let spec = InstallSpec::new(
+            "Ubuntu",
+            InstallSource::Tar {
+                path: r"D:\a.tar".to_owned(),
+            },
+        );
+
+        // 列表是空的时候它能过（只差目录非空与否）
+        assert!(state.preflight(&spec, false).ok());
+        assert!(!state.preflight(&spec, true).ok());
+
+        // 列表里已经有 Ubuntu → 报重名
+        state.snapshot.distros.push(wslc_core::model::Distro::new(
+            "Ubuntu",
+            wslc_core::model::DistroState::Stopped,
+            Some(2),
+            false,
+        ));
+        assert_eq!(state.distro_names(), vec!["Ubuntu".to_owned()]);
+        let check = state.preflight(&spec, false);
+        assert!(!check.ok());
+        assert!(check.error_text().unwrap().contains("已经有一个"));
     }
 
     #[test]

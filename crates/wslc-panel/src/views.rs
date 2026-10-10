@@ -15,6 +15,10 @@ use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 
 use wslc_core::cmd::container::{PullPolicy, RunSpec};
+// 安装的**计划**是纯逻辑（在 `wslc-core` 里）：页面直接把它的步骤列表画出来，
+// 和执行时读的是同一份数据 —— 预览不会和执行走偏。
+use wslc_core::mirrors;
+use wslc_core::model::install as install_model;
 use wslc_core::model::{ContainerState, ContainerSummary, Distro, DistroState};
 // `/etc/wsl.conf` 的字段表与保序文档模型（纯逻辑，在 `wslc-core` 里）。
 use wslc_core::model::wslconf;
@@ -24,14 +28,14 @@ use wslc_core::settings::{SETTING_KEYS, SettingKey, SettingKind};
 // 写明来源比"碰巧 glob 里有"可靠。
 use gpui_kit::component::checkbox::Checkbox;
 
-use crate::app::{CreateDialog, Shell, WslConfDialog};
+use crate::app::{CreateDialog, InstallForm, Shell, WslConfDialog};
 // 列宽定义与配置项预设值都是纯数据，住在不依赖 GPUI 的 `wslc-panel-core` 里
 // —— 这样它们的单测不必链接 GPUI（见那个 crate 的顶层说明）。
 use crate::columns::{ALL_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS};
 use crate::presets::presets_for;
 use crate::state::{
-    AppState, DistroAction, ImmediateAction, InstallSourceKind, Page, PendingAction, PromptKind,
-    PullProgress, SettingsTab, WslConfState, format_bytes,
+    AppState, DistroAction, ImmediateAction, InstallOutcome, InstallProgress, InstallSourceKind,
+    Page, PendingAction, PromptKind, PullProgress, SettingsTab, WslConfState, format_bytes,
 };
 use crate::theme;
 
@@ -1367,8 +1371,10 @@ fn cell_distro_badge(state: DistroState) -> AnyElement {
 
 /// 「添加实例」页。
 ///
-/// 三条安装路径**共用一套表单**，靠 [`InstallSourceKind`] 切换 ——
-/// 它们只是参数不同，没必要做成三个页面。
+/// # 五条来源共用一套表单
+///
+/// 靠 [`InstallSourceKind`] 切换 —— 它们只是参数不同，没必要做成五个页面。
+/// 这里**保留**了参考实现没有的「从文件安装」（`.wsl` 是新格式，`--import` 吃不了）。
 ///
 /// # 表单是懒创建的
 ///
@@ -1376,7 +1382,17 @@ fn cell_distro_badge(state: DistroState) -> AnyElement {
 /// 「添加实例」按钮时**才建（见 `Shell::ensure_install_form`）。
 /// 正常路径下进得来就一定有表单；万一没有（比如程序内部跳过来），
 /// 给一句提示而不是 panic。
+///
+/// # 校验与预览都走纯函数
+///
+/// 红字（[`AppState::preflight`]）和步骤预览（`install_model::plan`）都是
+/// **渲染时现算**的纯逻辑 —— 提交时用的是同两个函数，所以"看到的"和
+/// "挡住的/要跑的"不会走偏。
+///
+/// ⚠️ 渲染时**不查**"安装目录非空"（那要碰文件系统，每帧查一次会在网络盘上卡住）；
+/// 那条检查在提交那一刻做，见 `Shell::confirm_install`。
 pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
+    let state = &shell.state;
     let Some(form) = shell.install_form.as_ref() else {
         return card(
             "添加实例",
@@ -1392,8 +1408,16 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
     };
 
     let source = form.source;
+    let spec = form.to_spec(cx, &state.mirrors);
+    let check = state.preflight(&spec, false);
+    let plan = install_model::plan(&spec, &state.plan_context());
+    let running = state
+        .installing
+        .as_ref()
+        .map(InstallProgress::is_running)
+        .unwrap_or(false);
 
-    // -- 来源三选一 --
+    // -- 来源五选一 --
     let source_buttons: Vec<AnyElement> = InstallSourceKind::ALL
         .iter()
         .map(|kind| {
@@ -1417,18 +1441,18 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
     // -- 输入框 --
     let mut fields: Vec<AnyElement> = vec![form_field(
         "install-name",
-        "发行版名",
+        name_field_label(source),
         &form.name,
         cx,
         true,
     )];
 
-    if source.needs_path() {
+    if let Some((label, _)) = source.file_filter() {
         // 「浏览…」和输入框并排。`flex_1 + min_w_0` 让输入框吃掉剩余宽度，
         // 又在窗口很窄时允许它收缩（不写 `min_w_0` 会把它顶出去）。
-        let browse = {
+        let browse_file = {
             let entity = entity.clone();
-            Button::new("install-browse")
+            Button::new("install-browse-file")
                 .label("浏览…")
                 .small()
                 .on_click(move |_, window, cx| {
@@ -1443,39 +1467,87 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
                 .items_end()
                 .child(div().flex_1().min_w_0().child(form_field(
                     "install-path",
-                    source.path_label(),
+                    label,
                     &form.source_path,
                     cx,
                     true,
                 )))
-                .child(browse)
+                .child(browse_file)
                 .into_any_element(),
         );
     }
 
-    fields.push(form_field(
-        "install-dir",
-        if source.requires_install_dir() {
-            "安装目录（必填）"
-        } else {
-            "安装目录（可留空）"
-        },
-        &form.install_dir,
-        cx,
-        true,
-    ));
+    // 安装目录：+ 浏览 + 存为默认
+    let browse_dir = {
+        let entity = entity.clone();
+        Button::new("install-browse-dir")
+            .label("浏览…")
+            .small()
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |shell, cx| shell.browse_install_dir(window, cx));
+            })
+    };
+    let remember_dir = {
+        let entity = entity.clone();
+        Button::new("install-remember-dir")
+            .label("存为默认")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.remember_install_dir(cx));
+            })
+    };
+
+    fields.push(
+        v_flex()
+            .w_full()
+            .gap_1()
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .items_end()
+                    .child(div().flex_1().min_w_0().child(form_field(
+                        "install-dir",
+                        if source.requires_install_dir() {
+                            "安装目录（必填）"
+                        } else {
+                            "安装目录（可留空，交给 WSL 决定）"
+                        },
+                        &form.install_dir,
+                        cx,
+                        true,
+                    )))
+                    .child(browse_dir)
+                    .child(remember_dir),
+            )
+            .child(div().text_xs().text_color(theme::text_dim()).child(
+                "留空时会用「默认安装目录 + 发行版名」；点「存为默认」把当前这个路径记住。",
+            ))
+            .into_any_element(),
+    );
+
+    // -- 来源专属区块 --
+    let source_block: AnyElement = if source.is_online() {
+        online_block(state, form, entity, cx)
+    } else if source.is_mirror() {
+        mirror_block(state, form, entity, cx)
+    } else {
+        div().into_any_element()
+    };
 
     // -- 选项 --
     let mut options: Vec<AnyElement> = Vec::new();
 
     // 这里**没有** WSL 版本选择器：本项目只支持 WSL 2，
-    // 装出来的固定是 WSL 2（`wslc_core::cmd::distro::WSL_VERSION`）。
+    // 装出来的固定是 WSL 2（`wslc_core::model::install::WSL_VERSION`）。
     // 给一个只有一个选项的下拉框不如不给。
 
     // 开关用**按钮**而不是复选框：全项目都是这个路子
     // （复选框样式在深色主题下对比度很差）。
     if source.supports_launch() {
-        let entity = entity.clone();
+        // ⚠️ 不要用 `let entity = entity.clone()` 这种同名遮蔽：这个块里要用两次，
+        // 第二次会因为"已经从第一次的遮蔽变量里移走了"而编译不过（真的踩到了）。
+        let launch_entity = entity.clone();
         let mut button = Button::new("toggle-launch")
             .label(if form.launch {
                 "装完立即启动：是"
@@ -1484,9 +1556,25 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
             })
             .small()
             .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.toggle_install_launch(cx));
+                launch_entity.update(cx, |shell, cx| shell.toggle_install_launch(cx));
             });
         if form.launch {
+            button = button.primary();
+        }
+        options.push(button.into_any_element());
+
+        let web_entity = entity.clone();
+        let mut button = Button::new("toggle-web-download")
+            .label(if form.web_download {
+                "下载源：GitHub（--web-download）"
+            } else {
+                "下载源：微软商店"
+            })
+            .small()
+            .on_click(move |_, _, cx| {
+                web_entity.update(cx, |shell, cx| shell.toggle_web_download(cx));
+            });
+        if form.web_download {
             button = button.primary();
         }
         options.push(button.into_any_element());
@@ -1510,21 +1598,117 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
         options.push(button.into_any_element());
     }
 
-    // -- 等效命令预览（实时）--
-    let preview = form.to_spec(cx).preview_lines();
+    // -- 校验（红字）--
+    let mut problems: Vec<AnyElement> = Vec::new();
+    for error in &check.errors {
+        problems.push(
+            div()
+                .text_xs()
+                .text_color(theme::danger())
+                .child(format!("✘ {error}"))
+                .into_any_element(),
+        );
+    }
+    for warning in &check.warnings {
+        problems.push(
+            div()
+                .text_xs()
+                .text_color(theme::warning())
+                .child(format!("! {warning}"))
+                .into_any_element(),
+        );
+    }
 
-    // -- 提交 --
-    let install = {
-        let entity = entity.clone();
-        Button::new("do-install")
-            .label("开始安装")
-            .primary()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.confirm_install(cx));
-            })
+    // -- 步骤预览（实时；与执行读的是同一份计划）--
+    let preview_body: AnyElement = match &plan {
+        Ok(plan) => v_flex()
+            .w_full()
+            .gap_1()
+            .children(plan.preview_lines().into_iter().map(|line| {
+                div()
+                    .font_family("Consolas")
+                    .text_xs()
+                    .text_color(theme::text())
+                    .child(line)
+            }))
+            .children(plan.notes.iter().map(|note| {
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child(note.clone())
+            }))
+            .into_any_element(),
+        Err(e) => div()
+            .text_xs()
+            .text_color(theme::danger())
+            .child(format!("参数还不对：{e}"))
+            .into_any_element(),
     };
 
-    v_flex()
+    // -- 提交 / 取消 --
+    //
+    // ⚠️ 重定位那一步（导出 → 注销 → 导入）**不给**取消按钮：
+    // 它的 `cancellable` 是 false，中途停下等于把刚装好的发行版删掉。
+    // 让用户点了之后才发现没用，比"这里没有按钮 + 一句说明"糟得多。
+    let cancellable = state
+        .installing
+        .as_ref()
+        .map(|progress| progress.cancellable)
+        .unwrap_or(true);
+
+    let action: AnyElement = if running && cancellable {
+        let entity_cancel = entity.clone();
+        h_flex()
+            .w_full()
+            .items_center()
+            .gap_3()
+            .child(
+                Button::new("cancel-install")
+                    .label("取消安装")
+                    .small()
+                    .danger()
+                    .on_click(move |_, _, cx| {
+                        entity_cancel.update(cx, |shell, cx| shell.cancel_install(cx));
+                    }),
+            )
+            .child(elapsed_label(state))
+            .into_any_element()
+    } else if running {
+        h_flex()
+            .w_full()
+            .items_center()
+            .gap_3()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::warning())
+                    .child("正在改名/挪位置 —— 这一步不能取消（中途停下会把刚装好的东西删掉）"),
+            )
+            .child(elapsed_label(state))
+            .into_any_element()
+    } else {
+        // 取消过 / 装完之后按钮要能再点一次：文案跟着状态走。
+        let label = if state.installing.is_some() {
+            "再装一个"
+        } else {
+            "开始安装"
+        };
+        let entity = entity.clone();
+        h_flex()
+            .w_full()
+            .justify_end()
+            .child(
+                Button::new("do-install")
+                    .label(label)
+                    .primary()
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |shell, cx| shell.confirm_install(cx));
+                    }),
+            )
+            .into_any_element()
+    };
+
+    let mut page = v_flex()
         .w_full()
         .gap_4()
         .child(card(
@@ -1546,27 +1730,498 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
                         .child(source.hint()),
                 ),
         ))
-        .child(card("参数", v_flex().w_full().gap_3().children(fields)))
-        .child(card("选项", v_flex().w_full().gap_3().children(options)))
         .child(card(
-            "等效命令",
-            v_flex()
+            "参数",
+            v_flex().w_full().gap_3().children(fields).child(source_block),
+        ))
+        .child(card("选项", v_flex().w_full().gap_3().children(options)));
+
+    if !problems.is_empty() {
+        page = page.child(card("装前检查", v_flex().w_full().gap_2().children(problems)));
+    }
+
+    page = page
+        .child(card("要执行的步骤", preview_body))
+        .child(action);
+
+    // 装过 / 正在装 → 显示日志（装完之后留在页面上，用户要能读它）
+    if state.installing.is_some() {
+        page = page.child(install_log_card(state));
+    }
+
+    page.into_any_element()
+}
+
+/// 名字输入框的标签（在线安装时它同时是"清单里没有时手输的 id"）。
+fn name_field_label(source: InstallSourceKind) -> &'static str {
+    if source.is_online() {
+        "发行版名（清单拉不到时也可以直接填在线 id，如 Ubuntu-24.04）"
+    } else {
+        "发行版名"
+    }
+}
+
+/// 「在线清单」那一块：拉取按钮 + 搜索 + 列表 + 来源说明。
+fn online_block(
+    state: &AppState,
+    form: &InstallForm,
+    entity: &Entity<Shell>,
+    cx: &App,
+) -> AnyElement {
+    let refresh = {
+        let entity = entity.clone();
+        Button::new("online-refresh")
+            .label(if state.online.loading {
+                "正在拉取…"
+            } else {
+                "拉取在线清单"
+            })
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.refresh_online_list(cx));
+            })
+    };
+
+    let query = form.online_filter.read(cx).value().to_owned();
+    let matches = state.online.filtered(&query);
+
+    // 只画前 200 条：清单通常几十条，但万一是几百条，
+    // 一个超长的按钮列表会把页面撑得没法用。
+    let rows: Vec<AnyElement> = matches
+        .iter()
+        .take(200)
+        .map(|item| {
+            let id = item.id.clone();
+            let label = item.label.clone();
+            let selected = state.online.selected.as_deref() == Some(item.id.as_str());
+            let entity = entity.clone();
+
+            let mut button = Button::new(SharedString::from(format!("online-{}", item.id)))
+                .label(item.id.clone())
+                .small()
+                .on_click(move |_, window, cx| {
+                    let id = id.clone();
+                    entity.update(cx, |shell, cx| {
+                        shell.pick_online_distro(id, window, cx);
+                    });
+                });
+            if selected {
+                button = button.primary();
+            }
+
+            h_flex()
                 .w_full()
                 .gap_2()
-                .children(preview.into_iter().map(|line| {
+                .items_center()
+                .child(button)
+                .child(
                     div()
-                        .font_family("Consolas")
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child(label),
+                )
+                .into_any_element()
+        })
+        .collect();
+
+    // 状态：正在拉 / 失败原因（原文，包含 wsl 那句"连接被重置"）/ 来源说明
+    let status: AnyElement = if state.online.loading {
+        div()
+            .text_xs()
+            .text_color(theme::text_muted())
+            .child("正在拉取在线清单…")
+            .into_any_element()
+    } else if !state.online.error.trim().is_empty() {
+        v_flex()
+            .w_full()
+            .gap_1()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::warning())
+                    .child(format!("清单有问题：{}", state.online.error)),
+            )
+            .child(div().text_xs().text_color(theme::text_dim()).child(
+                "拉不到清单也能装：直接在「发行版名」里填在线 id（例如 Ubuntu-24.04）。",
+            ))
+            .into_any_element()
+    } else if !state.online.items.is_empty() {
+        div()
+            .text_xs()
+            .text_color(theme::text_dim())
+            .child(format!(
+                "共 {} 个，{} 个匹配。{}",
+                state.online.items.len(),
+                matches.len(),
+                state.online.source.label()
+            ))
+            .into_any_element()
+    } else {
+        div()
+            .text_xs()
+            .text_color(theme::text_dim())
+            .child("还没拉过清单 —— 点上面的按钮，或者直接在「发行版名」里手输 id。")
+            .into_any_element()
+    };
+
+    v_flex()
+        .w_full()
+        .gap_2()
+        .child(
+            h_flex()
+                .w_full()
+                .gap_2()
+                .items_end()
+                .child(refresh)
+                .child(div().flex_1().min_w_0().child(form_field(
+                    "install-online-filter",
+                    "搜索（id 与友好名都匹配）",
+                    &form.online_filter,
+                    cx,
+                    true,
+                ))),
+        )
+        .child(status)
+        .child(
+            // ⚠️ 滚动容器必须先有 `.id(...)`：`overflow_y_scroll` 来自
+            // `StatefulInteractiveElement`，只对带 id 的元素可用（漏了是编译错误）。
+            v_flex()
+                .id("install-online-list")
+                .w_full()
+                .max_h(px(240.))
+                .overflow_y_scroll()
+                .gap_1()
+                .children(rows),
+        )
+        .into_any_element()
+}
+
+/// 「镜像站」那一块：内置表 + 探测 + 自定义 URL。
+fn mirror_block(
+    state: &AppState,
+    form: &InstallForm,
+    entity: &Entity<Shell>,
+    cx: &App,
+) -> AnyElement {
+    if !mirrors::available_on_this_arch() {
+        return v_flex()
+            .w_full()
+            .gap_2()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::warning())
+                    .child(format!(
+                        "内置镜像表目前只有 amd64 的条目（这台机器是 {}）—— \
+                         请在下面填一个自定义 rootfs URL。",
+                        mirrors::arch()
+                    )),
+            )
+            .child(form_field(
+                "install-mirror-url",
+                "自定义 rootfs URL（http/https，指向 tar.gz / tar.xz）",
+                &form.mirror_url,
+                cx,
+                true,
+            ))
+            .into_any_element();
+    }
+
+    let distro_buttons: Vec<AnyElement> = mirrors::distros()
+        .iter()
+        .map(|distro| {
+            let id = distro.id.to_owned();
+            let selected = state.mirrors.distro_id == distro.id;
+            let entity = entity.clone();
+            let mut button = Button::new(SharedString::from(format!("mirror-{}", distro.id)))
+                .label(distro.label)
+                .small()
+                .on_click(move |_, _, cx| {
+                    let id = id.clone();
+                    entity.update(cx, |shell, cx| shell.select_mirror_distro(id, cx));
+                });
+            if selected {
+                button = button.primary();
+            }
+            button.into_any_element()
+        })
+        .collect();
+
+    let probe = {
+        let entity = entity.clone();
+        Button::new("mirror-probe")
+            .label(if state.mirrors.probing {
+                "正在探测…"
+            } else {
+                "探测最快镜像"
+            })
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.probe_mirrors(cx));
+            })
+    };
+
+    let rows: Vec<AnyElement> = state
+        .mirrors
+        .results
+        .iter()
+        .map(|result| {
+            let chosen = state
+                .mirrors
+                .chosen
+                .as_ref()
+                .is_some_and(|choice| choice.url == result.url);
+            h_flex()
+                .w_full()
+                .gap_2()
+                .items_center()
+                .child(if chosen {
+                    badge("已选", theme::success(), theme::success_soft()).into_any_element()
+                } else {
+                    div().w(px(34.)).into_any_element()
+                })
+                .child(
+                    div()
                         .text_xs()
                         .text_color(theme::text())
-                        .child(line)
-                }))
-                .child(div().text_xs().text_color(theme::text_dim()).child(
-                    "「设为默认」不是安装命令的选项（wsl 的 --import / --install 都没有它），\
-                     所以它是装完之后**再跑一条**命令 —— 上面会显示成两行。",
-                )),
+                        .child(result.site.clone()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(if result.is_ok() {
+                            theme::text_muted()
+                        } else {
+                            theme::danger()
+                        })
+                        .child(result.summary()),
+                )
+                .into_any_element()
+        })
+        .collect();
+
+    let chosen_line: AnyElement = match (&state.mirrors.chosen, &state.mirrors.error) {
+        (Some(choice), _) => div()
+            .text_xs()
+            .text_color(theme::success())
+            .child(format!(
+                "将用 {} 上的 {}{}",
+                choice.site,
+                choice.release,
+                choice
+                    .bytes
+                    .map(|bytes| format!("（{}）", mirrors::human_bytes(bytes)))
+                    .unwrap_or_default()
+            ))
+            .into_any_element(),
+        (None, Some(error)) => div()
+            .text_xs()
+            .text_color(theme::warning())
+            .child(error.clone())
+            .into_any_element(),
+        (None, None) => div()
+            .text_xs()
+            .text_color(theme::text_dim())
+            .child("还没探测 —— 点上面的按钮挑最快的那个镜像。也可以在下面直接填 URL。")
+            .into_any_element(),
+    };
+
+    // 当前选中那条的实测备注（大小/验证日期）：数据要从表里来，不能瞎写。
+    let note: AnyElement = state
+        .mirrors
+        .selected_distro()
+        .map(|distro| {
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child(distro.note)
+                .into_any_element()
+        })
+        .unwrap_or_else(|| div().into_any_element());
+
+    v_flex()
+        .w_full()
+        .gap_2()
+        .child(
+            h_flex()
+                .w_full()
+                .gap_2()
+                .flex_wrap()
+                .children(distro_buttons),
+        )
+        .child(note)
+        .child(h_flex().w_full().gap_2().items_center().child(probe))
+        .child(v_flex().w_full().gap_1().children(rows))
+        .child(chosen_line)
+        .child(form_field(
+            "install-mirror-url",
+            "自定义 rootfs URL（留空 = 用上面探测出来的）",
+            &form.mirror_url,
+            cx,
+            true,
         ))
-        .child(h_flex().w_full().justify_end().child(install))
         .into_any_element()
+}
+
+/// 一句"已经跑了多久"。
+fn elapsed_label(state: &AppState) -> AnyElement {
+    let text = state
+        .installing
+        .as_ref()
+        .map(|progress| {
+            let mut parts = vec![format!("已用 {}", human_secs(progress.elapsed_secs))];
+            if let Some(percent) = progress.percent() {
+                parts.push(format!("{percent:.1}%"));
+            }
+            if let Some(speed) = progress.speed() {
+                parts.push(speed);
+            }
+            parts.join(" · ")
+        })
+        .unwrap_or_default();
+
+    div()
+        .text_xs()
+        .text_color(theme::text_muted())
+        .child(text)
+        .into_any_element()
+}
+
+/// 秒数说成人话（安装动辄几十分钟，"已用 1830 秒"没人愿意换算）。
+fn human_secs(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs} 秒")
+    } else if secs < 3600 {
+        format!("{} 分 {:02} 秒", secs / 60, secs % 60)
+    } else {
+        format!("{} 时 {:02} 分", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
+/// 安装日志卡片：步骤 + 进度 + 输出 + 结局。
+///
+/// 装完之后**留在页面上**（不自动清空）：失败了用户要读日志，
+/// 成功了也能对一下"到底跑了哪些步骤"。下次点「再装一个」时被替换掉。
+fn install_log_card(state: &AppState) -> AnyElement {
+    let Some(progress) = state.installing.as_ref() else {
+        return div().into_any_element();
+    };
+
+    let head = h_flex()
+        .w_full()
+        .gap_2()
+        .items_center()
+        .justify_between()
+        .child(
+            div()
+                .text_sm()
+                .text_color(theme::text())
+                .child(if progress.total == 0 {
+                    format!("正在准备安装 {}…", progress.name)
+                } else {
+                    format!(
+                        "第 {} / {} 步：{}",
+                        progress.index, progress.total, progress.step_label
+                    )
+                }),
+        )
+        .child(elapsed_label(state));
+
+    // 已经走完的步骤：一眼能看出卡在哪一步
+    let finished: Vec<AnyElement> = progress
+        .finished
+        .iter()
+        .map(|step| {
+            let (mark, color) = if step.ok {
+                ("✔", theme::success())
+            } else {
+                ("✘", theme::danger())
+            };
+            div()
+                .text_xs()
+                .text_color(color)
+                .child(format!("{mark} {}", step.label))
+                .into_any_element()
+        })
+        .collect();
+
+    let outcome: AnyElement = match &progress.outcome {
+        None => div().into_any_element(),
+        Some(InstallOutcome::Success(message)) => div()
+            .text_sm()
+            .text_color(theme::success())
+            .child(format!("✔ {message}"))
+            .into_any_element(),
+        Some(InstallOutcome::Failed { detail, step }) => div()
+            .text_sm()
+            .text_color(theme::danger())
+            .child(format!(
+                "✘ 安装失败{}{detail}",
+                step.as_ref()
+                    .map(|step| format!("（{step}）"))
+                    .unwrap_or_default()
+            ))
+            .into_any_element(),
+        Some(InstallOutcome::Cancelled) => div()
+            .text_sm()
+            .text_color(theme::warning())
+            .child("已取消 —— 已经装到一半的东西不会自动回收，去实例列表看一眼")
+            .into_any_element(),
+    };
+
+    // ⚠️ 滚动容器必须带 `.id(...)`（见 online_block 的注释）。
+    //
+    // 只画**最后** 400 行：日志上限是 2000 行，一帧往界面里塞 2000 个元素
+    // 是白白的开销，而用户真正要看的就是尾部（拉取那边的日志上限也是 200 行）。
+    const SHOWN: usize = 400;
+    let shown_from = progress.log.len().saturating_sub(SHOWN);
+    let tail = &progress.log[shown_from..];
+
+    let log: AnyElement = if tail.is_empty() {
+        div().into_any_element()
+    } else {
+        v_flex()
+            .id("install-log")
+            .w_full()
+            .max_h(px(260.))
+            .overflow_y_scroll()
+            .gap_1()
+            .children(tail.iter().map(|line| {
+                div()
+                    .font_family("Consolas")
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child(line.clone())
+            }))
+            .into_any_element()
+    };
+
+    let log_note = if shown_from > 0 {
+        format!(
+            "已收到 {} 行输出（只显示最后 {SHOWN} 行）",
+            progress.log.len()
+        )
+    } else {
+        format!("已收到 {} 行输出", progress.log.len())
+    };
+
+    card(
+        "安装过程",
+        v_flex()
+            .w_full()
+            .gap_2()
+            .child(head)
+            .children(finished)
+            .child(outcome)
+            .child(log)
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child(log_note),
+            ),
+    )
+    .into_any_element()
 }
 
 // ---------------------------------------------------------------------------
