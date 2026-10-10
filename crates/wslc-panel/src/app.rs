@@ -1298,6 +1298,48 @@ impl Shell {
         cx.notify();
     }
 
+    /// 用系统默认程序打开 `%USERPROFILE%\.wslconfig`。
+    ///
+    /// # 为什么走 `explorer.exe`
+    ///
+    /// 它按**文件关联**打开，用户装了 VS Code / Notepad++ 就会用那个 ——
+    /// 比我们写死 `notepad.exe` 尊重用户的习惯。项目里"在资源管理器里打开"
+    /// 也是这个路子。
+    ///
+    /// **只 `spawn` 不等待**：等编辑器关掉会把界面挂住（这正是 v0.3.4 修的那类问题）。
+    pub fn open_wslconfig(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.state.snapshot.wslconfig.path.clone() else {
+            self.state.notify(Toast::error(
+                "找不到 .wslconfig 的位置（USERPROFILE 没定义？）",
+            ));
+            cx.notify();
+            return;
+        };
+
+        // 文件不存在时**先建一个空的**：不然 explorer 会弹一个系统级的
+        // "找不到文件"框，看起来像我们的错。建个空文件正是"从头配一份"的起点。
+        let created = !path.exists();
+        if created {
+            if let Err(e) = std::fs::write(&path, "") {
+                self.state
+                    .notify(Toast::error(format!("创建 .wslconfig 失败：{e}")));
+                cx.notify();
+                return;
+            }
+        }
+
+        let toast = match std::process::Command::new("explorer.exe")
+            .arg(&path)
+            .spawn()
+        {
+            Ok(_) if created => Toast::success("已创建空的 .wslconfig 并用系统默认程序打开"),
+            Ok(_) => Toast::success("已用系统默认程序打开 .wslconfig"),
+            Err(e) => Toast::error(format!("打开失败：{e}")),
+        };
+        self.state.notify(toast);
+        cx.notify();
+    }
+
     // -- 危险操作确认 ------------------------------------------------------
 
     /// 请求执行一个**容器域**危险操作（先弹确认框）。
@@ -2068,6 +2110,7 @@ fn nav_id(page: Page) -> &'static str {
         Page::Volumes => "nav-volumes",
         Page::AppSettings => "nav-app-settings",
         Page::Config => "nav-config",
+        Page::WslConfig => "nav-wsl-config",
     }
 }
 

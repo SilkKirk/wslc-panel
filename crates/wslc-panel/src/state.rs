@@ -24,6 +24,7 @@ use wslc_core::model::{
 };
 use wslc_core::settings::SettingsDoc;
 use wslc_core::storage::StorageInfo;
+use wslc_core::wslconfig::MisplacedKey;
 use wslc_core::{Result, Wsl, Wslc, cmd};
 
 /// 左侧导航的页面。
@@ -57,6 +58,11 @@ pub enum Page {
     AppSettings,
     /// wlsc 配置。
     Config,
+    /// WSL 自己的全局配置（`%USERPROFILE%\.wslconfig`）。
+    ///
+    /// 和 [`Page::Config`] 的区别：那个是 **wslc** 的 `settings.yaml`，
+    /// 这个是 **WSL 本身**的配置；两者互不相干，连文件位置都不同。
+    WslConfig,
 }
 
 impl Page {
@@ -64,7 +70,7 @@ impl Page {
     ///
     /// ⚠️ 同组的页面必须**连续** —— 侧边栏靠"组名变了就插一条标题"
     /// 来分组（见 `app.rs` 的 `render`）。
-    pub const ALL: [Page; 9] = [
+    pub const ALL: [Page; 10] = [
         Page::Dashboard,
         Page::Instances,
         Page::AddInstance,
@@ -74,6 +80,7 @@ impl Page {
         Page::Volumes,
         Page::AppSettings,
         Page::Config,
+        Page::WslConfig,
     ];
 
     /// 导航标签。
@@ -88,6 +95,7 @@ impl Page {
             Page::Volumes => "卷",
             Page::AppSettings => "应用设置",
             Page::Config => "wlsc 配置",
+            Page::WslConfig => "WSL 配置",
         }
     }
 
@@ -98,7 +106,7 @@ impl Page {
             Page::Instances | Page::AddInstance => "WSL 实例",
             Page::Containers => "容器",
             Page::Images | Page::Networks | Page::Volumes => "资源",
-            Page::AppSettings | Page::Config => "设置",
+            Page::AppSettings | Page::Config | Page::WslConfig => "设置",
         }
     }
 
@@ -229,10 +237,32 @@ pub struct Snapshot {
     ///
     /// 解析不出来时为 `None`（例如 `LOCALAPPDATA` 没定义）。
     pub storage: Option<StorageInfo>,
+    /// `%USERPROFILE%\.wslconfig` 的读取与静态检查结果。
+    ///
+    /// **在采集里读、不在渲染里读**：渲染每帧都可能发生，读文件不该在那儿做。
+    /// 这个文件很小、极少变，跟着 3 秒的刷新一起读完全够。
+    pub wslconfig: WslConfigInfo,
     /// 各区段的错误信息
     pub errors: Vec<String>,
     /// 本次刷新耗时（毫秒）
     pub elapsed_ms: u128,
+}
+
+/// `.wslconfig` 的读取结果。
+///
+/// **只读** —— 这一版不做编辑（写文件）。为什么不提供"一键校验"见
+/// [`wslc_core::wslconfig`] 的模块说明：实测 WSL 只在 **VM 启动时**
+/// 报配置告警，主动触发就得先 `wsl --shutdown`，那会打断所有正在跑的发行版。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WslConfigInfo {
+    /// 文件路径；`USERPROFILE` 取不到时为 `None`。
+    pub path: Option<std::path::PathBuf>,
+    /// 文件内容；`None` = **文件不存在**（没配过很正常，不是错误）。
+    pub text: Option<String>,
+    /// 读失败的原因（权限、编码……）。
+    pub error: Option<String>,
+    /// 静态检查发现的、放错文件的键（见 [`wslc_core::wslconfig::check`]）。
+    pub misplaced: Vec<MisplacedKey>,
 }
 
 impl Snapshot {
@@ -314,8 +344,42 @@ pub fn load_snapshot(wslc: &Wslc, wsl: &Wsl) -> Snapshot {
     let session = snap.sessions.first().map(|s| s.display_name.clone());
     snap.storage = wslc_core::storage::inspect(configured.as_deref(), session.as_deref());
 
+    // `.wslconfig`：纯文件读取（几毫秒），没有进程开销，所以每轮都读。
+    snap.wslconfig = load_wslconfig();
+
     snap.elapsed_ms = started.elapsed().as_millis();
     snap
+}
+
+/// 读 `%USERPROFILE%\.wslconfig` 并做静态检查。
+///
+/// 三种结果分得很清楚，因为界面上要说的话完全不同：
+///
+/// - 读到了 → 做检查，可能报出几条"放错文件的键"
+/// - **文件不存在** → 正常状态（没配过），不是错误
+/// - 读失败 → 真的出了问题（权限、编码），要如实说
+fn load_wslconfig() -> WslConfigInfo {
+    let path = wslc_core::config_path();
+    match wslc_core::wslconfig::read() {
+        Ok(Some(text)) => WslConfigInfo {
+            misplaced: wslc_core::wslconfig::check(&text),
+            path,
+            text: Some(text),
+            error: None,
+        },
+        Ok(None) => WslConfigInfo {
+            path,
+            text: None,
+            error: None,
+            misplaced: Vec::new(),
+        },
+        Err(e) => WslConfigInfo {
+            path,
+            text: None,
+            error: Some(e.to_string()),
+            misplaced: Vec::new(),
+        },
+    }
 }
 
 /// `wsl --status`（默认发行版 + 默认版本）。
@@ -1096,14 +1160,14 @@ mod tests {
             assert!(!page.label().is_empty());
             assert!(!page.group().is_empty());
         }
-        // v0.3 加了「实例列表」「添加实例」「应用设置」，从 6 个变成 9 个。
+        // v0.3 加了「实例列表」「添加实例」「应用设置」「WSL 配置」，从 6 个变成 10 个。
         //
         // 这个断言存在的意义就是**逼人改它**：加页面时忘了同步导航分组，
         // 侧边栏会出现重复的组标题。历史上 commit 552a91c 就是被它抓到的。
         //
         // ⚠️ 注意 `cargo check --all-targets` 只编译不执行，
         // 所以它真的被跑到要靠 CI 里的 `cargo test -p wslc-panel --bins`（见 SPIKE 7.8）。
-        assert_eq!(Page::ALL.len(), 9);
+        assert_eq!(Page::ALL.len(), 10);
     }
 
     #[test]

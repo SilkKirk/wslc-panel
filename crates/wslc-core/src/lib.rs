@@ -38,7 +38,9 @@ pub mod jsonl;
 pub mod model;
 pub mod settings;
 pub mod storage;
+pub mod wslconfig;
 
 pub use cli::{CancelToken, CommandOutput, StreamHandle, Wsl, Wslc};
 pub use error::{Error, Result};
 pub use storage::{StorageInfo, StoragePathOrigin, VolumeSpace};
+pub use wslconfig::{MisplacedKey, config_path};

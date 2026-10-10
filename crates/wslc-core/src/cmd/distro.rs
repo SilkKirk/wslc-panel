@@ -101,16 +101,24 @@ pub const WSL_VERSION: u8 = 2;
 
 /// 过滤掉 `wsl.exe` 打在 stderr 上、**与本操作无关**的配置告警。
 ///
-/// 实测：只要命令会进发行版（`-d X -e ...` / `--manage`），`wsl.exe` 就会
-/// 重复打印 `%USERPROFILE%\.wslconfig` 的告警：
+/// 实测：进发行版的命令（`-d X -e ...` / `--manage`）会在 stderr 上打出
+/// `%USERPROFILE%\.wslconfig` 的告警：
 ///
 /// ```text
 /// wsl: interop.appendWindowsPath:C:\Users\76434\.wslconfig 中的键"12"未知
 /// wsl: user.default:C:\Users\76434\.wslconfig 中的键"15"未知
 /// ```
 ///
+/// ⚠️ **只在 VM 启动时报一次**（v0.3.7 实测更正）：`wsl --shutdown` 之后的
+/// 第一条进发行版的命令会报，紧接着的第二、三条就静默了；`--status` /
+/// `--version` / `-l -v` / `--terminate` / `--set-default` 则**从来不报**。
+/// 也就是说它们来自 WSL2 虚拟机启动时读一次 `.wslconfig`，不是每条命令都校验。
+///
 /// 它们**不影响退出码**，但会把错误消息污染得看不出真正的原因 ——
 /// 用户看到"操作失败：键12未知"只会更迷惑。
+///
+/// 想把这些告警**呈现给用户**的话，见 [`crate::wslconfig`]（那个模块只做
+/// 不依赖 WSL 的静态检查，原因也写在它的模块说明里）。
 fn strip_config_warnings(text: &str) -> String {
     text.lines()
         .filter(|line| !line.trim_start().starts_with("wsl: "))
