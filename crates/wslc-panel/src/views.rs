@@ -3571,14 +3571,43 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEl
             continue;
         }
 
-        let rows: Vec<AnyElement> = wslconf::FIELDS
+        let fields: Vec<&'static wslconf::Field> = wslconf::FIELDS
             .iter()
             .filter(|f| f.section == section.name)
-            .map(|f| wslconf_row(state, dialog, f, entity, cx))
+            .copied()
             .collect();
-        if rows.is_empty() {
+        if fields.is_empty() {
             continue;
         }
+
+        // 布尔项**两两一行**。16 个字段里一半是开关，一列排下来弹窗太长
+        // （用户反馈"上下太长"）—— 勾选框本身很窄，并排一点也不挤。
+        let bool_fields: Vec<&'static wslconf::Field> = fields
+            .iter()
+            .copied()
+            .filter(|f| f.kind == wslconf::FieldKind::Bool && !f.read_only)
+            .collect();
+        let other_fields: Vec<&'static wslconf::Field> = fields
+            .iter()
+            .copied()
+            .filter(|f| f.kind != wslconf::FieldKind::Bool || f.read_only)
+            .collect();
+
+        let bool_rows: Vec<AnyElement> = bool_fields
+            .chunks(2)
+            .map(|pair| {
+                let cells: Vec<AnyElement> = pair
+                    .iter()
+                    .map(|f| {
+                        div()
+                            .w(px(350.))
+                            .child(wslconf_row(state, dialog, f, entity, cx))
+                            .into_any_element()
+                    })
+                    .collect();
+                h_flex().w_full().gap_4().children(cells).into_any_element()
+            })
+            .collect();
 
         sections.push(
             v_flex()
@@ -3591,7 +3620,13 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEl
                         .text_color(theme::text())
                         .child(section.label),
                 )
-                .children(rows)
+                .children(bool_rows)
+                .children(
+                    other_fields
+                        .iter()
+                        .map(|f| wslconf_row(state, dialog, f, entity, cx))
+                        .collect::<Vec<_>>(),
+                )
                 .into_any_element(),
         );
     }
@@ -3685,11 +3720,14 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEl
         .child(
             v_flex()
                 .id("wslconf-card")
-                .w(px(760.))
-                .max_h(px(880.))
+                // 高度上限卡在 620：16 个字段全展开会顶满整屏
+                // （用户反馈"上下太长"）。超了就滚 —— 与其把窗口撑到
+                // 遮住上下文，不如让用户滚动。
+                .w(px(780.))
+                .max_h(px(620.))
                 .overflow_y_scroll()
                 .gap_4()
-                .p_5()
+                .p_4()
                 .rounded_lg()
                 .bg(theme::bg_card())
                 .border_1()
