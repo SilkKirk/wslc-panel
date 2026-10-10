@@ -678,6 +678,12 @@ pub struct PlannedStep {
     /// 用户看到的失败信息是"无法与服务器建立连接"，但**换一条路可能就好了** ——
     /// 与其让他自己去猜，不如自动换一次。
     pub retry_other_source: bool,
+    /// 这一步失败**不算安装失败**（只记一条警告）。
+    ///
+    /// 给"收尾"步骤用：那一刻发行版已经装好了，比如"按 `.wslconfig` 开稀疏盘"
+    /// —— WSL 完全可能因为自己的策略拒绝它（实测它默认就拒绝），
+    /// 把整体判成失败会让人以为白装了（界面报"安装失败"、其实好好的）。
+    pub best_effort: bool,
 }
 
 impl PlannedStep {
@@ -688,6 +694,7 @@ impl PlannedStep {
             args,
             cancellable: true,
             retry_other_source: false,
+            best_effort: false,
         }
     }
 
@@ -699,6 +706,12 @@ impl PlannedStep {
     /// 失败时换一个下载源再试一次（只给在线安装那一步用，见字段说明）。
     fn with_source_fallback(mut self) -> Self {
         self.retry_other_source = true;
+        self
+    }
+
+    /// 失败**不算安装失败**（收尾步骤用，见字段说明）。
+    fn best_effort(mut self) -> Self {
+        self.best_effort = true;
         self
     }
 
@@ -1187,14 +1200,33 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
 
     // 收尾：用户自己在 `.wslconfig` 里要求了稀疏 VHD，就照着做。
     if ctx.wslconfig_sparse {
-        steps.push(PlannedStep::new(
-            format!("按 .wslconfig 把 {name} 的 VHD 设成稀疏（自动回收空间）"),
-            PlanProgram::Wsl,
-            own(&["--manage", name.as_str(), "--set-sparse", "true"]),
-        ));
+        // ⚠️ 必须带 `--allow-unsafe`：WSL 3.0.1.0 现在**默认拒绝**开稀疏盘
+        // （理由是"潜在的数据损坏"），报错里自己给出了该加的开关：
+        // `wsl.exe --manage <分发> --set-sparse true --allow-unsafe`。
+        // 用户的 `.wslconfig` 明确要了稀疏盘，所以照着它给的命令来。
+        //
+        // 这一步是 `best_effort`：WSL 哪天又改主意不给开，也**不能**把
+        // "已经装好的发行版"判成安装失败（这个坑也踩过 —— 界面报"安装失败"，
+        // 其实发行版好好地在那儿）。
+        steps.push(
+            PlannedStep::new(
+                format!("按 .wslconfig 把 {name} 的 VHD 设成稀疏（自动回收空间）"),
+                PlanProgram::Wsl,
+                own(&[
+                    "--manage",
+                    name.as_str(),
+                    "--set-sparse",
+                    "true",
+                    "--allow-unsafe",
+                ]),
+            )
+            .best_effort(),
+        );
         notes.push(
             "你的 `%USERPROFILE%\\.wslconfig` 里开了 `[experimental] sparseVhd`，\
-             所以装完会补一条 `--set-sparse true`。"
+             所以装完会补一条 `--set-sparse true --allow-unsafe`\
+             （WSL 目前默认拒绝开稀疏盘，要显式加 `--allow-unsafe`）。\
+             这一步没做成也不影响装好的发行版。"
                 .to_owned(),
         );
     }
@@ -1773,6 +1805,15 @@ mod tests {
             ]
         );
         assert!(plan.steps[2].args.iter().any(|a| a == "--set-sparse"));
+        // ⚠️ 必须带 `--allow-unsafe`，否则 WSL 默认拒绝开稀疏盘（实测它的报错里
+        //    自己给出的命令就带这个开关）—— 不带的话这条步骤在真机上必然失败
+        assert!(
+            plan.steps[2].args.iter().any(|a| a == "--allow-unsafe"),
+            "{:?}",
+            plan.steps[2].args
+        );
+        // 而且它失败**不算安装失败**：那一刻发行版已经装好了
+        assert!(plan.steps[2].best_effort);
         assert!(plan.notes.iter().any(|n| n.contains("sparseVhd")));
     }
 
