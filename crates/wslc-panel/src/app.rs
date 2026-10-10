@@ -203,6 +203,18 @@ impl CreateDialog {
     }
 }
 
+/// 顶部刷新按钮的文案。
+///
+/// `user_initiated` 为假（3 秒一次的自动刷新）时**永远是「刷新」** ——
+/// 自动刷新是后台行为，按钮不该跟着闪。用户点了按钮才是「刷新中…」。
+fn refresh_label(busy: bool, user_initiated: bool) -> &'static str {
+    if busy && user_initiated {
+        "刷新中…"
+    } else {
+        "刷新"
+    }
+}
+
 /// 按逗号（中英文）或换行切分，去掉空白项。
 ///
 /// 刻意**不按空格切**：环境变量的值里完全可能有空格
@@ -273,6 +285,12 @@ pub struct Shell {
     pub(crate) prompt: Option<TextPrompt>,
     /// 采集期间又有刷新请求进来；跑完要补一次。
     refresh_again: bool,
+    /// 当前这轮采集是否**由用户发起**（点按钮 / 操作完成后补刷）。
+    ///
+    /// 决定顶部按钮要不要显示「刷新中…」。3 秒一次的自动刷新是**后台**行为：
+    /// 它每轮都会把 `state.busy` 置起来（并发守卫要用），但按钮不该跟着闪 ——
+    /// 否则按钮几乎永远停在「刷新中…」上（用户看到的"按钮一直是刷新中"）。
+    refresh_visible: bool,
     /// 已经跑过多少轮刷新。
     ///
     /// 用来把 `wsl --status` 降到 30 秒一次（见 [`Shell::status_every_n_ticks`]）。
@@ -304,6 +322,7 @@ impl Shell {
             install_form: None,
             prompt: None,
             refresh_again: false,
+            refresh_visible: false,
             status_tick: 0,
         };
         shell.refresh(cx);
@@ -1186,7 +1205,22 @@ impl Shell {
 
     // -- 数据刷新 ----------------------------------------------------------
 
-    /// 后台采集一次完整快照。
+    /// 后台采集一次完整快照，并让顶部按钮显示「刷新中…」。
+    ///
+    /// 点按钮、以及操作（启动/停止/创建/删除）完成后的补刷都走这里。
+    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.refresh_inner(cx, true);
+    }
+
+    /// 后台采集一次完整快照，但**不动**顶部按钮的文案（静默刷新）。
+    ///
+    /// 3 秒一次的自动刷新走这条：它是后台行为，按钮该一直写着「刷新」；
+    /// 用户想立刻看到最新数据时自己点按钮（那条走 [`Shell::refresh`]）。
+    fn refresh_quiet(&mut self, cx: &mut Context<Self>) {
+        self.refresh_inner(cx, false);
+    }
+
+    /// 采集的公共实现。`visible` 表示这一轮要不要点亮顶部按钮。
     ///
     /// 已经在采的时候**不会并发再开一轮**，但也不会丢掉这次请求：
     /// 记在 `refresh_again` 上，本轮结束后立刻补跑。
@@ -1194,7 +1228,7 @@ impl Shell {
     /// 这一点很关键 —— 操作（启动/停止/创建/删除）完成后都会调它，
     /// 如果正好撞上 3 秒的自动刷新就把这次请求丢掉，
     /// 界面要等到下一个周期才变，用户会以为操作没生效。
-    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+    fn refresh_inner(&mut self, cx: &mut Context<Self>, visible: bool) {
         // 先顺手清掉已经死掉的哨兵（用户点了「终止」、或在别处 `wsl --shutdown`）。
         // 放在最前面：`busy` 那条提前返回也不该让界面上的"保持运行中"标记过期。
         self.sync_keep_alive(cx);
@@ -1204,10 +1238,17 @@ impl Shell {
             // 丢掉这次请求，界面就要等下一个周期才变 ——
             // 用户看到的就是"点了停止，状态还是运行中"。
             self.refresh_again = true;
+            // 用户点的按钮正好撞上后台那轮：立刻点亮按钮，免得"点了没反应"。
+            // 补跑的那轮会一直亮到采完（见下面处理 `refresh_again` 的顺序）。
+            if visible && !self.refresh_visible {
+                self.refresh_visible = true;
+                cx.notify();
+            }
             return;
         }
         self.refresh_again = false;
         self.state.busy = true;
+        self.refresh_visible = visible;
         cx.notify();
 
         // `wsl --status` 降频到 30 秒一次；其余（含发行版列表）跟随本轮刷新。
@@ -1229,6 +1270,7 @@ impl Shell {
 
             let _ = this.update(cx, |shell, cx| {
                 shell.state.busy = false;
+                shell.refresh_visible = false;
                 // 耗时只写日志，不在界面上显示。
                 tracing::debug!(
                     "采集完成：{} ms，{} 个容器，{} 个发行版，{} 处错误",
@@ -1259,12 +1301,15 @@ impl Shell {
                 if shell.state.settings.is_none() {
                     shell.load_settings(cx);
                 }
-                cx.notify();
 
-                // 本轮采集期间被挡下的刷新请求 → 立刻补跑
+                // 本轮采集期间被挡下的刷新请求 → 立刻补跑。
+                //
+                // 放在 `cx.notify()` **之前**：补跑会把 `busy` 重新置起来，
+                // 先通知的话会闪一帧「刷新」再变回「刷新中…」。
                 if std::mem::take(&mut shell.refresh_again) {
                     shell.refresh(cx);
                 }
+                cx.notify();
             });
         })
         .detach();
@@ -1272,13 +1317,15 @@ impl Shell {
 
     /// 定时刷新（自动刷新用）。
     ///
-    /// 与 [`Shell::refresh`] 的区别：**忙的时候直接跳过、不排队** ——
-    /// 下一个周期自然会再来一次，堆着没有意义。
+    /// 与 [`Shell::refresh`] 的区别有两点：
+    /// 1. **忙的时候直接跳过、不排队** —— 下一个周期自然会再来一次，堆着没有意义；
+    /// 2. **静默** —— 不动顶部按钮的文案。3 秒一次的后台刷新不该让按钮
+    ///    一直停在「刷新中…」上；用户想立刻刷新就自己点按钮。
     pub fn tick(&mut self, cx: &mut Context<Self>) {
         if self.state.busy {
             return;
         }
-        self.refresh(cx);
+        self.refresh_quiet(cx);
     }
 
     /// 按固定间隔自动刷新。
@@ -1916,11 +1963,15 @@ impl Render for Shell {
             crate::short_build_sha()
         );
 
+        // 按钮只在**用户发起**的采集期间显示「刷新中…」。
+        // 3 秒一次的自动刷新是后台行为：它照样跑，但按钮一直是「刷新」，
+        // 用户随时可以点它手动刷新（见 `refresh_quiet` / `refresh_inner`）。
+        let user_refreshing = state.busy && self.refresh_visible;
+
         let refresh_button = {
             let entity = entity.clone();
-            let busy = state.busy;
-            let label = if busy { "刷新中…" } else { "刷新" };
-            // 刻意**不**用 `.disabled(busy)`：禁用态的文字几乎看不清
+            let label = refresh_label(state.busy, self.refresh_visible);
+            // 刻意**不**用 `.disabled(...)`：禁用态的文字几乎看不清
             // （实机截图确认过）。`refresh()` 内部本来就有 `busy` 守卫，
             // 重复点击是无害的，文案也会变成"刷新中…"。
             Button::new("refresh")
@@ -1950,7 +2001,10 @@ impl Render for Shell {
                 .into_any_element()
         } else if !state.snapshot.has_data() {
             // 首屏 / 连不上 wslc 时的提示。比一片空白有用得多。
-            let hint = if state.busy {
+            //
+            // 用 `user_refreshing` 而不是 `state.busy`：连不上 wslc 时
+            // 后台每 3 秒就会空跑一轮，用 `busy` 的话这两句话会一直闪。
+            let hint = if user_refreshing {
                 "正在读取 wslc 数据…"
             } else {
                 "没有读到任何数据。请确认已安装 WSL 3.0 以上版本；\
@@ -2277,7 +2331,20 @@ mod tests {
     // 再导出了 gpui_macros 的 `test` **属性宏** —— 一旦 `use super::*`，
     // 本模块的 `#[test]` 会解析到那个宏而不是内建的，展开时自我递归，
     // 报 `recursion limit reached while expanding #[test]`。
+    use super::refresh_label;
     use super::split_list;
+
+    #[test]
+    fn auto_refresh_keeps_button_label_unchanged() {
+        // 后台自动刷新期间按钮**不能**变成「刷新中…」——
+        // 3 秒一次的话按钮就永远停在「刷新中…」上了。
+        assert_eq!(refresh_label(true, false), "刷新");
+        // 用户点的按钮才显示进度。
+        assert_eq!(refresh_label(true, true), "刷新中…");
+        // 空闲时当然是「刷新」。
+        assert_eq!(refresh_label(false, false), "刷新");
+        assert_eq!(refresh_label(false, true), "刷新");
+    }
 
     #[test]
     fn split_list_handles_commas_and_newlines() {
