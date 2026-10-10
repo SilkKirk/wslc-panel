@@ -129,6 +129,17 @@ struct KeepAlive {
     child: std::process::Child,
 }
 
+/// 「发行版配置（`/etc/wsl.conf`）」弹窗的输入框。
+///
+/// 每个**文本**字段一个 `InputState`，按 `(节, 键)` 索引。
+/// 布尔字段用勾选框（`gpui_kit::component::checkbox::Checkbox`），不需要输入框。
+///
+/// 键用字段表里的 `&'static str` —— 它们是 [`wslc_core::model::wslconf::FIELDS`]
+/// 里的常量，所以不用 `String`，也就不会有拼写不一致的问题。
+pub(crate) struct WslConfDialog {
+    pub(crate) inputs: std::collections::HashMap<(&'static str, &'static str), Entity<InputState>>,
+}
+
 impl KeepAlive {
     /// 哨兵还活着吗？
     ///
@@ -240,6 +251,10 @@ pub struct Shell {
     /// 界面只看到 `AppState::kept_alive` 里的名字；真正的进程句柄留在这里 ——
     /// 那是"能力"，不是界面状态。
     keep_alive: Vec<KeepAlive>,
+    /// 「发行版配置（`/etc/wsl.conf`）」弹窗的输入框；关闭时为 `None`。
+    ///
+    /// `views::wslconf_overlay` 要读它来画 `Input`，所以是 `pub(crate)`。
+    pub(crate) wslconf_dialog: Option<WslConfDialog>,
     /// 「创建容器」弹窗；关闭时为 `None`。
     create_dialog: Option<CreateDialog>,
     /// 正在查看详情的容器名；关闭时为 None。
@@ -295,6 +310,7 @@ impl Shell {
             export_cancel: None,
             picking: false,
             keep_alive: Vec::new(),
+            wslconf_dialog: None,
             create_dialog: None,
             detail: None,
             distro_detail: None,
@@ -1678,6 +1694,236 @@ impl Shell {
         );
     }
 
+    // -- 发行版配置（/etc/wsl.conf）-----------------------------------------
+
+    /// 打开「发行版配置」弹窗：后台读 `/etc/wsl.conf` + `wsl --version`。
+    ///
+    /// 两件事都要起 `wsl.exe`（秒级），所以走后台执行器；
+    /// 回来时用 `spawn_in` + `update_in` 拿回 `&mut Window` 建输入框
+    /// （`InputState::new` 要它）。
+    pub fn open_wslconf(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.wslconf.is_some() {
+            return;
+        }
+        self.state
+            .notify(Toast::info(format!("正在读取 {name} 的 /etc/wsl.conf…")));
+        cx.notify();
+
+        let wsl = self.state.wsl.clone();
+        let target = name.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let loaded = cx
+                .background_executor()
+                .spawn(async move {
+                    let text = wslc_core::cmd::distro::read_wsl_conf(&wsl, &target)?;
+                    let version = wslc_core::cmd::distro::wsl_version(&wsl);
+                    Ok::<_, wslc_core::Error>((text, version))
+                })
+                .await;
+
+            let _ = this.update_in(cx, |shell, window, cx| {
+                match loaded {
+                    Ok((text, version)) => {
+                        let doc = wslc_core::model::wslconf::WslConfDoc::parse(&text);
+
+                        // 给每个可编辑的文本字段建输入框，并**预填有效值**
+                        // （文件里没写时就是默认值）—— 界面上不该是空白。
+                        let mut inputs = std::collections::HashMap::new();
+                        for field in wslc_core::model::wslconf::FIELDS {
+                            if field.kind != wslc_core::model::wslconf::FieldKind::Text
+                                || field.read_only
+                            {
+                                continue;
+                            }
+                            let value = doc.effective(field.section, field.key);
+                            let input = cx.new(|cx| {
+                                InputState::new(window, cx).placeholder(field.placeholder)
+                            });
+                            input.update(cx, |state, cx| state.set_value(value, window, cx));
+                            inputs.insert((field.section, field.key), input);
+                        }
+
+                        shell.wslconf_dialog = Some(WslConfDialog { inputs });
+                        shell.state.wslconf = Some(state::WslConfState::new(name, doc, version));
+                    }
+                    Err(e) => shell
+                        .state
+                        .notify(Toast::error(format!("读取 {name} 的配置失败：{e}"))),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 关闭弹窗（不保存）。
+    pub fn close_wslconf(&mut self, cx: &mut Context<Self>) {
+        self.wslconf_dialog = None;
+        self.state.wslconf = None;
+        cx.notify();
+    }
+
+    /// 切换一个布尔字段。
+    ///
+    /// `Checkbox` 是**受控**组件：`on_change` 给的是"请求的新值"，
+    /// 由我们存下来再 `cx.notify()`（见 gpui-kit 的 checkbox 文档）。
+    pub fn set_wslconf_bool(
+        &mut self,
+        section: &'static str,
+        key: &'static str,
+        value: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(state) = self.state.wslconf.as_mut() {
+            state.doc.set_bool(section, key, value);
+            cx.notify();
+        }
+    }
+
+    /// 显示 / 隐藏"实际会写进去的内容"。
+    pub fn toggle_wslconf_preview(&mut self, cx: &mut Context<Self>) {
+        if let Some(state) = self.state.wslconf.as_mut() {
+            state.show_preview = !state.show_preview;
+            cx.notify();
+        }
+    }
+
+    /// 保存；`restart` = 顺便重启发行版让改动生效。
+    ///
+    /// `wsl.conf` 要**发行版重启之后**才被读，所以改完不重启等于没生效 ——
+    /// 参考项目也是这么给的（「保存」/「保存并重启发行版」两个按钮）。
+    pub fn save_wslconf(&mut self, restart: bool, cx: &mut Context<Self>) {
+        // 1) 把输入框的值读回文档。
+        //    先收集成拥有所有权的数据，**结束对 `self` 的借用** ——
+        //    下面要 `&mut self.state`。
+        let Some(dialog) = self.wslconf_dialog.as_ref() else {
+            return;
+        };
+        let updates: Vec<(&'static str, &'static str, String)> =
+            wslc_core::model::wslconf::FIELDS
+                .iter()
+                .filter(|f| f.kind == wslc_core::model::wslconf::FieldKind::Text && !f.read_only)
+                .filter_map(|f| {
+                    dialog
+                        .inputs
+                        .get(&(f.section, f.key))
+                        .map(|input| (f.section, f.key, input.read(cx).value().trim().to_owned()))
+                })
+                .collect();
+
+        let Some(state) = self.state.wslconf.as_mut() else {
+            return;
+        };
+        for (section, key, value) in updates {
+            // 清空 = 恢复默认（保存时把那一行删掉）
+            if value.is_empty() {
+                state.doc.clear(section, key);
+            } else {
+                state.doc.set(section, key, value);
+            }
+        }
+
+        if !state.doc.is_dirty() {
+            self.state.notify(Toast::info("没有改动"));
+            cx.notify();
+            return;
+        }
+
+        let doc = state.doc.clone();
+        let text = doc.render();
+        let distro = state.distro.clone();
+        state.busy = true;
+        state.errors.clear();
+        cx.notify();
+
+        // 记下"它本来是不是我们吊着的" —— 重启后要恢复
+        let was_kept = self.state.kept_alive.iter().any(|n| n == &distro);
+
+        let wsl = self.state.wsl.clone();
+        let target = distro.clone();
+        // 内层 `async move` 会把 `task_target` 吃掉；外层 `update` 还要用
+        // `target` 拼提示、恢复 keep-alive，所以这里分成两个名字。
+        let task_target = target.clone();
+        cx.spawn(async move |this, cx| {
+            let outcome = cx
+                .background_executor()
+                .spawn(async move {
+                    // 2) 校验。写错 `[user] default` 会让发行版**下次启动直接失败**，
+                    //    写错 `[boot] command` 会让它起不来 —— 都必须在写之前挡下。
+                    let mut errors = Vec::new();
+                    if let Some(user) = doc.get("user", "default") {
+                        if !user.trim().is_empty()
+                            && !wslc_core::cmd::distro::user_exists(&wsl, &task_target, user)?
+                        {
+                            errors.push(format!("发行版里没有用户「{user}」"));
+                        }
+                    }
+                    if let Some(cmd) = doc.get("boot", "command") {
+                        if !cmd.trim().is_empty()
+                            && !wslc_core::cmd::distro::path_exists(&wsl, &task_target, cmd)?
+                        {
+                            errors.push(format!("找不到启动命令「{cmd}」"));
+                        }
+                    }
+                    if !errors.is_empty() {
+                        return Ok::<_, wslc_core::Error>((errors, false));
+                    }
+
+                    // 3) 写（`write_wsl_conf` 内部会先备份到 .bak）
+                    wslc_core::cmd::distro::write_wsl_conf(&wsl, &task_target, &text)?;
+
+                    // 4) 重启：`wsl.conf` 要重启才被读
+                    if restart {
+                        wslc_core::cmd::distro::terminate(&wsl, &task_target)?;
+                    }
+                    Ok((errors, true))
+                })
+                .await;
+
+            let _ = this.update(cx, |shell, cx| {
+                let saved = match outcome {
+                    Ok((errors, saved)) => {
+                        if let Some(state) = shell.state.wslconf.as_mut() {
+                            state.busy = false;
+                            state.errors = errors;
+                        }
+                        saved
+                    }
+                    Err(e) => {
+                        if let Some(state) = shell.state.wslconf.as_mut() {
+                            state.busy = false;
+                        }
+                        shell.state.notify(Toast::error(format!("保存失败：{e}")));
+                        false
+                    }
+                };
+
+                if saved {
+                    shell.wslconf_dialog = None;
+                    shell.state.wslconf = None;
+                    shell.state.notify(Toast::success(format!(
+                        "{target} 的 /etc/wsl.conf 已保存{}",
+                        if restart {
+                            "，发行版已重启（改动已生效）"
+                        } else {
+                            "（重启发行版后才生效）"
+                        }
+                    )));
+
+                    // 重启会把我们吊着的哨兵一起带走，清掉那个标记；
+                    // 如果它本来是被我们保持运行的，就重新吊起来。
+                    shell.sync_keep_alive(cx);
+                    if restart && was_kept {
+                        shell.start_distro(target.clone(), cx);
+                    }
+                    shell.refresh(cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     // -- 添加实例 ----------------------------------------------------------
 
     /// 切换安装来源。
@@ -2076,6 +2322,9 @@ impl Render for Shell {
         // 导出进度浮层（长任务，可取消）。
         let export_overlay: AnyElement = views::export_overlay(state, &entity);
 
+        // 发行版配置（/etc/wsl.conf）弹窗。要 `cx` 才能读输入框的值。
+        let wslconf_dialog: AnyElement = views::wslconf_overlay(self, &entity, cx);
+
         // 页面渲染要 `&Shell`（不只是 `&AppState`）——「添加实例」页有输入框，
         // 而输入框的 `InputState` 住在 `Shell` 里。
         // `cx` 也只有那一页用得上（要实时读输入框的值做命令预览）。
@@ -2185,6 +2434,7 @@ impl Render for Shell {
             // 后画的压在详情上面。
             .child(prompt_dialog)
             .child(export_overlay)
+            .child(wslconf_dialog)
     }
 }
 

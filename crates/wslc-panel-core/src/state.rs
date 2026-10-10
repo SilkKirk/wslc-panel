@@ -1032,6 +1032,46 @@ impl ExportProgress {
     }
 }
 
+/// 「发行版配置（`/etc/wsl.conf`）」弹窗的状态。
+///
+/// **纯数据** —— 输入框（`Entity<InputState>`）在 `Shell::wslconf_dialog` 里，
+/// 那是 GPUI 的类型，不能进 `AppState`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WslConfState {
+    /// 哪个发行版。
+    pub distro: String,
+    /// 保序文档：原文 + 我们管的那几个键的显式值。
+    pub doc: wslc_core::model::wslconf::WslConfDoc,
+    /// WSL 自己的版本号（形如 `2.6.1.0`）；**拿不到时是空串**。
+    ///
+    /// 界面用它做版本门控（`[boot]` / `[gpu]` / `[time]` 要不要显示）。
+    pub wsl_version: String,
+    /// 正在读或者正在写。
+    pub busy: bool,
+    /// 保存前的校验错误；非空时挡下保存。
+    pub errors: Vec<String>,
+    /// 要不要显示"实际会写进去的内容"。
+    pub show_preview: bool,
+}
+
+impl WslConfState {
+    /// 新建。
+    pub fn new(
+        distro: impl Into<String>,
+        doc: wslc_core::model::wslconf::WslConfDoc,
+        wsl_version: impl Into<String>,
+    ) -> Self {
+        Self {
+            distro: distro.into(),
+            doc,
+            wsl_version: wsl_version.into(),
+            busy: false,
+            errors: Vec::new(),
+            show_preview: false,
+        }
+    }
+}
+
 /// 应用的完整状态。
 ///
 /// 这是 `app::Shell` 里唯一的字段，所有页面都是它的只读视图。
@@ -1088,6 +1128,11 @@ pub struct AppState {
     /// 界面上要标出来，因为这是**我们**在维持它：用户有权知道
     /// 关掉面板之后它还会继续跑。
     pub kept_alive: Vec<String>,
+    /// 「发行版配置（`/etc/wsl.conf`）」弹窗；关闭时为 `None`。
+    ///
+    /// 纯数据（原文 + 显式值 + 版本 + 校验错误）；真正的输入框在
+    /// `Shell::wslconf_dialog` 里 —— 那是 GPUI 的类型。
+    pub wslconf: Option<WslConfState>,
     /// 待用户确认的危险操作（容器域或发行版域）。
     pub confirm: Option<ConfirmAction>,
     /// 提示条。
@@ -1111,6 +1156,7 @@ impl AppState {
             pulling: None,
             exporting: None,
             kept_alive: Vec::new(),
+            wslconf: None,
             confirm: None,
             toast: None,
         }
