@@ -2069,7 +2069,7 @@ fn elapsed_label(state: &AppState) -> AnyElement {
         .installing
         .as_ref()
         .map(|progress| {
-            let mut parts = vec![format!("已用 {} 秒", progress.elapsed_secs)];
+            let mut parts = vec![format!("已用 {}", human_secs(progress.elapsed_secs))];
             if let Some(percent) = progress.percent() {
                 parts.push(format!("{percent:.1}%"));
             }
@@ -2085,6 +2085,17 @@ fn elapsed_label(state: &AppState) -> AnyElement {
         .text_color(theme::text_muted())
         .child(text)
         .into_any_element()
+}
+
+/// 秒数说成人话（安装动辄几十分钟，"已用 1830 秒"没人愿意换算）。
+fn human_secs(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs} 秒")
+    } else if secs < 3600 {
+        format!("{} 分 {:02} 秒", secs / 60, secs % 60)
+    } else {
+        format!("{} 时 {:02} 分", secs / 3600, (secs % 3600) / 60)
+    }
 }
 
 /// 安装日志卡片：步骤 + 进度 + 输出 + 结局。
@@ -2159,7 +2170,14 @@ fn install_log_card(state: &AppState) -> AnyElement {
     };
 
     // ⚠️ 滚动容器必须带 `.id(...)`（见 online_block 的注释）。
-    let log: AnyElement = if progress.log.is_empty() {
+    //
+    // 只画**最后** 400 行：日志上限是 2000 行，一帧往界面里塞 2000 个元素
+    // 是白白的开销，而用户真正要看的就是尾部（拉取那边的日志上限也是 200 行）。
+    const SHOWN: usize = 400;
+    let shown_from = progress.log.len().saturating_sub(SHOWN);
+    let tail = &progress.log[shown_from..];
+
+    let log: AnyElement = if tail.is_empty() {
         div().into_any_element()
     } else {
         v_flex()
@@ -2168,7 +2186,7 @@ fn install_log_card(state: &AppState) -> AnyElement {
             .max_h(px(260.))
             .overflow_y_scroll()
             .gap_1()
-            .children(progress.log.iter().map(|line| {
+            .children(tail.iter().map(|line| {
                 div()
                     .font_family("Consolas")
                     .text_xs()
@@ -2176,6 +2194,15 @@ fn install_log_card(state: &AppState) -> AnyElement {
                     .child(line.clone())
             }))
             .into_any_element()
+    };
+
+    let log_note = if shown_from > 0 {
+        format!(
+            "已收到 {} 行输出（只显示最后 {SHOWN} 行）",
+            progress.log.len()
+        )
+    } else {
+        format!("已收到 {} 行输出", progress.log.len())
     };
 
     card(
@@ -2191,7 +2218,7 @@ fn install_log_card(state: &AppState) -> AnyElement {
                 div()
                     .text_xs()
                     .text_color(theme::text_dim())
-                    .child(format!("已收到 {} 行输出", progress.log.len())),
+                    .child(log_note),
             ),
     )
     .into_any_element()
