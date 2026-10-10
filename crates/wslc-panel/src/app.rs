@@ -16,7 +16,7 @@
 //! 因此如果上游 API 有变动，只需要改这一个文件。
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // 注意：`primary()` / `danger()` 这些样式方法来自 trait `ButtonVariants`，
 // 光导入 `Button` 是不够的 —— 这里用 glob 把 button 模块全带上。
@@ -29,14 +29,22 @@ use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 
 use wslc_core::cmd::container::{PullPolicy, RunSpec};
-use wslc_core::cmd::distro::{InstallSource, InstallSpec};
+// 安装现在是**多步计划**（见 `wslc_core::model::install` 的模块说明）：
+// `InstallSpec` 是用户填的东西，`plan()` 把它变成步骤，`run_plan` 把它做出来。
+use wslc_core::cmd::distro::InstallSpec;
+use wslc_core::cmd::install::{self, InstallCancel, InstallEvent, InstallSummary, RunOptions};
+use wslc_core::mirrors;
+use wslc_core::model::install::{
+    self as install_model, InstallSource, derive_install_dir, suggest_name_from_file,
+};
 use wslc_core::settings::SettingKey;
 // `Wsl` 是发行版（实例）的调用器，和容器的 `Wslc` 并列。
 use wslc_core::{Wsl, Wslc};
 
 use crate::state::{
     self, AppState, ConfirmAction, DistroAction, ExportProgress, ImmediateAction,
-    InstallSourceKind, Page, PendingAction, PromptKind, Toast, ToastKind,
+    InstallOutcome, InstallProgress, InstallSourceKind, MirrorChoice, MirrorProbeResult, Page,
+    PendingAction, PromptKind, Toast, ToastKind,
 };
 use crate::theme;
 // `split_list` / `refresh_label` 是纯函数，住在不依赖 GPUI 的 `wslc-panel-core` 里
@@ -58,14 +66,37 @@ pub(crate) struct InstallForm {
     pub(crate) name: Entity<InputState>,
     /// 安装目录（在线安装可以留空）。
     pub(crate) install_dir: Entity<InputState>,
-    /// 来源文件路径（tar / RootFS）。在线安装时用不到。
+    /// 来源文件路径（tar / vhdx / `.wsl`）。网络来源用不到。
     pub(crate) source_path: Entity<InputState>,
+    /// 镜像站那块"自定义 rootfs URL"（留空 = 用探测出来的那个）。
+    pub(crate) mirror_url: Entity<InputState>,
+    /// 在线清单的搜索框。
+    pub(crate) online_filter: Entity<InputState>,
+    /// 在线清单里选中的发行版 id（`wsl --install -d` 要的就是它）。
+    pub(crate) online_id: Option<String>,
     /// 选中的来源。
     pub(crate) source: InstallSourceKind,
     /// 装完是否启动（只有在线安装支持）。
     pub(crate) launch: bool,
     /// 装完是否设为默认。
     pub(crate) set_default: bool,
+    /// 在线安装是否走 `--web-download`（从网络下，而不是微软商店）。
+    ///
+    /// 默认由"GitHub 通不通"决定（参考实现也这么探），但按钮在界面上，用户能改。
+    pub(crate) web_download: bool,
+    /// 用户**自己动过**那个开关吗。
+    ///
+    /// 探测是后台跑的（几秒后才有结果），期间用户可能已经手动切过了 ——
+    /// 那时候不能再用探测结果去覆盖他的选择。
+    pub(crate) web_download_touched: bool,
+    /// **上一次由我们推导出来的**安装目录。
+    ///
+    /// 用来判断"用户是不是自己改过目录"：值等于它（或为空）说明这个框还是我们填的，
+    /// 名字一变就可以跟着更新；否则绝不覆盖用户手输的东西。
+    ///
+    /// 这么绕是因为本仓库没有"输入框内容变化"的订阅先例（本机编译不了，
+    /// 猜 API 要白烧一轮 CI）—— 用"比较上次推导值"能达到同样效果。
+    pub(crate) last_derived_dir: Option<String>,
 }
 
 impl InstallForm {
@@ -73,22 +104,69 @@ impl InstallForm {
     ///
     /// 需要 `cx` 才能从 `InputState` 里取值，所以它不是纯函数 ——
     /// 这也是 `views::page` 要多收一个 `&Shell` 的原因
-    /// （页面底部要**实时**预览等效命令）。
+    /// （页面要**实时**预览要跑哪些步骤）。
     ///
     /// **没有版本这一项**：本项目只支持 WSL 2，装出来的固定是 WSL 2
-    /// （见 `wslc_core::cmd::distro::WSL_VERSION`）。
-    pub(crate) fn to_spec(&self, cx: &App) -> InstallSpec {
+    /// （见 [`wslc_core::model::install::WSL_VERSION`]）。
+    ///
+    /// # 镜像站那一条为什么以输入框为准
+    ///
+    /// 「自定义 URL」填了就用它，**忽略**探测出来的那个 ——
+    /// 用户手输地址就是在表达"别管你探测到什么"。这也让"镜像站上没有我要的版本"
+    /// 有个出口，而不是只能换来源。
+    pub(crate) fn to_spec(&self, cx: &App, mirrors: &crate::state::MirrorState) -> InstallSpec {
         let text = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
+        let typed_name = text(&self.name);
 
         let source = match self.source {
             InstallSourceKind::Tar => InstallSource::Tar {
                 path: text(&self.source_path),
             },
+            InstallSourceKind::Vhdx => InstallSource::Vhdx {
+                path: text(&self.source_path),
+            },
             InstallSourceKind::File => InstallSource::File {
                 path: text(&self.source_path),
             },
+            InstallSourceKind::Mirror => {
+                let custom = text(&self.mirror_url);
+                match (custom.is_empty(), mirrors.chosen.as_ref()) {
+                    // 手填优先
+                    (false, _) => InstallSource::Mirror {
+                        url: custom,
+                        mirror: "自定义 URL".to_owned(),
+                        release: mirrors
+                            .selected_distro()
+                            .map(|d| d.release.to_owned())
+                            .unwrap_or_default(),
+                    },
+                    // 否则用探测出来的那个；都还没有就给空 URL（校验会挡住并说明）
+                    (true, Some(choice)) => InstallSource::Mirror {
+                        url: choice.url.clone(),
+                        mirror: choice.site.clone(),
+                        release: choice.release.clone(),
+                    },
+                    (true, None) => InstallSource::Mirror {
+                        url: String::new(),
+                        mirror: String::new(),
+                        release: mirrors
+                            .selected_distro()
+                            .map(|d| d.release.to_owned())
+                            .unwrap_or_default(),
+                    },
+                }
+            }
             InstallSourceKind::Online => InstallSource::Online {
+                // 清单里选过就用它的 id（那才是 `wsl --install -d` 认的名字）；
+                // 没选过（清单拉不到）就把用户手输的名字当 id ——
+                // 这正是 v0.3 的那条老路：本机拉不到在线清单是常态。
+                id: self
+                    .online_id
+                    .clone()
+                    .filter(|id| !id.trim().is_empty())
+                    .unwrap_or_else(|| typed_name.clone()),
                 launch: self.launch,
+                web_download: self.web_download,
             },
         };
 
@@ -217,6 +295,87 @@ impl CreateDialog {
     }
 }
 
+/// 一次正在跑的安装。
+///
+/// # 为什么要有它
+///
+/// 安装跑在**后台执行器**上（几分钟到几十分钟），它没法直接改界面状态；
+/// 而界面要**边跑边显示**日志和进度。这里的三个字段就是那条通路：
+/// 后台线程往 `events` 里塞事件，界面每 250 ms 取一次，
+/// `done` 一旦有值就说明跑完了（执行器是**阻塞**的，所以结果只能这样交回来）。
+///
+/// 取消令牌单独存在 `Shell::install_cancel` 里 —— 那是"能力"（能杀子进程），
+/// 和这份"状态"不是一回事。
+struct InstallRun {
+    /// 后台线程塞进来的事件（界面每轮取走）。
+    events: Arc<Mutex<Vec<InstallEvent>>>,
+    /// 执行结果；`None` = 还在跑。
+    done: Arc<Mutex<Option<InstallSummary>>>,
+    /// 整个安装是什么时候开始的（界面上显示"已用时"）。
+    started: Instant,
+}
+
+/// 取锁；中毒（别的线程 panic 过）时照常用里面的值。
+///
+/// 这几个锁保护的都只是"事件队列"，中毒不影响数据本身的正确性 ——
+/// 在这里 `unwrap()` 只会把后台线程的一次 panic 变成界面的一次 crash。
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// GitHub 通不通 —— 在线安装默认走 `--web-download` 还是微软商店。
+///
+/// 参考实现也是这么探的：GitHub 通的时候直接从网络下比走商店快，
+/// 商店在国内还经常拉不动。
+///
+/// ⚠️ **阻塞**（起 `curl.exe`，最长 5 秒），只能在后台执行器上调用 ——
+/// 见 [`Shell::probe_web_download`]。
+fn github_reachable() -> bool {
+    // `-o NUL` 丢掉正文，只留状态码；`-m 5` 是"别为一个默认值等太久"
+    let args = [
+        "-s",
+        "-I",
+        "-L",
+        "-m",
+        "5",
+        "-o",
+        "NUL",
+        "-w",
+        "%{http_code}",
+        "https://github.com",
+    ];
+    match wslc_core::cli::run_helper_with_hint(
+        "curl.exe",
+        "curl.exe",
+        wslc_core::cli::CURL_NOT_FOUND_HINT,
+        &args,
+        Duration::from_secs(10),
+    ) {
+        Ok(out) => out.stdout.trim() == "200",
+        Err(e) => {
+            tracing::info!("探测 GitHub 失败（那就默认走微软商店）：{e}");
+            false
+        }
+    }
+}
+
+/// 安装目录里已经有东西了吗。
+///
+/// ⚠️ 只在**提交那一刻**调用：渲染每帧都可能发生，而 `read_dir` 碰上网络盘
+/// 或者掉线的移动硬盘能卡很久 —— 那种卡顿看起来就像界面死了。
+fn dir_non_empty(dir: &str) -> bool {
+    let dir = dir.trim();
+    if dir.is_empty() {
+        return false;
+    }
+    match std::fs::read_dir(dir) {
+        Ok(mut entries) => entries.next().is_some(),
+        // 目录不存在 / 没权限 → 当作"不是非空"。
+        // 真有问题的话，后面的 `create_dir_all` / `wsl` 会给一句更准确的错。
+        Err(_) => false,
+    }
+}
+
 /// 应用外壳。
 pub struct Shell {
     /// 全部状态。
@@ -277,6 +436,20 @@ pub struct Shell {
     ///
     /// 同样是 `pub(crate)`：浮层在 `views.rs` 里渲染。
     pub(crate) prompt: Option<TextPrompt>,
+    /// 正在跑的安装（事件队列 + 结果）；空闲时为 `None`。
+    ///
+    /// 纯数据部分（走到第几步、日志、进度）在 `AppState::installing` 里 ——
+    /// `views.rs` 只拿得到 `&AppState`。
+    install_run: Option<InstallRun>,
+    /// 正在跑的安装的取消令牌。
+    ///
+    /// 和 `export_cancel` 并列：都是长任务、都能取消，但一个走 `wsl.exe`
+    /// （外加 `curl.exe`），另一个只有 `wsl --export`。
+    install_cancel: Option<InstallCancel>,
+    /// 探过"GitHub 通不通"了吗（在线安装的默认下载路径）。
+    ///
+    /// 只探一次：它决定的是一个**默认值**，每次进页面都起一个 curl 不值得。
+    web_download_probed: bool,
     /// 采集期间又有刷新请求进来；跑完要补一次。
     refresh_again: bool,
     /// 当前这轮采集是否**由用户发起**（点按钮 / 操作完成后补刷）。
@@ -316,6 +489,9 @@ impl Shell {
             distro_detail: None,
             install_form: None,
             prompt: None,
+            install_run: None,
+            install_cancel: None,
+            web_download_probed: false,
             refresh_again: false,
             refresh_visible: false,
             status_tick: 0,
@@ -328,24 +504,80 @@ impl Shell {
     /// 建「添加实例」表单（幂等）。
     ///
     /// **必须**在有 `&mut Window` 的地方调用 —— `InputState::new` 要它。
+    ///
+    /// 安装目录预填「默认安装目录」偏好（见 `prefs.rs`）：它同时是"由名字推路径"
+    /// 的基准，用户不用每装一个都重新敲一遍盘符。
     fn ensure_install_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.install_form.is_some() {
             return;
         }
 
         let default_source = InstallSourceKind::default();
+        let default_dir = self.state.prefs.install_dir.clone().unwrap_or_default();
+
         self.install_form = Some(InstallForm {
             name: cx.new(|cx| {
                 InputState::new(window, cx).placeholder(default_source.name_placeholder())
             }),
-            install_dir: cx.new(|cx| InputState::new(window, cx).placeholder(r"D:\wsl\MyDistro")),
+            install_dir: cx.new(|cx| {
+                InputState::new(window, cx).placeholder(r"D:\wsl\MyDistro")
+            }),
             source_path: cx.new(|cx| {
                 InputState::new(window, cx).placeholder(default_source.path_placeholder())
             }),
+            mirror_url: cx.new(|cx| {
+                InputState::new(window, cx).placeholder("留空 = 用上面探测出来的那个地址")
+            }),
+            online_filter: cx.new(|cx| InputState::new(window, cx).placeholder("搜索发行版")),
+            online_id: None,
             source: default_source,
             launch: false,
             set_default: false,
+            // 默认走微软商店；后台探到 GitHub 通会把它翻过来（见 `probe_web_download`）
+            web_download: false,
+            web_download_touched: false,
+            last_derived_dir: if default_dir.is_empty() {
+                None
+            } else {
+                Some(default_dir.clone())
+            },
         });
+
+        // 预填默认安装目录本身（"名字还没填"时它就是基准）
+        if !default_dir.is_empty() {
+            if let Some(form) = self.install_form.as_ref() {
+                form.install_dir
+                    .update(cx, |state, cx| state.set_value(default_dir, window, cx));
+            }
+        }
+    }
+
+    /// 按名字刷新安装目录（**只在用户没自己改过时**）。
+    ///
+    /// 判断依据是 [`InstallForm::last_derived_dir`]：输入框的值还等于我们上次推的
+    /// （或者干脆是空的），就说明它是我们填的，可以跟着名字走；
+    /// 否则一律不动 —— 用户手输了路径却被我们改掉，是最恼人的一类 bug。
+    fn resync_install_dir(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let default_dir = self.state.prefs.install_dir.clone();
+        let Some(form) = self.install_form.as_mut() else {
+            return;
+        };
+
+        let name = form.name.read(cx).value().trim().to_owned();
+        let current = form.install_dir.read(cx).value().trim().to_owned();
+        let untouched =
+            current.is_empty() || Some(current.as_str()) == form.last_derived_dir.as_deref();
+        if !untouched {
+            return;
+        }
+
+        let derived = derive_install_dir(default_dir.as_deref(), &name)
+            .or_else(|| default_dir.clone().filter(|_| name.is_empty()));
+        if let Some(dir) = derived {
+            form.install_dir
+                .update(cx, |state, cx| state.set_value(dir.clone(), window, cx));
+            form.last_derived_dir = Some(dir);
+        }
     }
 
     // -- 单输入框提示弹窗（移动位置 / 调整大小 / 设置默认用户）---------------
@@ -1557,6 +1789,9 @@ impl Shell {
     pub fn set_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         if page.needs_window_to_enter() {
             self.ensure_install_form(window, cx);
+            // 在线安装默认走商店还是 GitHub —— 后台探一次（几秒），
+            // 结果回来了把开关拨过去。**不在这里同步探**：那会卡住界面。
+            self.probe_web_download(cx);
         }
         self.goto_page(page, cx);
     }
@@ -1664,36 +1899,76 @@ impl Shell {
     }
 
     /// 给「添加实例」页的**来源文件**输入框弹选择器。
+    ///
+    /// 选完做三件事（而不只是填个路径）：
+    ///
+    /// 1. 填路径；
+    /// 2. 从**文件名**猜一个发行版名（`ubuntu-rootfs-amd64.tar.gz` → `ubuntu`）——
+    ///    用户不必自己敲一遍；
+    /// 3. 让安装目录跟着新名字走（见 [`Shell::resync_install_dir`]）。
+    ///
+    /// 后缀表按来源给：选"从 VHDX 导入"时不该看见一堆 `.tar`。
     pub fn browse_install_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // 后缀表写成常量而不是 `&["tar"][..]`：临时数组靠 rvalue 提升也能拿到
-        // `'static`，但显式写出来不必让人去推这件事。
-        const TAR_ONLY: &[&str] = &["tar"];
-        const INSTALL_FILES: &[&str] = &["tar", "gz", "vhdx"];
-
-        let picked = self.install_form.as_ref().and_then(|form| {
-            // 后缀按来源给 —— 用户看到的就是"只列 tar"或者"只列安装文件"
-            let (label, extensions) = match form.source {
-                InstallSourceKind::Tar => ("tar 文件", TAR_ONLY),
-                InstallSourceKind::File => ("安装文件", INSTALL_FILES),
-                // 在线安装没有文件路径这一项
-                InstallSourceKind::Online => return None,
-            };
+        let Some((input, label, extensions)) = self.install_form.as_ref().and_then(|form| {
+            let (label, extensions) = form.source.file_filter()?;
             Some((form.source_path.clone(), label, extensions))
-        });
-
-        let Some((input, label, extensions)) = picked else {
+        }) else {
             return;
         };
 
-        self.spawn_picker(
-            &input,
-            false,
-            label,
-            extensions,
-            "选择安装文件",
-            window,
-            cx,
-        );
+        if self.picking {
+            self.state
+                .notify(Toast::info("已经有一个选择框开着了，先处理它"));
+            cx.notify();
+            return;
+        }
+        self.picking = true;
+        cx.notify();
+
+        cx.spawn_in(window, async move |this, cx| {
+            let picked = cx
+                .background_executor()
+                .spawn(async move { wslc_core::cmd::picker::pick_file(label, extensions) })
+                .await;
+
+            let _ = this.update_in(cx, |shell, window, cx| {
+                shell.picking = false;
+
+                match picked {
+                    Ok(Some(path)) => {
+                        // 先只做"填输入框"这类需要 `&mut Window` 的事，
+                        // 借用在下面那个块结束时自然放开，才能再 `&mut shell`。
+                        let suggested = {
+                            let Some(form) = shell.install_form.as_ref() else {
+                                cx.notify();
+                                return;
+                            };
+                            form.source_path
+                                .update(cx, |state, cx| state.set_value(path.clone(), window, cx));
+
+                            let suggested = suggest_name_from_file(&path);
+                            if !suggested.is_empty() {
+                                form.name.update(cx, |state, cx| {
+                                    state.set_value(suggested.clone(), window, cx)
+                                });
+                            }
+                            suggested
+                        };
+
+                        if !suggested.is_empty() {
+                            shell.resync_install_dir(window, cx);
+                        }
+                    }
+                    // 用户点了取消 —— 这不是错误，什么都不做
+                    Ok(None) => {}
+                    Err(e) => shell
+                        .state
+                        .notify(Toast::error(format!("打开选择框失败：{e}"))),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     // -- 发行版配置（/etc/wsl.conf）-----------------------------------------
@@ -1969,60 +2244,504 @@ impl Shell {
         }
     }
 
+    /// 切换在线安装的下载路径（微软商店 / `--web-download`）。
+    ///
+    /// 记下"用户动过它"，免得几秒后才回来的探测结果把他的选择覆盖掉。
+    pub fn toggle_web_download(&mut self, cx: &mut Context<Self>) {
+        if let Some(form) = self.install_form.as_mut() {
+            form.web_download = !form.web_download;
+            form.web_download_touched = true;
+            cx.notify();
+        }
+    }
+
+    /// 后台探一次"GitHub 通不通"，据此决定在线安装的默认下载路径。
+    ///
+    /// **必须后台探**：`curl` 最长 5 秒，放在点击回调里就是"点了「添加实例」
+    /// 界面卡 5 秒"（`AGENTS.md` §7.1 那类 bug）。它决定的是一个**默认值**，
+    /// 晚几百毫秒回来完全没关系 —— 用户能看到开关自己变过去。
+    ///
+    /// 只探一次（`web_download_probed`）：每次进页面都起一个 curl 不值得。
+    fn probe_web_download(&mut self, cx: &mut Context<Self>) {
+        if self.web_download_probed {
+            return;
+        }
+        self.web_download_probed = true;
+
+        cx.spawn(async move |this, cx| {
+            let reachable = cx
+                .background_executor()
+                .spawn(async { github_reachable() })
+                .await;
+
+            let _ = this.update(cx, |shell, cx| {
+                if let Some(form) = shell.install_form.as_mut() {
+                    // 只在用户没动过那个开关时改
+                    if !form.web_download_touched {
+                        form.web_download = reachable;
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 把当前安装目录记成"新实例默认安装目录"。
+    ///
+    /// 刻意**不做成设置页里的输入框**：那需要给设置页也引入"懒创建输入框"
+    /// 那一套机制（见 [`InstallForm`] 的说明）。用户在安装页填好一个路径、
+    /// 顺手点一下"存为默认"，是更短的路径。
+    pub fn remember_install_dir(&mut self, cx: &mut Context<Self>) {
+        let Some(form) = self.install_form.as_ref() else {
+            return;
+        };
+        let dir = form.install_dir.read(cx).value().trim().to_owned();
+
+        if dir.is_empty() {
+            self.state
+                .notify(Toast::error("先在「安装目录」里填一个绝对路径"));
+            cx.notify();
+            return;
+        }
+        if !install_model::is_absolute_windows_path(&dir) {
+            self.state.notify(Toast::error(format!(
+                "要记也得是绝对路径（如 D:\\wsl）：{dir}"
+            )));
+            cx.notify();
+            return;
+        }
+
+        // ⚠️ `Prefs` 是**整体**写回磁盘的：这里必须带上刷新间隔与主题，
+        // 只填 install_dir 会把它们重置掉。
+        let prefs = crate::prefs::Prefs {
+            refresh_secs: self.state.prefs.refresh_secs,
+            theme: self.state.prefs.theme,
+            install_dir: Some(dir.clone()),
+        };
+        self.state.prefs = prefs;
+        match self.state.prefs.save() {
+            Ok(()) => {
+                tracing::info!("默认安装目录已记为 {dir}");
+                self.state
+                    .notify(Toast::success(format!("已记住：新实例默认装到 {dir}")));
+            }
+            Err(e) => {
+                // 内存里的值仍然生效，只是重启后会丢
+                self.state
+                    .notify(Toast::error(format!("已记住 {dir}，但写盘失败：{e}")));
+            }
+        }
+        cx.notify();
+    }
+
+    /// 选一个目录填进「安装目录」。
+    ///
+    /// 选完要把 [`InstallForm::last_derived_dir`] 清掉：那之后这个名字联动
+    /// 就不能再动它了 —— 用户亲手选的目录被我们改掉是最恼人的一类 bug。
+    pub fn browse_install_dir(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(input) = self.install_form.as_ref().map(|form| form.install_dir.clone()) else {
+            return;
+        };
+        self.spawn_picker(&input, true, "目录", &[], "选择安装目录", window, cx);
+        if let Some(form) = self.install_form.as_mut() {
+            form.last_derived_dir = None;
+        }
+    }
+
+    // -- 添加实例：在线清单与镜像站 ----------------------------------------
+
+    /// 拉在线可安装发行版的清单。
+    ///
+    /// 先问 `wsl --list --online`，拉不到就自己拉微软那份
+    /// `DistributionInfo.json`（本机 `raw.githubusercontent.com` 不通，
+    /// 所以兜底那条路是**常态**，见 `cmd::distro::online_distros`）。
+    pub fn refresh_online_list(&mut self, cx: &mut Context<Self>) {
+        if self.state.online.loading {
+            return;
+        }
+        self.state.online.loading = true;
+        self.state.online.error.clear();
+        cx.notify();
+
+        let wsl = self.state.wsl.clone();
+        cx.spawn(async move |this, cx| {
+            let listing = cx
+                .background_executor()
+                .spawn(async move { wslc_core::cmd::distro::online_distros(&wsl) })
+                .await;
+
+            let _ = this.update(cx, |shell, cx| {
+                shell.state.online.loading = false;
+                shell.state.online.source = listing.source;
+                if listing.items.is_empty() {
+                    shell.state.online.clear();
+                    shell.state.online.error = if listing.error.trim().is_empty() {
+                        "没有拿到任何在线发行版".to_owned()
+                    } else {
+                        listing.error
+                    };
+                } else {
+                    shell.state.online.error.clear();
+                    shell.state.online.items = listing.items;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 选中在线清单里的一项。
+    ///
+    /// # 名字默认填**清单里的 id**，而不是友好名
+    ///
+    /// 参考实现填的是友好名（`Ubuntu 24.04 LTS` → `Ubuntu-24-04-LTS`）。
+    /// 那样每次在线安装都会走"导出 → 注销 → 导入"的重定位（多拷几个 GB），
+    /// 因为它和 `wsl --install -d` 认的 id 对不上。
+    /// 我们的默认值是 id（`Ubuntu-24.04`，本身就是合法名字），于是走
+    /// `--install -d Ubuntu-24.04 --location <目录>` 这条快路；
+    /// 用户想改名随时能改，界面上也会提示那会多一次全量拷贝。
+    pub fn pick_online_distro(
+        &mut self,
+        id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(form) = self.install_form.as_mut() {
+            form.online_id = Some(id.clone());
+            form.name
+                .update(cx, |state, cx| state.set_value(id.clone(), window, cx));
+        }
+        self.state.online.select(id);
+        self.resync_install_dir(window, cx);
+        cx.notify();
+    }
+
+    /// 切换镜像站那块选中的发行版。
+    pub fn select_mirror_distro(&mut self, id: String, cx: &mut Context<Self>) {
+        self.state.mirrors.select_distro(id);
+        cx.notify();
+    }
+
+    /// 探测镜像站：逐条 HEAD 一遍，挑最快的那个。
+    ///
+    /// **串行**探测（内置表里每个发行版只有 2~3 个候选、每条 8 秒上限）：
+    /// 并发要引入线程管理，而收益只是"省几秒"。
+    pub fn probe_mirrors(&mut self, cx: &mut Context<Self>) {
+        if self.state.mirrors.probing {
+            return;
+        }
+        let Some(distro) = self.state.mirrors.selected_distro() else {
+            self.state
+                .notify(Toast::error("内置镜像表里没有可用的发行版"));
+            cx.notify();
+            return;
+        };
+        if !mirrors::available_on_this_arch() {
+            self.state.notify(Toast::error(format!(
+                "内置镜像表目前只有 amd64 的条目，这台机器是 {} —— 请用「自定义 URL」",
+                mirrors::arch()
+            )));
+            cx.notify();
+            return;
+        }
+
+        let candidates = mirrors::candidates(distro);
+        let release = distro.release.to_owned();
+
+        self.state.mirrors.probing = true;
+        self.state.mirrors.error = None;
+        self.state.mirrors.results.clear();
+        self.state.mirrors.chosen = None;
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let probed = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut out: Vec<(mirrors::Candidate, Option<mirrors::Probe>)> = Vec::new();
+                    for candidate in candidates {
+                        let args = mirrors::probe_args(&candidate.url);
+                        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+                        let probe = wslc_core::cli::run_helper_with_hint(
+                            "curl.exe",
+                            "curl.exe",
+                            wslc_core::cli::CURL_NOT_FOUND_HINT,
+                            &refs,
+                            Duration::from_secs(20),
+                        )
+                        .ok()
+                        .and_then(|out| mirrors::parse_probe(&out.stdout));
+                        out.push((candidate, probe));
+                    }
+                    out
+                })
+                .await;
+
+            let _ = this.update(cx, |shell, cx| {
+                shell.state.mirrors.probing = false;
+                shell.state.mirrors.results = probed
+                    .iter()
+                    .map(|(candidate, probe)| MirrorProbeResult {
+                        site: candidate.site.clone(),
+                        url: candidate.url.clone(),
+                        code: probe.as_ref().map(|p| p.code).unwrap_or(0),
+                        secs: probe.as_ref().map(|p| p.secs).unwrap_or(0.0),
+                        bytes: probe.as_ref().and_then(|p| p.bytes),
+                    })
+                    .collect();
+
+                match mirrors::pick_fastest(&probed) {
+                    Some((candidate, probe)) => {
+                        let site = candidate.site.clone();
+                        shell.state.mirrors.chosen = Some(MirrorChoice {
+                            site: site.clone(),
+                            url: candidate.url,
+                            release: release.clone(),
+                            bytes: probe.bytes,
+                        });
+                        shell.state.notify(Toast::success(format!(
+                            "选中最快的镜像：{site}"
+                        )));
+                    }
+                    None => {
+                        shell.state.mirrors.chosen = None;
+                        shell.state.mirrors.error = Some(
+                            "这个发行版在所有内置镜像上都拿不到（可能那一版的文件改名了）——\
+                             换一个版本，或者用「自定义 URL」"
+                                .to_owned(),
+                        );
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    // -- 添加实例：执行 ----------------------------------------------------
+
     /// 按表单执行安装。
     ///
-    /// 安装可能跑十几分钟到几十分钟（在线下载 / 铺开文件系统），
-    /// 所以走后台执行器 + 完成后再提示；期间界面照常可用。
+    /// 安装可能跑十几分钟到几十分钟（在线下载 / 铺开文件系统），所以：
+    ///
+    /// 1. 装前检查在**提交这一刻**做（其中"目录非空"要碰文件系统，
+    ///    不能放在渲染里）；
+    /// 2. 真正干活的是 [`wslc_core::cmd::install::run_plan`]（**阻塞**），
+    ///    跑在后台执行器上；
+    /// 3. 界面每 250 ms 把事件搬进 `AppState::installing`，
+    ///    所以日志和进度是**边跑边显示**的。
     pub fn confirm_install(&mut self, cx: &mut Context<Self>) {
-        // 先把 spec 取出来、**结束对 `self` 的借用** —— 下面要 `&mut self`
-        // 去发提示条，借用还活着的话编译器会拦。
-        let spec = match self.install_form.as_ref() {
-            Some(form) => form.to_spec(cx),
-            None => {
-                self.state.notify(Toast::error("表单尚未创建"));
+        if self.install_run.is_some() {
+            self.state
+                .notify(Toast::error("已经有一个安装在进行 —— 等它结束，或者先取消"));
+            cx.notify();
+            return;
+        }
+
+        // 先把 spec 取出来（借用在这一句结束），下面才好 `&mut self` 发提示条。
+        let spec = self
+            .install_form
+            .as_ref()
+            .map(|form| form.to_spec(cx, &self.state.mirrors));
+        let Some(spec) = spec else {
+            self.state.notify(Toast::error("表单尚未创建"));
+            cx.notify();
+            return;
+        };
+
+        let ctx = self.state.plan_context();
+        let dir = spec
+            .effective_install_dir(&ctx)
+            .unwrap_or_default();
+        let check = self.state.preflight(&spec, dir_non_empty(&dir));
+        if !check.ok() {
+            self.state.notify(Toast::error(
+                check
+                    .error_text()
+                    .unwrap_or_else(|| "参数有误".to_owned()),
+            ));
+            cx.notify();
+            return;
+        }
+        for warning in &check.warnings {
+            tracing::info!("安装提醒：{warning}");
+        }
+
+        let plan = match install_model::plan(&spec, &ctx) {
+            Ok(plan) => plan,
+            Err(e) => {
+                self.state.notify(Toast::error(format!("参数有误：{e}")));
                 cx.notify();
                 return;
             }
         };
 
-        if let Err(e) = spec.validate() {
-            self.state.notify(Toast::error(format!("参数有误：{e}")));
-            cx.notify();
-            return;
-        }
+        // 要跑哪些步骤写进日志：出问题时能直接复制到终端复现
+        // （界面上的预览和执行读的是**同一份计划**）。
+        tracing::info!(
+            "安装 {}：{}",
+            plan.name,
+            plan.preview_lines().join("  →  ")
+        );
 
-        // 等效命令写进日志：出问题时能直接复制到终端复现。
-        tracing::info!("安装发行版：{}", spec.preview_lines().join("  &&  "));
+        let events: Arc<Mutex<Vec<InstallEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let done: Arc<Mutex<Option<InstallSummary>>> = Arc::new(Mutex::new(None));
+        let cancel = InstallCancel::new();
+        let expected_bytes = self.state.mirrors.chosen.as_ref().and_then(|c| c.bytes);
+        let wsl = self.state.wsl.clone();
 
+        // 事件队列与结果槽的**原始 Arc 交给 `install_run`**（界面每轮从那儿取），
+        // 后台任务拿的是克隆 —— 两边看到的是同一份数据。
+        let work_events = Arc::clone(&events);
+        let work_done = Arc::clone(&done);
+        let work_cancel = cancel.clone();
+
+        self.state.installing = Some(InstallProgress::new(plan.name.clone()));
+        self.install_run = Some(InstallRun {
+            events: Arc::clone(&events),
+            done: Arc::clone(&done),
+            started: Instant::now(),
+        });
+        self.install_cancel = Some(cancel.clone());
         self.state.notify(Toast::info(format!(
-            "正在安装 {}…（可能要十几分钟，期间界面可以继续用）",
-            spec.name.trim()
+            "正在安装 {}…（期间界面可以继续用，随时能取消）",
+            plan.name
         )));
         cx.notify();
 
-        let wsl = self.state.wsl.clone();
         cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { wslc_core::cmd::distro::install(&wsl, &spec) })
-                .await;
+            // 阻塞活：后台执行器 + 流式事件。这是本仓库唯一允许起进程的地方。
+            let work = cx.background_executor().spawn(async move {
+                let mut opts = RunOptions::new(move |event| lock(&work_events).push(event));
+                opts.cancel = work_cancel;
+                opts.expected_bytes = expected_bytes;
+                let summary = install::run_plan(&wsl, &plan, opts);
+                *lock(&work_done) = Some(summary.clone());
+                summary
+            });
+
+            // 边跑边搬事件。`absorb_install_events` 顺便看一眼执行结果有没有到 ——
+            // `run_plan` 是**阻塞**函数，结果只能这样交回来。
+            let summary = loop {
+                let finished = this
+                    .update(cx, |shell, cx| shell.absorb_install_events(cx))
+                    .ok()
+                    .flatten();
+                if let Some(summary) = finished {
+                    break summary;
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(250))
+                    .await;
+            };
+
+            // 等它真正结束，免得 `Task` 在完成前被 drop 掉（那会取消任务）
+            let _ = work.await;
 
             let _ = this.update(cx, |shell, cx| {
-                match result {
-                    Ok(message) => {
-                        shell.state.notify(Toast::success(message));
-                        // 装完跳到列表，让用户直接看到新实例
-                        shell.goto_page(Page::Instances, cx);
-                    }
-                    Err(e) => shell
-                        .state
-                        .notify(Toast::error(format!("安装失败：{e}"))),
-                }
-                shell.refresh(cx);
-                cx.notify();
+                shell.absorb_install_events(cx);
+                shell.finish_install(summary, cx);
             });
         })
         .detach();
+    }
+
+    /// 取消正在进行的安装（kill 当前子进程）。
+    ///
+    /// ⚠️ 取消**不保证**什么都没发生：在线安装可能已经注册了一半，
+    /// 重定位阶段（`--unregister` 之后）更是根本不给取消 ——
+    /// 见 `wslc_core::cmd::install` 的模块说明。
+    pub fn cancel_install(&mut self, cx: &mut Context<Self>) {
+        match &self.install_cancel {
+            Some(token) => {
+                token.cancel();
+                tracing::info!("已请求取消安装");
+                self.state.notify(Toast::info("正在取消安装…"));
+            }
+            None => self
+                .state
+                .notify(Toast::error("当前没有正在进行的安装")),
+        }
+        cx.notify();
+    }
+
+    /// 把后台线程塞进来的事件搬进界面状态；返回**执行结果**（还在跑时是 `None`）。
+    ///
+    /// 只有**真的有变化**才 `cx.notify()`：进度事件每 250 ms 就来一个，
+    /// 无脑重绘等于让界面一直空转（导出那边是同样的处理）。
+    ///
+    /// 结果也从这里回传（而不是另外留一个方法）：界面每轮反正要看一眼事件队列，
+    /// 顺手看一眼结果槽不额外花什么，还能保证"最后一批事件"一定先被吃掉。
+    fn absorb_install_events(&mut self, cx: &mut Context<Self>) -> Option<InstallSummary> {
+        let (events, started, finished) = {
+            let Some(run) = self.install_run.as_ref() else {
+                return None;
+            };
+            let drained: Vec<InstallEvent> = std::mem::take(&mut *lock(&run.events));
+            (drained, run.started, lock(&run.done).clone())
+        };
+
+        let Some(progress) = self.state.installing.as_mut() else {
+            return finished;
+        };
+
+        let mut changed = false;
+        for event in &events {
+            changed |= progress.apply(event);
+        }
+
+        // 没有进度事件的步骤（导入 / 注销 / 安装本身）也要显示"跑了多久"
+        let secs = started.elapsed().as_secs();
+        if progress.elapsed_secs != secs {
+            progress.elapsed_secs = secs;
+            changed = true;
+        }
+
+        if changed {
+            cx.notify();
+        }
+        finished
+    }
+
+    /// 安装收尾：写结局、发提示、刷新列表。
+    ///
+    /// 失败时**留在页面上** —— 那里有完整日志，用户要能读它；
+    /// 成功才跳到实例列表，让他直接看到新装好的东西。
+    fn finish_install(&mut self, summary: InstallSummary, cx: &mut Context<Self>) {
+        self.install_run = None;
+        self.install_cancel = None;
+
+        let outcome = if summary.cancelled {
+            InstallOutcome::Cancelled
+        } else if summary.ok {
+            InstallOutcome::Success(summary.detail.clone())
+        } else {
+            InstallOutcome::Failed {
+                detail: summary.detail.clone(),
+                step: summary.failed_step.clone(),
+            }
+        };
+        if let Some(progress) = self.state.installing.as_mut() {
+            progress.finish(outcome);
+        }
+
+        if summary.cancelled {
+            self.state.notify(Toast::info(format!(
+                "{} 的安装已取消。如果它其实已经装好了，去实例列表看一眼；不想要就删掉。",
+                summary.name
+            )));
+        } else if summary.ok {
+            self.state
+                .notify(Toast::success(format!("{} 已安装", summary.name)));
+            self.goto_page(Page::Instances, cx);
+        } else {
+            self.state
+                .notify(Toast::error(format!("安装失败：{}", summary.detail)));
+        }
+
+        self.refresh(cx);
+        cx.notify();
     }
 
     /// 设置自动刷新间隔（秒），并立即写入偏好文件。
