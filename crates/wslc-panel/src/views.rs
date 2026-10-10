@@ -31,7 +31,7 @@ use crate::columns::{ALL_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS
 use crate::presets::presets_for;
 use crate::state::{
     AppState, DistroAction, ImmediateAction, InstallSourceKind, Page, PendingAction, PromptKind,
-    PullProgress, WslConfState, format_bytes,
+    PullProgress, SettingsTab, WslConfState, format_bytes,
 };
 use crate::theme;
 
@@ -322,8 +322,8 @@ pub fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
         Page::Networks => networks(state, entity).into_any_element(),
         Page::Volumes => volumes(state, entity).into_any_element(),
         Page::AppSettings => app_settings(state, entity),
-        Page::Config => config(state, entity),
-        Page::WslConfig => wsl_config(state, entity),
+        Page::About => about(state, entity),
+        Page::Config | Page::WslConfig => app_settings(state, entity),
     }
 }
 
@@ -1592,23 +1592,123 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
 ///
 /// v0.3 只做两项（都是"简单且立刻见效"的）：自动刷新间隔、界面主题。
 pub fn app_settings(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+    let content: AnyElement = match state.settings_tab {
+        SettingsTab::General => settings_general(state, entity),
+        // 「高级」和「WSL」就是把原先那两个独立页面搬进来当 tab ——
+        // 内容一行没改，只是不再各占一个侧边栏入口。
+        SettingsTab::Advanced => config(state, entity),
+        SettingsTab::Wsl => wsl_config(state, entity),
+    };
+
+    v_flex()
+        .w_full()
+        .gap_4()
+        .child(settings_tabs(state, entity))
+        .child(content)
+        .into_any_element()
+}
+
+/// 设置页的 tab 行。
+///
+/// 用 Button 而不是 gpui-kit 的 `TabBar`：项目现有的"选中态"就是这么做的
+/// （见 [`theme_card`]），风格一致，而且是**已经编译通过**的形式。
+/// 想换成 `TabBar` 的话，替换点只有这一个函数。
+fn settings_tabs(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+    let buttons: Vec<AnyElement> = SettingsTab::ALL
+        .iter()
+        .map(|tab| {
+            let tab = *tab;
+            let entity = entity.clone();
+            // id 用 `{:?}`：稳定且与显示语言无关
+            let mut button = Button::new(SharedString::from(format!("settings-tab-{tab:?}")))
+                .label(tab.label())
+                .small()
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |shell, cx| shell.set_settings_tab(tab, cx));
+                });
+            if state.settings_tab == tab {
+                button = button.primary();
+            }
+            button.into_any_element()
+        })
+        .collect();
+
+    h_flex()
+        .w_full()
+        .gap_2()
+        .children(buttons)
+        .into_any_element()
+}
+
+/// 「常规」tab：界面 + 主题。
+///
+/// 「关于」卡片从这里**搬走了** —— 它现在是一个独立的侧边栏页面
+/// （见 [`about`]），因为那一页只有只读信息，混在设置里容易被当成开关。
+fn settings_general(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     v_flex()
         .w_full()
         .gap_4()
         .child(interface_card(state, entity))
         .child(theme_card(state, entity))
+        .into_any_element()
+}
+
+/// 「关于」页：应用介绍、版本、构建、地址。
+///
+/// 单独一页而不是设置里的一个 tab：这里**没有任何开关**，
+/// 放进设置会让人以为里面能改东西。
+pub fn about(_state: &AppState, _entity: &Entity<Shell>) -> AnyElement {
+    const LINKS: &[(&str, &str)] = &[
+        ("项目主页", "https://github.com/SilkKirk/wslc-panel"),
+        ("问题反馈", "https://github.com/SilkKirk/wslc-panel/issues"),
+        (
+            "参考项目 owu/wsl-dashboard",
+            "https://github.com/owu/wsl-dashboard",
+        ),
+        ("界面库 gpui-kit", "https://github.com/longbridge/gpui-kit"),
+    ];
+
+    let rows: Vec<AnyElement> = LINKS
+        .iter()
+        .map(|(label, url)| {
+            v_flex()
+                .w_full()
+                .gap_1()
+                .child(div().text_xs().text_color(theme::text_dim()).child(*label))
+                .child(
+                    div()
+                        .font_family("Consolas")
+                        .text_xs()
+                        .text_color(theme::primary())
+                        .child(*url),
+                )
+                .into_any_element()
+        })
+        .collect();
+
+    v_flex()
+        .w_full()
+        .gap_4()
         .child(card(
-            "关于",
+            "wslc-panel",
             v_flex()
                 .w_full()
                 .gap_2()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme::text())
+                        .child("WSL 容器（wslc）和发行版（wsl.exe）的图形管理面板。"),
+                )
                 .child(kv("版本", env!("CARGO_PKG_VERSION")))
                 .child(kv("构建", crate::short_build_sha()))
+                .child(kv("界面库", "gpui-kit 0.7.1（GPUI）"))
                 .child(div().text_xs().text_color(theme::text_dim()).child(
-                    "偏好文件只属于本程序，刻意不写进 wslc 的 settings.yaml —— \
-                     那个文件由 wslc 拥有，塞自定义键既可能被它重置，也会让人误会。",
+                    "许可证 Apache-2.0。参考项目 owu/wsl-dashboard 是 GPL-3.0-only，\
+                     只用来理解机制，没有代码进入本仓库。",
                 )),
         ))
+        .child(card("地址", v_flex().w_full().gap_3().children(rows)))
         .into_any_element()
 }
 

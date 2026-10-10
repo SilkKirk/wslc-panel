@@ -1780,6 +1780,11 @@ impl Shell {
         }
     }
 
+    /// 切换「应用设置」页里的 tab。
+    pub fn set_settings_tab(&mut self, tab: state::SettingsTab, cx: &mut Context<Self>) {
+        self.state.settings_tab = tab;
+        cx.notify();
+    }
     /// 显示 / 隐藏"实际会写进去的内容"。
     pub fn toggle_wslconf_preview(&mut self, cx: &mut Context<Self>) {
         if let Some(state) = self.state.wslconf.as_mut() {

@@ -63,6 +63,10 @@ pub enum Page {
     /// 和 [`Page::Config`] 的区别：那个是 **wslc** 的 `settings.yaml`，
     /// 这个是 **WSL 本身**的配置；两者互不相干，连文件位置都不同。
     WslConfig,
+    /// 关于：应用介绍、版本、构建、地址。
+    ///
+    /// 和「应用设置」分开：那一页是**可改**的偏好，这一页只是**看**。
+    About,
 }
 
 impl Page {
@@ -70,7 +74,10 @@ impl Page {
     ///
     /// ⚠️ 同组的页面必须**连续** —— 侧边栏靠"组名变了就插一条标题"
     /// 来分组（见 `app.rs` 的 `render`）。
-    pub const ALL: [Page; 10] = [
+    /// ⚠️ Config 和 WslConfig **故意不在这里** —— 它们已经变成
+    /// 「应用设置」页里的两个 tab（见 [SettingsTab]）。留在 ALL 里
+    /// 会让侧边栏多出两个和「应用设置」重复的入口。
+    pub const ALL: [Page; 9] = [
         Page::Dashboard,
         Page::Instances,
         Page::AddInstance,
@@ -79,8 +86,7 @@ impl Page {
         Page::Networks,
         Page::Volumes,
         Page::AppSettings,
-        Page::Config,
-        Page::WslConfig,
+        Page::About,
     ];
 
     /// 导航标签。
@@ -96,6 +102,7 @@ impl Page {
             Page::AppSettings => "应用设置",
             Page::Config => "wlsc 配置",
             Page::WslConfig => "WSL 配置",
+            Page::About => "关于",
         }
     }
 
@@ -106,7 +113,7 @@ impl Page {
             Page::Instances | Page::AddInstance => "WSL 实例",
             Page::Containers => "容器",
             Page::Images | Page::Networks | Page::Volumes => "资源",
-            Page::AppSettings | Page::Config | Page::WslConfig => "设置",
+            Page::AppSettings | Page::Config | Page::WslConfig | Page::About => "设置",
         }
     }
 
@@ -1072,8 +1079,44 @@ impl WslConfState {
     }
 }
 
-/// 应用的完整状态。
+/// 「应用设置」页里的 tab。
 ///
+/// 原先这是侧边栏里的三个独立页面（应用设置 / wlsc 配置 / WSL 配置），
+/// 但它们都是"设置"，分开摆反而让人找不着 —— 收进一页分 tab。
+/// 参考项目的设置页也是这么分的（常规 / 高级 / 界面）。
+///
+/// ⚠️ 这里**没有**「关于」：那是一个只能看、不能改的页面，
+/// 混进设置 tab 里会让人以为里面有开关。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettingsTab {
+    /// 常规：刷新间隔、主题。
+    #[default]
+    General,
+    /// 高级：**wslc 自己**的 `settings.yaml`。
+    Advanced,
+    /// WSL：`%USERPROFILE%\.wslconfig`（**WSL 本身**的全局配置）。
+    Wsl,
+}
+
+impl SettingsTab {
+    /// 全部 tab（决定显示顺序）。
+    pub const ALL: [SettingsTab; 3] = [
+        SettingsTab::General,
+        SettingsTab::Advanced,
+        SettingsTab::Wsl,
+    ];
+
+    /// tab 标题。
+    pub fn label(self) -> &'static str {
+        match self {
+            SettingsTab::General => "常规",
+            SettingsTab::Advanced => "高级",
+            SettingsTab::Wsl => "WSL",
+        }
+    }
+}
+
+/// 应用的完整状态。///
 /// 这是 `app::Shell` 里唯一的字段，所有页面都是它的只读视图。
 ///
 /// （`Shell` 在 `wslc-panel` 那个 crate 里 —— 它持有 GPUI 的 `InputState`，
@@ -1133,6 +1176,8 @@ pub struct AppState {
     /// 纯数据（原文 + 显式值 + 版本 + 校验错误）；真正的输入框在
     /// `Shell::wslconf_dialog` 里 —— 那是 GPUI 的类型。
     pub wslconf: Option<WslConfState>,
+    /// 「应用设置」页当前选中的 tab。
+    pub settings_tab: SettingsTab,
     /// 待用户确认的危险操作（容器域或发行版域）。
     pub confirm: Option<ConfirmAction>,
     /// 提示条。
@@ -1157,6 +1202,7 @@ impl AppState {
             exporting: None,
             kept_alive: Vec::new(),
             wslconf: None,
+            settings_tab: SettingsTab::default(),
             confirm: None,
             toast: None,
         }
