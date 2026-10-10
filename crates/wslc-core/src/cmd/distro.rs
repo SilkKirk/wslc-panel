@@ -616,13 +616,18 @@ pub fn read_wsl_conf(wsl: &Wsl, name: &str) -> Result<String> {
         });
     }
 
-    // 去掉可能的前导 BOM 和结尾空白：这个文件通常是我们自己写的，
+    // 只剥可能的前导 BOM：这个文件通常是我们自己写的，
     // 但用户也可能拿别的编辑器存过带 BOM 的版本。
-    Ok(out
-        .stdout
-        .trim_start_matches('\u{feff}')
-        .trim_end()
-        .to_owned())
+    //
+    // ⚠️ **不要**在这里 `trim_end()`。`WslConfDoc::is_dirty()` 是拿
+    // `render()` 和原文比字节的，而 `render()` 会照着原文决定结尾换行 ——
+    // 一旦把结尾换行（以及 CRLF 末尾那个 `\r`）在这里 trim 掉，两边就
+    // **永远**不相等：用户打开 `/etc/wsl.conf`、什么都没改、点一次保存，
+    // 也会整文件重写一遍（把我们的键规范化成 `key = value`、丢掉 BOM、
+    // 还可能改掉行尾），`.bak` 里也白留一份。
+    //
+    // `cat` 出来的就是文件的字节，原样交给 `parse` 才是对的。
+    Ok(out.stdout.trim_start_matches('\u{feff}').to_owned())
 }
 
 /// 写发行版内的 `/etc/wsl.conf`（**先备份**）。

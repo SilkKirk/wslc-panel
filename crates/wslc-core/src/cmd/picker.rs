@@ -131,6 +131,23 @@ fn build_script(title: &str, filter: Option<&str>, folders: bool) -> String {
 
     let mut script = String::new();
 
+    // **必须强制 stdout 为 UTF-8。**
+    //
+    // 这是实测踩出来的：`run` 给子进程加了 `CREATE_NO_WINDOW`，于是它
+    // **没有控制台**，PowerShell 5.1 会把 stdout 回退到**系统 ANSI 代码页**
+    // （本机 ACP=936，实测 `chcp` 确认）。含中文的路径因此被编码成 GBK，
+    // 而 [`parse_output`] 用 `from_utf8_lossy` 解码 —— 结果是
+    // `D:\测试镜像\a.tar` 变成 `D:\<U+FFFD>…\a.tar`，
+    // 用户选完路径却拿到一个不存在的路径，且**没有任何报错**。
+    //
+    // 实测对比（同一段脚本，只差 `CREATE_NO_WINDOW`）：
+    // - 继承控制台的管道           → `e6 b5 8b …`（UTF-8，正确）
+    // - 管道 + `CREATE_NO_WINDOW`  → `b2 e2 ca d4 …`（GBK，坏）
+    //
+    // 另外实测：设 `$OutputEncoding` **没有用**，只有设
+    // `[Console]::OutputEncoding` 才能把它掰回 UTF-8。
+    script.push_str("[Console]::OutputEncoding=[Text.Encoding]::UTF8\n");
+
     // 隐藏的 owner 窗体：把对话框顶到最前面。
     // 不给 owner 的话它可能开在应用窗口**后面** ——
     // 用户点了「浏览」却什么都没看见，又是一次"点了没反应"。
@@ -214,6 +231,12 @@ mod tests {
         // 隐藏的 owner 必须在，且被用作 ShowDialog 的 owner
         assert!(script.contains("$owner.TopMost = $true"));
         assert!(script.contains("ShowDialog($owner)"));
+        // 必须强制 stdout 为 UTF-8。漏了它，含中文的路径会被 GBK 编码，
+        // 然后在 `parse_output` 里静默变成 U+FFFD（见 `build_script` 的说明）。
+        assert!(
+            script.contains("[Console]::OutputEncoding=[Text.Encoding]::UTF8"),
+            "脚本必须先把 stdout 掰成 UTF-8，否则中文路径会烂掉：{script}"
+        );
         // 收尾要关掉 owner，不然会有个隐形窗体一直挂着
         assert!(script.trim_end().ends_with("$owner.Close()"));
     }
@@ -256,5 +279,23 @@ mod tests {
         // 中文路径在某些代码页下可能不是合法 UTF-8 —— 丢掉坏字节而不是崩
         let bytes = [0x44, 0x3A, 0x5C, 0xFF, 0xFE];
         assert!(parse_output(&bytes).is_some());
+    }
+
+    #[test]
+    fn utf8_paths_survive_the_round_trip() {
+        // 脚本已经把 stdout 掰成 UTF-8（见上一条），所以这里的字节就是
+        // UTF-8。这条测试盯的是"**内容**别被弄坏"——之前只断言
+        // `is_some()`，中文路径烂成 U+FFFD 也照样绿。
+        for path in [
+            r"D:\测试镜像\a.tar",
+            r"\\server\共享 目录\镜像.tar",
+            r"C:\Users\me\AppData\Local\wslc\a.tar",
+        ] {
+            assert_eq!(
+                parse_output(path.as_bytes()),
+                Some(path.to_owned()),
+                "路径被解码弄坏了：{path}"
+            );
+        }
     }
 }

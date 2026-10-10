@@ -102,9 +102,14 @@ cargo run -p wslc-panel
 
 | Workflow | 触发 | 作用 |
 |---|---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | 任意 push / PR | `wslc-core` + `wslc-panel-core` 测试（纯逻辑）+ 整个 workspace 的 `cargo check` |
+| [`ci.yml`](.github/workflows/ci.yml) | 推 `main` / 任意 PR（纯文档 PR 跳过） | `--workspace` 的纯逻辑测试（**排除** `wslc-panel`，以免把整棵 GPUI 链接回来）+ 整个 workspace 的 `cargo check --all-targets` |
+| [`fmt.yml`](.github/workflows/fmt.yml) | 手动触发 | 跑 `cargo fmt --all` 并把结果提交回仓库 —— 本机没有 rustfmt 时**唯一**能格式化代码的入口 |
 | [`release.yml`](.github/workflows/release.yml) | 推 `v*` 标签，或手动触发 | 编译 release、打包 zip、建 Release |
 | [`gen-lock.yml`](.github/workflows/gen-lock.yml) | 推 `ci/gen-lock` 分支，或手动触发 | 生成 / 更新 `Cargo.lock` 并提交回分支 —— 本机没有 Rust 工具链时，这是唯一能更新锁文件的办法 |
+
+> ⚠️ 功能分支的 push **不会**触发 `ci.yml`（`on.push.branches` 只写了 `main`）。
+> 这是刻意的：否则「推分支 + 开 PR」会把同一套 job 跑两遍。
+> **功能分支的结果要去 PR 里看**，别在本地干等。
 
 在 Actions 页手动触发 `release.yml`，就能在不打标签的情况下验证"exe 能不能产出"。
 

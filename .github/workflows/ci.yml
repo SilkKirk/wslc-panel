@@ -83,17 +83,25 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: 跑数据层测试
+      - name: 跑全部纯逻辑测试（wslc-core + wslc-panel-core + 以后新增的 crate）
         # 真机冒烟测试在没有 wslc 的 runner 上会自动跳过（见 tests/wslc_smoke.rs）。
+        #
+        # ⚠️ 用 `--workspace --exclude wslc-panel`，**不要**写死包名。
+        # 原先这里是两条 `-p wslc-core` / `-p wslc-panel-core`：将来往 workspace
+        # 里加第 4 个 crate 时，它的测试**永远不会跑**而 CI 照样是绿的 ——
+        # 而 AGENTS.md §2 恰恰鼓励把纯逻辑搬进 `wslc-panel-core`（也就是鼓励加新东西）。
+        #
+        # `--exclude wslc-panel` 是为了不把整棵 GPUI 依赖树链接回来：原先那一步
+        # `cargo test -p wslc-panel --bins` 实测 **763 秒**，占掉一整轮 CI 的 72%。
         #
         # `--profile ci`（见根 Cargo.toml）：不优化、不带调试信息 ——
         # dev 里那个 `opt-level = 3` 是给本地跑 GPUI 用的，CI 不需要。
-        run: cargo test -p wslc-core --profile ci -- --nocapture
-
-      - name: 跑面板纯逻辑测试
-        # 面板的**全部**单测都在这里：偏好、状态、列宽、预设值、纯函数。
-        # 它们不碰 GPUI，所以这一步只要十几秒 —— 对比原先 `--bins` 的 763 秒。
-        run: cargo test -p wslc-panel-core --profile ci -- --nocapture
+        #
+        # `--locked`：本机没有 cargo，改了 Cargo.toml 之后**无法在本地重新生成
+        # 锁文件**。不加它，cargo 会自己把 `Cargo.lock` 更新到新解析结果再继续跑，
+        # 于是 CI 全绿、而仓库里那份锁文件永远是旧的：构建不可复现，
+        # release 会用一份**没记录在仓库里**的依赖集出包。
+        run: cargo test --workspace --exclude wslc-panel --locked --profile ci -- --nocapture
 
   ui:
     name: wslc-panel 编译检查（GPUI）
@@ -117,10 +125,10 @@ jobs:
         #
         # 刻意**不加** `--profile ci`：check 不产出机器码，opt-level 对它没有意义，
         # 加了只会白搭一份冷缓存（见根 Cargo.toml 的说明）。
-        run: cargo check --workspace --all-targets
+        run: cargo check --workspace --all-targets --locked
 
       - name: 检查默认启动是否可用
-        run: cargo check -p wslc-panel --bins
+        run: cargo check -p wslc-panel --bins --locked
 
   lint:
     name: 格式与 clippy（只报告，不阻塞）
@@ -161,12 +169,18 @@ jobs:
       - name: clippy
         shell: pwsh
         run: |
-          $out = (cargo clippy --workspace --all-targets --message-format short 2>&1 | Out-String)
+          $out = (cargo clippy --workspace --all-targets --locked --message-format short 2>&1 | Out-String)
           Write-Output $out
-          $warn = ($out -split "`n" | Where-Object { $_ -match '^(warning|error)' }).Count
+          # ⚠️ 不能用 `^(warning|error)` 过滤：`--message-format short` 把每条诊断
+          # 渲染成 `路径:行:列: warning: ...`（**行首是文件路径**），于是那个正则
+          # 只匹配得到 cargo 自己的汇总行（`warning: \`x\` (lib) generated N warnings`），
+          # 明细一条都进不了 Step Summary —— 而 Step Summary 正是 AGENTS.md §3
+          # 教人拿错误的地方，那样写等于给人一个空壳。
+          $diag = $out -split "`n" | Where-Object { $_ -match '^\S+?:\d+:\d+: (warning|error)' }
+          $warn = $diag.Count
           if ($warn -gt 0) {
             Write-Output "::warning title=clippy::clippy 报告了 $warn 条问题"
-            $tail = ($out -split "`n" | Where-Object { $_ -match '^(warning|error)' } | Select-Object -First 100) -join "`n"
+            $tail = ($diag | Select-Object -First 100) -join "`n"
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## clippy（$warn 条）`n`n``````n$tail`n``````"
           } else {
             Write-Output "clippy 通过"

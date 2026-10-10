@@ -1334,7 +1334,9 @@ fn distro_row_actions(
     }
 
     // 已经是默认了就不必再显示这个按钮（详情里会写明"当前是默认"）。
-    if !is_default {
+    // 同上：过渡态下一律不给写操作（这段代码上方的「启动」按钮
+    // 也是用 `distro.state.is_transitional()` 挡的）。
+    if !is_default && !distro.state.is_transitional() {
         actions.push(
             immediate_button(
                 &format!("default-{name}"),
@@ -2940,7 +2942,12 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
     // 详情是留给"低频、危险、需要看清代价"的操作的。
     let mut actions: Vec<AnyElement> = Vec::new();
 
-    if !is_default {
+    // 过渡态下也必须挡住：`wsl --set-default` 是**写**命令，而
+    // `DistroState::is_transitional` 的文档（见 wslc-core 的 `model/distro.rs`）
+    // 明确写着"过渡态下不能对发行版做任何写操作，`wsl` 自己会拒绝"。
+    // 同一个 `actions` 里的压缩 / 移动 / 调整大小 / 导出 / 删除都带了这个守卫，
+    // 只有「设为默认」曾经漏掉 —— 于是安装中的发行版会得到一个"点了必错"的按钮。
+    if !is_default && !transitional {
         actions.push(
             immediate_button(
                 "distro-detail-default",
