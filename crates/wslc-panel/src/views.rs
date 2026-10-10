@@ -3571,10 +3571,12 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEl
             continue;
         }
 
+        // 注意这里**不能**加 `.copied()`：`FIELDS.iter()` 已经是 `&Field`，
+        // 再 `copied()` 会得到 `Field`（值），和 `Vec<&Field>` 对不上。
+        // 下面那两处 `fields.iter().copied()` 才对 —— 那里的 Item 是 `&&Field`。
         let fields: Vec<&'static wslconf::Field> = wslconf::FIELDS
             .iter()
             .filter(|f| f.section == section.name)
-            .copied()
             .collect();
         if fields.is_empty() {
             continue;
