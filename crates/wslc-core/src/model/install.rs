@@ -315,8 +315,11 @@ pub fn parse_online_list(text: &str) -> Vec<OnlineDistro> {
 
         let mut parts = line.split_whitespace();
         let Some(id) = parts.next() else { continue };
-        // 表格里可能出现分隔线或额外的说明行，按"第一列必须像个名字"过滤
-        if !id.chars().all(is_name_char) {
+        // 表格里的分隔线（`----  -------------`）和别的说明行会落到这里。
+        // 只按"字符合法"过滤是不够的 —— `-` 本身就是合法的名字字符，
+        // 于是 `----` 会被当成一个发行版 id（CI 上真的这么挂过一次）。
+        // 真正的发行版名一定含字母或数字，加上这一条就干净了。
+        if !id.chars().all(is_name_char) || !id.chars().any(|c| c.is_ascii_alphanumeric()) {
             continue;
         }
         let label = parts.collect::<Vec<_>>().join(" ");
@@ -1282,7 +1285,8 @@ mod tests {
     fn online_list_ignores_junk_lines_after_the_header() {
         let text = "NAME  FRIENDLY NAME\n----  -------------\nUbuntu  Ubuntu\n";
         let items = parse_online_list(text);
-        // 分隔线被过滤掉（第一列不是合法名字字符）
+        // 分隔线被过滤掉：它的第一列是 `----`，虽然每个字符都"合法"，
+        // 但里面没有字母数字 —— 真正的发行版名不会长这样。
         assert_eq!(items.len(), 1, "{items:?}");
         assert_eq!(items[0].id, "Ubuntu");
     }

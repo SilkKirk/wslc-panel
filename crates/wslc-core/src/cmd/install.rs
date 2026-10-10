@@ -72,6 +72,11 @@ pub enum InstallEvent {
         label: String,
         /// 界面上那一行（可能是真命令行，见 [`PlannedStep::line`]）。
         line: String,
+        /// 这一步能不能被取消。
+        ///
+        /// 界面据此决定**给不给**取消按钮：重定位那一步不接受取消
+        /// （中途停下等于把刚装好的删了），让用户点了之后才发现没用更糟。
+        cancellable: bool,
     },
     /// 子进程的一行输出。
     Line(String),
@@ -177,6 +182,7 @@ pub fn run_plan(wsl: &Wsl, plan: &InstallPlan, opts: RunOptions) -> InstallSumma
                 total,
                 label: step.label.clone(),
                 line: step.line(),
+                cancellable: step.cancellable,
             },
         );
 

@@ -1310,6 +1310,11 @@ pub struct InstallProgress {
     pub step_label: String,
     /// 当前这步对应的命令行（没有命令的步骤是空串）。
     pub step_line: String,
+    /// 当前这步能不能被取消。
+    ///
+    /// 重定位（导出 → 注销 → 导入）那一步是 `false`：中途停下等于把刚装好的删了。
+    /// 界面据此**不给**取消按钮，而不是让用户点了之后才发现没用。
+    pub cancellable: bool,
     /// 已经走完的步骤。
     pub finished: Vec<FinishedStep>,
     /// 日志（环形截断）。
@@ -1347,6 +1352,7 @@ impl InstallProgress {
             index: 0,
             step_label: String::new(),
             step_line: String::new(),
+            cancellable: true,
             finished: Vec::new(),
             log: Vec::new(),
             last_line: String::new(),
@@ -1425,11 +1431,13 @@ impl InstallProgress {
                 total,
                 label,
                 line,
+                cancellable,
             } => {
                 self.index = *index;
                 self.total = *total;
                 self.step_label = label.clone();
                 self.step_line = line.clone();
+                self.cancellable = *cancellable;
                 // 换步骤了：进度归零（那是上一步的产物大小）
                 self.have = 0;
                 self.total_bytes = None;
@@ -1857,9 +1865,11 @@ mod tests {
             total: 3,
             label: "创建安装目录".to_owned(),
             line: "创建安装目录 D:\\wsl\\MyUbuntu".to_owned(),
+            cancellable: true,
         }));
         assert_eq!(progress.index, 1);
         assert_eq!(progress.total, 3);
+        assert!(progress.cancellable);
         assert!(progress.log.iter().any(|l| l.contains("第 1/3 步")));
         assert!(progress.log.iter().any(|l| l.contains("创建安装目录 D:")));
 
@@ -1883,7 +1893,10 @@ mod tests {
             total: 3,
             label: "导入".to_owned(),
             line: String::new(),
+            // 重定位那一步不可取消 —— 界面据此不给"取消"按钮
+            cancellable: false,
         });
+        assert!(!progress.cancellable);
         assert_eq!(progress.have, 0);
         assert_eq!(progress.percent(), None);
 

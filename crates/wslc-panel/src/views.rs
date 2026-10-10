@@ -1646,7 +1646,17 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
     };
 
     // -- 提交 / 取消 --
-    let action: AnyElement = if running {
+    //
+    // ⚠️ 重定位那一步（导出 → 注销 → 导入）**不给**取消按钮：
+    // 它的 `cancellable` 是 false，中途停下等于把刚装好的发行版删掉。
+    // 让用户点了之后才发现没用，比"这里没有按钮 + 一句说明"糟得多。
+    let cancellable = state
+        .installing
+        .as_ref()
+        .map(|progress| progress.cancellable)
+        .unwrap_or(true);
+
+    let action: AnyElement = if running && cancellable {
         let entity_cancel = entity.clone();
         h_flex()
             .w_full()
@@ -1660,6 +1670,19 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
                     .on_click(move |_, _, cx| {
                         entity_cancel.update(cx, |shell, cx| shell.cancel_install(cx));
                     }),
+            )
+            .child(elapsed_label(state))
+            .into_any_element()
+    } else if running {
+        h_flex()
+            .w_full()
+            .items_center()
+            .gap_3()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::warning())
+                    .child("正在改名/挪位置 —— 这一步不能取消（中途停下会把刚装好的东西删掉）"),
             )
             .child(elapsed_label(state))
             .into_any_element()
