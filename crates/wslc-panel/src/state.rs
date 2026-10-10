@@ -774,6 +774,43 @@ impl PromptKind {
             Self::ExportDistro => "开始导出",
         }
     }
+
+    /// 这一种要不要选路径；要的话是**文件**还是**目录**。
+    ///
+    /// 不是每种都有 —— 「调整大小」填的是 `50GB` 这种数字，
+    /// 「设置默认用户」填的是用户名，给它们一个「浏览…」按钮只会让人困惑。
+    pub fn pick_target(self) -> Option<PickTarget> {
+        match self {
+            // 移动位置要的是一个**目录**（新的安装位置）
+            Self::MoveDistro => Some(PickTarget {
+                folders: true,
+                label: "",
+                extensions: &[],
+                title: "选择新的安装目录",
+            }),
+            // 导出要的是一个**文件名**（默认就是 tar 格式）
+            Self::ExportDistro => Some(PickTarget {
+                folders: false,
+                label: "tar 文件",
+                extensions: &["tar"],
+                title: "导出到",
+            }),
+            Self::ResizeDistro | Self::SetDefaultUser => None,
+        }
+    }
+}
+
+/// 文件 / 目录选择器的目标。见 [`PromptKind::pick_target`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PickTarget {
+    /// `true` = 选目录，`false` = 选文件。
+    pub folders: bool,
+    /// 选文件时的类别名（如 `"tar 文件"`）。选目录时用不到。
+    pub label: &'static str,
+    /// 选文件时的后缀，**不含点**。选目录时为空。
+    pub extensions: &'static [&'static str],
+    /// 对话框标题。
+    pub title: &'static str,
 }
 
 /// 提示条的类型。

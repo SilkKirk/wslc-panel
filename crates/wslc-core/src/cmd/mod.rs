@@ -12,6 +12,7 @@ pub mod container;
 pub mod distro;
 pub mod image;
 pub mod network;
+pub mod picker;
 pub mod system;
 pub mod volume;
 
