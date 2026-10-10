@@ -203,7 +203,11 @@ impl WslConfDoc {
                     MANAGED
                         .iter()
                         .find(|(s, key)| *s == section && *key == k)
-                        .map(|(_, key)| key.to_owned())
+                        // ⚠️ 必须 `to_string()` 而不是 `to_owned()`：这里的
+                        // `key` 是 `&&str`，`to_owned()` 会命中 `Clone` 那个
+                        // blanket impl（`&str: Clone`）**返回 `&str`**，
+                        // 而我们要的是 `String`。踩过一次。
+                        .map(|(_, key)| key.to_string())
                 })
             };
 
@@ -220,7 +224,7 @@ impl WslConfDoc {
 
             // 记下这一节内容延伸到了哪里（跳过末尾的空行）
             if !line.is_empty() {
-                if let Some(entry) = section_end.iter_mut().rev().find(|(s, _)| *s == section) {
+                if let Some(entry) = section_end.iter_mut().rev().find(|(s, _)| *s == &section) {
                     entry.1 = out.len();
                 }
             }
@@ -243,7 +247,7 @@ impl WslConfDoc {
             if lines.is_empty() {
                 continue;
             }
-            match section_end.iter().rev().find(|(s, _)| *s == section_name) {
+            match section_end.iter().rev().find(|(s, _)| *s == &section_name) {
                 Some((_, at)) => inserts.push((*at, section_name, lines)),
                 // 这一节原文里没有 → 在文件末尾新建
                 None => inserts.push((out.len(), section_name, lines)),
@@ -258,7 +262,7 @@ impl WslConfDoc {
             if at >= out.len() && !out.is_empty() {
                 block.push(String::new());
             }
-            if !section_end.iter().any(|(s, _)| *s == section_name) {
+            if !section_end.iter().any(|(s, _)| *s == &section_name) {
                 block.push(format!("[{section_name}]"));
             }
             block.extend(lines);
