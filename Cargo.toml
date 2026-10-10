@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/wslc-core", "crates/wslc-panel", "crates/wslc-panel-core"]
 
 [workspace.package]
-version = "0.4.2"
+version = "0.5.0"
 license = "Apache-2.0"
 repository = ""
 publish = false
