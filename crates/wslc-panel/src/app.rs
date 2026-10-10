@@ -732,7 +732,6 @@ impl Shell {
         let started = std::time::Instant::now();
 
         cx.spawn(async move |this, cx| {
-            let mut handle = handle;
             let code = loop {
                 // 1) 目标文件长到多大了（`metadata` 是微秒级，不会卡界面）
                 let written = std::fs::metadata(&probe).ok().map(|m| m.len());
@@ -1587,6 +1586,9 @@ impl Shell {
     /// 写输入框要 `InputState::set_value(value, window, cx)`，**它要一个
     /// `&mut Window`**。`cx.spawn` 给的回调里没有 window；
     /// `cx.spawn_in(window, ...)` 才有 —— 配合 `update_in` 就能把 window 拿回来。
+    // 参数确实多（输入框 / 目录还是文件 / 标题 / 扩展名 / 窗口 / 上下文……），
+    // 但它们各自独立、没有天然的聚合体，硬凑个结构体只是把复杂度搬个地方。
+    #[allow(clippy::too_many_arguments)]
     fn spawn_picker(
         &mut self,
         input: &Entity<InputState>,
