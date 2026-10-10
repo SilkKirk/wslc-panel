@@ -21,9 +21,7 @@ use wslc_core::settings::{SETTING_KEYS, SettingKey, SettingKind};
 use crate::app::{CreateDialog, Shell};
 // 列宽定义与配置项预设值都是纯数据，住在不依赖 GPUI 的 `wslc-panel-core` 里
 // —— 这样它们的单测不必链接 GPUI（见那个 crate 的顶层说明）。
-use crate::columns::{
-    ALL_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS,
-};
+use crate::columns::{ALL_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS};
 use crate::presets::presets_for;
 use crate::state::{
     AppState, DistroAction, ImmediateAction, InstallSourceKind, Page, PendingAction, PromptKind,
