@@ -569,6 +569,97 @@ pub fn set_default_user(wsl: &Wsl, name: &str, user: &str) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// `/etc/wsl.conf`（P4）
+// ---------------------------------------------------------------------------
+
+/// 发行版内 `wsl.conf` 的路径。
+pub const WSL_CONF_PATH: &str = "/etc/wsl.conf";
+
+/// 把一段文本包成 POSIX shell 的**单引号字面量**。
+///
+/// 单引号里除了 `'` 本身什么都不会被解释；`'` 的写法是 `'\''`
+/// （关引号 → 反斜杠转义的单引号 → 再开引号）。
+///
+/// ⚠️ **凡是用户输入要进 shell 命令的地方都必须走这里。**
+/// 表单里的「默认用户」是自由文本，不转义的话用户写一个
+/// `; rm -rf /` 就直接执行了。
+pub fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+/// 读发行版内的 `/etc/wsl.conf`。
+///
+/// **文件不存在时返回空串**，不是错误 —— 没配过 `wsl.conf` 是完全正常的
+/// 状态，不该弹一条红色错误给用户。
+///
+/// 所以这里用一个**永远退出 0** 的脚本：`[ -f ... ] && cat ... || true`。
+/// 比"跑 `cat`，失败后再去猜 stderr 里那句本地化的'没有那个文件'"稳得多。
+///
+/// 不用 `-u root`：`/etc/wsl.conf` 对任何用户都可读，少一次提权少一层意外。
+pub fn read_wsl_conf(wsl: &Wsl, name: &str) -> Result<String> {
+    let script = format!("[ -f {WSL_CONF_PATH} ] && cat {WSL_CONF_PATH} || true");
+    let out = wsl.run_with_timeout(&["-d", name, "-e", "sh", "-c", &script], QUICK_TIMEOUT)?;
+
+    if !out.success() {
+        return Err(Error::NonZeroExit {
+            program: "wsl",
+            args: out.args.join(" "),
+            code: out.code.unwrap_or(-1),
+            stderr: {
+                let detail = strip_config_warnings(&out.combined());
+                if detail.is_empty() {
+                    "（wsl 没有给出任何输出）".to_owned()
+                } else {
+                    detail
+                }
+            },
+        });
+    }
+
+    // 去掉可能的前导 BOM 和结尾空白：这个文件通常是我们自己写的，
+    // 但用户也可能拿别的编辑器存过带 BOM 的版本。
+    Ok(out
+        .stdout
+        .trim_start_matches('\u{feff}')
+        .trim_end()
+        .to_owned())
+}
+
+/// 写发行版内的 `/etc/wsl.conf`（**先备份**）。
+///
+/// 备份到 `/etc/wsl.conf.bak`。改坏了还能从那儿捞回来 ——
+/// 这个文件写错会让发行版起不来，到时候一句"改坏了"没法交代。
+pub fn write_wsl_conf(wsl: &Wsl, name: &str, text: &str) -> Result<()> {
+    // 1) 备份。文件不存在时 `cp` 会失败，所以套一层 `[ -f ]`。
+    let backup =
+        format!("[ -f {WSL_CONF_PATH} ] && cp {WSL_CONF_PATH} {WSL_CONF_PATH}.bak || true");
+    run_action(
+        wsl,
+        &["-d", name, "-u", "root", "-e", "sh", "-c", &backup],
+        QUICK_TIMEOUT,
+    )?;
+
+    // 2) 写。heredoc 的定界符是**挑过的**（见 `model::wslconf::write_script`），
+    //    而且带引号，所以 `$` / 反引号 / 反斜杠都不会被 shell 展开（实测）。
+    let script = crate::model::wslconf::write_script(text);
+    run_action(
+        wsl,
+        &["-d", name, "-u", "root", "-e", "sh", "-c", &script],
+        QUICK_TIMEOUT,
+    )
+}
+
+/// 发行版里有没有这个用户。
+///
+/// 保存 `[user] default` 之前用它挡一下 —— 写一个不存在的用户名会让
+/// 发行版**下次启动直接失败**，而错误要到那时候才暴露，很难联想到这里。
+pub fn user_exists(wsl: &Wsl, name: &str, user: &str) -> Result<bool> {
+    let script = format!("id -u {}", shell_quote(user));
+    let out = wsl.run_with_timeout(&["-d", name, "-e", "sh", "-c", &script], QUICK_TIMEOUT)?;
+    Ok(out.success())
+}
+
+// ---------------------------------------------------------------------------
 // 导出（P3 遗留）
 // ---------------------------------------------------------------------------
 
@@ -1363,5 +1454,64 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{ccc}\r
         let wsl = Wsl::with_program("definitely-not-a-real-binary");
         let result = export_streaming(&wsl, "Ubuntu", r"D:\backup\ubuntu.tar", |_: &str| {});
         assert!(matches!(result, Err(Error::ExecutableNotFound { .. })));
+    }
+
+    // -- /etc/wsl.conf -----------------------------------------------------
+
+    #[test]
+    fn shell_quote_neutralizes_injection() {
+        // 用户输入的默认用户名会进 shell 命令（`id -u <user>`），必须转义。
+        assert_eq!(shell_quote("ubuntu"), "'ubuntu'");
+        assert_eq!(shell_quote(""), "''");
+        // 单引号本身：关引号 → 转义的单引号 → 再开引号
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+
+        // 这些在单引号里都只是普通字符
+        for nasty in ["; rm -rf /", "$(whoami)", "`id`", "a b", "a\"b", "a\\b"] {
+            let quoted = shell_quote(nasty);
+            assert!(quoted.starts_with('\'') && quoted.ends_with('\''), "{quoted}");
+            // 关键：**不能**出现未被包裹的引号 —— 那才是能逃出去的地方
+            assert!(
+                !quoted[1..quoted.len() - 1].contains('\''),
+                "内部还有裸引号：{quoted}"
+            );
+        }
+    }
+
+    #[test]
+    fn shell_quote_survives_a_real_shell_when_available() {
+        // 有 `sh` 就**真的**跑一遍 —— 比对照自己写的逆运算有说服力得多。
+        // 没有就跳过：CI 的 windows runner 上不一定有 sh 在 PATH 里。
+        if std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exit 0")
+            .output()
+            .is_err()
+        {
+            eprintln!("没有 sh，跳过这条");
+            return;
+        }
+
+        for original in [
+            "ubuntu",
+            "it's",
+            "a b",
+            "; rm -rf /tmp/nope",
+            "$(id)",
+            "`id`",
+            "a\\b",
+        ] {
+            let script = format!("printf '%s' {}", shell_quote(original));
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&script)
+                .output()
+                .expect("跑 sh 失败");
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                original,
+                "原文 {original:?} 过了一遍 shell 之后变了"
+            );
+        }
     }
 }

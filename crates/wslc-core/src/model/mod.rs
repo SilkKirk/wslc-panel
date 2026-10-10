@@ -20,6 +20,10 @@ mod volume;
 // 需要被 `cmd::distro` 复用，而且它们**不依赖 Windows**，可以独立跑单测。
 pub mod distro;
 
+// `/etc/wsl.conf` 的保序读写模型。纯逻辑（不碰文件系统、不跑 WSL），
+// 所以能脱离 Windows 单测 —— 解析和"改哪几行"的逻辑都在这里。
+pub mod wslconf;
+
 pub use container::{
     parse_wsl_metadata, ContainerInspect, ContainerListItem, ContainerState, ContainerStats,
     ContainerSummary, Platform, PortMapping, WslPortSpec,
