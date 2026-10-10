@@ -1346,22 +1346,9 @@ fn distro_row_actions(
         );
     }
 
-    // 过渡态（安装中 / 卸载中 / 转换中）下 `wsl` 会拒绝写操作，
-    // 所以不给删除按钮 —— 与其让用户点出一个错误，不如先不给。
-    if !distro.state.is_transitional() {
-        actions.push(
-            danger_button_distro(
-                &format!("unregister-{name}"),
-                "删除",
-                DistroAction::Unregister {
-                    name: name.to_owned(),
-                    vhdx_bytes: distro.vhdx_bytes,
-                },
-                entity,
-            )
-            .into_any_element(),
-        );
-    }
+    // 「删除」**不在这里** —— 它挪去了详情。列表行是横向排布的，
+    // 一个红色的「删除」和「打开终端」挨着，误点的代价太大；
+    // 详情里地方宽，能把"要删掉多少"写清楚（见 `distro_detail_overlay`）。
 
     h_flex().gap_2().children(actions).into_any_element()
 }
@@ -2948,13 +2935,9 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
 
     // -- 动作 --------------------------------------------------------------
 
-    let mut actions: Vec<AnyElement> = vec![immediate_button(
-        "distro-detail-term",
-        "打开终端",
-        ImmediateAction::OpenDistroTerminal(name.to_owned()),
-        entity,
-    )
-    .into_any_element()];
+    // 列表行里已经有的动作（打开终端 / 启动 / 终止）这里**不再重复** ——
+    // 详情是留给"低频、危险、需要看清代价"的操作的。
+    let mut actions: Vec<AnyElement> = Vec::new();
 
     if !is_default {
         actions.push(
@@ -2962,18 +2945,6 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
                 "distro-detail-default",
                 "设为默认",
                 ImmediateAction::SetDefaultDistro(name.to_owned()),
-                entity,
-            )
-            .into_any_element(),
-        );
-    }
-
-    if running {
-        actions.push(
-            danger_button_distro(
-                "distro-detail-terminate",
-                "终止",
-                DistroAction::Terminate(name.to_owned()),
                 entity,
             )
             .into_any_element(),
@@ -2996,7 +2967,8 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
 
     // -- `wsl --manage` 的另外几项（P4）--
     //
-    // 全是**低频**操作，所以只出现在详情里，不塞进列表行。
+    // 低频操作，所以只出现在详情里，不塞进列表行。
+    // （「打开终端 / 启动 / 终止」反过来 —— 高频，只在列表行里。）
     if !transitional {
         actions.push(prompt_button(
             "distro-detail-move",
@@ -3006,7 +2978,7 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
             entity,
         ));
 
-        // 调整大小和稀疏都是**VHDX 专属**的，WSL 1 上没有意义
+        // 调整大小是**VHDX 专属**的，WSL 1 上没有意义
         if !is_wsl1 {
             actions.push(prompt_button(
                 "distro-detail-resize",
@@ -3017,13 +2989,8 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
             ));
         }
 
-        actions.push(prompt_button(
-            "distro-detail-user",
-            "默认用户",
-            PromptKind::SetDefaultUser,
-            name,
-            entity,
-        ));
+        // 「默认用户」搬去 `/etc/wsl.conf` 的编辑弹窗了（`[user] default`）。
+        // 两个入口会让人不知道该改哪个，所以这里只留那一个。
 
         // 导出对 WSL 1 / 2 都成立（它只是把根文件系统打成 tar），
         // 所以**不**受 `is_wsl1` 限制。
@@ -3035,37 +3002,9 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
             entity,
         ));
 
-        // 稀疏是两个**明确方向**的按钮，而不是一个"切换"：
-        // 界面不显示当前状态（注册表 `Flags` 里哪一位是稀疏**没有实测确认**），
-        // 与其猜，不如让用户自己说清要开还是要关。
-        if !is_wsl1 {
-            actions.push(
-                danger_button_distro(
-                    "distro-detail-sparse-on",
-                    "启用稀疏",
-                    DistroAction::SetSparse {
-                        name: name.to_owned(),
-                        sparse: true,
-                    },
-                    entity,
-                )
-                .into_any_element(),
-            );
-        }
-        if !is_wsl1 {
-            actions.push(
-                danger_button_distro(
-                    "distro-detail-sparse-off",
-                    "关闭稀疏",
-                    DistroAction::SetSparse {
-                        name: name.to_owned(),
-                        sparse: false,
-                    },
-                    entity,
-                )
-                .into_any_element(),
-            );
-        }
+        // 稀疏开关按需求去掉了。日常要开它走 `.wslconfig` 的
+        // `[experimental] sparseVhd=true`（见「应用设置 → WSL」）；
+        // 单个发行版想临时改，手动跑 `wsl --manage <名字> --set-sparse` 也能做。
     }
 
     // 这里**没有**「转为 WSL 1/2」：本项目只支持 WSL 2，
