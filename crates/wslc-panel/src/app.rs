@@ -621,24 +621,68 @@ impl Shell {
 
     // -- WSL 发行版（实例）动作 --------------------------------------------
 
+    /// 后台跑一个发行版动作，完了刷新。
+    ///
+    /// # 为什么所有动作都必须走这里
+    ///
+    /// `wsl.exe` 是**同步**等的（`Command::output()` 那种），
+    /// 直接在界面线程上调用会让整个窗口卡住 ——
+    /// Windows 大约 5 秒后就给它挂上"**未响应**"。
+    ///
+    /// 实测「启动」一个发行版要一两秒，`--shutdown` 更久，
+    /// 压缩/移动是分钟级。这些**全都**不能在界面线程上跑。
+    ///
+    /// 另外：点下去先发一条"正在…"，否则从点击到结果出来这段时间
+    /// 界面上什么都没发生，用起来像是按钮没反应。
+    fn spawn_distro_action(
+        &mut self,
+        verb: &'static str,
+        name: String,
+        action: fn(&Wsl, &str) -> wslc_core::Result<()>,
+        note: &'static str,
+        cx: &mut Context<Self>,
+    ) {
+        let wsl = self.state.wsl.clone();
+        let target = name.clone();
+
+        self.state
+            .notify(Toast::info(format!("正在{verb} {name}…")));
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { action(&wsl, &target) })
+                .await;
+
+            let _ = this.update(cx, |shell, cx| {
+                match result {
+                    Ok(()) => shell
+                        .state
+                        .notify(Toast::success(format!("{name} 已{verb}{note}"))),
+                    Err(e) => shell
+                        .state
+                        .notify(Toast::error(format!("{name} {verb}失败：{e}"))),
+                }
+                shell.refresh(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// 唤醒一个已停止的发行版。
     ///
     /// ⚠️ **大约 20 秒后 WSL 会把它收回 Stopped** —— 这是 WSL 3.x 的行为
-    /// （最后一个会话退出就回收），不是本程序的 bug。所以：
-    ///
-    /// - 提示里**不写**"已启动"就完事，要带上这个前提；
-    /// - 想让它持续运行，界面上引导用户用「打开终端」。
+    /// （最后一个会话退出就回收），不是本程序的 bug。所以提示里要带上这个前提。
     pub fn start_distro(&mut self, name: String, cx: &mut Context<Self>) {
-        let wsl = self.state.wsl.clone();
-        let toast = match wslc_core::cmd::distro::start(&wsl, &name) {
-            Ok(()) => Toast::success(format!(
-                "{name} 已唤醒（WSL 在没有活动会话后约 20 秒会自动停止；要一直跑请用「打开终端」）"
-            )),
-            Err(e) => Toast::error(format!("启动 {name} 失败：{e}")),
-        };
-        self.state.notify(toast);
-        cx.notify();
-        self.refresh(cx);
+        self.spawn_distro_action(
+            "启动",
+            name,
+            wslc_core::cmd::distro::start,
+            "（WSL 在没有活动会话后约 20 秒会自动停止；要一直跑请用「打开终端」）",
+            cx,
+        );
     }
 
     /// 打开发行版的终端（新控制台窗口）。
@@ -659,14 +703,13 @@ impl Shell {
 
     /// 设为默认发行版（不破坏数据，所以不弹确认）。
     pub fn set_default_distro(&mut self, name: String, cx: &mut Context<Self>) {
-        let wsl = self.state.wsl.clone();
-        let toast = match wslc_core::cmd::distro::set_default(&wsl, &name) {
-            Ok(()) => Toast::success(format!("{name} 已设为默认发行版")),
-            Err(e) => Toast::error(format!("设为默认失败：{e}")),
-        };
-        self.state.notify(toast);
-        cx.notify();
-        self.refresh(cx);
+        self.spawn_distro_action(
+            "设为默认",
+            name,
+            wslc_core::cmd::distro::set_default,
+            "",
+            cx,
+        );
     }
 
     /// 在资源管理器里定位发行版的安装目录。
@@ -1104,30 +1147,57 @@ impl Shell {
     ///
     /// 两个域共用这一个入口：[`ConfirmAction::execute`] 内部按域分派到
     /// 各自的调用器（`wslc` / `wsl`）。
+    ///
+    /// ⚠️ **必须异步**：`wslc` / `wsl` 的调用都是同步等子进程的，
+    /// 放在界面线程上会把窗口卡成"未响应"。容器那边的停止/删除还只是秒级，
+    /// 发行版的压缩、移动是**分钟级** —— 同步跑的话界面能挂十分钟。
     pub fn confirm_pending(&mut self, cx: &mut Context<Self>) {
         let Some(action) = self.state.confirm.take() else {
             return;
         };
 
+        // 发行版被删掉之后它的详情弹窗就没有对象了 —— 现在先判断好，
+        // 待会儿 `action` 要移进异步块。
+        let close_detail = match &action {
+            ConfirmAction::Distro(DistroAction::Unregister { name, .. }) => {
+                self.distro_detail.as_deref() == Some(name.as_str())
+            }
+            _ => false,
+        };
+
+        // 点下去先给个回应。慢动作（压缩/移动）要等很久，
+        // 没有这条的话用户只会觉得按钮坏了，然后去点第二次。
+        let title = action.title();
+        self.state.notify(Toast::info(format!("正在{title}…")));
+        cx.notify();
+
         let wslc = self.state.wslc.clone();
         let wsl = self.state.wsl.clone();
-        let toast = match action.execute(&wslc, &wsl) {
-            Ok(message) => Toast::success(message),
-            Err(e) => Toast::error(format!("{}失败：{e}", action.title())),
-        };
-        self.state.notify(toast);
 
-        // 发行版被删掉之后，它的详情弹窗就没有对象了 —— 顺手关掉，
-        // 免得它继续对着一个已经不存在的名字渲染。
-        if let ConfirmAction::Distro(DistroAction::Unregister { name, .. }) = &action {
-            if self.distro_detail.as_deref() == Some(name.as_str()) {
-                self.distro_detail = None;
-            }
-        }
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { action.execute(&wslc, &wsl) })
+                .await;
 
-        cx.notify();
-        // 立即刷新，让列表反映最新状态。
-        self.refresh(cx);
+            let _ = this.update(cx, |shell, cx| {
+                match result {
+                    Ok(message) => shell.state.notify(Toast::success(message)),
+                    Err(e) => shell
+                        .state
+                        .notify(Toast::error(format!("{title}失败：{e}"))),
+                }
+
+                if close_detail {
+                    shell.distro_detail = None;
+                }
+
+                // 立即刷新，让列表反映最新状态。
+                shell.refresh(cx);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     // -- 界面状态 ----------------------------------------------------------
