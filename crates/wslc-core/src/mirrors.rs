@@ -1,20 +1,41 @@
-//! 镜像站：内置的 rootfs 清单 + 测速探测 + 下载命令。
+//! 在线发行版：清单来自 wslui 的公开接口 + 测速探测 + 下载命令。
 //!
-//! # 为什么不从"别人的 API"取清单
+//! # 清单是**数据**，代码是自己写的
 //!
-//! 参考实现（`wsl-dashboard-ref`）的镜像清单来自它自己的服务
-//! `https://api1.wslui.com`：它先问服务要一个清单 URL，再去那个 URL 取
-//! 每个发行版的镜像列表，然后测速选最快的。**那套东西我们不能用** ——
-//! 那是别人家的服务，随时会变、也随时会没。所以这里换成**内置表**：
-//! 每个发行版列出"哪个镜像站上有哪个文件"，运行期只做两件事：
-//! 逐条 HEAD 探测（挑最快的）、挑中的那条交给 `curl.exe` 下载。
+//! 「在线发行版（国内镜像源）」这条来源的清单来自 `https://api1.wslui.com`：
+//! 先问它"清单在哪儿"，再去那个地址取"哪些发行版、每个版本有哪些镜像上有文件"，
+//! 然后测速挑最快的下载。这和参考实现（`wsl-dashboard-ref`）用的是**同一套接口**
+//! —— 用户明确要求对齐它，而且这份清单是活的（2026-10-10 实测：24 个发行版、
+//! 每个 2~13 个镜像站、全是国内镜像）。
 //!
-//! 表里的每一条 URL 都是**本机 curl 实测 200** 过的（见每条 `note`）。
-//! 镜像站的文件名会随版本更新而变化（Alpine 的文件名里带小版本号），
-//! 所以改表的时候必须重新实测 —— 探测失败时界面会明确说
-//! "可能改名了，换一个版本或用自定义 URL"，而不是留一个转圈的空列表。
+//! 但**代码一行没抄**：参考实现是 GPL-3.0-only、本仓库 Apache-2.0
+//! （`AGENTS.md` §6），能共用的只有"接口地址与 JSON 字段"这类事实。
 //!
-//! # 为什么下载走 `curl.exe`
+//! ```text
+//! GET https://api1.wslui.com/desktop/v1/helper/install
+//!   → { err, msg, data: { online_distros: { url } } }        ← 清单地址（会变，所以要问）
+//! GET <那个 url>
+//!   → { err, msg, data: { distros: [ { name, version, sources: [ { url, mirror, format } ] } ],
+//!                         mirrors: [ …同上，arm64 的那一份… ] } }
+//! ```
+//!
+//! 实测（2026-10-10）：`helper/install` 441 字节；清单 52497 字节，
+//! amd64 24 项 / arm64 20 项，`update_time` 是 2026-10-09。
+//!
+//! # ⚠️ `format` 不止一种，装法**不一样**
+//!
+//! 每条来源都带 `format`。实测取值有 `tar.xz` / `tar.gz` / `wsl`：
+//!
+//! - `tar.*` → `wsl --import`（我们本来那条路）；
+//! - `wsl` → 那是**新格式的 `.wsl` 包**，`--import` 吃不了，必须
+//!   `wsl --install --from-file`。Ubuntu 24.04 的 13 个来源里**有 10 个**是这种
+//!   （清华/阿里/华为/网易…的 `ubuntu-releases/*.wsl`）。
+//!
+//! 所以"挑最快的那个然后一律 `--import`"会**直接失败** ——
+//! 参考实现就是这么干的（它 `install_from_mirror` 里永远 `--import`）。
+//! 这里按 `format` 分岔，见 `model::install::plan`。
+//!
+//! # 为什么探测与下载走 `curl.exe`
 //!
 //! 本仓库**不能新增依赖**：本机没有 cargo（`AGENTS.md` §1），而 CI 全部带
 //! `--locked` —— 往 `Cargo.toml` 里加一个 HTTP 客户端会让锁文件与清单对不上，
@@ -22,100 +43,127 @@
 //! 随系统提供（本机实测 `C:\WINDOWS\system32\curl.exe`，8.21.0），
 //! 思路与 `cmd/picker.rs` 借 `powershell.exe` 弹对话框完全一致。
 //!
-//! 代价：`curl.exe` 被 EDR 拦掉的环境用不了镜像站这条来源 ——
+//! 代价：`curl.exe` 被 EDR 拦掉的环境用不了镜像源这条来源 ——
 //! 界面要如实提示"改用本地 tar 导入"。
+//!
+//! ⚠️ 顺带记一条实测：**系统代理（dev-sidecar）我们的 curl 用不上**。
+//! `wsl.exe` 自己走系统代理（所以开着代理时 `wsl -l -o` 能通），
+//! 而 `curl.exe` 不读 Windows 的代理设置；手动 `--proxy` 指过去会撞
+//! MITM 证书（`000`）。所以这里的请求都按**直连**设计：
+//! `api1/api2.wslui.com` 与国内镜像站直连都通（实测 200）。
 
 use std::path::PathBuf;
 
-/// 一个镜像站。
+/// 问"清单在哪儿"的接口。
+pub const DISCOVERY_URL: &str = "https://api1.wslui.com/desktop/v1/helper/install";
+
+/// 清单地址的兜底：上面的接口挂了就直接用这个。
+///
+/// 2026-10-10 实测它就是接口返回的那个地址。写两份的理由是
+/// "接口会变、地址不一定会变" —— 少一个请求就少一个失败点。
+pub const CATALOG_FALLBACK_URL: &str = "https://api2.wslui.com/co-creation/api/online-distros";
+
+/// 接口要一个像浏览器的 UA（实测不带也 200，但带上更稳）。
+pub const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+
+/// 清单里的**一个来源**：某个镜像站上的一份文件。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MirrorSite {
-    /// 站点名（只用于显示，比如"清华 TUNA"）。
-    pub name: &'static str,
-    /// 根 URL，**不带结尾斜杠**。
-    pub base: &'static str,
+pub struct OfferSource {
+    /// 镜像站名（清单里给的短名，如 `lxc-tuna` / `tsinghua`）。
+    pub mirror: String,
+    /// 完整下载地址（清单给的就是完整 URL，不需要我们自己拼）。
+    pub url: String,
+    /// 打包格式：`tar.xz` / `tar.gz` / `wsl`……
+    pub format: String,
 }
 
-/// 内置清单里的一条：某一版发行版在哪些镜像站上有 rootfs。
+impl OfferSource {
+    /// 是不是 `.wsl` 包（装法和 tar 不同，见模块说明）。
+    ///
+    /// 除了看 `format`，也看后缀：清单里偶尔会有 `format` 缺失、
+    /// 但文件名明摆着是 `.wsl` 的条目。
+    pub fn is_bundle(&self) -> bool {
+        self.format.eq_ignore_ascii_case("wsl") || self.url.to_lowercase().ends_with(".wsl")
+    }
+
+    /// 临时文件该用什么后缀（`.wsl` / `.tar.xz` / `.tar.gz`）。
+    pub fn extension(&self) -> &'static str {
+        if self.is_bundle() {
+            ".wsl"
+        } else if self.format.eq_ignore_ascii_case("tar.gz") {
+            ".tar.gz"
+        } else if self.url.to_lowercase().ends_with(".tar.gz") {
+            ".tar.gz"
+        } else {
+            ".tar.xz"
+        }
+    }
+}
+
+/// 清单里的一个发行版（**某一个版本**）。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MirrorDistro {
-    /// 内部 id（计划里与界面按钮的 id 用它）。
-    pub id: &'static str,
-    /// 给人看的名字。
-    pub label: &'static str,
-    /// 版本代号（显示 + preflight 的提醒里用）。
-    pub release: &'static str,
-    /// 相对目录（相对镜像站根，不带结尾斜杠）。
-    pub dir: &'static str,
-    /// 文件名。
-    pub file: &'static str,
-    /// 有哪些镜像站有它（写 [`MirrorSite::name`]）。
-    pub sites: &'static [&'static str],
-    /// 实测备注：多大、什么时候验的。
-    pub note: &'static str,
+pub struct Offer {
+    /// 发行版名（如 `Ubuntu`）。
+    pub name: String,
+    /// 版本（如 `24.04` / `current`）。
+    pub version: String,
+    /// 有哪些镜像上有它。
+    pub sources: Vec<OfferSource>,
 }
 
-/// 内置的镜像站。
-///
-/// 只放**本机实测能连上**的：Gitee 上的镜像站列表动辄几十个，
-/// 但一个个试过去会让"探测最快镜像"变成一次几十秒的等待。
-pub fn sites() -> &'static [MirrorSite] {
-    &[
-        MirrorSite {
-            name: "清华 TUNA",
-            base: "https://mirrors.tuna.tsinghua.edu.cn",
-        },
-        MirrorSite {
-            name: "中科大 USTC",
-            base: "https://mirrors.ustc.edu.cn",
-        },
-        MirrorSite {
-            name: "阿里云",
-            base: "https://mirrors.aliyun.com",
-        },
-    ]
+impl Offer {
+    /// 内部 id：`"<name> <version>"`。
+    ///
+    /// 和参考实现同一个形状（它用 `format!("{} {}", name, version)` 当 internal_id），
+    /// 这样两边的清单能直接对照着看。
+    pub fn id(&self) -> String {
+        format!("{} {}", self.name, self.version)
+    }
+
+    /// 显示名：`"Ubuntu 24.04"`。
+    pub fn label(&self) -> String {
+        format!("{} {}", self.name, self.version)
+    }
+
+    /// 候选地址（探测与下载都用它）。
+    pub fn candidates(&self) -> Vec<Candidate> {
+        self.sources
+            .iter()
+            .filter(|source| !source.url.trim().is_empty())
+            .map(|source| Candidate {
+                site: source.mirror.clone(),
+                url: source.url.clone(),
+                format: source.format.clone(),
+            })
+            .collect()
+    }
+
+    /// 一句话说明这条有哪些装法（界面显示用）：
+    /// `"tar.xz × 3 / wsl 包 × 10"`。
+    pub fn format_summary(&self) -> String {
+        let mut tar = 0usize;
+        let mut bundle = 0usize;
+        for source in &self.sources {
+            if source.is_bundle() {
+                bundle += 1;
+            } else {
+                tar += 1;
+            }
+        }
+        match (tar, bundle) {
+            (0, 0) => "没有可用来源".to_owned(),
+            (0, n) => format!("{n} 个来源（都是 .wsl 包）"),
+            (n, 0) => format!("{n} 个来源（都是 tar）"),
+            (t, b) => format!("{t} 个 tar / {b} 个 .wsl 包"),
+        }
+    }
 }
 
-/// 内置的可装清单。
+/// 本机架构在清单里的写法（`amd64` / `arm64`）。
 ///
-/// ⚠️ **只有 amd64**。arm64 的 WSL 上这张表是空的（界面据此提示"用自定义 URL"）——
-/// 与其编一条没验证过的 arm64 URL，不如老实说没有。
-pub fn distros() -> &'static [MirrorDistro] {
-    &[
-        MirrorDistro {
-            id: "ubuntu-24.04",
-            label: "Ubuntu 24.04 LTS（noble）",
-            release: "noble",
-            dir: "ubuntu-cloud-images/noble/current",
-            file: "noble-server-cloudimg-amd64-root.tar.xz",
-            sites: &["清华 TUNA", "中科大 USTC"],
-            note: "实测 2026-10-10：200，229,623,728 字节（约 219 MB）",
-        },
-        MirrorDistro {
-            id: "ubuntu-22.04",
-            label: "Ubuntu 22.04 LTS（jammy）",
-            release: "jammy",
-            dir: "ubuntu-cloud-images/jammy/current",
-            file: "jammy-server-cloudimg-amd64-root.tar.xz",
-            sites: &["清华 TUNA", "中科大 USTC"],
-            note: "实测 2026-10-10：200，458,270,220 字节（约 437 MB）",
-        },
-        MirrorDistro {
-            id: "alpine-3.21",
-            label: "Alpine Linux 3.21（minirootfs）",
-            release: "v3.21",
-            dir: "alpine/v3.21/releases/x86_64",
-            file: "alpine-minirootfs-3.21.0-x86_64.tar.gz",
-            sites: &["清华 TUNA", "中科大 USTC", "阿里云"],
-            note: "实测 2026-10-10：200，3,509,360 字节（约 3.3 MB）",
-        },
-    ]
-}
-
-/// 本机架构在镜像站文件名里的写法。
-///
-/// 只用于**判断这张表适不适用** —— 具体目录/文件名在表里是写死的字面量
-/// （Ubuntu 用 `amd64`、Alpine 用 `x86_64`，模板反而不如字面量清楚）。
+/// 清单里有两份数组（`distros` 是 amd64、`mirrors` 是 arm64），
+/// 靠它决定取哪一份。都不是就返回 `"unknown"`，调用方据此报错
+/// ——**不猜**：拿错架构的 rootfs 装出来的发行版根本起不来。
 pub fn arch() -> &'static str {
     if cfg!(target_arch = "x86_64") {
         "amd64"
@@ -126,41 +174,175 @@ pub fn arch() -> &'static str {
     }
 }
 
-/// 内置表在当前架构上有没有可用的条目。
+/// 本机架构的清单拿得到吗。
 pub fn available_on_this_arch() -> bool {
-    arch() == "amd64"
+    arch() != "unknown"
 }
 
-/// 按名字找站点。
-pub fn site_by_name(name: &str) -> Option<&'static MirrorSite> {
-    sites().iter().find(|site| site.name == name)
-}
-
-/// 一个候选下载地址（站点 + 完整 URL）。
+/// 一个候选下载地址（站点 + 完整 URL + 格式）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
     /// 站点名。
     pub site: String,
     /// 完整 URL。
     pub url: String,
+    /// 打包格式（决定装法，见模块说明）。
+    pub format: String,
 }
 
-/// 拼出一条条目的**全部**候选地址。
+impl Candidate {
+    /// 是不是 `.wsl` 包。
+    pub fn is_bundle(&self) -> bool {
+        self.format.eq_ignore_ascii_case("wsl") || self.url.to_lowercase().ends_with(".wsl")
+    }
+}
+
+/// 校验接口信封 `{ err, msg, data }`，返回 `data`。
 ///
-/// 表里写了站点名但站点表里没有那个名字时**跳过**（而不是 panic）——
-/// 那是改表时的手误，单测会钉住它，运行期不该因此崩掉。
-pub fn candidates(distro: &MirrorDistro) -> Vec<Candidate> {
-    let mut out = Vec::new();
-    for name in distro.sites {
-        let Some(site) = site_by_name(name) else {
+/// 两个接口都是这个信封：`err != 0` 是**业务错误**（HTTP 仍然是 200），
+/// 忽略它会把"接口说你没权限"读成"清单是空的"。
+fn envelope_data(json: &str) -> Result<serde_json::Value, String> {
+    let clean = json.trim_start_matches('\u{feff}').trim();
+    if clean.is_empty() {
+        return Err("接口返回了空内容".to_owned());
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(clean).map_err(|e| format!("接口返回的不是 JSON：{e}"))?;
+
+    let err = value.get("err").and_then(serde_json::Value::as_i64).unwrap_or(0);
+    if err != 0 {
+        let msg = value
+            .get("msg")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        return Err(format!("接口报错（err={err}）：{msg}"));
+    }
+    value
+        .get("data")
+        .cloned()
+        .ok_or_else(|| "接口返回里没有 data".to_owned())
+}
+
+/// 从 `helper/install` 的响应里取出**清单地址**。
+pub fn parse_discovery(json: &str) -> Result<String, String> {
+    let data = envelope_data(json)?;
+    let url = data
+        .get("online_distros")
+        .and_then(|it| it.get("url"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if url.trim().is_empty() {
+        return Err("接口没有给出清单地址（online_distros.url 是空的）".to_owned());
+    }
+    Ok(url.trim().to_owned())
+}
+
+/// 解析清单：按架构取 `distros`（amd64）或 `mirrors`（arm64）。
+///
+/// 空清单**算错误**：那不是"没有可装的发行版"，多半是接口换了字段名 ——
+/// 界面据此说清"清单是空的"比留一个空列表有用。
+pub fn parse_catalog(json: &str, arm64: bool) -> Result<Vec<Offer>, String> {
+    let data = envelope_data(json)?;
+    let key = if arm64 { "mirrors" } else { "distros" };
+    let list = match data.get(key) {
+        Some(serde_json::Value::Array(list)) => list,
+        // arm64 的清单可能整份缺字段（老接口）—— 那时退回 amd64 那一份
+        // 会让用户装出一个跑不起来的发行版，所以宁可报错。
+        _ => return Err(format!("清单里没有 `{key}` 数组")),
+    };
+
+    let mut offers: Vec<Offer> = Vec::new();
+    for item in list {
+        let name = item
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_owned();
+        if name.is_empty() {
             continue;
-        };
-        out.push(Candidate {
-            site: site.name.to_owned(),
-            url: format!("{}/{}/{}", site.base, distro.dir, distro.file),
+        }
+        let version = item
+            .get("version")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_owned();
+
+        let mut sources = Vec::new();
+        if let Some(serde_json::Value::Array(items)) = item.get("sources") {
+            for source in items {
+                let url = source
+                    .get("url")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_owned();
+                if url.is_empty() {
+                    continue;
+                }
+                sources.push(OfferSource {
+                    mirror: source
+                        .get("mirror")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("未知镜像")
+                        .trim()
+                        .to_owned(),
+                    url,
+                    format: source
+                        .get("format")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("")
+                        .trim()
+                        .to_owned(),
+                });
+            }
+        }
+        // 一个来源都没有的条目对用户没有意义（点了也装不了）
+        if sources.is_empty() {
+            continue;
+        }
+        offers.push(Offer {
+            name,
+            version,
+            sources,
         });
     }
-    out
+
+    if offers.is_empty() {
+        return Err(format!("清单里的 `{key}` 数组是空的"));
+    }
+    Ok(offers)
+}
+
+/// 取清单里的 `update_time`（显示"这份清单是什么时候更新的"）。
+pub fn parse_update_time(json: &str) -> Option<String> {
+    let data = envelope_data(json).ok()?;
+    let time = data
+        .get("update_time")
+        .and_then(serde_json::Value::as_str)?
+        .trim()
+        .to_owned();
+    if time.is_empty() {
+        None
+    } else {
+        Some(time)
+    }
+}
+
+/// `curl.exe` 拉 JSON 的参数（正文走 stdout）。
+///
+/// `-m 25`：清单 52 KB，正常几百毫秒；给足余量但不让它挂死。
+pub fn curl_json_args(url: &str) -> Vec<String> {
+    vec![
+        "-s".to_owned(),
+        "-L".to_owned(),
+        "-m".to_owned(),
+        "25".to_owned(),
+        "-A".to_owned(),
+        BROWSER_UA.to_owned(),
+        url.to_owned(),
+    ]
 }
 
 /// `curl.exe` 的**探测**参数（HEAD，不打正文）。
@@ -356,41 +538,134 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_entry_resolves_to_real_sites_and_clean_urls() {
-        for distro in distros() {
-            assert!(!distro.sites.is_empty(), "{} 没有镜像站", distro.id);
-            let found = candidates(distro);
-            assert_eq!(
-                found.len(),
-                distro.sites.len(),
-                "{} 有站点名没在站点表里（改表时的手误）",
-                distro.id
-            );
-            for candidate in found {
-                assert!(candidate.url.starts_with("https://"), "{}", candidate.url);
-                // 去掉协议头之后再查 `//`：`https://` 自己就带两个斜杠，
-                // 不剥掉的话这条断言永远为假（这个坑真的差点写进去）。
-                let rest = candidate.url.trim_start_matches("https://");
-                assert!(!rest.contains("//"), "{}", candidate.url);
-                assert!(!candidate.url.ends_with('/'), "{}", candidate.url);
-                assert!(candidate.url.ends_with(distro.file), "{}", candidate.url);
-            }
+    fn real_discovery_response_gives_the_catalog_url() {
+        // 本机真实抓的响应（2026-10-10，442 字节）
+        let json = include_str!("../tests/fixtures/wslui_helper_install.json");
+        let url = parse_discovery(json).expect("真实响应应该能解出清单地址");
+        assert!(url.starts_with("https://"), "{url}");
+        assert_eq!(url, CATALOG_FALLBACK_URL, "接口给的就是兜底里那个地址");
+    }
+
+    #[test]
+    fn discovery_errors_are_reported_not_silently_defaulted() {
+        // 空内容 / 不是 JSON / 业务错误 / 没有 online_distros → 都要报错，
+        // 让调用方自己决定要不要退到兜底地址（而不是这里偷偷给个空串）
+        assert!(parse_discovery("").is_err());
+        assert!(parse_discovery("<html>502</html>").is_err());
+        assert!(parse_discovery(r#"{"err":1001,"msg":"bad sign","data":{}}"#)
+            .unwrap_err()
+            .contains("1001"));
+        assert!(parse_discovery(r#"{"err":0,"msg":"ok","data":{}}"#).is_err());
+        assert!(parse_discovery(r#"{"err":0,"msg":"ok","data":{"online_distros":{"url":"  "}}}"#).is_err());
+    }
+
+    #[test]
+    fn real_catalog_parses_both_architectures() {
+        // 本机真实抓的清单（2026-10-10，52497 字节，update_time 2026-10-09）
+        let json = include_str!("../tests/fixtures/wslui_online_distros.json");
+
+        let amd64 = parse_catalog(json, false).expect("amd64 清单应该能解析");
+        assert!(amd64.len() >= 20, "只解析出 {} 项", amd64.len());
+        assert_eq!(parse_update_time(json).as_deref(), Some("2026-10-09T21:35:03.166313241Z"));
+
+        let ubuntu = amd64
+            .iter()
+            .find(|offer| offer.id() == "Ubuntu 24.04")
+            .expect("清单里应该有 Ubuntu 24.04");
+        assert!(ubuntu.sources.len() >= 5, "{}", ubuntu.sources.len());
+        for source in &ubuntu.sources {
+            assert!(source.url.starts_with("https://"), "{source:?}");
+            assert!(!source.mirror.trim().is_empty(), "{source:?}");
+        }
+        // Ubuntu 24.04 的绝大多数来源是 .wsl 包 —— 这正是"不能一律 --import"的原因
+        let bundles = ubuntu.sources.iter().filter(|s| s.is_bundle()).count();
+        assert!(bundles >= 5, "Ubuntu 24.04 应该有多个 .wsl 来源：{bundles}");
+        assert!(ubuntu.format_summary().contains("wsl"), "{}", ubuntu.format_summary());
+
+        // arm64 那一份是另一组 URL（文件名里带 arm64）
+        let arm64 = parse_catalog(json, true).expect("arm64 清单应该能解析");
+        assert!(arm64.len() >= 15, "只解析出 {} 项", arm64.len());
+        let arm_ubuntu = arm64
+            .iter()
+            .find(|offer| offer.id() == "Ubuntu 24.04")
+            .expect("arm64 清单里也应该有 Ubuntu 24.04");
+        assert!(
+            arm_ubuntu.sources.iter().all(|s| !s.url.contains("amd64")),
+            "arm64 的来源里不该出现 amd64 的文件名"
+        );
+        assert!(arm_ubuntu.sources.iter().all(|s| s.url.contains("arm64")));
+
+        // 每一条都要有 id 与至少一个候选地址
+        for offer in &amd64 {
+            assert!(!offer.id().trim().is_empty());
+            assert!(!offer.candidates().is_empty(), "{offer:?}");
         }
     }
 
     #[test]
-    fn unknown_site_names_are_skipped_instead_of_panicking() {
-        // 运行期不该因为改表手误而崩 —— 单测会把这种手误挡在上一条里
-        let broken = MirrorDistro {
-            id: "x",
-            label: "x",
-            release: "x",
-            dir: "d",
-            file: "f.tar",
-            sites: &["不存在的站点"],
-            note: "",
+    fn catalog_ignores_broken_entries_but_keeps_the_rest() {
+        // 缺 name、没有 sources、url 是空的条目都要被跳过，
+        // 而不是让整份清单失败（接口偶尔会有半成品条目）
+        let json = r#"{"err":0,"msg":"ok","data":{"distros":[
+            {"name":"","version":"1","sources":[{"url":"https://a/x","mirror":"m","format":"tar.xz"}]},
+            {"name":"NoSource","version":"1","sources":[]},
+            {"name":"EmptyUrl","version":"1","sources":[{"url":"  ","mirror":"m","format":"tar.xz"}]},
+            {"name":"Good","version":"1","sources":[{"url":"https://a/g","mirror":"m","format":"tar.gz"}]}
+        ]}}"#;
+        let offers = parse_catalog(json, false).unwrap();
+        assert_eq!(offers.len(), 1, "{offers:?}");
+        assert_eq!(offers[0].id(), "Good 1");
+        assert_eq!(offers[0].candidates()[0].format, "tar.gz");
+
+        // 整份清单空掉时要报错（那不是"没有可装的"，多半是字段改名了）
+        let empty = r#"{"err":0,"msg":"ok","data":{"distros":[]}}"#;
+        assert!(parse_catalog(empty, false).unwrap_err().contains("空的"));
+        // arm64 那一份缺数组时也要报错（退回 amd64 会装出跑不起来的东西）
+        assert!(parse_catalog(json, true).is_err());
+    }
+
+    #[test]
+    fn candidates_carry_the_install_method() {
+        // tar → --import；.wsl → --install --from-file。后缀决定临时文件名。
+        let tar = OfferSource {
+            mirror: "lxc-tuna".to_owned(),
+            url: "https://mirrors.tuna.tsinghua.edu.cn/x/rootfs.tar.xz".to_owned(),
+            format: "tar.xz".to_owned(),
         };
-        assert!(candidates(&broken).is_empty());
+        assert!(!tar.is_bundle());
+        assert_eq!(tar.extension(), ".tar.xz");
+
+        let bundle = OfferSource {
+            mirror: "tsinghua".to_owned(),
+            url: "https://mirrors.tuna.tsinghua.edu.cn/ubuntu-releases/24.04/ubuntu-24.04.5-wsl-amd64.wsl".to_owned(),
+            format: "wsl".to_owned(),
+        };
+        assert!(bundle.is_bundle());
+        assert_eq!(bundle.extension(), ".wsl");
+
+        // format 缺失但后缀是 .wsl 也要认出来
+        let by_suffix = OfferSource {
+            mirror: "m".to_owned(),
+            url: "https://x/y.WSL".to_owned(),
+            format: String::new(),
+        };
+        assert!(by_suffix.is_bundle());
+
+        let gz = OfferSource {
+            mirror: "m".to_owned(),
+            url: "https://x/y.tar.gz".to_owned(),
+            format: String::new(),
+        };
+        assert_eq!(gz.extension(), ".tar.gz");
+    }
+
+    #[test]
+    fn json_arguments_are_stable() {
+        let args = curl_json_args("https://api1.wslui.com/x");
+        assert_eq!(
+            args,
+            vec!["-s", "-L", "-m", "25", "-A", BROWSER_UA, "https://api1.wslui.com/x"]
+        );
     }
 
     #[test]
@@ -445,14 +720,17 @@ mod tests {
         let a = Candidate {
             site: "慢".to_owned(),
             url: "https://a/x".to_owned(),
+            format: "tar.xz".to_owned(),
         };
         let b = Candidate {
             site: "快".to_owned(),
             url: "https://b/x".to_owned(),
+            format: "tar.xz".to_owned(),
         };
         let c = Candidate {
             site: "坏".to_owned(),
             url: "https://c/x".to_owned(),
+            format: "tar.xz".to_owned(),
         };
         let probes = vec![
             (

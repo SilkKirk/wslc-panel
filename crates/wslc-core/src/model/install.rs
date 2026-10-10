@@ -492,22 +492,39 @@ pub enum InstallSource {
         /// 但按钮在界面上，用户可以改。
         web_download: bool,
     },
-    /// 镜像站：下载 rootfs 再按 [`InstallSource::Tar`] 那条路导入。
+    /// 镜像源：下载官方 rootfs / `.wsl` 包，再装成本地发行版。
     ///
     /// `url` 是**已经选定的**那一个（探测最快镜像的结果，或用户手填的）。
     /// 选哪一个是界面的活（要测速、要显示结果），计划里只记结论 ——
     /// 这样计划是确定的，预览才能和执行完全一致。
+    ///
+    /// # `format` 决定装法
+    ///
+    /// 清单里的来源有两种（实测 `wslui` 那份清单：Ubuntu 24.04 的 13 个来源里
+    /// 10 个是 `.wsl`）：
+    ///
+    /// - `tar.*` → `wsl --import`（只是铺开文件系统）；
+    /// - `wsl` → **新格式的 `.wsl` 包**，`--import` 吃不了，要走
+    ///   `wsl --install --from-file`（会做首次启动初始化）。
+    ///
+    /// 参考实现一律按 `--import` 处理 —— 它挑到 `.wsl` 来源时必然失败。
     Mirror {
-        /// rootfs 的下载地址。
+        /// 下载地址。
         url: String,
-        /// 镜像站名（只用于显示，比如"清华 TUNA"）。
+        /// 镜像站名（只用于显示，比如 `lxc-tuna` / `tsinghua`）。
         mirror: String,
-        /// 发行版版本（只用于显示，比如 `noble`）。
+        /// 发行版版本（只用于显示，比如 `24.04`）。
         release: String,
+        /// 打包格式：`tar.xz` / `tar.gz` / `wsl`（空串按后缀猜）。
+        format: String,
     },
 }
 
 impl InstallSource {
+    /// 镜像源这条是不是 `.wsl` 包（装法与 tar 不同）。
+    pub fn mirror_is_bundle(format: &str, url: &str) -> bool {
+        format.eq_ignore_ascii_case("wsl") || url.to_lowercase().ends_with(".wsl")
+    }
     /// 这个来源需不需要用户指定**安装目录**。
     ///
     /// 在线安装可以留空（WSL 有自己的默认位置）—— 但一旦要改名，
@@ -651,16 +668,16 @@ pub struct PlannedStep {
     /// `false` 的只有重定位那一步 —— 它中途被打断会**丢数据**。
     /// 界面据此不给"取消"按钮，而不是让用户点了之后才发现没用。
     pub cancellable: bool,
-    /// 失败时要不要**去掉 `--location` 重试一次**。
+    /// 失败时要不要**换一个下载源**（商店 ⇄ `--web-download`）重试一次。
     ///
-    /// 只给在线安装的"快路径"用：`--location` 在 `wsl --install -d` 上是
-    /// 微软文档列出的选项，但本机没法验证商店那条路是不是真的认它。
-    /// 万一它直接报错，去掉它至少能把发行版装上 ——
-    /// 后面那一步 `EnsureRelocated` 会把名字和位置都补正。
+    /// 只给在线安装那一步用。两条通道走的是**不同的下载实现**，
+    /// 所以一条挂了另一条可能通：实测（2026-10-10）本机
+    /// `--location` 那条通道秒报 `Wsl/InstallDistro/WININET_E_CANNOT_CONNECT`，
+    /// 而参考实现那条（不带 `--location`）能连上。
     ///
-    /// ⚠️ **不能**给 `--install --from-file` 用：那条路后面没有重定位步骤，
-    /// 去掉 `--location` 会静默装到 WSL 的默认位置去。
-    pub location_fallback: bool,
+    /// 用户看到的失败信息是"无法与服务器建立连接"，但**换一条路可能就好了** ——
+    /// 与其让他自己去猜，不如自动换一次。
+    pub retry_other_source: bool,
 }
 
 impl PlannedStep {
@@ -670,7 +687,7 @@ impl PlannedStep {
             program,
             args,
             cancellable: true,
-            location_fallback: false,
+            retry_other_source: false,
         }
     }
 
@@ -679,9 +696,9 @@ impl PlannedStep {
         self
     }
 
-    /// 失败时去掉 `--location` 再试一次（只给在线安装的快路径用，见字段说明）。
-    fn with_location_fallback(mut self) -> Self {
-        self.location_fallback = true;
+    /// 失败时换一个下载源再试一次（只给在线安装那一步用，见字段说明）。
+    fn with_source_fallback(mut self) -> Self {
+        self.retry_other_source = true;
         self
     }
 
@@ -822,12 +839,13 @@ pub fn preflight(
     if let InstallSource::Mirror { release, .. } = &spec.source {
         if !release.trim().is_empty() {
             warnings.push(format!(
-                "rootfs 会先下载到临时目录（{release}，几百 MB），装完自动删掉。"
+                "文件会先下载到临时目录（{release}，几百 MB），装完自动删掉。"
             ));
         }
         warnings.push(
-            "镜像站的文件名会随版本变。如果探测/下载报 404，说明那一版的文件改名了，\
-             可以换一个版本或用「自定义 URL」。"
+            "清单里给的是各个镜像站上的地址，会随版本更新而变化。\
+             如果探测/下载报 404，说明那一版的文件改名了 —— 刷新清单、换一个版本，\
+             或者用「自定义下载地址」。"
                 .to_owned(),
         );
     }
@@ -882,12 +900,16 @@ fn validate(spec: &InstallSpec, ctx: &PlanContext) -> Vec<String> {
         InstallSource::Mirror { url, .. } => {
             let url = url.trim();
             if url.is_empty() {
-                out.push("还没有选好镜像 —— 先点「探测最快镜像」，或手填一个 rootfs 的 URL".to_owned());
+                out.push(
+                    "还没有选好下载地址 —— 先刷新清单并点「探测最快镜像」，\
+                     或者手填一个下载地址"
+                        .to_owned(),
+                );
             } else if !url.starts_with("http://") && !url.starts_with("https://") {
-                out.push(format!("rootfs 的 URL 要以 http:// 或 https:// 开头：{url}"));
+                out.push(format!("下载地址要以 http:// 或 https:// 开头：{url}"));
             }
             if dir.is_none() {
-                out.push("从镜像站安装必须指定安装目录".to_owned());
+                out.push("从镜像源安装必须指定安装目录".to_owned());
             }
         }
     }
@@ -934,7 +956,7 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
             ));
             notes.push(
                 "`--import` 只是把文件系统铺开，**不会**做首次启动初始化（不建默认用户）。\
-                 想要那一步请用「从文件安装」。"
+                 想要那一步请用「从 .wsl / 文件安装」。"
                     .to_owned(),
             );
         }
@@ -992,31 +1014,35 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
             if *web_download {
                 args.push("--web-download".to_owned());
             }
-            // 快路径：名字就是清单里的 id，且给了目录 —— 直接把目录交给 WSL。
-            // 装完执行器会用注册表**核实**它是否真的生效，没生效再走重定位。
-            if same_name {
-                if let Some(dir) = target_dir.as_deref() {
-                    args.push("--location".to_owned());
-                    args.push(dir.to_owned());
-                }
-            }
+            // ⚠️ **不传 `--location`** —— 这是实测出来的（2026-10-10，本机）：
+            //
+            // | 命令 | 结果 |
+            // |---|---|
+            // | `wsl --install -d Ubuntu --location D:\wsl --version 2 --no-launch` | 秒失败：`Wsl/InstallDistro/WININET_E_CANNOT_CONNECT` |
+            // | `wsl --install -d Ubuntu --web-download --location D:\wsl …` | 同样秒失败 |
+            // | `wsl --install -d Ubuntu --no-launch` | **能连上**（25 秒还在下载） |
+            //
+            // 带上 `--location` 时 WSL 走的是"自己把整包下到指定目录"那条通道，
+            // 用的是不认系统代理的 WinINET；不带时走商店/清单那条，能通。
+            // 参考实现也从不传 `--location` —— 它装完再搬（我们也一样，
+            // 见下面那一步 `EnsureRelocated`，同名的走 `--manage --move`）。
+            //
+            // 代价：多一次搬运（同一个卷上是改名，跨卷是真的拷一遍）。
+            // 好处：这条路能装上，而"直接装到目标目录"在这台机器上装不上。
             args.push("--version".to_owned());
             args.push(WSL_VERSION.to_string());
             if !launch {
                 args.push("--no-launch".to_owned());
             }
-            let mut install_step = PlannedStep::new(
-                format!("从在线源安装 {id}"),
-                PlanProgram::Wsl,
-                args,
+            steps.push(
+                PlannedStep::new(
+                    format!("从在线源安装 {id}"),
+                    PlanProgram::Wsl,
+                    args,
+                )
+                // 商店 ⇄ GitHub 自动换一次：两条通道在不同网络环境下会各挂一条。
+                .with_source_fallback(),
             );
-            // 只有"把位置交给 WSL"这条快路径才需要这个兜底：
-            // 万一 `--location` 在商店那条路上不被接受，去掉它至少能把发行版装上，
-            // 后面那一步 EnsureRelocated 会把名字和位置都补正。
-            if same_name && target_dir.is_some() {
-                install_step = install_step.with_location_fallback();
-            }
-            steps.push(install_step);
 
             steps.push(PlannedStep::new(
                 format!("等 {id} 注册完成"),
@@ -1050,10 +1076,10 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
                     ));
                 } else {
                     notes.push(format!(
-                        "名字和在线清单里的一致，所以直接把安装位置交给 WSL\
-                         （`--install -d {id} --location …`）。装完会用注册表核实它到底装到哪儿了 ——\
-                         万一 WSL 没听（或者干脆不接受 `--location`），会自动去掉它重试一次，\
-                         再走重定位把位置补正。"
+                        "装的时候**不带 `--location`**（带上它 WSL 会改走一条不认系统代理的\
+                         下载通道，实测在这台机器上直接报 `WININET_E_CANNOT_CONNECT`），\
+                         所以装完会用注册表核实它落在哪儿，需要的话用 `--manage {id} --move` \
+                         搬到 {target_dir}。"
                     ));
                 }
             }
@@ -1062,41 +1088,93 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
             url,
             mirror,
             release,
+            format,
         } => {
             let url = url.trim();
             let dir = dir.clone().unwrap_or_default();
-            let temp_rootfs = format!(
-                "{}\\wslc-panel-rootfs-{}-{}.tar.xz",
+            let bundle = InstallSource::mirror_is_bundle(format, url);
+            let extension = if bundle {
+                ".wsl"
+            } else if format.eq_ignore_ascii_case("tar.gz") || url.to_lowercase().ends_with(".tar.gz")
+            {
+                ".tar.gz"
+            } else {
+                ".tar.xz"
+            };
+            let temp_file = format!(
+                "{}\\wslc-panel-rootfs-{}-{}{}",
                 ctx.temp_dir.trim_end_matches(['\\', '/']),
                 sanitize_name(release),
-                ctx.stamp
+                ctx.stamp,
+                extension
             );
 
             steps.push(PlannedStep::new(
-                format!("从{mirror}下载 rootfs（{release}）"),
+                format!("从 {mirror} 下载{}（{release}）", if bundle { " .wsl 包" } else { " rootfs" }),
                 PlanProgram::Curl,
-                crate::mirrors::download_args(url, temp_rootfs.as_str()),
+                crate::mirrors::download_args(url, temp_file.as_str()),
             ));
-            steps.push(create_dir_step(dir.as_str()));
-            steps.push(PlannedStep::new(
-                format!("把下载的 rootfs 展开成发行版 {name}"),
-                PlanProgram::Wsl,
-                own(&[
-                    "--import",
+
+            if bundle {
+                // `.wsl` 包 → 交给 WSL 自己的安装器（`--from-file`）。
+                // `--name` 直接给了最终名字，所以**不需要**改名重定位；
+                // 但 `--location` 不一定被采纳，所以位置仍然要核实一次。
+                let mut args = own(&[
+                    "--install",
+                    "--from-file",
+                    temp_file.as_str(),
+                    "--name",
                     name.as_str(),
-                    dir.as_str(),
-                    temp_rootfs.as_str(),
-                    "--version",
-                    "2",
-                ]),
-            ));
+                ]);
+                if !dir.is_empty() {
+                    args.push("--location".to_owned());
+                    args.push(dir.clone());
+                }
+                steps.push(PlannedStep::new(
+                    format!("把下载的 .wsl 包安装成发行版 {name}"),
+                    PlanProgram::Wsl,
+                    args,
+                ));
+                if !dir.is_empty() {
+                    steps.push(
+                        PlannedStep::new(
+                            format!("必要时把 {name} 挪到 {dir}"),
+                            PlanProgram::EnsureRelocated,
+                            vec![name.clone(), name.clone(), dir.clone(), String::new()],
+                        )
+                        .uncancellable(),
+                    );
+                }
+                notes.push(format!(
+                    "下载的是镜像站上的官方 **.wsl 包**（{url}）——\
+                     它和 tar 不一样：走 WSL 自己的安装器，会做首次启动初始化（建默认用户）。\
+                     装完会把临时文件删掉。"
+                ));
+            } else {
+                steps.push(create_dir_step(dir.as_str()));
+                steps.push(PlannedStep::new(
+                    format!("把下载的 rootfs 展开成发行版 {name}"),
+                    PlanProgram::Wsl,
+                    own(&[
+                        "--import",
+                        name.as_str(),
+                        dir.as_str(),
+                        temp_file.as_str(),
+                        "--version",
+                        "2",
+                    ]),
+                ));
+                notes.push(format!(
+                    "下载的是镜像站上的官方 rootfs（{url}）；\
+                     `--import` 只是铺开文件系统，**不做**首次启动初始化。\
+                     装完会把临时文件删掉。"
+                ));
+            }
+
             steps.push(PlannedStep::new(
-                format!("删掉临时文件 {temp_rootfs}"),
+                format!("删掉临时文件 {temp_file}"),
                 PlanProgram::RemoveFile,
-                vec![temp_rootfs.clone()],
-            ));
-            notes.push(format!(
-                "下载的是镜像站上的官方 rootfs（{url}）；装完会把临时文件删掉。"
+                vec![temp_file.clone()],
             ));
         }
     }
@@ -1287,23 +1365,25 @@ mod tests {
 
     #[test]
     fn online_list_parses_the_two_column_table() {
-        // ⚠️ 这段**不是本机抓的**（本机抓不到成功输出，见上面那条测试）。
-        // 形状来自微软文档与 `wsl --help`，属于未在本机验证的假设；
-        // 真机上第一次成功拉到列表后应当换成真 fixture。
-        let text = concat!(
-            "以下是可安装的有效分发的列表：\n",
-            "NAME            FRIENDLY NAME\n",
-            "Ubuntu          Ubuntu\n",
-            "Ubuntu-24.04    Ubuntu 24.04 LTS\n",
-            "Debian          Debian GNU/Linux\n"
-        );
+        // 真实抓下来的 `wsl -l -o` **成功**输出（28 行，1394 字节）——
+        // 2026-10-10 开着 dev-sidecar 系统代理时抓的：`wsl.exe` 走系统代理，
+        // 所以它能去 `raw.githubusercontent.com` 取清单；
+        // 而面板自己的 `curl.exe` 不走系统代理（见 `cmd::distro` 的兜底说明）。
+        let text = include_str!("../../tests/fixtures/wsl_list_online.txt");
         let items = parse_online_list(text);
-        assert_eq!(items.len(), 3, "{items:?}");
-        assert_eq!(items[0].id, "Ubuntu");
-        assert_eq!(items[0].label, "Ubuntu");
-        assert_eq!(items[1].id, "Ubuntu-24.04");
-        assert_eq!(items[1].label, "Ubuntu 24.04 LTS");
-        assert_eq!(items[2].label, "Debian GNU/Linux");
+        assert!(items.len() >= 15, "只解析出 {} 项：{items:?}", items.len());
+
+        // 提示语与表头之间的空行、以及中文提示行都不能进来
+        assert!(!items.iter().any(|item| item.id.contains("以下是")), "{items:?}");
+        // 两列的名字要拆对：id 是第一列，友好名可能是**带空格**的多个词
+        let ubuntu = items
+            .iter()
+            .find(|item| item.id == "Ubuntu-24.04")
+            .expect("应该有 Ubuntu-24.04");
+        assert_eq!(ubuntu.label, "Ubuntu 24.04 LTS");
+        // 不带版本号的那个是默认项，它两列同名
+        let default = items.iter().find(|item| item.id == "Ubuntu").expect("应该有 Ubuntu");
+        assert_eq!(default.label, "Ubuntu");
     }
 
     #[test]
@@ -1503,8 +1583,8 @@ mod tests {
                 "--no-launch"
             ]
         );
-        // 这条路径本来就没有 --location，也就不需要那个兜底
-        assert!(!plan.steps[0].location_fallback);
+        // 换下载源的兜底同样挂着（这条与名字无关）
+        assert!(plan.steps[0].retry_other_source);
         // 重定位不可取消（中途打断会丢数据）
         assert!(!plan.steps[2].cancellable);
         assert_eq!(
@@ -1531,7 +1611,7 @@ mod tests {
     }
 
     #[test]
-    fn online_plan_takes_the_fast_path_when_the_name_is_the_id() {
+    fn online_plan_never_passes_location_when_the_name_is_the_id() {
         let spec = InstallSpec::new(
             "Ubuntu-24.04",
             InstallSource::Online {
@@ -1541,27 +1621,28 @@ mod tests {
             },
         );
         let plan = super::plan(&spec, &ctx()).unwrap();
+        // ⚠️ **不能**带 `--location`：带上它 WSL 会改走一条不认系统代理的下载通道，
+        // 本机实测直接 `WININET_E_CANNOT_CONNECT`（参考实现也从不传它）
         assert_eq!(
             plan.steps[0].args,
             vec![
                 "--install",
                 "-d",
                 "Ubuntu-24.04",
-                "--location",
-                r"D:\wsl\Ubuntu-24.04",
                 "--version",
                 "2",
                 "--no-launch"
             ]
         );
-        // 有目录 → 仍然留一步"必要时重定位"，执行器用注册表核实后才知道要不要做
+        // 位置由后面那一步"必要时重定位"补正（同名走 `--manage --move`）
         assert_eq!(
             labels(&plan),
             vec!["Wsl", "WaitRegistered", "EnsureRelocated"]
         );
-        // 快路径要带"失败时去掉 --location 重试"的兜底：本机没法验证商店那条路认不认它
-        assert!(plan.steps[0].location_fallback);
+        assert_eq!(plan.steps[2].args[2], r"D:\wsl\Ubuntu-24.04");
         assert!(!plan.steps[2].cancellable);
+        // 失败时能自动换一个下载源再试（两条通道的可用性不同）
+        assert!(plan.steps[0].retry_other_source);
         // 没有目录、名字也相同 → 连重定位那一步都不需要
         let bare = PlanContext {
             default_dir: None,
@@ -1581,6 +1662,7 @@ mod tests {
                 url: "https://mirrors.tuna.tsinghua.edu.cn/ubuntu-cloud-images/noble/current/noble-server-cloudimg-amd64-root.tar.xz".to_owned(),
                 mirror: "清华 TUNA".to_owned(),
                 release: "noble".to_owned(),
+                format: "tar.xz".to_owned(),
             },
         );
         let plan = super::plan(&spec, &ctx()).unwrap();
@@ -1609,6 +1691,47 @@ mod tests {
         // 下载那一步是可以取消的
         assert!(plan.steps[0].cancellable);
         assert!(plan.preview_lines()[0].starts_with("1. curl -s -S -L"));
+    }
+
+    #[test]
+    fn mirror_plan_uses_the_installer_for_wsl_bundles() {
+        // 清单里 Ubuntu 24.04 的多数来源是 `.wsl` 包 —— 那种必须走 `--install --from-file`，
+        // `--import` 吃不了（参考实现一律 `--import`，挑到这种来源必然失败）
+        let spec = InstallSpec::new(
+            "Ubuntu-24.04",
+            InstallSource::Mirror {
+                url: "https://mirrors.tuna.tsinghua.edu.cn/ubuntu-releases/24.04/ubuntu-24.04.5-wsl-amd64.wsl".to_owned(),
+                mirror: "tsinghua".to_owned(),
+                release: "24.04".to_owned(),
+                format: "wsl".to_owned(),
+            },
+        );
+        let plan = super::plan(&spec, &ctx()).unwrap();
+        assert_eq!(
+            labels(&plan),
+            vec!["Curl", "Wsl", "EnsureRelocated", "RemoveFile"]
+        );
+        // 临时文件按格式取后缀
+        assert!(plan.steps[0].args[8].ends_with(".wsl"), "{:?}", plan.steps[0].args);
+        assert_eq!(
+            plan.steps[1].args,
+            vec![
+                "--install",
+                "--from-file",
+                r"C:\Temp\wslc-panel\wslc-panel-rootfs-24.04-1234-5678.wsl",
+                "--name",
+                "Ubuntu-24.04",
+                "--location",
+                r"D:\wsl\Ubuntu-24.04",
+            ]
+        );
+        // 位置要核实（`--location` 不一定被采纳），但那一步不能取消
+        assert_eq!(plan.steps[2].args[0], "Ubuntu-24.04");
+        assert!(!plan.steps[2].cancellable);
+        // 删临时文件必须排在重定位之后（重定位可能还要读它？——不会，
+        // `--move` 用的是发行版自己的 VHD，这里只是把顺序钉住）
+        assert_eq!(plan.steps[3].program, PlanProgram::RemoveFile);
+        assert!(plan.notes.iter().any(|n| n.contains(".wsl")));
     }
 
     #[test]
@@ -1700,6 +1823,7 @@ mod tests {
                 url: String::new(),
                 mirror: "清华 TUNA".to_owned(),
                 release: "noble".to_owned(),
+                format: "tar.xz".to_owned(),
             },
         );
         assert!(super::plan(&no_url, &ctx()).unwrap_err().contains("还没有选好镜像"));
@@ -1709,6 +1833,7 @@ mod tests {
                 url: r"D:\a.tar.xz".to_owned(),
                 mirror: "本地".to_owned(),
                 release: "noble".to_owned(),
+                format: "tar.xz".to_owned(),
             },
         );
         assert!(super::plan(&bad_url, &ctx()).unwrap_err().contains("http"));

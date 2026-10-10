@@ -45,11 +45,13 @@ v0.3 的 P3（commit `0b97d17`）已经有「添加实例」：三种来源（ta
 | 事实 | 数据 |
 |---|---|
 | `curl.exe` | `C:\WINDOWS\system32\curl.exe`，curl 8.21.0 ✅ |
-| `wsl -l -o` | **失败**：`raw.githubusercontent.com` 连接被重置，退出码 `-1`（原始输出存成 `tests/fixtures/wsl_list_online_failed.txt`） |
+| `wsl -l -o` | **没代理时失败**（`raw.githubusercontent.com` 连接被重置，退出码 `-1`，原始输出存成 `tests/fixtures/wsl_list_online_failed.txt`）；**开着系统代理（dev-sidecar）时成功**，28 行 → `tests/fixtures/wsl_list_online.txt` |
+| 系统代理与 `curl.exe` | 系统代理 `127.0.0.1:31181`（dev-sidecar）。`wsl.exe` 认它（所以 `-l -o` 能通），而 **`curl.exe` 不读 Windows 的代理设置**：直连 `raw.githubusercontent.com` 000、清华 200；手动 `--proxy` 指过去会撞它的 MITM 证书（`000`）。所以面板的网络请求都按"直连能通的目标"设计 |
 | 在线清单兜底 | `cdn.jsdelivr.net/gh/microsoft/WSL@master/distributions/DistributionInfo.json` 200 / 18481 B ✅；`ghproxy.net/...` 也 200 ✅ |
+| **镜像源接口**（照参考实现） | `GET api1.wslui.com/desktop/v1/helper/install` → 441 B（给出清单地址）；`GET api2.wslui.com/co-creation/api/online-distros` → 52497 B，**amd64 24 项 / arm64 20 项**，每条 2~13 个镜像，`update_time` 2026-10-09 ✅。两份响应都存成了 fixture |
+| 清单里的 `format` | `tar.xz` / `tar.gz` / **`wsl`** —— Ubuntu 24.04 的 13 个来源里 **10 个是 `.wsl`**（清华/阿里/华为/网易/搜狐/火山/南大/华中科大/哈工大/北外），只有 3 个是 lxc 的 `rootfs.tar.xz` |
+| **在线安装的 `--location` 陷阱** | 带 `--location` 必失败（`Wsl/InstallDistro/WININET_E_CANNOT_CONNECT`，商店与 `--web-download` 都一样）；**不带**则能连上开始下载。详见 §4.3 |
 | Ubuntu rootfs | `mirrors.{tuna,ustc}.edu.cn/ubuntu-cloud-images/{noble,jammy}/current/{rel}-server-cloudimg-amd64-root.tar.xz` → 200（229 MB / 458 MB）✅ |
-| Alpine rootfs | `.../alpine/v3.21/releases/x86_64/alpine-minirootfs-3.21.0-x86_64.tar.gz` → TUNA / USTC / 阿里云均 200（3.5 MB）✅ |
-| 不可用（因此**不进表**） | lxc-images 的 `default/rootfs.tar.xz`（TUNA/NJU/Tencent/SJTU 全 404）、Debian cloud rootfs（TUNA/USTC/NJU 404）、Kali（TUNA 的 release 目录里没有 WSL/rootfs 文件）、Huawei（假 200，返回 HTML 页面） |
 | 依赖 | 本仓库**没有 HTTP 客户端依赖**，且 CI 全部 `--locked`、本机没有 cargo → **不能新增依赖**（加了锁文件就与清单对不上，而本地没法重新生成） |
 
 ## 4. 我们怎么做
@@ -59,7 +61,8 @@ v0.3 的 P3（commit `0b97d17`）已经有「添加实例」：三种来源（ta
 ```
 crates/wslc-core/src/
 ├── model/install.rs   纯逻辑：名称/路径推导、装前检查、**执行计划**、两个在线列表的解析
-├── mirrors.rs         内置镜像表 + 探测/下载参数 + 进度换算（curl.exe）
+├── mirrors.rs         镜像源的**清单解析**（wslui 接口的 JSON）+ 探测/下载参数 + 进度换算
+├── cmd/catalog.rs     拉镜像源清单（两个 HTTP 请求走 curl.exe，阻塞）
 ├── cmd/install.rs     把计划执行出来：起进程、流式读输出、轮询进度、取消、重定位
 └── cmd/distro.rs      只留"起 wsl.exe"的部分；`list_online` / `online_distros`（含兜底）
 ```
@@ -73,34 +76,84 @@ crates/wslc-core/src/
 
 ### 4.2 五条来源的步骤
 
-| 来源 | 步骤 |
+| 来源（界面上的名字） | 步骤 |
 |---|---|
-| 从 tar 导入 | 建目录 → `wsl --import <name> <dir> <tar> --version 2` |
-| 从 VHDX 导入 | 建目录 → `wsl --import <name> <dir> <file> --vhd --version 2` |
-| 从文件安装 | `wsl --install --from-file <file> --name <name> [--location <dir>]` |
-| 镜像站下载 | `curl -s -S -L --retry 2 -o <tmp> <url>` → 建目录 → `--import` → 删临时文件 |
-| 在线安装 | `--install -d <id> [--web-download] [--location <dir>] --version 2 [--no-launch]` → 等注册 →（必要时、**不可取消**）`--export` → `--unregister` → `--import` → 删中转 tar |
+| 本地 rootfs 文件（tar / tar.gz / tar.xz） | 建目录 → `wsl --import <name> <dir> <tar> --version 2` |
+| 导入 VHDX 虚拟磁盘 | 建目录 → `wsl --import <name> <dir> <file> --vhd --version 2` |
+| 从 `.wsl` / 文件安装 | `wsl --install --from-file <file> --name <name> [--location <dir>]` |
+| 微软商店 (Microsoft Store) | `--install -d <id> [--web-download] --version 2 [--no-launch]`（**不带 `--location`**，见 §4.3）→ 等注册 →（必要时、**不可取消**）`--manage --move <dir>`，要改名时 `--export` → `--unregister` → `--import` → 删中转 tar |
+| 在线发行版（国内镜像源） | `curl -s -S -L --retry 2 -o <tmp> <url>` → 建目录 → `tar.*` 走 `--import`、`.wsl` 包走 `--install --from-file` → 删临时文件 |
 
 收尾（任何来源）：`.wslconfig` 里开了 `[experimental] sparseVhd` → 补一条
 `--manage <name> --set-sparse true`；用户勾了"设为默认" → 最后一条 `--set-default`。
 
-### 4.3 在线安装的"快路径"
+> **v0.5.1 补记（来源名字 + 动态清单）**：这两条联网来源原来叫「在线安装」和
+> 「镜像站下载」，名字上**看不出跟微软商店有关系** —— 用户要的就是"商店那条路"，
+> 所以按参考实现的**分类**改名为「微软商店 (Microsoft Store)」与
+> 「在线发行版（国内镜像源）」，并把商店排在镜像源前面（官方那条路优先）。
+> 同时镜像源那份清单改成**照参考实现那样动态拉**（见 §3 的接口实测），
+> 不再用写死的三行内置表。措辞与代码都是我们自己写的：参考实现是 GPL-3.0-only、
+> 本仓库 Apache-2.0（`AGENTS.md` §6），能共用的只有"接口地址与 JSON 字段"这类事实。
 
-`--install -d` 只认清单里的 id。所以：
+### 4.3 在线安装：**绝不传 `--location`**
 
-- **名字 == id**（默认就是它，选清单时把名字填成 id）→ 直接
-  `--install -d <id> --location <dir>`，装完用**注册表 `BasePath` 核实**；
-- `--location` 那次**失败**（微软文档列了它，但本机没法验证商店那条路是否真的接受）→
-  **去掉 `--location` 自动重试一次**（`PlannedStep::location_fallback`），
-  随后由重定位把名字与位置补正 —— 比"安装直接失败"好得多；
-- 核实不通过（WSL 没听 `--location`）或**名字 != id** → 走重定位补齐。
+这是 v0.5.1 最重要的一条实测结论（同一台机器、同一天、只差一个参数）：
 
-参考实现**总是**重定位（哪怕名字一样），代价是每次多拷几个 GB。
-我们把它拆成"快路径 + 核实兜底 + 去掉 `--location` 重试"：默认快，结果仍然确定。
+| 命令 | 结果 |
+|---|---|
+| `wsl --install -d Ubuntu --location D:\wsl --version 2 --no-launch` | **秒失败**：`Wsl/InstallDistro/WININET_E_CANNOT_CONNECT` |
+| `wsl --install -d Ubuntu --web-download --location D:\wsl …` | 同样秒失败 |
+| `wsl --install -d Ubuntu --no-launch` | **能连上**（25 秒还在下载，被我们掐掉） |
+
+带上 `--location` 时 WSL 走的是"自己把整包下到指定目录"那条通道，用的是**不认系统代理**
+的 WinINET（这台机器上系统代理是 dev-sidecar，`wsl -l -o` 能通说明清单那条通道认代理）；
+不带时走商店/清单那条，能通。参考实现也从不传 `--location` —— 它装完再搬。
+
+所以：
+
+- 在线安装那条命令**永远不带 `--location`**，`<install_dir>` 由后面的
+  `EnsureRelocated` 补正：同名 → `wsl --manage <name> --move <dir>`；
+  要改名 → `--export` → `--unregister` → `--import`（那一步**不可取消**）；
+- 代价是多一次搬运（同卷是改名，跨卷是真的拷一遍）；
+- 收益是**装得上** —— 这条比"少拷一次"重要得多。
+
+### 4.3 在线安装：**绝不传 `--location`**
+
+这是 v0.5.1 最重要的一条实测结论（同一台机器、同一天、只差一个参数）：
+
+| 命令 | 结果 |
+|---|---|
+| `wsl --install -d Ubuntu --location D:\wsl --version 2 --no-launch` | **秒失败**：`Wsl/InstallDistro/WININET_E_CANNOT_CONNECT` |
+| `wsl --install -d Ubuntu --web-download --location D:\wsl …` | 同样秒失败 |
+| `wsl --install -d Ubuntu --no-launch` | **能连上**（25 秒还在下载，被我们掐掉） |
+
+带上 `--location` 时 WSL 走的是"自己把整包下到指定目录"那条通道，用的是**不认系统代理**
+的 WinINET（这台机器上系统代理是 dev-sidecar，`wsl -l -o` 能通说明清单那条通道认代理）；
+不带时走商店/清单那条，能通。参考实现也从不传 `--location` —— 它装完再搬。
+
+所以：
+
+- 在线安装那条命令**永远不带 `--location`**，`<install_dir>` 由后面的
+  `EnsureRelocated` 补正：同名 → `wsl --manage <name> --move <dir>`；
+  要改名 → `--export` → `--unregister` → `--import`（那一步**不可取消**）；
+- 代价是多一次搬运（同卷是改名，跨卷是真的拷一遍）；
+- 收益是**装得上** —— 这条比"少拷一次"重要得多。
+
+> **v0.5.1 补记（两条通道互备）**：商店与 `--web-download` 走的是**不同的下载实现**，
+> 一条挂了另一条可能通，所以在线安装那一步挂 `PlannedStep::retry_other_source`：
+> 失败时自动换一边再试一次，并在日志里说明。
+>
+> 另外**删掉了**原来那个"探 GitHub 通不通来决定默认下载源"的后台探测：
+> 它探的是**我们自己的 curl**（不读 Windows 系统代理），而真正决定成败的是
+> **WSL 自己的网络通道** —— 两者在这台机器上结论正好相反（curl 探到 000，
+> 而 WSL 能装上）。用错的信号去改默认值，只会把用户带偏；现在默认值固定是
+> 微软商店，交给"失败自动换源"去兜。
 
 ### 4.4 界面
 
-- 来源五个按钮；来源相关的字段（文件路径 / 在线清单 / 镜像区）；
+- 来源五个按钮（不下拉：本机没有 Rust 工具链，而 `Select` 组件的 API
+  只有 CI 能验，为一个纯观感的改动不值得；按钮的措辞与参考实现的分类对齐）；
+  来源相关的字段（文件路径 / 商店清单 / 镜像区）；
 - **红字**：`preflight()` 在渲染时现算（纯函数），提交时用同一个函数；
   ⚠️ "安装目录非空"要碰文件系统 → 只在**提交那一刻**查（渲染每帧查会在网络盘上卡死）；
 - **步骤预览**：`plan()` 的步骤列表 + notes（代价说明）；
@@ -115,12 +168,13 @@ crates/wslc-core/src/
 |---|---|---|
 | 1 | **不删同名发行版**。参考实现在 Store 安装前会 `delete_distro(id)` 清理 | 那等于**悄悄 unregister 掉用户已有的数据**。我们改成重名直接报错并建议改名 |
 | 2 | **不弹二次确认框**，改成按钮文案 + 常驻一行代价说明 | 用户已经在**专用安装页**填过表单了；本仓库既有的取舍是"信息充分的按钮优于连续弹窗"（见 `PromptKind` 的说明） |
-| 3 | 在线清单**有兜底**（自己拉微软那份 JSON） | 本机 `wsl -l -o` 就是坏的，参考实现直接依赖它 |
-| 4 | 镜像清单**不依赖第三方服务**，改成内置表 + 自定义 URL | 参考实现的清单来自它自己的 `api1.wslui.com`；别人的服务随时会变、会没。表里只放**本机 curl 验证过 200** 的条目 |
+| 3 | 在线清单**有兜底**（自己拉微软那份 JSON） | 本机在没代理时 `wsl -l -o` 就是坏的（有代理时能通），参考实现直接依赖它 |
+| 4 | 镜像清单**和它用同一套接口**（wslui），但**解析与下载自己写** | 用户在用它、要的就是这份活的清单（24 个发行版、每个 2~13 个镜像）；接口地址与字段是事实，代码不能抄（GPL ↔ Apache，`AGENTS.md` §6）。同时保留「自定义下载地址」这条出口 |
 | 5 | 名字默认填**清单 id**，不是友好名 | 否则每次在线安装都命中重定位（多拷几 GB）。用户想改名随时能改，界面会提示代价 |
-| 6 | 保留「从文件安装」（`--install --from-file`） | `.wsl` 是新格式，`--import` 吃不了；现成能力不该退 |
+| 6 | 保留「从 `.wsl` / 文件安装」（`--install --from-file`） | `.wsl` 是新格式，`--import` 吃不了；而且镜像源里**一半以上的来源就是 `.wsl`**（Ubuntu 24.04 的 13 个来源里 10 个），所以这条能力是必须的，不是锦上添花 |
 | 7 | 导入失败时**保留**中转 tar 并告诉用户路径 | 那一刻源发行版已经 `--unregister` 了，tar 是唯一的数据副本 —— 参考实现无论如何都删掉 |
 | 8 | 渲染时不做"目录非空"检查 | 每帧 `read_dir` 碰上网络盘会卡住界面；提交时查一次就够 |
+| 9 | 镜像源按 `format` **分岔**（`tar.*` → `--import`；`wsl` → `--install --from-file`） | 参考实现一律 `--import`，挑到 `.wsl` 来源必然失败 —— 而它清单里 Ubuntu 的多数来源就是 `.wsl` |
 
 ## 6. 边界与失败模式
 
