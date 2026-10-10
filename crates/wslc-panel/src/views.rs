@@ -19,6 +19,10 @@ use wslc_core::model::{ContainerState, ContainerSummary, Distro, DistroState};
 use wslc_core::settings::{SETTING_KEYS, SettingKey, SettingKind};
 
 use crate::app::{CreateDialog, Shell};
+// 列宽定义与配置项预设值都是纯数据，住在不依赖 GPUI 的 `wslc-panel-core` 里
+// —— 这样它们的单测不必链接 GPUI（见那个 crate 的顶层说明）。
+use crate::columns::{ALL_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS};
+use crate::presets::presets_for;
 use crate::state::{
     AppState, DistroAction, ImmediateAction, InstallSourceKind, Page, PendingAction, PromptKind,
     PullProgress, format_bytes,
@@ -608,15 +612,6 @@ fn disk_usage_card(state: &AppState) -> AnyElement {
 // ② 全部 container
 // ---------------------------------------------------------------------------
 
-const ALL_COLUMNS: &[(&str, f32)] = &[
-    ("名称", 240.0),
-    ("镜像", 260.0),
-    ("状态", 120.0),
-    ("资源", 190.0),
-    ("端口", 200.0),
-    ("操作", 250.0),
-];
-
 /// 端口映射的精简显示：`主机端口:容器端口`。
 ///
 /// 刻意**不显示绑定地址**（`127.0.0.1`）—— 实测默认就是它，
@@ -820,14 +815,6 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
 // ③ 镜像 / 网络 / 卷
 // ---------------------------------------------------------------------------
 
-const IMAGE_COLUMNS: &[(&str, f32)] = &[
-    ("仓库:标签", 380.0),
-    ("ID", 130.0),
-    ("大小", 100.0),
-    ("创建于", 200.0),
-    ("操作", 120.0),
-];
-
 /// 镜像页。
 pub fn images(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
     let rows: Vec<AnyElement> = state
@@ -905,15 +892,6 @@ pub fn images(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
         )
 }
 
-const NETWORK_COLUMNS: &[(&str, f32)] = &[
-    ("名称", 200.0),
-    ("ID", 140.0),
-    ("驱动", 100.0),
-    ("作用域", 100.0),
-    ("IPv6", 80.0),
-    ("操作", 220.0),
-];
-
 /// 网络页。
 pub fn networks(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
     let rows: Vec<AnyElement> = state
@@ -983,14 +961,6 @@ pub fn networks(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
         )
 }
 
-const VOLUME_COLUMNS: &[(&str, f32)] = &[
-    ("名称", 240.0),
-    ("驱动", 120.0),
-    ("作用域", 120.0),
-    ("挂载点", 320.0),
-    ("操作", 120.0),
-];
-
 /// 卷页。
 pub fn volumes(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
     let rows: Vec<AnyElement> = state
@@ -1048,26 +1018,6 @@ pub fn volumes(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
 // ---------------------------------------------------------------------------
 // ④ WSL 实例（发行版）
 // ---------------------------------------------------------------------------
-
-/// 实例列表的列（名称 / 状态 / 版本 / 默认 / 安装位置 / 磁盘 / 操作）。
-///
-/// 「磁盘」是 VHDX 的**虚拟大小**，不是实际占用 —— 见 [`instances`] 的说明。
-///
-/// 列宽是**压着算的**：加上「操作」这一列之后总和约 860px，
-/// 刚好放得进主区域（窗口 1280 减去侧边栏 216 再减去内边距）。
-/// 所以「安装位置」从 330 缩到 170 —— 长路径会被截断，
-/// 完整路径在详情弹窗里看（那里用 `kv_block`，不截断）。
-const DISTRO_COLUMNS: &[(&str, f32)] = &[
-    ("名称", 150.),
-    ("状态", 70.),
-    ("版本", 50.),
-    ("默认", 40.),
-    ("安装位置", 170.),
-    ("磁盘（虚拟）", 84.),
-    // 「操作」列要放最多 5 个按钮（打开终端 / 启动 / 终止 / 设为默认 / 删除），
-    // 所以给得比别的列宽。
-    ("操作", 340.),
-];
 
 /// WSL 实例（发行版）列表。
 ///
@@ -2098,19 +2048,6 @@ fn setting_row(
         )
         .child(warning)
         .into_any_element()
-}
-
-/// 各配置项的常用预设值。
-fn presets_for(key: &SettingKey) -> &'static [&'static str] {
-    match (key.section, key.key) {
-        (Some("session"), "cpuCount") => &["4", "8", "16"],
-        (Some("session"), "memorySize") => &["2GB", "4GB", "8GB"],
-        (Some("session"), "maxStorageSize") => &["100GB", "500GB", "1TB"],
-        (Some("session"), "idleTimeout") => &["30", "60", "300"],
-        (Some("session"), "hostLoopback") => &["host.wslc.internal", "none"],
-        (Some("session"), "defaultBindingAddress") => &["127.0.0.1", "0.0.0.0"],
-        _ => &[],
-    }
 }
 
 fn open_in_editor_button(entity: &Entity<Shell>) -> impl IntoElement {
@@ -3400,112 +3337,4 @@ pub fn export_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                 .child(h_flex().w_full().justify_end().child(cancel)),
         )
         .into_any_element()
-}
-
-#[cfg(test)]
-mod tests {
-    // ⚠️ 这里**故意不用 `use super::*;`** —— 这是个很难查的坑，记下来：
-    //
-    // `views` 模块里有 `use gpui_kit::*;`，而 gpui 在 gpui.rs 里无条件再导出了
-    // gpui_macros 的 `test` **属性宏**：
-    //
-    //     pub use gpui_macros::{..., property_test, register_action, test, ...};
-    //
-    // `use super::*` 会把这个名字继承进来，于是本模块里的 `#[test]`
-    // 解析到 **GPUI 的 test 宏**而不是 Rust 内建的那个，展开时自我递归。
-    //
-    // 症状极具迷惑性：报错是
-    //     error: recursion limit reached while expanding `#[test]`
-    // 而且提示的递归上限会随你调高而水涨船高（128 → 512 → 1024），
-    // 因为问题不是"深度不够"，而是宏被同名遮蔽了。
-    //
-    // 正确做法（gpui-kit 的 lib.rs 注释里也写了）：测试模块**显式导入**需要的类型。
-    use super::{
-        ALL_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS, presets_for,
-    };
-    use wslc_core::settings::{SETTING_KEYS, SettingKind};
-
-    /// 汇总所有表格的列定义，方便逐个检查。
-    fn all_column_sets() -> Vec<&'static [(&'static str, f32)]> {
-        vec![
-            ALL_COLUMNS,
-            IMAGE_COLUMNS,
-            NETWORK_COLUMNS,
-            VOLUME_COLUMNS,
-            DISTRO_COLUMNS,
-        ]
-    }
-
-    #[test]
-    fn table_columns_have_names_and_positive_widths() {
-        for columns in all_column_sets() {
-            for &(name, width) in columns {
-                assert!(!name.is_empty(), "列名不能为空");
-                assert!(width > 0.0, "列宽必须为正数：{name}");
-            }
-        }
-    }
-
-    #[test]
-    fn every_table_has_the_expected_column_count() {
-        // 行内的 cell 数量少于列数只会留下空白，多出来则会被丢弃；
-        // 这里把"必须一一对应"的约束固化下来，避免改表头时忘记改行。
-        //
-        // `DISTRO_COLUMNS` 是 7 列（P2 加了「操作」），
-        // 和 `distro_row` 里 push 的 7 个 cell 对应 ——
-        // 改一边就必须改另一边，这个断言就是盯着这件事的。
-        let counts: Vec<usize> = all_column_sets().iter().map(|c| c.len()).collect();
-        assert_eq!(counts, vec![6, 5, 6, 5, 7]);
-    }
-
-    #[test]
-    fn distro_row_cells_match_the_column_count() {
-        // 上面那个测试只保证"列定义"本身没问题，管不到行里塞了几个 cell。
-        // 这里直接把列数钉死，配合 `distro_row` 的 7 个 cell 使用。
-        assert_eq!(
-            DISTRO_COLUMNS.len(),
-            7,
-            "distro_row 里的 cell 数量必须与之同步"
-        );
-    }
-
-    #[test]
-    fn presets_are_non_empty_for_every_key() {
-        for key in SETTING_KEYS {
-            for preset in presets_for(key) {
-                assert!(!preset.is_empty(), "{} 的预设值不能为空", key.key);
-            }
-        }
-    }
-
-    #[test]
-    fn enum_setting_uses_choices_instead_of_presets() {
-        let cred = SETTING_KEYS
-            .iter()
-            .find(|k| k.key == "credentialStore")
-            .expect("应存在 credentialStore");
-        assert_eq!(cred.kind, SettingKind::Enum);
-        assert!(presets_for(cred).is_empty());
-
-        // 注意：不要写成 `assert_eq!(cred.choices, &["wincred", "file"])`。
-        // `&[&str]` 与 `&[&str; N]` 的比较会让编译器展开出一大堆引用/去 Sized 强制转换，
-        // 在 `#[test]` 里表现为 "recursion limit reached while expanding #[test]"。
-        // 统一转成 `Vec` 再比，类型简单、诊断也清楚。
-        let choices: Vec<&str> = cred.choices.to_vec();
-        assert_eq!(choices, vec!["wincred", "file"]);
-    }
-
-    #[test]
-    fn numeric_settings_offer_presets() {
-        let cpu = SETTING_KEYS.iter().find(|k| k.key == "cpuCount").unwrap();
-        let cpu_presets: Vec<&str> = presets_for(cpu).to_vec();
-        assert_eq!(cpu_presets, vec!["4", "8", "16"]);
-
-        let idle = SETTING_KEYS
-            .iter()
-            .find(|k| k.key == "idleTimeout")
-            .unwrap();
-        let idle_presets: Vec<&str> = presets_for(idle).to_vec();
-        assert_eq!(idle_presets, vec!["30", "60", "300"]);
-    }
 }

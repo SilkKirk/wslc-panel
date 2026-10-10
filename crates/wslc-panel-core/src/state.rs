@@ -1034,7 +1034,10 @@ impl ExportProgress {
 
 /// 应用的完整状态。
 ///
-/// 这是 [`crate::app::Shell`] 里唯一的字段，所有页面都是它的只读视图。
+/// 这是 `app::Shell` 里唯一的字段，所有页面都是它的只读视图。
+///
+/// （`Shell` 在 `wslc-panel` 那个 crate 里 —— 它持有 GPUI 的 `InputState`，
+/// 所以不能搬到这里来；这里刻意不写 intra-doc 链接，否则 `cargo doc` 会报断链。）
 #[derive(Debug)]
 pub struct AppState {
     /// 容器（`wslc.exe`）调用器。

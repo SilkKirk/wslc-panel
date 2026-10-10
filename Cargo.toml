@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/wslc-core", "crates/wslc-panel"]
+members = ["crates/wslc-core", "crates/wslc-panel", "crates/wslc-panel-core"]
 
 [workspace.package]
 version = "0.3.8"
@@ -10,6 +10,7 @@ publish = false
 
 [workspace.dependencies]
 wslc-core = { path = "crates/wslc-core" }
+wslc-panel-core = { path = "crates/wslc-panel-core" }
 gpui-kit = "0.7.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -26,3 +27,22 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# CI 专用。
+#
+# 上面那个 `opt-level = 3` 是给**本地跑界面**用的（GPUI 不优化就卡），
+# 但 CI 从来不跑界面：它只做 `cargo check`（不产出机器码，opt-level 对它没意义）
+# 和纯逻辑单测。让 CI 把整棵依赖树按最高优化 + 全量调试信息编一遍纯属浪费 ——
+# 实测 `cargo test -p wslc-panel --bins` 那一步要 763 秒，就是这么来的。
+#
+# 只给**真的会 codegen** 的步骤用（`cargo test --profile ci`）。
+# `cargo check` 不要加 `--profile ci`：白搭一份冷缓存，一点好处都没有。
+[profile.ci]
+inherits = "dev"
+opt-level = 0
+debug = 0
+incremental = false
+
+[profile.ci.package."*"]
+opt-level = 0
+debug = 0
