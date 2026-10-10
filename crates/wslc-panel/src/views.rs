@@ -313,6 +313,7 @@ pub fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
         Page::Volumes => volumes(state, entity).into_any_element(),
         Page::AppSettings => app_settings(state, entity),
         Page::Config => config(state, entity),
+        Page::WslConfig => wsl_config(state, entity),
     }
 }
 
@@ -1778,6 +1779,177 @@ pub fn config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                         .child(raw),
                 ),
         ))
+        .into_any_element()
+}
+
+// ---------------------------------------------------------------------------
+// ⑥b WSL 配置（.wslconfig）
+// ---------------------------------------------------------------------------
+
+/// 「WSL 配置」页 —— `%USERPROFILE%\.wslconfig`。
+///
+/// # 这一页是**只读**的
+///
+/// 不做编辑，也不提供"一键校验"。原因是"校验"在这里做不到轻量：
+/// 实测 WSL 只在 **VM 启动时**读一次 `.wslconfig` 并报出认不出的键，
+/// 想主动触发就得先 `wsl --shutdown` —— 那会打断所有正在跑的发行版。
+/// 详见 `wslc_core::wslconfig` 的模块说明。
+///
+/// 所以这一页只做**不需要跑 WSL 就能做**的部分：把文件摊开、
+/// 把实测已知放错文件的键指出来、真要改就交给系统编辑器。
+pub fn wsl_config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+    let info = &state.snapshot.wslconfig;
+
+    let path_text = info
+        .path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "（拿不到：USERPROFILE 没有定义）".to_owned());
+
+    let open = {
+        let entity = entity.clone();
+        Button::new("open-wslconfig")
+            .label("用系统默认程序打开")
+            .small()
+            .primary()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.open_wslconfig(cx));
+            })
+    };
+
+    // 三种状态说的话完全不同：读到了 / 文件不存在 / 读失败
+    let body: AnyElement = if let Some(error) = &info.error {
+        v_flex()
+            .w_full()
+            .gap_2()
+            .child(empty_state("读不到这个文件"))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child(error.clone()),
+            )
+            .into_any_element()
+    } else if let Some(text) = &info.text {
+        v_flex()
+            // 滚动容器必须先有 id（同 config 页的说明）
+            .id("wslconfig-raw")
+            .w_full()
+            .max_h(px(420.))
+            .overflow_y_scroll()
+            .rounded_md()
+            .bg(theme::bg())
+            .p_3()
+            .child(
+                div()
+                    .font_family("Consolas")
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child(text.clone()),
+            )
+            .into_any_element()
+    } else {
+        v_flex()
+            .w_full()
+            .gap_2()
+            .child(empty_state("还没有这个文件"))
+            .child(div().text_xs().text_color(theme::text_dim()).child(
+                "没配过 .wslconfig 是完全正常的状态 —— WSL 会用全部默认值。\
+                 想从头配一份就点下面的按钮（会先建一个空文件再打开）。",
+            ))
+            .into_any_element()
+    };
+
+    let misplaced: AnyElement = if info.misplaced.is_empty() {
+        v_flex()
+            .w_full()
+            .gap_2()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child("没有发现实测已知的「键放错文件」写法。"),
+            )
+            .child(div().text_xs().text_color(theme::text_dim()).child(
+                "⚠️ 这**不等于**配置没问题 —— 这里只比对实测确认过的那几条，\
+                 不是 WSL 的完整键表。宁可少报，不要错报：错报会让人改坏本来正常的配置。",
+            ))
+            .into_any_element()
+    } else {
+        let rows: Vec<AnyElement> = info
+            .misplaced
+            .iter()
+            .map(|m| {
+                v_flex()
+                    .w_full()
+                    .gap_1()
+                    .p_3()
+                    .rounded_md()
+                    .bg(theme::bg())
+                    .child(
+                        div()
+                            .font_family("Consolas")
+                            .text_xs()
+                            .text_color(theme::text())
+                            .child(format!("第 {} 行：{}", m.line, m.text)),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_muted())
+                            .child(format!("应该放到 {} —— {}", m.belongs_to, m.why)),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+
+        v_flex()
+            .w_full()
+            .gap_2()
+            .child(div().text_xs().text_color(theme::text_muted()).child(
+                "这几行 WSL **明确报过**「未知键」，会被忽略 —— 配置看着生效、其实没有。",
+            ))
+            .children(rows)
+            .into_any_element()
+    };
+
+    v_flex()
+        .w_full()
+        .gap_4()
+        .child(card(
+            "文件",
+            v_flex()
+                .w_full()
+                .gap_2()
+                .child(kv_block("位置", path_text).into_any_element())
+                .child(div().text_xs().text_color(theme::text_dim()).child(
+                    "这是 **WSL 本身**的全局配置（管 WSL2 虚拟机：内存、网络模式、内核命令行……）。\
+                     发行版自己的配置是各发行版里的 /etc/wsl.conf，两者互不相干、键也不能混用。",
+                )),
+        ))
+        .child(card("内容", body))
+        .child(card("放错文件的键", misplaced))
+        .child(card(
+            "为什么这里没有「一键校验」",
+            v_flex()
+                .w_full()
+                .gap_2()
+                .child(
+                    div().text_xs().text_color(theme::text_muted()).child(
+                        "实测（WSL 3.0.1.0）：`wsl --status` / `--version` / `-l -v` / `--terminate` \
+                         都**不报**配置告警；只有 `wsl --shutdown` 之后**第一条**进发行版的命令会报，\
+                         紧接着的第二、三条就静默了。",
+                    ),
+                )
+                .child(
+                    div().text_xs().text_color(theme::text_muted()).child(
+                        "也就是说这些告警来自 **WSL2 虚拟机启动时读一次 .wslconfig**。\
+                         想主动触发就得先 `wsl --shutdown` —— 那会**打断所有正在跑的发行版**。\
+                         为了校验一个配置文件付这个代价不值得，所以这里只做不依赖 WSL 的静态检查。",
+                    ),
+                ),
+        ))
+        .child(h_flex().w_full().justify_end().child(open))
         .into_any_element()
 }
 
