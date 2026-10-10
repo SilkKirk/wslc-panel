@@ -68,7 +68,12 @@ pub struct MisplacedKey {
 
 /// 实测确认会被 WSL 报"未知键"的组合：`(节, 键)`。
 ///
-/// ⚠️ 这是**实测结果**，不是从文档推的 —— WSL 3.0.1.0 上这两条会打：
+/// ⚠️ 这里是**驼峰**写法（和 `.wslconfig` 里的样子一致，读起来清楚）；
+/// 比较时**忽略大小写**，别指望调用方先转好小写 ——
+/// 第一版就是栽在这儿：解析时把键转成小写，却拿它跟这里的驼峰比，
+/// 于是永远不相等，三条测试一起挂。见 [`check`] 里的比较。
+///
+/// 这两条是**实测结果**，不是从文档推的 —— WSL 3.0.1.0 上会打：
 ///
 /// ```text
 /// wsl: interop.appendWindowsPath:C:\Users\...\.wslconfig 中的键"12"未知
@@ -100,7 +105,7 @@ pub fn check(text: &str) -> Vec<MisplacedKey> {
 
         // 节头
         if line.starts_with('[') && line.ends_with(']') {
-            section = line[1..line.len() - 1].trim().to_ascii_lowercase();
+            section = line[1..line.len() - 1].trim().to_owned();
             continue;
         }
 
@@ -108,11 +113,13 @@ pub fn check(text: &str) -> Vec<MisplacedKey> {
         let Some((key, _)) = line.split_once('=') else {
             continue;
         };
-        let key = key.trim().to_ascii_lowercase();
+        let key = key.trim();
 
+        // **忽略大小写**比较：`.wslconfig` 里 `[WSL2]` 和 `[wsl2]` 是一回事，
+        // 键名同理。`KNOWN_MISPLACED` 里保持驼峰可读性，不靠调用方先转小写。
         if KNOWN_MISPLACED
             .iter()
-            .any(|(s, k)| *s == section && *k == key)
+            .any(|(s, k)| s.eq_ignore_ascii_case(&section) && k.eq_ignore_ascii_case(key))
         {
             found.push(MisplacedKey {
                 line: line_no,
@@ -252,6 +259,24 @@ autoMemoryReclaim=gradual
         if let Some(path) = config_path() {
             assert!(path.ends_with(".wslconfig"), "{path:?}");
             assert_eq!(path.file_name().unwrap(), ".wslconfig");
+        }
+    }
+
+    #[test]
+    fn key_matching_is_case_insensitive() {
+        // **回归测试**：第一版把解析出来的键转成小写，却拿它跟
+        // `KNOWN_MISPLACED` 里的驼峰 `appendWindowsPath` 比 —— 永远不相等，
+        // 三条测试一起挂。现在两边都忽略大小写，四种写法都得认。
+        //
+        // 以后有人想"顺手统一成小写"时，这条会提醒他：两边必须一致。
+        for text in [
+            "[interop]\nappendWindowsPath=false\n",
+            "[interop]\nAPPENDWINDOWSPATH=false\n",
+            "[INTEROP]\nappendwindowspath=false\n",
+            "[Interop]\nAppendWindowsPath = false\n",
+            "[user]\nDefault=wt\n",
+        ] {
+            assert_eq!(check(text).len(), 1, "漏了：{text:?}");
         }
     }
 }
