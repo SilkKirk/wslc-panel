@@ -2756,6 +2756,16 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
             entity,
         ));
 
+        // 导出对 WSL 1 / 2 都成立（它只是把根文件系统打成 tar），
+        // 所以**不**受 `is_wsl1` 限制。
+        actions.push(prompt_button(
+            "distro-detail-export",
+            "导出",
+            PromptKind::ExportDistro,
+            name,
+            entity,
+        ));
+
         // 稀疏是两个**明确方向**的按钮，而不是一个"切换"：
         // 界面不显示当前状态（注册表 `Flags` 里哪一位是稀疏**没有实测确认**），
         // 与其猜，不如让用户自己说清要开还是要关。
@@ -2952,10 +2962,15 @@ pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEle
     } else {
         typed
     };
-    let flag = match kind {
-        PromptKind::MoveDistro => "--move",
-        PromptKind::ResizeDistro => "--resize",
-        PromptKind::SetDefaultUser => "--set-default-user",
+    // 等效命令**逐种拼**，不抽一个"flag"出来：导出的 `--export` 不是
+    // `--manage` 的子命令，硬塞进同一个模板反而要写特例。
+    let preview = match kind {
+        PromptKind::MoveDistro => format!("wsl --manage {} --move {shown}", prompt.distro),
+        PromptKind::ResizeDistro => format!("wsl --manage {} --resize {shown}", prompt.distro),
+        PromptKind::SetDefaultUser => {
+            format!("wsl --manage {} --set-default-user {shown}", prompt.distro)
+        }
+        PromptKind::ExportDistro => format!("wsl --export {} {shown}", prompt.distro),
     };
 
     let cancel = {
@@ -3040,7 +3055,7 @@ pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEle
                                 .font_family("Consolas")
                                 .text_xs()
                                 .text_color(theme::text())
-                                .child(format!("wsl --manage {} {flag} {shown}", prompt.distro)),
+                                .child(preview),
                         ),
                 )
                 .child(
@@ -3051,6 +3066,89 @@ pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEle
                         .child(cancel)
                         .child(confirm),
                 ),
+        )
+        .into_any_element()
+}
+
+/// 导出进度浮层。
+///
+/// # 为什么它和拉取镜像的浮层长得不一样
+///
+/// 拉取那边显示的是 **docker 的输出行**（每层一行，信息量在行里）。
+/// 导出这边 `wsl --export` 几乎不打进度，但产物是个文件 ——
+/// **文件大小是真实且连续增长的**，直接量它比解析输出有用得多，
+/// 用户看到的也是"还要写多少"。
+pub fn export_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+    let Some(progress) = state.exporting.as_ref() else {
+        return div().into_any_element();
+    };
+
+    let written = progress
+        .written
+        .map(format_bytes)
+        .unwrap_or_else(|| "还没开始写入".to_owned());
+
+    let last = if progress.last_line.trim().is_empty() {
+        "（暂无输出）"
+    } else {
+        progress.last_line.trim()
+    };
+
+    let cancel = {
+        let entity = entity.clone();
+        Button::new("export-cancel")
+            .label("取消导出")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.cancel_export(cx));
+            })
+    };
+
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme::scrim())
+        .child(
+            v_flex()
+                .w(px(680.))
+                .gap_4()
+                .p_5()
+                .rounded_lg()
+                .bg(theme::bg_card())
+                .border_1()
+                .border_color(theme::border())
+                .child(
+                    div()
+                        .text_lg()
+                        .font_bold()
+                        .text_color(theme::text())
+                        .child(format!("正在导出 {}", progress.name)),
+                )
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap_2()
+                        .child(kv_block("目标文件", progress.path.clone()).into_any_element())
+                        .child(kv("已写入", written).into_any_element())
+                        .child(kv("已用时", format!("{} 秒", progress.elapsed_secs)).into_any_element()),
+                )
+                .child(div().text_xs().text_color(theme::text_dim()).child(
+                    "wsl 不报告导出百分比，所以「已写入」是**目标文件当前的大小** —— \
+                     它是连续增长的，可以据此估还要多久。",
+                ))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child(format!(
+                            "导出期间请勿关机。**取消会留下一个不完整的 tar**，需要你自己删。\
+                             最后一行输出：{last}"
+                        )),
+                )
+                .child(h_flex().w_full().justify_end().child(cancel)),
         )
         .into_any_element()
 }

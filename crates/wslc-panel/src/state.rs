@@ -703,6 +703,12 @@ pub enum PromptKind {
     ResizeDistro,
     /// 设置默认用户。
     SetDefaultUser,
+    /// 导出发行版到 tar 文件。
+    ///
+    /// ⚠️ 它和另外三个**不一样**：提交后不是跑一条 `wsl --manage` 就完事，
+    /// 而是起一个长时间、可取消的流式任务 —— 见 `Shell::start_export`。
+    /// 复用的只是"要用户填一个文本参数"这个外形。
+    ExportDistro,
 }
 
 impl PromptKind {
@@ -712,6 +718,7 @@ impl PromptKind {
             Self::MoveDistro => "移动安装位置",
             Self::ResizeDistro => "调整磁盘大小",
             Self::SetDefaultUser => "设置默认用户",
+            Self::ExportDistro => "导出发行版",
         }
     }
 
@@ -721,6 +728,7 @@ impl PromptKind {
             Self::MoveDistro => "新的安装目录（绝对路径）",
             Self::ResizeDistro => "新的磁盘大小",
             Self::SetDefaultUser => "用户名",
+            Self::ExportDistro => "导出到（绝对路径，要含文件名）",
         }
     }
 
@@ -730,6 +738,7 @@ impl PromptKind {
             Self::MoveDistro => r"D:\wsl\MyDistro",
             Self::ResizeDistro => "50GB",
             Self::SetDefaultUser => "myuser",
+            Self::ExportDistro => r"D:\backup\MyDistro.tar",
         }
     }
 
@@ -748,6 +757,11 @@ impl PromptKind {
                 "这是发行版内**已经存在**的用户名。用户不存在时 wsl 会报错 ——\
                  本程序不会替你创建用户。"
             }
+            Self::ExportDistro => {
+                "导出成 **tar**，之后可以用「添加实例 → 从 tar 导入」再装回来，\
+                 也能拷到别的机器上用。18 GB 的盘要几分钟到几十分钟，\
+                 期间有进度条、随时可以取消；取消留下的是**不完整**的文件，要自己删。"
+            }
         }
     }
 
@@ -757,6 +771,7 @@ impl PromptKind {
             Self::MoveDistro => "开始移动",
             Self::ResizeDistro => "调整大小",
             Self::SetDefaultUser => "设为默认用户",
+            Self::ExportDistro => "开始导出",
         }
     }
 }
@@ -877,6 +892,42 @@ impl PullProgress {
     }
 }
 
+/// 导出发行版的实时进度。
+///
+/// # 为什么它和 [`PullProgress`] 长得不一样
+///
+/// 拉取镜像的进度只能从 `docker` 的输出行里读（每层一行），所以那边存的是
+/// **输出行**。导出不一样：`wsl --export` 几乎不打进度，但**目标文件的大小
+/// 是真实且连续的** —— 直接轮询文件比解析它的输出靠谱得多。
+///
+/// 所以这里存的是"写了多少字节 / 跑了多久"，界面上就是一个进度条 + 计时。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportProgress {
+    /// 正在导出的发行版名。
+    pub name: String,
+    /// 目标文件路径。
+    pub path: String,
+    /// 已经写入的字节数。文件还没建出来时为 `None`。
+    pub written: Option<u64>,
+    /// 已经跑了多少秒。
+    pub elapsed_secs: u64,
+    /// 最后一行输出（出错时它就是原因）。
+    pub last_line: String,
+}
+
+impl ExportProgress {
+    /// 新建一个进度记录。
+    pub fn new(name: impl Into<String>, path: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            path: path.into(),
+            written: None,
+            elapsed_secs: 0,
+            last_line: String::new(),
+        }
+    }
+}
+
 /// 应用的完整状态。
 ///
 /// 这是 [`crate::app::Shell`] 里唯一的字段，所有页面都是它的只读视图。
@@ -911,6 +962,13 @@ pub struct AppState {
     ///
     /// 拉取可能几分钟到几十分钟，期间界面显示**实时输出**并允许取消。
     pub pulling: Option<PullProgress>,
+    /// 正在导出的发行版；空闲时为 `None`。
+    ///
+    /// 和 `pulling` 并列而不是复用它：两者的进度来源完全不同
+    /// （见 [`ExportProgress`] 的说明）。同一时刻只可能有其中一个在跑 ——
+    /// 拉取走 `wslc.exe`，导出走 `wsl.exe`，但界面上的浮层位置是同一个，
+    /// 所以启动前会互相检查。
+    pub exporting: Option<ExportProgress>,
     /// 待用户确认的危险操作（容器域或发行版域）。
     pub confirm: Option<ConfirmAction>,
     /// 提示条。
@@ -932,6 +990,7 @@ impl AppState {
             prefs: crate::prefs::Prefs::load(),
             busy: false,
             pulling: None,
+            exporting: None,
             confirm: None,
             toast: None,
         }
@@ -1191,6 +1250,7 @@ mod tests {
             PromptKind::MoveDistro,
             PromptKind::ResizeDistro,
             PromptKind::SetDefaultUser,
+            PromptKind::ExportDistro,
         ] {
             assert!(!kind.title().is_empty(), "{kind:?}");
             assert!(!kind.label().is_empty(), "{kind:?}");
