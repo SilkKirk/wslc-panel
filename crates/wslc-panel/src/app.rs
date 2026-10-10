@@ -113,6 +113,29 @@ pub(crate) struct TextPrompt {
     pub(crate) input: Entity<InputState>,
 }
 
+/// 本面板正在"吊着"的一个发行版。
+///
+/// WSL 在最后一个活动会话结束约 20 秒后回收发行版。所谓"启动"，就是
+/// **从 Windows 这边吊住一个 `wsl.exe` 不放** —— 见
+/// [`wslc_core::cmd::distro::start`] 的说明和实测数据。
+///
+/// 句柄必须留着：它既是"这个发行版为什么还在跑"的凭据，
+/// 也是判断哨兵还活不活着的唯一办法（`try_wait`）。
+struct KeepAlive {
+    name: String,
+    child: std::process::Child,
+}
+
+impl KeepAlive {
+    /// 哨兵还活着吗？
+    ///
+    /// `try_wait` 会**顺手回收**已经退出的子进程 —— 不调它的话，
+    /// 退掉的子进程会以僵尸状态一直挂在系统里。
+    fn is_alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+}
+
 /// 「创建容器」弹窗的全部输入框。
 ///
 /// 每个字段一个独立的 `InputState` —— 这是 GPUI 的标准做法。
@@ -221,6 +244,11 @@ pub struct Shell {
     /// 用来**防止重复弹窗**：选择器没有超时（用户不点完它就一直开着），
     /// 连点两下「浏览…」会堆出两个对话框。见 `cmd::picker` 的说明。
     picking: bool,
+    /// 本面板正在吊着的发行版（见 [`KeepAlive`]）。
+    ///
+    /// 界面只看到 `AppState::kept_alive` 里的名字；真正的进程句柄留在这里 ——
+    /// 那是"能力"，不是界面状态。
+    keep_alive: Vec<KeepAlive>,
     /// 「创建容器」弹窗；关闭时为 `None`。
     create_dialog: Option<CreateDialog>,
     /// 正在查看详情的容器名；关闭时为 None。
@@ -269,6 +297,7 @@ impl Shell {
             pull_cancel: None,
             export_cancel: None,
             picking: false,
+            keep_alive: Vec::new(),
             create_dialog: None,
             detail: None,
             distro_detail: None,
@@ -814,7 +843,6 @@ impl Shell {
         verb: &'static str,
         name: String,
         action: fn(&Wsl, &str) -> wslc_core::Result<()>,
-        note: &'static str,
         cx: &mut Context<Self>,
     ) {
         let wsl = self.state.wsl.clone();
@@ -834,7 +862,7 @@ impl Shell {
                 match result {
                     Ok(()) => shell
                         .state
-                        .notify(Toast::success(format!("{name} 已{verb}{note}"))),
+                        .notify(Toast::success(format!("{name} 已{verb}"))),
                     Err(e) => shell
                         .state
                         .notify(Toast::error(format!("{name} {verb}失败：{e}"))),
@@ -846,18 +874,76 @@ impl Shell {
         .detach();
     }
 
-    /// 唤醒一个已停止的发行版。
+    /// 启动发行版，并**让它一直保持运行**。
     ///
-    /// ⚠️ **大约 20 秒后 WSL 会把它收回 Stopped** —— 这是 WSL 3.x 的行为
-    /// （最后一个会话退出就回收），不是本程序的 bug。所以提示里要带上这个前提。
+    /// 做法是从 Windows 这边吊住一个 `wsl.exe -d <name> -- sleep infinity` 不放：
+    /// 那个进程活着，WSL 就认为有活动会话，发行版不会被回收。
+    /// 机制和实测数据见 [`wslc_core::cmd::distro::start`]。
+    ///
+    /// ⚠️ 和 [`Shell::spawn_distro_action`] 那条路不一样：这个**要留下句柄**，
+    /// 所以不能复用那个"跑完就完"的辅助函数。
     pub fn start_distro(&mut self, name: String, cx: &mut Context<Self>) {
-        self.spawn_distro_action(
-            "启动",
-            name,
-            wslc_core::cmd::distro::start,
-            "（WSL 在没有活动会话后约 20 秒会自动停止；要一直跑请用「打开终端」）",
-            cx,
-        );
+        // 先清一遍死掉的哨兵，免得"已经吊着了"的判断基于过期信息
+        self.sync_keep_alive(cx);
+
+        if self.state.kept_alive.iter().any(|n| n == &name) {
+            self.state
+                .notify(Toast::info(format!("{name} 已经由本面板保持运行中")));
+            cx.notify();
+            return;
+        }
+
+        self.state
+            .notify(Toast::info(format!("正在启动 {name}…")));
+        cx.notify();
+
+        let wsl = self.state.wsl.clone();
+        let target = name.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { wslc_core::cmd::distro::start(&wsl, &target) })
+                .await;
+
+            let _ = this.update(cx, |shell, cx| {
+                match result {
+                    Ok(child) => {
+                        shell.keep_alive.push(KeepAlive {
+                            name: name.clone(),
+                            child,
+                        });
+                        shell.sync_keep_alive(cx);
+                        shell.state.notify(Toast::success(format!(
+                            "{name} 已启动并保持运行 —— 由本面板吊着，\
+                             关掉面板它也会继续跑；想停就点「终止」"
+                        )));
+                    }
+                    Err(e) => shell
+                        .state
+                        .notify(Toast::error(format!("启动 {name} 失败：{e}"))),
+                }
+                shell.refresh(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 把已经死掉的哨兵清出去，并把名单同步给界面。
+    ///
+    /// 什么时候会死：用户点了「终止」/「关停全部」（`wsl --terminate` 会连
+    /// `sleep infinity` 一起杀，哨兵进程随之退出），或者在别处跑了 `wsl --shutdown`。
+    ///
+    /// 放在 `refresh` 里每轮跑一次：`try_wait` 是**非阻塞**的，几乎不要钱；
+    /// 而且它顺手回收了退出的子进程，不留僵尸。
+    fn sync_keep_alive(&mut self, cx: &mut Context<Self>) {
+        self.keep_alive.retain_mut(|k| k.is_alive());
+
+        let names: Vec<String> = self.keep_alive.iter().map(|k| k.name.clone()).collect();
+        if self.state.kept_alive != names {
+            self.state.kept_alive = names;
+            cx.notify();
+        }
     }
 
     /// 打开发行版的终端（新控制台窗口）。
@@ -882,7 +968,6 @@ impl Shell {
             "设为默认",
             name,
             wslc_core::cmd::distro::set_default,
-            "",
             cx,
         );
     }
@@ -1110,6 +1195,10 @@ impl Shell {
     /// 如果正好撞上 3 秒的自动刷新就把这次请求丢掉，
     /// 界面要等到下一个周期才变，用户会以为操作没生效。
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        // 先顺手清掉已经死掉的哨兵（用户点了「终止」、或在别处 `wsl --shutdown`）。
+        // 放在最前面：`busy` 那条提前返回也不该让界面上的"保持运行中"标记过期。
+        self.sync_keep_alive(cx);
+
         if self.state.busy {
             // **不能丢**：正在跑的那轮采到的是操作**之前**的数据。
             // 丢掉这次请求，界面就要等下一个周期才变 ——
