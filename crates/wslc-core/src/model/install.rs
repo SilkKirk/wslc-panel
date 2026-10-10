@@ -651,6 +651,16 @@ pub struct PlannedStep {
     /// `false` 的只有重定位那一步 —— 它中途被打断会**丢数据**。
     /// 界面据此不给"取消"按钮，而不是让用户点了之后才发现没用。
     pub cancellable: bool,
+    /// 失败时要不要**去掉 `--location` 重试一次**。
+    ///
+    /// 只给在线安装的"快路径"用：`--location` 在 `wsl --install -d` 上是
+    /// 微软文档列出的选项，但本机没法验证商店那条路是不是真的认它。
+    /// 万一它直接报错，去掉它至少能把发行版装上 ——
+    /// 后面那一步 `EnsureRelocated` 会把名字和位置都补正。
+    ///
+    /// ⚠️ **不能**给 `--install --from-file` 用：那条路后面没有重定位步骤，
+    /// 去掉 `--location` 会静默装到 WSL 的默认位置去。
+    pub location_fallback: bool,
 }
 
 impl PlannedStep {
@@ -660,11 +670,18 @@ impl PlannedStep {
             program,
             args,
             cancellable: true,
+            location_fallback: false,
         }
     }
 
     fn uncancellable(mut self) -> Self {
         self.cancellable = false;
+        self
+    }
+
+    /// 失败时去掉 `--location` 再试一次（只给在线安装的快路径用，见字段说明）。
+    fn with_location_fallback(mut self) -> Self {
+        self.location_fallback = true;
         self
     }
 
@@ -988,11 +1005,18 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
             if !launch {
                 args.push("--no-launch".to_owned());
             }
-            steps.push(PlannedStep::new(
+            let mut install_step = PlannedStep::new(
                 format!("从在线源安装 {id}"),
                 PlanProgram::Wsl,
                 args,
-            ));
+            );
+            // 只有"把位置交给 WSL"这条快路径才需要这个兜底：
+            // 万一 `--location` 在商店那条路上不被接受，去掉它至少能把发行版装上，
+            // 后面那一步 EnsureRelocated 会把名字和位置都补正。
+            if same_name && target_dir.is_some() {
+                install_step = install_step.with_location_fallback();
+            }
+            steps.push(install_step);
 
             steps.push(PlannedStep::new(
                 format!("等 {id} 注册完成"),
@@ -1028,7 +1052,8 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
                     notes.push(format!(
                         "名字和在线清单里的一致，所以直接把安装位置交给 WSL\
                          （`--install -d {id} --location …`）。装完会用注册表核实它到底装到哪儿了 ——\
-                         万一 WSL 没听，再自动走一次重定位补齐。"
+                         万一 WSL 没听（或者干脆不接受 `--location`），会自动去掉它重试一次，\
+                         再走重定位把位置补正。"
                     ));
                 }
             }
@@ -1478,6 +1503,8 @@ mod tests {
                 "--no-launch"
             ]
         );
+        // 这条路径本来就没有 --location，也就不需要那个兜底
+        assert!(!plan.steps[0].location_fallback);
         // 重定位不可取消（中途打断会丢数据）
         assert!(!plan.steps[2].cancellable);
         assert_eq!(
@@ -1532,6 +1559,8 @@ mod tests {
             labels(&plan),
             vec!["Wsl", "WaitRegistered", "EnsureRelocated"]
         );
+        // 快路径要带"失败时去掉 --location 重试"的兜底：本机没法验证商店那条路认不认它
+        assert!(plan.steps[0].location_fallback);
         assert!(!plan.steps[2].cancellable);
         // 没有目录、名字也相同 → 连重定位那一步都不需要
         let bare = PlanContext {

@@ -252,13 +252,51 @@ fn arg(step: &PlannedStep, index: usize) -> Result<&str> {
 }
 
 /// 起一个 `wsl.exe` 步骤，边跑边读。
+///
+/// 带 [`PlannedStep::location_fallback`] 的步骤失败时会**去掉 `--location` 重试一次**：
+/// `--location` 在 `wsl --install -d` 上是文档列出的选项，但本机没法验证商店那条路
+/// 是否真的认它。真不认的话，去掉它至少能把发行版装上 —— 后面那一步
+/// `EnsureRelocated` 会把名字和位置补正，比"安装直接失败"好得多。
 fn run_wsl_step(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions) -> Result<()> {
+    let first = run_wsl_once(wsl, &step.args, step.cancellable, opts);
+    if first.is_err() && step.location_fallback {
+        if let Some(without) = args_without_location(&step.args) {
+            emit(
+                opts,
+                InstallEvent::Line(
+                    "带上 `--location` 的那次失败了 —— 改成让 WSL 自己选位置再装一次，\
+                     随后会把它挪到你要的目录"
+                        .to_owned(),
+                ),
+            );
+            return run_wsl_once(wsl, &without, step.cancellable, opts);
+        }
+    }
+    first
+}
+
+/// 跑一条 `wsl.exe` 命令（一步，不重试）。
+fn run_wsl_once(
+    wsl: &Wsl,
+    args: &[String],
+    cancellable: bool,
+    opts: &RunOptions,
+) -> Result<()> {
     let (sink, last) = line_sink(opts);
     let handle = {
-        let refs: Vec<&str> = step.args.iter().map(String::as_str).collect();
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         wsl.spawn_streaming(&refs, sink)?
     };
-    finish_stream(handle, "wsl", &step.args, last, step.cancellable, None, opts)
+    finish_stream(handle, "wsl", args, last, cancellable, None, opts)
+}
+
+/// 去掉 `--location <dir>` 这一对参数；没有它时返回 `None`。
+fn args_without_location(args: &[String]) -> Option<Vec<String>> {
+    let at = args.iter().position(|arg| arg == "--location")?;
+    let mut out = Vec::with_capacity(args.len().saturating_sub(2));
+    out.extend(args[..at].iter().cloned());
+    out.extend(args.get(at + 2..).unwrap_or_default().iter().cloned());
+    Some(out)
 }
 
 /// 起一个 `curl.exe` 步骤（下载），并轮询产物大小当进度。
@@ -713,8 +751,49 @@ mod tests {
             program: PlanProgram::CreateDir,
             args: Vec::new(),
             cancellable: true,
+            location_fallback: false,
         };
         assert!(matches!(arg(&step, 0), Err(Error::Install(_))));
+    }
+
+    #[test]
+    fn location_can_be_stripped_for_the_retry() {
+        // 快路径失败时的兜底：去掉 `--location <dir>` 这一对，其余原样
+        let owned = |items: &[&str]| -> Vec<String> {
+            items.iter().map(|item| (*item).to_owned()).collect()
+        };
+
+        let args = owned(&[
+            "--install",
+            "-d",
+            "Ubuntu-24.04",
+            "--location",
+            r"D:\wsl\U",
+            "--version",
+            "2",
+            "--no-launch",
+        ]);
+        assert_eq!(
+            args_without_location(&args).unwrap(),
+            owned(&[
+                "--install",
+                "-d",
+                "Ubuntu-24.04",
+                "--version",
+                "2",
+                "--no-launch"
+            ])
+        );
+
+        // 没有 `--location` 时**不重试**（返回 None）—— 否则等于把命令原样再跑一遍
+        assert_eq!(args_without_location(&owned(&["--install", "-d", "X"])), None);
+        assert_eq!(args_without_location(&[]), None);
+
+        // `--location` 是最后一个参数（畸形计划）→ 只丢掉它自己，不 panic
+        assert_eq!(
+            args_without_location(&owned(&["--install", "--location"])).unwrap(),
+            owned(&["--install"])
+        );
     }
 
     #[test]
@@ -735,12 +814,14 @@ mod tests {
                     program: PlanProgram::CreateDir,
                     args: vec![dir.to_string_lossy().into_owned()],
                     cancellable: true,
+                    location_fallback: false,
                 },
                 PlannedStep {
                     label: "删掉临时文件（本来就不在，也算成功）".to_owned(),
                     program: PlanProgram::RemoveFile,
                     args: vec![file.to_string_lossy().into_owned()],
                     cancellable: true,
+                    location_fallback: false,
                 },
             ],
             notes: Vec::new(),
@@ -795,12 +876,14 @@ mod tests {
                     program: PlanProgram::Wsl,
                     args: vec!["--import".to_owned()],
                     cancellable: true,
+                    location_fallback: false,
                 },
                 PlannedStep {
                     label: "不该被执行到".to_owned(),
                     program: PlanProgram::CreateDir,
                     args: vec![std::env::temp_dir().to_string_lossy().into_owned()],
                     cancellable: true,
+                    location_fallback: false,
                 },
             ],
             notes: Vec::new(),
@@ -846,6 +929,7 @@ mod tests {
                 program: PlanProgram::WaitRegistered,
                 args: vec!["X".to_owned()],
                 cancellable: true,
+                location_fallback: false,
             }],
             notes: Vec::new(),
         };
