@@ -1909,9 +1909,9 @@ impl Shell {
     ///
     /// 后缀表按来源给：选"从 VHDX 导入"时不该看见一堆 `.tar`。
     pub fn browse_install_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((input, label, extensions)) = self.install_form.as_ref().and_then(|form| {
+        let Some((label, extensions)) = self.install_form.as_ref().and_then(|form| {
             let (label, extensions) = form.source.file_filter()?;
-            Some((form.source_path.clone(), label, extensions))
+            Some((label, extensions))
         }) else {
             return;
         };
@@ -2754,6 +2754,8 @@ impl Shell {
         let prefs = crate::prefs::Prefs {
             refresh_secs: secs,
             theme: self.state.prefs.theme,
+            // ⚠️ 同样要带上默认安装目录 —— 少写一个字段就是把用户设过的东西抹掉。
+            install_dir: self.state.prefs.install_dir.clone(),
         }
         .normalized();
         if self.state.prefs == prefs {

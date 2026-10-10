@@ -1357,7 +1357,7 @@ mod tests {
                 path: r"D:\img\ubuntu.tar".to_owned(),
             },
         );
-        let plan = plan(&spec, &ctx()).unwrap();
+        let plan = super::plan(&spec, &ctx()).unwrap();
 
         assert_eq!(plan.name, "Ubuntu");
         assert_eq!(plan.install_dir, r"D:\wsl\Ubuntu");
@@ -1390,7 +1390,7 @@ mod tests {
                 path: r"D:\img\ext4.vhdx".to_owned(),
             },
         );
-        let plan = plan(&spec, &ctx()).unwrap();
+        let plan = super::plan(&spec, &ctx()).unwrap();
         assert_eq!(
             plan.steps.last().unwrap().args,
             vec![
@@ -1414,7 +1414,7 @@ mod tests {
             },
         );
         // 留空安装目录 → 用默认目录推出来，仍然是 `--location`
-        let plan = plan(&spec, &ctx()).unwrap();
+        let plan = super::plan(&spec, &ctx()).unwrap();
         assert_eq!(
             plan.steps[0].args,
             vec![
@@ -1430,7 +1430,7 @@ mod tests {
 
         // 显式给目录
         spec.install_dir = r"E:\wsl\MyDistro".to_owned();
-        let plan = plan(&spec, &ctx()).unwrap();
+        let plan = super::plan(&spec, &ctx()).unwrap();
         assert!(plan.steps[0].args.iter().any(|a| a == r"E:\wsl\MyDistro"));
 
         // 上下文里也没有默认目录 → 老实不传 --location
@@ -1440,7 +1440,7 @@ mod tests {
         };
         let mut no_dir = spec.clone();
         no_dir.install_dir = String::new();
-        let plan = plan(&no_dir, &bare).unwrap();
+        let plan = super::plan(&no_dir, &bare).unwrap();
         assert!(!plan.steps[0].args.iter().any(|a| a == "--location"));
         assert!(plan.install_dir.is_empty());
     }
@@ -1455,7 +1455,7 @@ mod tests {
                 web_download: false,
             },
         );
-        let plan = plan(&spec, &ctx()).unwrap();
+        let plan = super::plan(&spec, &ctx()).unwrap();
 
         assert_eq!(
             labels(&plan),
@@ -1494,7 +1494,7 @@ mod tests {
             launch: true,
             web_download: true,
         };
-        let plan = plan(&spec, &ctx()).unwrap();
+        let plan = super::plan(&spec, &ctx()).unwrap();
         assert!(plan.steps[0].args.iter().any(|a| a == "--web-download"));
         assert!(!plan.steps[0].args.iter().any(|a| a == "--no-launch"));
     }
@@ -1509,7 +1509,7 @@ mod tests {
                 web_download: false,
             },
         );
-        let plan = plan(&spec, &ctx()).unwrap();
+        let plan = super::plan(&spec, &ctx()).unwrap();
         assert_eq!(
             plan.steps[0].args,
             vec![
@@ -1536,7 +1536,7 @@ mod tests {
         };
         let mut no_dir = spec.clone();
         no_dir.install_dir = String::new();
-        let plan = plan(&no_dir, &bare).unwrap();
+        let plan = super::plan(&no_dir, &bare).unwrap();
         assert_eq!(labels(&plan), vec!["Wsl", "WaitRegistered"]);
     }
 
@@ -1550,7 +1550,7 @@ mod tests {
                 release: "noble".to_owned(),
             },
         );
-        let plan = plan(&spec, &ctx()).unwrap();
+        let plan = super::plan(&spec, &ctx()).unwrap();
         assert_eq!(
             labels(&plan),
             vec!["Curl", "CreateDir", "Wsl", "RemoveFile"]
@@ -1588,7 +1588,7 @@ mod tests {
         );
         spec.set_default = true;
 
-        let plan = plan(&spec, &ctx()).unwrap();
+        let plan = super::plan(&spec, &ctx()).unwrap();
         let last = plan.steps.last().unwrap();
         assert_eq!(last.program, PlanProgram::Wsl);
         assert_eq!(last.args, vec!["--set-default", "Ubuntu"]);
@@ -1599,7 +1599,7 @@ mod tests {
             wslconfig_sparse: true,
             ..ctx()
         };
-        let plan = plan(&spec, &sparse_ctx).unwrap();
+        let plan = super::plan(&spec, &sparse_ctx).unwrap();
         let programs: Vec<PlanProgram> = plan.steps.iter().map(|s| s.program).collect();
         assert_eq!(
             programs,
@@ -1622,7 +1622,7 @@ mod tests {
             ..ctx()
         };
         let spec = InstallSpec::new("  ", InstallSource::Tar { path: " ".to_owned() });
-        let err = plan(&spec, &bare).unwrap_err();
+        let err = super::plan(&spec, &bare).unwrap_err();
         assert!(err.contains("发行版名不能为空"), "{err}");
         assert!(err.contains("tar 文件路径不能为空"), "{err}");
         assert!(err.contains("必须指定安装目录"), "{err}");
@@ -1635,7 +1635,7 @@ mod tests {
             },
         );
         relative.install_dir = r"wsl\X".to_owned();
-        let err = plan(&relative, &ctx()).unwrap_err();
+        let err = super::plan(&relative, &ctx()).unwrap_err();
         assert!(err.contains("绝对路径"), "{err}");
 
         // 在线安装：没选发行版
@@ -1647,7 +1647,7 @@ mod tests {
                 web_download: false,
             },
         );
-        assert!(plan(&no_id, &ctx()).unwrap_err().contains("请先选"));
+        assert!(super::plan(&no_id, &ctx()).unwrap_err().contains("请先选"));
         // 在线安装要改名却没目录
         let no_dir = InstallSpec::new(
             "X",
@@ -1657,7 +1657,7 @@ mod tests {
                 web_download: false,
             },
         );
-        let err = plan(&no_dir, &bare).unwrap_err();
+        let err = super::plan(&no_dir, &bare).unwrap_err();
         assert!(err.contains("安装目录"), "{err}");
 
         // 镜像站没选 URL / URL 形状不对
@@ -1669,7 +1669,7 @@ mod tests {
                 release: "noble".to_owned(),
             },
         );
-        assert!(plan(&no_url, &ctx()).unwrap_err().contains("还没有选好镜像"));
+        assert!(super::plan(&no_url, &ctx()).unwrap_err().contains("还没有选好镜像"));
         let bad_url = InstallSpec::new(
             "X",
             InstallSource::Mirror {
@@ -1678,7 +1678,7 @@ mod tests {
                 release: "noble".to_owned(),
             },
         );
-        assert!(plan(&bad_url, &ctx()).unwrap_err().contains("http"));
+        assert!(super::plan(&bad_url, &ctx()).unwrap_err().contains("http"));
     }
 
     #[test]

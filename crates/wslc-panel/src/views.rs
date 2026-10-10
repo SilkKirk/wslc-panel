@@ -1545,7 +1545,9 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
     // 开关用**按钮**而不是复选框：全项目都是这个路子
     // （复选框样式在深色主题下对比度很差）。
     if source.supports_launch() {
-        let entity = entity.clone();
+        // ⚠️ 不要用 `let entity = entity.clone()` 这种同名遮蔽：这个块里要用两次，
+        // 第二次会因为"已经从第一次的遮蔽变量里移走了"而编译不过（真的踩到了）。
+        let launch_entity = entity.clone();
         let mut button = Button::new("toggle-launch")
             .label(if form.launch {
                 "装完立即启动：是"
@@ -1554,14 +1556,14 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
             })
             .small()
             .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.toggle_install_launch(cx));
+                launch_entity.update(cx, |shell, cx| shell.toggle_install_launch(cx));
             });
         if form.launch {
             button = button.primary();
         }
         options.push(button.into_any_element());
 
-        let entity = entity.clone();
+        let web_entity = entity.clone();
         let mut button = Button::new("toggle-web-download")
             .label(if form.web_download {
                 "下载源：GitHub（--web-download）"
@@ -1570,7 +1572,7 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
             })
             .small()
             .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.toggle_web_download(cx));
+                web_entity.update(cx, |shell, cx| shell.toggle_web_download(cx));
             });
         if form.web_download {
             button = button.primary();
@@ -1715,7 +1717,8 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
         page = page.child(card("装前检查", v_flex().w_full().gap_2().children(problems)));
     }
 
-    page.child(card("要执行的步骤", preview_body))
+    page = page
+        .child(card("要执行的步骤", preview_body))
         .child(action);
 
     // 装过 / 正在装 → 显示日志（装完之后留在页面上，用户要能读它）

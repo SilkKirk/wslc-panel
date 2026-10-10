@@ -333,21 +333,19 @@ pub const ONLINE_LIST_FALLBACK_URLS: [&str; 2] = [
 /// "wsl 报错 + 兜底拿到了列表"。错误信息留着给用户看，
 /// 界面自己决定要不要显示。这样调用方不必区分"完全成功"和"兜底成功"。
 pub fn online_distros(wsl: &Wsl) -> OnlineListing {
-    let mut wsl_error = String::new();
-
-    match list_online(wsl) {
-        Ok((items, reason)) => {
-            if !items.is_empty() {
-                return OnlineListing {
-                    items,
-                    error: String::new(),
-                    source: OnlineListSource::Wsl,
-                };
-            }
-            wsl_error = reason;
+    // 直接一处赋值（而不是先 `let mut ... = String::new()` 再覆盖）：
+    // 那样编译器会提醒"初始值没被读过"，而它是对的。
+    let wsl_error = match list_online(wsl) {
+        Ok((items, _)) if !items.is_empty() => {
+            return OnlineListing {
+                items,
+                error: String::new(),
+                source: OnlineListSource::Wsl,
+            };
         }
-        Err(e) => wsl_error = e.to_string(),
-    }
+        Ok((_, reason)) => reason,
+        Err(e) => e.to_string(),
+    };
 
     tracing::info!("wsl --list --online 没拿到清单（{wsl_error}），改走微软那份 JSON");
 
