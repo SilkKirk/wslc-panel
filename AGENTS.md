@@ -64,7 +64,7 @@ crates/
 只是元数据，对那一步一点用都没有，缓存再热也得从头再来。
 
 那些测试全是纯逻辑，搬进不依赖 GPUI 的 `wslc-panel-core` 之后，
-由 `core` 任务里的 `cargo test -p wslc-panel-core` 跑，**十几秒完事**。
+由 `core` 任务里的 `cargo test --workspace --exclude wslc-panel` 跑，**十几秒完事**。
 
 > **一轮 CI：17.7 分钟 → 1.7 分钟。测试一条没少。**
 
@@ -80,8 +80,8 @@ crates/
 
 | job | 名字 | 干什么 | 耗时 |
 |---|---|---|---|
-| `core` | 纯逻辑测试（wslc-core + wslc-panel-core，无需 GPU） | `cargo test -p wslc-core --profile ci` + `cargo test -p wslc-panel-core --profile ci` | ~1 分钟 |
-| `ui` | wslc-panel 编译检查（GPUI） | `cargo check --workspace --all-targets` + `cargo check -p wslc-panel --bins` | ~15 分钟（冷缓存） |
+| `core` | 纯逻辑测试（wslc-core + wslc-panel-core，无需 GPU） | `cargo test --workspace --exclude wslc-panel --locked --profile ci` | ~1 分钟 |
+| `ui` | wslc-panel 编译检查（GPUI） | `cargo check --workspace --all-targets --locked` + `cargo check -p wslc-panel --bins --locked` | ~15 分钟（冷缓存） |
 | `lint` | 格式与 clippy（只报告，不阻塞） | rustfmt + clippy，`continue-on-error: true` | — |
 
 要点：
@@ -89,12 +89,25 @@ crates/
 - **`core` 先绿不代表能过** —— GPUI 的 API 假设（异步闭包、`ButtonVariants`、
   `Styled` 方法名、`spawn_in` / `update_in`……）只有 `ui` 那个 job 真正编译过才算数。
   **UI 改动要盯 `ui`。**
+- **`core` 用 `--workspace --exclude wslc-panel`，不写死包名** ——
+  写死的话，往 workspace 里加第 4 个 crate 时它的测试**永远不会跑**而 CI 照样绿
+  （而 §2 恰恰鼓励把纯逻辑搬进 `wslc-panel-core`，也就是鼓励加新东西）。
+  `--exclude` 是为了不把 GPUI 链接回来（那是 763 秒的来源）。
+- **所有 cargo 步骤都带 `--locked`** —— 本机没有 cargo，改了 `Cargo.toml`
+  之后**无法在本地重新生成锁文件**；不带 `--locked`，cargo 会自己解析一份新依赖集
+  继续跑，于是 CI 全绿而仓库里那份 `Cargo.lock` 永远是旧的：构建不可复现，
+  release 会用一份**没记录在仓库里**的依赖集出包。
 - `push` **只监听 `main`**；功能分支走 `pull_request`。所以「推分支 + 开 PR」
   不会跑两遍（这是刻意改的，见 `ci.yml` 顶部注释）。
 - 同一个分支连推两次会**取消上一次**（`concurrency`）。
 - 纯文档 PR 会跳过（`paths-ignore: **.md`）。
 - `--profile ci`（见根 `Cargo.toml`）是给**真的会 codegen** 的步骤用的：
   不优化、不带调试信息。**`cargo check` 不要加它** —— 白搭一份冷缓存。
+
+> ⚠️ **「CI 绿」这个信号只覆盖：类型检查过 + 纯逻辑测试跑过。仅此而已。**
+> 它**不**包含：格式（`lint` 永远不阻塞，见下）、clippy、MSRV（CI 用浮动
+> `stable`，`rust-version = "1.75"` 无人校验）、以及界面到底渲染成什么样（§8）。
+> 别把它当全能凭证。
 
 ### 拿 CI 结果的可靠姿势
 
@@ -114,9 +127,19 @@ Invoke-RestMethod -Headers $H -Uri "$api/commits/<sha>/check-runs"
 (Invoke-WebRequest -Headers $H -UseBasicParsing -Uri "$api/actions/jobs/<job_id>/logs").Content
 ```
 
-⚠️ **判断"CI 跑完了"时，必须同时要求 `check_runs.Count -gt 0`。**
-空列表也满足"没有未完成的"，会让循环立刻退出、拿着空结果往下走
-（这个 bug 真的发生过一次，见 §7）。
+⚠️ 轮询"CI 跑完了没"有两个**相反**的坑，都得防：
+
+1. **空列表也满足"没有未完成的"** —— 会让循环立刻退出、拿着空结果往下走。
+   所以必须同时要求 `check_runs.Count -gt 0`。（这个 bug 真的发生过一次。）
+2. **但纯文档 PR（`**.md` / `docs/**`）一条 check run 都不会产生** ——
+   `paths-ignore` 把它们整个跳过了。对这类 PR，`Count -gt 0` 会让循环
+   **永远等下去**（表现为"卡住"，比第 1 条更难查）。正确姿势：先看这个 PR
+   改了哪些文件；零 check run 就直接判成"预期跳过"，别再等。
+
+另外，**只看"没有未完成的"不够，还要看 `conclusion`**：被 `concurrency`
+取消掉的运行、以及被跳过的 job，状态都是 `completed` —— 不检查 `conclusion`
+就会把"取消"读成"绿了"。收工条件应该是
+`status == 'completed'` **且** `conclusion in ('success','neutral','skipped')`。
 
 ---
 
@@ -280,7 +303,11 @@ cx.spawn_in(window, async move |this, cx| {
 
 ### 7.5 弹窗 / 浮层的约定
 
-- 滚动容器**必须先有 `.id(...)`**，否则 GPUI 会 panic。
+- 滚动容器**必须先有 `.id(...)`** —— 但这条**不是**运行时 panic：
+  `overflow_y_scroll` 来自 `StatefulInteractiveElement`，只对**带 id 的**元素
+  可用，漏了 `.id()` 是**编译错误**（`no method named overflow_y_scroll`）。
+  也就是说 `ui` job 会直接拦住，这类缺陷溜不进 main —— 不用把它当"会崩"来防。
+  （`crates/wslc-panel/src/app.rs` 的 `app-body-scroll` 那段注释也说了这件事。）
 - `InputState::new` 要 `&mut Window` → 表单只能**懒创建**（点击时建）。
   渲染时建会每帧重建输入框，**字都打不进去**。
 - 输入框的焦点在打开时用 `window.focus(&handle, cx)` 给过去，

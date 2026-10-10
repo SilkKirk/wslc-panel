@@ -71,7 +71,10 @@ jobs:
           # 注入提交号，让程序自己报出"构建自哪个提交" ——
           # 用户据此确认下载到的到底是不是新版。
           WSLC_PANEL_BUILD_SHA: ${{ github.sha }}
-        run: cargo build -p wslc-panel --release
+        # `--locked`：本机没有 cargo，改 Cargo.toml 后无法在本地重新生成锁文件。
+        # 不加它，cargo 会自己解析一份新依赖集来出包 —— 那份依赖集**没有记录
+        # 在仓库里**，于是"这个 tag 对应哪个可执行文件"就不再可复现了。
+        run: cargo build -p wslc-panel --release --locked
 
       - name: 确认 exe 存在
         shell: pwsh

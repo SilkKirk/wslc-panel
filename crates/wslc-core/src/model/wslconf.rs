@@ -562,10 +562,25 @@ impl WslConfDoc {
             }
         }
 
-        let mut text = out.join("\n");
-        // 文件末尾留一个换行（POSIX 的规矩；`cat` 出来的东西不该少这一下）
-        if !text.is_empty() && !text.ends_with('\n') {
-            text.push('\n');
+        // 用**从原文推断出来的**换行符拼回去。
+        //
+        // 硬写 `"\n"` 会把 CRLF 文件的整个行尾改成 LF，而 `is_dirty()` 是拿
+        // 结果和原文比字节的 —— 那样 CRLF 文件每次打开都算"脏"。
+        let eol = if self.original.contains("\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        };
+        let mut text = out.join(eol);
+        // 结尾换行也跟着**原文**走，而不是无条件补：
+        //
+        // - 原文以换行结尾 → 补一个（POSIX 的规矩；`cat` 出来的东西不该少这一下）；
+        // - 原文是**空文件**   → 补一个（下面要新建节，得让它以换行结尾）；
+        // - 原文没有尾换行  → **不补**。否则 `render() != original` 恒成立，
+        //   `is_dirty()` 就永远是 true —— 用户什么都没改、点一次保存，
+        //   也会整文件重写一遍真实系统配置。这条是被实测踩出来的。
+        if !text.is_empty() && (self.original.is_empty() || self.original.ends_with('\n')) {
+            text.push_str(eol);
         }
         text
     }
@@ -611,8 +626,24 @@ fn split_kv(line: &str) -> Option<(&str, &str)> {
 ///
 /// 返回的是要交给 `sh -c` 的脚本（不含 `wsl -d ... -e` 那一段）。
 pub fn write_script(text: &str) -> String {
-    let delimiter = pick_delimiter(text);
-    format!("cat << '{delimiter}' > /etc/wsl.conf\n{text}{delimiter}\n")
+    // 定界符必须**独占一行**，heredoc 才会结束。
+    //
+    // 如果 `text` 没有以换行结尾，脚本最后一行就成了
+    // `default = uWSL_CONF_EOF` —— 没有任何一行等于定界符，sh 会以
+    // "here-document delimited by end-of-file" 收尾，并把定界符**当正文**
+    // 写进 `/etc/wsl.conf`，那一行就成了一个坏配置项（`default` 变成不存在的
+    // 用户 → 发行版下次启动直接失败，而错误要到那时候才暴露）。
+    //
+    // 所以这里**自己兜底**，不指望调用方记得给结尾换行 ——
+    // 原先的契约只是"text"，而现有 4 个测试全都传了尾换行，等于没覆盖。
+    let body = if text.is_empty() || text.ends_with('\n') {
+        text.to_owned()
+    } else {
+        format!("{text}\n")
+    };
+    // 定界符要跟**真正写进去的**内容比，不是跟传进来的 `text` 比。
+    let delimiter = pick_delimiter(&body);
+    format!("cat << '{delimiter}' > /etc/wsl.conf\n{body}{delimiter}\n")
 }
 
 /// 挑一个 `text` 里没出现过的 heredoc 定界符。
@@ -977,6 +1008,49 @@ options = \"metadata,umask=22\"
         );
     }
 
+    #[test]
+    fn render_is_a_fixpoint_so_a_no_op_save_writes_nothing() {
+        // 回归：`render()` 曾经无条件补 `'\n'`、并且用 `"\n"` 拼行，
+        // 于是 ① CRLF 文件 ② 原文没有结尾换行的文件，`render() != original`
+        // 恒成立 → `is_dirty()` 永远为 true。真实路径上 `read_wsl_conf`
+        // 还会再 `trim_end()` 一次，把普通 LF 文件也一起拖下水：
+        // 用户**什么都没改**、点一次保存，也会整文件重写用户的 /etc/wsl.conf。
+        //
+        // 注意：我们管的键本来就会被规范化成 `key = value`（见 `render` 第 3 步），
+        // 所以这里的输入都用**规范写法**，否则测的就不是"不动点"而是规范化了。
+        for text in [
+            "[network]\r\nhostname = my-box\r\n",      // CRLF
+            "[network]\r\nhostname = my-box\r\n\r\n",  // CRLF + 结尾空行
+            "[network]\nhostname = my-box\n",          // LF
+            "[network]\nhostname = my-box\n\n",        // LF + 结尾空行
+            "[network]\nhostname = my-box",            // LF，**没有**结尾换行
+            "",                                        // 空文件
+        ] {
+            let doc = WslConfDoc::parse(text);
+            assert_eq!(
+                doc.render(),
+                text,
+                "render() 不是原文的不动点，会被判成「有改动」：{text:?}"
+            );
+            assert!(!doc.is_dirty(), "没改动却判定为脏：{text:?}");
+        }
+    }
+
+    #[test]
+    fn crlf_files_keep_their_line_endings() {
+        // 保存一次不能把用户的 CRLF 文件整篇改成 LF。
+        let mut doc = WslConfDoc::parse("[network]\r\nhostname = my-box\r\n");
+        doc.set("network", "hostname", "renamed");
+        let out = doc.render();
+        assert!(out.contains("hostname = renamed\r\n"), "{out:?}");
+        assert!(
+            !out.contains("renamed\n"),
+            "CRLF 被改成了 LF：{out:?}"
+        );
+        // 结尾也得还是 CRLF，不能变成裸 LF
+        assert!(out.ends_with("\r\n"), "{out:?}");
+    }
+
     // -- 版本门控 ----------------------------------------------------------
 
     #[test]
@@ -1048,6 +1122,27 @@ options = \"metadata,umask=22\"
         assert!(!script.starts_with("cat << 'WSL_CONF_EOF'"), "{script}");
         assert!(script.contains("WSL_CONF_EOF_1"), "{script}");
         assert!(script.contains("rm -rf /tmp/oops"), "{script}");
+    }
+
+    #[test]
+    fn write_script_terminates_even_without_a_trailing_newline() {
+        // 回归：`text` 不以换行结尾时，定界符会**粘在最后一行**上，
+        // heredoc 不结束 —— sh 报 "here-document delimited by end-of-file"，
+        // 并把定界符当正文写进文件（`default = uWSL_CONF_EOF` → 默认用户
+        // 变成一个不存在的用户 → 发行版下次启动直接失败）。
+        let script = write_script("[user]\ndefault = u");
+
+        // 定界符必须独占一行
+        assert!(
+            script.ends_with("u\nWSL_CONF_EOF\n"),
+            "定界符没有独占一行：{script:?}"
+        );
+        // 而且不能有"粘在一起"的那一行
+        assert!(!script.contains("uWSL_CONF_EOF"), "{script:?}");
+
+        // 空输入也该给出一个合法的空文件写入脚本
+        let empty = write_script("");
+        assert_eq!(empty, "cat << 'WSL_CONF_EOF' > /etc/wsl.conf\nWSL_CONF_EOF\n");
     }
 
     #[test]
