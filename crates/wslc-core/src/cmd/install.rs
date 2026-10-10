@@ -253,26 +253,23 @@ fn arg(step: &PlannedStep, index: usize) -> Result<&str> {
 
 /// 起一个 `wsl.exe` 步骤，边跑边读。
 ///
-/// 带 [`PlannedStep::location_fallback`] 的步骤失败时会**去掉 `--location` 重试一次**：
-/// `--location` 在 `wsl --install -d` 上是文档列出的选项，但本机没法验证商店那条路
-/// 是否真的认它。真不认的话，去掉它至少能把发行版装上 —— 后面那一步
-/// `EnsureRelocated` 会把名字和位置补正，比"安装直接失败"好得多。
+/// 带 [`PlannedStep::retry_other_source`] 的步骤（只有在线安装那一步）失败时会
+/// **换一个下载源**（微软商店 ⇄ `--web-download`）重试一次：两条通道走的是不同的
+/// 下载实现，实测本机上一条秒失败、另一条能连上 —— 换一次比让用户自己猜好。
 fn run_wsl_step(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions) -> Result<()> {
     let first = run_wsl_once(wsl, &step.args, step.cancellable, opts);
-    if first.is_err() && step.location_fallback {
-        if let Some(without) = args_without_location(&step.args) {
-            emit(
-                opts,
-                InstallEvent::Line(
-                    "带上 `--location` 的那次失败了 —— 改成让 WSL 自己选位置再装一次，\
-                     随后会把它挪到你要的目录"
-                        .to_owned(),
-                ),
-            );
-            return run_wsl_once(wsl, &without, step.cancellable, opts);
-        }
+    if first.is_ok() || !step.retry_other_source {
+        return first;
     }
-    first
+
+    let Some(args) = args_with_source_toggled(&step.args) else {
+        return first;
+    };
+    emit(
+        opts,
+        InstallEvent::Line("这一次没连上 —— 换一个下载源再试一次（微软商店 ⇄ GitHub）".to_owned()),
+    );
+    run_wsl_once(wsl, &args, step.cancellable, opts)
 }
 
 /// 跑一条 `wsl.exe` 命令（一步，不重试）。
@@ -290,11 +287,23 @@ fn run_wsl_once(
     finish_stream(handle, "wsl", args, last, cancellable, None, opts)
 }
 
-/// 去掉 `--location <dir>` 这一对参数；没有它时返回 `None`。
-fn args_without_location(args: &[String]) -> Option<Vec<String>> {
-    let at = args.iter().position(|arg| arg == "--location")?;
-    let mut out = Vec::with_capacity(args.len().saturating_sub(2));
-    out.extend(args[..at].iter().cloned());
+/// 商店 ⇄ `--web-download`：有就去掉，没有就插在 `-d <id>` 后面。
+///
+/// 返回 `None` 表示这条命令根本不是在装某个发行版（没有 `-d`）——
+/// 那种情况不该乱改参数。
+fn args_with_source_toggled(args: &[String]) -> Option<Vec<String>> {
+    if let Some(at) = args.iter().position(|arg| arg == "--web-download") {
+        let mut out = Vec::with_capacity(args.len() - 1);
+        out.extend(args[..at].iter().cloned());
+        out.extend(args[at + 1..].iter().cloned());
+        return Some(out);
+    }
+
+    // 插在 `-d <id>` 后面：参数顺序对 wsl 无所谓，但这样日志里读起来和文档一致
+    let at = args.iter().position(|arg| arg == "-d")?;
+    let mut out = Vec::with_capacity(args.len() + 1);
+    out.extend(args[..=at + 1].iter().cloned());
+    out.push("--web-download".to_owned());
     out.extend(args.get(at + 2..).unwrap_or_default().iter().cloned());
     Some(out)
 }
@@ -751,49 +760,49 @@ mod tests {
             program: PlanProgram::CreateDir,
             args: Vec::new(),
             cancellable: true,
-            location_fallback: false,
+            retry_other_source: false,
         };
         assert!(matches!(arg(&step, 0), Err(Error::Install(_))));
     }
 
     #[test]
-    fn location_can_be_stripped_for_the_retry() {
-        // 快路径失败时的兜底：去掉 `--location <dir>` 这一对，其余原样
+    fn the_download_source_can_be_toggled_for_the_retry() {
         let owned = |items: &[&str]| -> Vec<String> {
             items.iter().map(|item| (*item).to_owned()).collect()
         };
 
-        let args = owned(&[
-            "--install",
-            "-d",
-            "Ubuntu-24.04",
-            "--location",
-            r"D:\wsl\U",
-            "--version",
-            "2",
-            "--no-launch",
-        ]);
+        // 商店 → GitHub：插在 `-d <id>` 后面
+        let store = owned(&["--install", "-d", "Ubuntu-24.04", "--version", "2", "--no-launch"]);
         assert_eq!(
-            args_without_location(&args).unwrap(),
+            args_with_source_toggled(&store).unwrap(),
             owned(&[
                 "--install",
                 "-d",
                 "Ubuntu-24.04",
+                "--web-download",
                 "--version",
                 "2",
                 "--no-launch"
             ])
         );
 
-        // 没有 `--location` 时**不重试**（返回 None）—— 否则等于把命令原样再跑一遍
-        assert_eq!(args_without_location(&owned(&["--install", "-d", "X"])), None);
-        assert_eq!(args_without_location(&[]), None);
-
-        // `--location` 是最后一个参数（畸形计划）→ 只丢掉它自己，不 panic
+        // GitHub → 商店：去掉那个开关，其余原样
+        let web = owned(&[
+            "--install",
+            "-d",
+            "Ubuntu",
+            "--web-download",
+            "--version",
+            "2",
+        ]);
         assert_eq!(
-            args_without_location(&owned(&["--install", "--location"])).unwrap(),
-            owned(&["--install"])
+            args_with_source_toggled(&web).unwrap(),
+            owned(&["--install", "-d", "Ubuntu", "--version", "2"])
         );
+
+        // 不是在装发行版（没有 `-d`）→ 不重试（返回 None），不许乱改命令
+        assert_eq!(args_with_source_toggled(&owned(&["--list", "--online"])), None);
+        assert_eq!(args_with_source_toggled(&[]), None);
     }
 
     #[test]
@@ -814,14 +823,14 @@ mod tests {
                     program: PlanProgram::CreateDir,
                     args: vec![dir.to_string_lossy().into_owned()],
                     cancellable: true,
-                    location_fallback: false,
+            retry_other_source: false,
                 },
                 PlannedStep {
                     label: "删掉临时文件（本来就不在，也算成功）".to_owned(),
                     program: PlanProgram::RemoveFile,
                     args: vec![file.to_string_lossy().into_owned()],
                     cancellable: true,
-                    location_fallback: false,
+            retry_other_source: false,
                 },
             ],
             notes: Vec::new(),
@@ -876,14 +885,14 @@ mod tests {
                     program: PlanProgram::Wsl,
                     args: vec!["--import".to_owned()],
                     cancellable: true,
-                    location_fallback: false,
+            retry_other_source: false,
                 },
                 PlannedStep {
                     label: "不该被执行到".to_owned(),
                     program: PlanProgram::CreateDir,
                     args: vec![std::env::temp_dir().to_string_lossy().into_owned()],
                     cancellable: true,
-                    location_fallback: false,
+            retry_other_source: false,
                 },
             ],
             notes: Vec::new(),
@@ -929,7 +938,7 @@ mod tests {
                 program: PlanProgram::WaitRegistered,
                 args: vec!["X".to_owned()],
                 cancellable: true,
-                location_fallback: false,
+            retry_other_source: false,
             }],
             notes: Vec::new(),
         };

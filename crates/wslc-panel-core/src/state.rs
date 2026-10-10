@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use wslc_core::cmd::install::InstallEvent;
-use wslc_core::mirrors::{self, MirrorDistro};
+use wslc_core::mirrors::{self, Offer};
 use wslc_core::model::install::{online_matches, InstallSpec, OnlineDistro, PlanContext, Preflight};
 // 「在线清单来自哪儿」是**数据**（`wsl -l -o` 还是兜底 JSON），
 // 定义在 `wslc-core` 里；这里转出去，界面按它显示那句说明。
@@ -165,38 +165,48 @@ pub enum InstallSourceKind {
 }
 
 impl InstallSourceKind {
-    /// 全部可选值（决定界面上的按钮顺序）。
+    /// 全部可选值（决定下拉框里的顺序与索引）。
     ///
-    /// 顺序刻意是 **本地三种 → 镜像站 → 在线**：越靠前越不依赖网络。
-    /// 本机实测 `wsl --list --online` 是坏的（解析不了
-    /// `raw.githubusercontent.com`），所以在线那条最不该当默认。
+    /// 顺序：**本地的三条在前，联网的两条在后**；联网那两条里
+    /// 「微软商店」排在「镜像源」前面 —— 商店是 WSL 官方那条路，
+    /// 装出来就是官方发行版，镜像源是商店/GitHub 都拉不动时的备选。
     pub const ALL: [InstallSourceKind; 5] = [
         InstallSourceKind::Tar,
         InstallSourceKind::Vhdx,
         InstallSourceKind::File,
-        InstallSourceKind::Mirror,
         InstallSourceKind::Online,
+        InstallSourceKind::Mirror,
     ];
 
-    /// 按钮文案。
+    /// 下拉框里的文案。
+    ///
+    /// ⚠️ **措辞是我们自己写的**：参考实现是 GPL-3.0-only、本仓库是 Apache-2.0
+    /// （`AGENTS.md` §6），只对齐"有哪几类"，不抄它的字。
     pub fn label(self) -> &'static str {
         match self {
-            Self::Tar => "从 tar 导入",
-            Self::Vhdx => "从 VHDX 导入",
-            Self::File => "从文件安装",
-            Self::Mirror => "镜像站下载",
-            Self::Online => "在线安装",
+            Self::Tar => "本地 rootfs 文件（tar / tar.gz / tar.xz）",
+            Self::Vhdx => "导入 VHDX 虚拟磁盘",
+            Self::File => "从 .wsl / 文件安装",
+            Self::Online => "微软商店 (Microsoft Store)",
+            Self::Mirror => "在线发行版（国内镜像源）",
         }
     }
 
-    /// 一句话说明（显示在按钮下面）。
+    /// 一句话说明（显示在下拉框下面）。
     pub fn hint(self) -> &'static str {
         match self {
             Self::Tar => "最可靠：本地 tar 文件，不需要联网。只是把文件系统铺开。",
             Self::Vhdx => "本地 ext4 虚拟磁盘（`.vhdx`）会被**拷贝**一份到安装目录，原始文件不动。",
             Self::File => "交给 WSL 自己的安装器（`.wsl` 或 rootfs 都行），会做首次启动初始化（建默认用户）。",
-            Self::Mirror => "从国内镜像站下载官方 rootfs 再导入 —— 拉不动商店时用这条。",
-            Self::Online => "从微软商店/网络下载。清单拉不到时可以手输发行版名。",
+            Self::Online => {
+                "走 WSL 官方的在线安装（`wsl --install -d`）：默认从微软商店装，\
+                 商店拉不动时可以切到 GitHub（`--web-download`）。\
+                 下面那个发行版清单来自微软的 `DistributionInfo.json`。"
+            }
+            Self::Mirror => {
+                "从国内镜像站下载官方 rootfs 再导入 —— 商店和 GitHub 都拉不动时用这条，\
+                 只用 `curl.exe`，不碰微软的服务器。"
+            }
         }
     }
 
@@ -899,7 +909,7 @@ impl PromptKind {
                  本程序不会替你创建用户。"
             }
             Self::ExportDistro => {
-                "导出成 **tar**，之后可以用「添加实例 → 从 tar 导入」再装回来，\
+                "导出成 **tar**，之后可以用「添加实例 → 本地 rootfs 文件」再装回来，\
                  也能拷到别的机器上用。18 GB 的盘要几分钟到几十分钟，\
                  期间有进度条、随时可以取消；取消留下的是**不完整**的文件，要自己删。"
             }
@@ -1199,18 +1209,43 @@ impl MirrorProbeResult {
 pub struct MirrorChoice {
     /// 镜像站名。
     pub site: String,
-    /// rootfs 的完整 URL。
+    /// 完整 URL。
     pub url: String,
     /// 版本代号（计划里显示用）。
     pub release: String,
+    /// 打包格式（`tar.xz` / `wsl`……）—— 决定装法，见 `mirrors` 的模块说明。
+    pub format: String,
     /// 预期大小（下载进度条的分母）；未知时 `None`。
     pub bytes: Option<u64>,
 }
 
-/// 「镜像站下载」那一块的状态。
+impl MirrorChoice {
+    /// 是不是 `.wsl` 包（走 `--install --from-file` 而不是 `--import`）。
+    pub fn is_bundle(&self) -> bool {
+        wslc_core::model::install::InstallSource::mirror_is_bundle(&self.format, &self.url)
+    }
+}
+
+/// 「在线发行版（国内镜像源）」那一块的状态。
+///
+/// 清单是**动态拉的**（`wslc_core::cmd::catalog`，两个 HTTP 请求走 `curl.exe`），
+/// 所以这里存的是"拉回来的清单 + 探测结果"，而不是写死的表。
 #[derive(Debug, Clone, PartialEq)]
 pub struct MirrorState {
-    /// 内置表里选中的那一条（默认第一条）。
+    /// 正在拉清单。
+    pub loading: bool,
+    /// 清单拉取失败的原因（成功时 `None`）。
+    ///
+    /// 和 `online.error` 一样是"要原样显示给用户看"的那种话
+    /// （接口不通 / 解不开 / 架构不认识）。
+    pub load_error: Option<String>,
+    /// 清单（每个"发行版 + 版本"一条）。
+    pub offers: Vec<Offer>,
+    /// 清单来源说明（`"清单来自 wslui 接口（api1 → api2）"`）。
+    pub origin: String,
+    /// 清单的更新时间（接口给的）。
+    pub updated: Option<String>,
+    /// 选中的那一条（`"<name> <version>"`；空串 = 还没选，按第一条算）。
     pub distro_id: String,
     /// 正在探测。
     pub probing: bool,
@@ -1218,17 +1253,19 @@ pub struct MirrorState {
     pub results: Vec<MirrorProbeResult>,
     /// 选定的那一个。
     pub chosen: Option<MirrorChoice>,
-    /// 失败原因（比如"这个镜像上没有这个文件"）。
+    /// 探测失败原因（比如"所有镜像上都拿不到"）。
     pub error: Option<String>,
 }
 
 impl Default for MirrorState {
     fn default() -> Self {
         Self {
-            distro_id: mirrors::distros()
-                .first()
-                .map(|d| d.id.to_owned())
-                .unwrap_or_default(),
+            loading: false,
+            load_error: None,
+            offers: Vec::new(),
+            origin: String::new(),
+            updated: None,
+            distro_id: String::new(),
             probing: false,
             results: Vec::new(),
             chosen: None,
@@ -1243,11 +1280,28 @@ impl MirrorState {
         Self::default()
     }
 
-    /// 内置表里当前选中的条目。
-    pub fn selected_distro(&self) -> Option<&'static MirrorDistro> {
-        mirrors::distros()
-            .iter()
-            .find(|distro| distro.id == self.distro_id)
+    /// 当前选中的那一条（没显式选过就是第一条）。
+    pub fn selected_offer(&self) -> Option<&Offer> {
+        if !self.distro_id.trim().is_empty() {
+            if let Some(found) = self.offers.iter().find(|offer| offer.id() == self.distro_id) {
+                return Some(found);
+            }
+        }
+        self.offers.first()
+    }
+
+    /// 换一条清单：清掉上一次的探测结果，并在原来选的那条没了时回落到第一条。
+    pub fn set_offers(&mut self, offers: Vec<Offer>, origin: String, updated: Option<String>) {
+        // 原来选的那条还在新清单里吗（清单会更新，版本可能就没了）
+        let keep = offers.iter().any(|offer| offer.id() == self.distro_id);
+        self.offers = offers;
+        self.origin = origin;
+        self.updated = updated;
+        self.load_error = None;
+        if !keep {
+            self.distro_id = self.offers.first().map(Offer::id).unwrap_or_default();
+            self.reset_probe();
+        }
     }
 
     /// 换一个发行版：清掉上一次的探测结果（否则会拿旧结果当新的）。
@@ -1257,9 +1311,15 @@ impl MirrorState {
             return;
         }
         self.distro_id = id;
+        self.reset_probe();
+    }
+
+    /// 把探测结果清空（换发行版 / 重新拉清单时用）。
+    pub fn reset_probe(&mut self) {
         self.results.clear();
         self.chosen = None;
         self.error = None;
+        self.probing = false;
     }
 }
 
@@ -1849,6 +1909,19 @@ mod tests {
         let labels: Vec<&str> = InstallSourceKind::ALL.iter().map(|k| k.label()).collect();
         let unique: std::collections::HashSet<&&str> = labels.iter().collect();
         assert_eq!(unique.len(), labels.len(), "{labels:?}");
+
+        // 「微软商店」必须**一眼看得出来**是商店 —— 用户最想找的就是它，
+        // 之前它叫"在线安装"，从名字上完全看不出跟商店有关系。
+        assert!(
+            InstallSourceKind::Online.label().contains("微软商店"),
+            "{}",
+            InstallSourceKind::Online.label()
+        );
+        // 商店排在镜像源前面：商店是 WSL 官方那条路，镜像源是它的备选
+        let order = InstallSourceKind::ALL.to_vec();
+        let store = order.iter().position(|k| *k == InstallSourceKind::Online);
+        let mirror = order.iter().position(|k| *k == InstallSourceKind::Mirror);
+        assert!(store < mirror, "{order:?}");
     }
 
     #[test]
@@ -1970,48 +2043,84 @@ mod tests {
     }
 
     #[test]
-    fn mirror_state_forgets_previous_probes_when_switching_distro() {
+    fn mirror_state_forgets_previous_probes_when_switching_or_reloading() {
+        fn offer(name: &str, version: &str) -> Offer {
+            Offer {
+                name: name.to_owned(),
+                version: version.to_owned(),
+                sources: vec![wslc_core::mirrors::OfferSource {
+                    mirror: "lxc-tuna".to_owned(),
+                    url: format!("https://mirrors.tuna.tsinghua.edu.cn/x/{name}-{version}.tar.xz"),
+                    format: "tar.xz".to_owned(),
+                }],
+            }
+        }
+        fn probed() -> MirrorProbeResult {
+            MirrorProbeResult {
+                site: "lxc-tuna".to_owned(),
+                url: "https://mirrors.tuna.tsinghua.edu.cn/x/a.tar.xz".to_owned(),
+                code: 200,
+                secs: 0.5,
+                bytes: Some(100),
+            }
+        }
+
         let mut state = MirrorState::new();
-        // 默认选中内置表的第一条
-        assert!(state.selected_distro().is_some());
-        let first = state.distro_id.clone();
+        // 还没拉清单 → 没有可选的
+        assert!(state.selected_offer().is_none());
+        assert!(state.distro_id.is_empty());
 
-        state.results.push(MirrorProbeResult {
-            site: "清华 TUNA".to_owned(),
-            url: "https://x/y.tar.xz".to_owned(),
-            code: 200,
-            secs: 0.5,
-            bytes: Some(100),
-        });
+        state.set_offers(
+            vec![offer("Ubuntu", "24.04"), offer("Alpine", "3.22")],
+            "测试清单".to_owned(),
+            Some("2026-10-09T00:00:00Z".to_owned()),
+        );
+        // 拉回来之后默认选第一条
+        assert_eq!(state.distro_id, "Ubuntu 24.04");
+        assert_eq!(state.origin, "测试清单");
+        assert_eq!(state.updated.as_deref(), Some("2026-10-09T00:00:00Z"));
+
+        state.results.push(probed());
         state.chosen = Some(MirrorChoice {
-            site: "清华 TUNA".to_owned(),
-            url: "https://x/y.tar.xz".to_owned(),
-            release: "noble".to_owned(),
+            site: "lxc-tuna".to_owned(),
+            url: "https://mirrors.tuna.tsinghua.edu.cn/x/a.tar.xz".to_owned(),
+            release: "24.04".to_owned(),
+            format: "tar.xz".to_owned(),
             bytes: Some(100),
         });
 
-        let other = wslc_core::mirrors::distros()
-            .iter()
-            .find(|d| d.id != first)
-            .map(|d| d.id.to_owned())
-            .expect("内置表里应该不止一条");
-        state.select_distro(other.clone());
-        assert_eq!(state.distro_id, other);
+        state.select_distro("Alpine 3.22");
+        assert_eq!(state.distro_id, "Alpine 3.22");
         // 换了发行版就不该留着上一条的探测结果（那会拿着 A 的 URL 去装 B）
         assert!(state.results.is_empty());
         assert!(state.chosen.is_none());
         assert!(state.error.is_none());
 
         // 选同一个不算换
-        state.results.push(MirrorProbeResult {
-            site: "a".to_owned(),
-            url: "b".to_owned(),
-            code: 200,
-            secs: 1.0,
-            bytes: None,
-        });
-        state.select_distro(state.distro_id.clone());
+        state.results.push(probed());
+        state.select_distro("Alpine 3.22");
         assert_eq!(state.results.len(), 1);
+
+        // 重新拉清单：原来选的那条还在 → 保留选择与探测结果
+        state.set_offers(
+            vec![offer("Ubuntu", "24.04"), offer("Alpine", "3.22")],
+            "新清单".to_owned(),
+            None,
+        );
+        assert_eq!(state.distro_id, "Alpine 3.22");
+        assert_eq!(state.results.len(), 1);
+
+        // 原来选的那条**没了**（版本更新）→ 回落到第一条并清掉探测结果
+        state.set_offers(vec![offer("Ubuntu", "26.04")], "新清单".to_owned(), None);
+        assert_eq!(state.distro_id, "Ubuntu 26.04");
+        assert!(state.results.is_empty() && state.chosen.is_none());
+
+        // id 与清单对不上（理论上不该发生）时也要能回落到第一条，而不是给 None
+        state.distro_id = "不存在的 1".to_owned();
+        assert_eq!(
+            state.selected_offer().map(Offer::id).as_deref(),
+            Some("Ubuntu 26.04")
+        );
     }
 
     #[test]

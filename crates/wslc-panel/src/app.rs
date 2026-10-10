@@ -130,29 +130,37 @@ impl InstallForm {
             },
             InstallSourceKind::Mirror => {
                 let custom = text(&self.mirror_url);
+                // 选中的那条发行版给出 `release`（只用于显示 / 临时文件名）
+                let release = mirrors
+                    .selected_offer()
+                    .map(|offer| offer.version.clone())
+                    .unwrap_or_default();
                 match (custom.is_empty(), mirrors.chosen.as_ref()) {
-                    // 手填优先
+                    // 手填优先：格式按后缀猜（`.wsl` 要走安装器，不是 `--import`）
                     (false, _) => InstallSource::Mirror {
-                        url: custom,
+                        url: custom.clone(),
                         mirror: "自定义 URL".to_owned(),
-                        release: mirrors
-                            .selected_distro()
-                            .map(|d| d.release.to_owned())
-                            .unwrap_or_default(),
+                        release,
+                        format: if custom.to_lowercase().ends_with(".wsl") {
+                            "wsl".to_owned()
+                        } else if custom.to_lowercase().ends_with(".tar.gz") {
+                            "tar.gz".to_owned()
+                        } else {
+                            "tar.xz".to_owned()
+                        },
                     },
                     // 否则用探测出来的那个；都还没有就给空 URL（校验会挡住并说明）
                     (true, Some(choice)) => InstallSource::Mirror {
                         url: choice.url.clone(),
                         mirror: choice.site.clone(),
                         release: choice.release.clone(),
+                        format: choice.format.clone(),
                     },
                     (true, None) => InstallSource::Mirror {
                         url: String::new(),
                         mirror: String::new(),
-                        release: mirrors
-                            .selected_distro()
-                            .map(|d| d.release.to_owned())
-                            .unwrap_or_default(),
+                        release,
+                        format: "tar.xz".to_owned(),
                     },
                 }
             }
@@ -171,6 +179,16 @@ impl InstallForm {
         };
 
         let mut spec = InstallSpec::new(text(&self.name), source);
+        // 微软商店那条路上，名字**可以留空**：留空就用清单里选中的那个 id
+        // （参考实现的商店页干脆没有名字输入框）。这样默认走的就是
+        // "名字 == id"的快路径，不会有那次多余的全量拷贝。
+        if spec.name.trim().is_empty() && self.source.is_online() {
+            spec.name = self
+                .online_id
+                .clone()
+                .filter(|id| !id.trim().is_empty())
+                .unwrap_or_default();
+        }
         spec.install_dir = text(&self.install_dir);
         spec.set_default = self.set_default;
         spec
@@ -323,42 +341,6 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// GitHub 通不通 —— 在线安装默认走 `--web-download` 还是微软商店。
-///
-/// 参考实现也是这么探的：GitHub 通的时候直接从网络下比走商店快，
-/// 商店在国内还经常拉不动。
-///
-/// ⚠️ **阻塞**（起 `curl.exe`，最长 5 秒），只能在后台执行器上调用 ——
-/// 见 [`Shell::probe_web_download`]。
-fn github_reachable() -> bool {
-    // `-o NUL` 丢掉正文，只留状态码；`-m 5` 是"别为一个默认值等太久"
-    let args = [
-        "-s",
-        "-I",
-        "-L",
-        "-m",
-        "5",
-        "-o",
-        "NUL",
-        "-w",
-        "%{http_code}",
-        "https://github.com",
-    ];
-    match wslc_core::cli::run_helper_with_hint(
-        "curl.exe",
-        "curl.exe",
-        wslc_core::cli::CURL_NOT_FOUND_HINT,
-        &args,
-        Duration::from_secs(10),
-    ) {
-        Ok(out) => out.stdout.trim() == "200",
-        Err(e) => {
-            tracing::info!("探测 GitHub 失败（那就默认走微软商店）：{e}");
-            false
-        }
-    }
-}
-
 /// 安装目录里已经有东西了吗。
 ///
 /// ⚠️ 只在**提交那一刻**调用：渲染每帧都可能发生，而 `read_dir` 碰上网络盘
@@ -449,7 +431,6 @@ pub struct Shell {
     /// 探过"GitHub 通不通"了吗（在线安装的默认下载路径）。
     ///
     /// 只探一次：它决定的是一个**默认值**，每次进页面都起一个 curl 不值得。
-    web_download_probed: bool,
     /// 采集期间又有刷新请求进来；跑完要补一次。
     refresh_again: bool,
     /// 当前这轮采集是否**由用户发起**（点按钮 / 操作完成后补刷）。
@@ -491,7 +472,6 @@ impl Shell {
             prompt: None,
             install_run: None,
             install_cancel: None,
-            web_download_probed: false,
             refresh_again: false,
             refresh_visible: false,
             status_tick: 0,
@@ -533,7 +513,9 @@ impl Shell {
             source: default_source,
             launch: false,
             set_default: false,
-            // 默认走微软商店；后台探到 GitHub 通会把它翻过来（见 `probe_web_download`）
+            // 默认走**微软商店**（实测本机这条路能连上，而带 `--location` 的
+            // `--web-download` 那条不行）。开关在界面上，用户可以切；
+            // 真失败了执行器还会自动换一次（见 `PlannedStep::retry_other_source`）。
             web_download: false,
             web_download_touched: false,
             last_derived_dir: if default_dir.is_empty() {
@@ -1789,9 +1771,17 @@ impl Shell {
     pub fn set_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         if page.needs_window_to_enter() {
             self.ensure_install_form(window, cx);
-            // 在线安装默认走商店还是 GitHub —— 后台探一次（几秒），
-            // 结果回来了把开关拨过去。**不在这里同步探**：那会卡住界面。
-            self.probe_web_download(cx);
+
+            // 进页面就把两份清单在后台拉起来：用户切到「微软商店」或
+            // 「在线发行版（镜像源）」时列表**已经在了**，不用先点一次「刷新」。
+            // 两个请求都很小（商店清单十几 KB、镜像清单 50 KB），
+            // 而且各自的函数里会挡住重复请求。**不在这里同步拉**：那会卡住界面。
+            if self.state.online.items.is_empty() && !self.state.online.loading {
+                self.refresh_online_list(cx);
+            }
+            if self.state.mirrors.offers.is_empty() && !self.state.mirrors.loading {
+                self.refresh_mirror_catalog(cx);
+            }
         }
         self.goto_page(page, cx);
     }
@@ -2255,38 +2245,6 @@ impl Shell {
         }
     }
 
-    /// 后台探一次"GitHub 通不通"，据此决定在线安装的默认下载路径。
-    ///
-    /// **必须后台探**：`curl` 最长 5 秒，放在点击回调里就是"点了「添加实例」
-    /// 界面卡 5 秒"（`AGENTS.md` §7.1 那类 bug）。它决定的是一个**默认值**，
-    /// 晚几百毫秒回来完全没关系 —— 用户能看到开关自己变过去。
-    ///
-    /// 只探一次（`web_download_probed`）：每次进页面都起一个 curl 不值得。
-    fn probe_web_download(&mut self, cx: &mut Context<Self>) {
-        if self.web_download_probed {
-            return;
-        }
-        self.web_download_probed = true;
-
-        cx.spawn(async move |this, cx| {
-            let reachable = cx
-                .background_executor()
-                .spawn(async { github_reachable() })
-                .await;
-
-            let _ = this.update(cx, |shell, cx| {
-                if let Some(form) = shell.install_form.as_mut() {
-                    // 只在用户没动过那个开关时改
-                    if !form.web_download_touched {
-                        form.web_download = reachable;
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
     /// 把当前安装目录记成"新实例默认安装目录"。
     ///
     /// 刻意**不做成设置页里的输入框**：那需要给设置页也引入"懒创建输入框"
@@ -2408,46 +2366,89 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         if let Some(form) = self.install_form.as_mut() {
+            // 只在"名字还是我们填的"时候动它：空着、或者还是上一次选中的那个 id。
+            // 用户自己敲过名字就不该被覆盖（和 `last_derived_dir` 是同一条原则）。
+            let current = form.name.read(cx).value().trim().to_owned();
+            let ours = current.is_empty() || Some(current.as_str()) == form.online_id.as_deref();
             form.online_id = Some(id.clone());
-            form.name
-                .update(cx, |state, cx| state.set_value(id.clone(), window, cx));
+            if ours {
+                form.name
+                    .update(cx, |state, cx| state.set_value(id.clone(), window, cx));
+            }
         }
         self.state.online.select(id);
         self.resync_install_dir(window, cx);
         cx.notify();
     }
 
-    /// 切换镜像站那块选中的发行版。
+    /// 拉「在线发行版（镜像源）」的清单。
+    ///
+    /// 两个 HTTP 请求（先问清单地址、再取清单）走 `curl.exe`，**必须在后台**：
+    /// 最长 25 秒 × 2，放界面上就是"点进去卡半分钟"（`AGENTS.md` §7.1）。
+    pub fn refresh_mirror_catalog(&mut self, cx: &mut Context<Self>) {
+        if self.state.mirrors.loading {
+            return;
+        }
+        self.state.mirrors.loading = true;
+        self.state.mirrors.load_error = None;
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let fetched = cx
+                .background_executor()
+                .spawn(async { wslc_core::cmd::catalog::fetch() })
+                .await;
+
+            let _ = this.update(cx, |shell, cx| {
+                shell.state.mirrors.loading = false;
+                match fetched {
+                    Ok(catalog) => {
+                        let count = catalog.offers.len();
+                        shell.state.mirrors.set_offers(
+                            catalog.offers,
+                            catalog.origin.label().to_owned(),
+                            catalog.updated,
+                        );
+                        shell.state.notify(Toast::success(format!(
+                            "拿到 {count} 个可装的发行版"
+                        )));
+                    }
+                    Err(e) => {
+                        // 清单拉不到时**留着旧清单**：旧的还能用，总比空的强
+                        shell.state.mirrors.load_error = Some(e.clone());
+                        shell.state.notify(Toast::error(e));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 切换镜像源那块选中的发行版。
     pub fn select_mirror_distro(&mut self, id: String, cx: &mut Context<Self>) {
         self.state.mirrors.select_distro(id);
         cx.notify();
     }
 
-    /// 探测镜像站：逐条 HEAD 一遍，挑最快的那个。
+    /// 探测镜像源：逐条 HEAD 一遍，挑最快的那个。
     ///
-    /// **串行**探测（内置表里每个发行版只有 2~3 个候选、每条 8 秒上限）：
-    /// 并发要引入线程管理，而收益只是"省几秒"。
+    /// **串行**探测：清单里一条发行版最多十几个候选、每条 8 秒上限 ——
+    /// 探测期间界面照常能用（跑在后台执行器上），而并发要引入线程管理，
+    /// 收益只是"省几秒"。
     pub fn probe_mirrors(&mut self, cx: &mut Context<Self>) {
         if self.state.mirrors.probing {
             return;
         }
-        let Some(distro) = self.state.mirrors.selected_distro() else {
+        let Some(offer) = self.state.mirrors.selected_offer() else {
             self.state
-                .notify(Toast::error("内置镜像表里没有可用的发行版"));
+                .notify(Toast::error("先拉一下发行版清单（点「刷新清单」）"));
             cx.notify();
             return;
         };
-        if !mirrors::available_on_this_arch() {
-            self.state.notify(Toast::error(format!(
-                "内置镜像表目前只有 amd64 的条目，这台机器是 {} —— 请用「自定义 URL」",
-                mirrors::arch()
-            )));
-            cx.notify();
-            return;
-        }
 
-        let candidates = mirrors::candidates(distro);
-        let release = distro.release.to_owned();
+        let candidates = offer.candidates();
+        let release = offer.version.clone();
 
         self.state.mirrors.probing = true;
         self.state.mirrors.error = None;
@@ -2494,20 +2495,23 @@ impl Shell {
                 match mirrors::pick_fastest(&probed) {
                     Some((candidate, probe)) => {
                         let site = candidate.site.clone();
+                        let bundle = candidate.is_bundle();
                         shell.state.mirrors.chosen = Some(MirrorChoice {
                             site: site.clone(),
                             url: candidate.url,
                             release: release.clone(),
+                            format: candidate.format,
                             bytes: probe.bytes,
                         });
                         shell.state.notify(Toast::success(format!(
-                            "选中最快的镜像：{site}"
+                            "选中最快的镜像：{site}{}",
+                            if bundle { "（.wsl 包）" } else { "" }
                         )));
                     }
                     None => {
                         shell.state.mirrors.chosen = None;
                         shell.state.mirrors.error = Some(
-                            "这个发行版在所有内置镜像上都拿不到（可能那一版的文件改名了）——\
+                            "这个发行版在所有镜像上都拿不到（镜像站的文件会随版本改名）——\
                              换一个版本，或者用「自定义 URL」"
                                 .to_owned(),
                         );

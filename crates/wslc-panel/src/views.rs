@@ -17,7 +17,7 @@ use gpui_kit::*;
 use wslc_core::cmd::container::{PullPolicy, RunSpec};
 // 安装的**计划**是纯逻辑（在 `wslc-core` 里）：页面直接把它的步骤列表画出来，
 // 和执行时读的是同一份数据 —— 预览不会和执行走偏。
-use wslc_core::mirrors;
+use wslc_core::mirrors::{self, Offer};
 use wslc_core::model::install as install_model;
 use wslc_core::model::{ContainerState, ContainerSummary, Distro, DistroState};
 // `/etc/wsl.conf` 的字段表与保序文档模型（纯逻辑，在 `wslc-core` 里）。
@@ -1374,7 +1374,7 @@ fn cell_distro_badge(state: DistroState) -> AnyElement {
 /// # 五条来源共用一套表单
 ///
 /// 靠 [`InstallSourceKind`] 切换 —— 它们只是参数不同，没必要做成五个页面。
-/// 这里**保留**了参考实现没有的「从文件安装」（`.wsl` 是新格式，`--import` 吃不了）。
+/// 这里**保留**了参考实现没有的「从 .wsl / 文件安装」（`.wsl` 是新格式，`--import` 吃不了）。
 ///
 /// # 表单是懒创建的
 ///
@@ -1568,7 +1568,7 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
             .label(if form.web_download {
                 "下载源：GitHub（--web-download）"
             } else {
-                "下载源：微软商店"
+                "下载源：微软商店（Microsoft Store）"
             })
             .small()
             .on_click(move |_, _, cx| {
@@ -1578,6 +1578,23 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
             button = button.primary();
         }
         options.push(button.into_any_element());
+        // 这条对"装不装得上"影响最大，所以把两条通道的差别说清：
+        // 微软商店走的是商店/清单那条通道，`--web-download` 是 WSL 自己去
+        // GitHub 下整包 —— 实测本机上前者能连上、后者直连不通（要代理）。
+        // 真失败了执行器还会自动换一次（见 `PlannedStep::retry_other_source`）。
+        options.push(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child(if form.web_download {
+                    "GitHub 那条要能连上 raw.githubusercontent.com（被墙时要走代理）；\
+                     连不上会自动切回微软商店再试一次。"
+                } else {
+                    "微软商店是 WSL 官方那条路（本机实测能连上）；\
+                     商店也拉不动时，改用「在线发行版（国内镜像源）」——那条完全不依赖 WSL 的网络。"
+                })
+                .into_any_element(),
+        );
     }
 
     {
@@ -1752,16 +1769,16 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
     page.into_any_element()
 }
 
-/// 名字输入框的标签（在线安装时它同时是"清单里没有时手输的 id"）。
+/// 名字输入框的标签（微软商店那条路里它同时是"清单拉不到时手输的 id"）。
 fn name_field_label(source: InstallSourceKind) -> &'static str {
     if source.is_online() {
-        "发行版名（清单拉不到时也可以直接填在线 id，如 Ubuntu-24.04）"
+        "发行版名（留空 = 用下面选中的那个 id；清单拉不到时也可以直接填，如 Ubuntu-24.04）"
     } else {
         "发行版名"
     }
 }
 
-/// 「在线清单」那一块：拉取按钮 + 搜索 + 列表 + 来源说明。
+/// 「微软商店」那一块：刷新 + 搜索 + 发行版列表 + 来源说明。
 fn online_block(
     state: &AppState,
     form: &InstallForm,
@@ -1774,7 +1791,7 @@ fn online_block(
             .label(if state.online.loading {
                 "正在拉取…"
             } else {
-                "拉取在线清单"
+                "刷新商店清单"
             })
             .small()
             .on_click(move |_, _, cx| {
@@ -1792,12 +1809,15 @@ fn online_block(
         .take(200)
         .map(|item| {
             let id = item.id.clone();
-            let label = item.label.clone();
+            // 右边那行小字单独留一份：上面那个闭包已经把 `id` 移走了
+            let id_text = item.id.clone();
             let selected = state.online.selected.as_deref() == Some(item.id.as_str());
             let entity = entity.clone();
 
             let mut button = Button::new(SharedString::from(format!("online-{}", item.id)))
-                .label(item.id.clone())
+                // 主文案用**友好名**（"Ubuntu 24.04 LTS"），id 作次要信息放右边 ——
+                // 和参考实现的观感一致；但真正传给 `wsl --install -d` 的还是 id。
+                .label(item.label.clone())
                 .small()
                 .on_click(move |_, window, cx| {
                     let id = id.clone();
@@ -1818,7 +1838,7 @@ fn online_block(
                     div()
                         .text_xs()
                         .text_color(theme::text_dim())
-                        .child(label),
+                        .child(id_text),
                 )
                 .into_any_element()
         })
@@ -1868,6 +1888,12 @@ fn online_block(
         .w_full()
         .gap_2()
         .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child("选择发行版（微软商店 / Microsoft Store）"),
+        )
+        .child(
             h_flex()
                 .w_full()
                 .gap_2()
@@ -1896,45 +1922,40 @@ fn online_block(
         .into_any_element()
 }
 
-/// 「镜像站」那一块：内置表 + 探测 + 自定义 URL。
+/// 「在线发行版（国内镜像源）」那一块：清单（动态拉）+ 探测 + 自定义 URL。
+///
+/// 清单来自 `wslc_core::cmd::catalog`（wslui 的公开接口，见 `mirrors.rs` 的说明）。
 fn mirror_block(
     state: &AppState,
     form: &InstallForm,
     entity: &Entity<Shell>,
     cx: &App,
 ) -> AnyElement {
-    if !mirrors::available_on_this_arch() {
-        return v_flex()
-            .w_full()
-            .gap_2()
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme::warning())
-                    .child(format!(
-                        "内置镜像表目前只有 amd64 的条目（这台机器是 {}）—— \
-                         请在下面填一个自定义 rootfs URL。",
-                        mirrors::arch()
-                    )),
-            )
-            .child(form_field(
-                "install-mirror-url",
-                "自定义 rootfs URL（http/https，指向 tar.gz / tar.xz）",
-                &form.mirror_url,
-                cx,
-                true,
-            ))
-            .into_any_element();
-    }
+    let refresh = {
+        let entity = entity.clone();
+        Button::new("mirror-refresh")
+            .label(if state.mirrors.loading {
+                "正在拉取…"
+            } else {
+                "刷新清单"
+            })
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.refresh_mirror_catalog(cx));
+            })
+    };
 
-    let distro_buttons: Vec<AnyElement> = mirrors::distros()
+    let selected_id = state.mirrors.selected_offer().map(Offer::id);
+    let offer_rows: Vec<AnyElement> = state
+        .mirrors
+        .offers
         .iter()
-        .map(|distro| {
-            let id = distro.id.to_owned();
-            let selected = state.mirrors.distro_id == distro.id;
+        .map(|offer| {
+            let id = offer.id();
+            let selected = selected_id.as_deref() == Some(id.as_str());
             let entity = entity.clone();
-            let mut button = Button::new(SharedString::from(format!("mirror-{}", distro.id)))
-                .label(distro.label)
+            let mut button = Button::new(SharedString::from(format!("mirror-{id}")))
+                .label(offer.label())
                 .small()
                 .on_click(move |_, _, cx| {
                     let id = id.clone();
@@ -1943,9 +1964,72 @@ fn mirror_block(
             if selected {
                 button = button.primary();
             }
-            button.into_any_element()
+            h_flex()
+                .w_full()
+                .gap_2()
+                .items_center()
+                .child(button)
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child(offer.format_summary()),
+                )
+                .into_any_element()
         })
         .collect();
+
+    // 状态行：正在拉 / 拉失败（原话）/ 清单概览
+    let status: AnyElement = if state.mirrors.loading {
+        div()
+            .text_xs()
+            .text_color(theme::text_muted())
+            .child("正在拉取发行版清单…")
+            .into_any_element()
+    } else if let Some(error) = state.mirrors.load_error.as_ref() {
+        div()
+            .text_xs()
+            .text_color(theme::warning())
+            .child(format!("清单没拉到：{error}"))
+            .into_any_element()
+    } else if !state.mirrors.offers.is_empty() {
+        div()
+            .text_xs()
+            .text_color(theme::text_dim())
+            .child(format!(
+                "共 {} 个可装版本。{}{}",
+                state.mirrors.offers.len(),
+                state.mirrors.origin,
+                state
+                    .mirrors
+                    .updated
+                    .as_ref()
+                    .map(|time| format!("（清单更新于 {time}）"))
+                    .unwrap_or_default()
+            ))
+            .into_any_element()
+    } else {
+        div()
+            .text_xs()
+            .text_color(theme::text_dim())
+            .child("还没拉到清单 —— 点「刷新清单」，或者直接在下面填一个 rootfs URL。")
+            .into_any_element()
+    };
+
+    let list: AnyElement = if offer_rows.is_empty() {
+        div().into_any_element()
+    } else {
+        // ⚠️ 滚动容器必须先有 `.id(...)`（`overflow_y_scroll` 只对带 id 的元素可用，
+        // 漏了是编译错误 —— 见 `AGENTS.md` §7.5）。
+        v_flex()
+            .id("install-mirror-list")
+            .w_full()
+            .max_h(px(220.))
+            .overflow_y_scroll()
+            .gap_1()
+            .children(offer_rows)
+            .into_any_element()
+    };
 
     let probe = {
         let entity = entity.clone();
@@ -2026,19 +2110,6 @@ fn mirror_block(
             .into_any_element(),
     };
 
-    // 当前选中那条的实测备注（大小/验证日期）：数据要从表里来，不能瞎写。
-    let note: AnyElement = state
-        .mirrors
-        .selected_distro()
-        .map(|distro| {
-            div()
-                .text_xs()
-                .text_color(theme::text_dim())
-                .child(distro.note)
-                .into_any_element()
-        })
-        .unwrap_or_else(|| div().into_any_element());
-
     v_flex()
         .w_full()
         .gap_2()
@@ -2046,16 +2117,23 @@ fn mirror_block(
             h_flex()
                 .w_full()
                 .gap_2()
-                .flex_wrap()
-                .children(distro_buttons),
+                .items_center()
+                .child(refresh)
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child("选择发行版（在线发行版 · 国内镜像源）"),
+                ),
         )
-        .child(note)
+        .child(status)
+        .child(list)
         .child(h_flex().w_full().gap_2().items_center().child(probe))
         .child(v_flex().w_full().gap_1().children(rows))
         .child(chosen_line)
         .child(form_field(
             "install-mirror-url",
-            "自定义 rootfs URL（留空 = 用上面探测出来的）",
+            "自定义下载地址（留空 = 用上面探测出来的；`.wsl` 包和 tar 都支持）",
             &form.mirror_url,
             cx,
             true,
