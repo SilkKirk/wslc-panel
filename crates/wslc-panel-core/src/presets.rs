@@ -4,7 +4,9 @@
 //! 但它旁边那几个断言（枚举项不给预设、数值项有预设）是纯逻辑，
 //! 没必要为了跑它们去链接 GPUI（见本 crate 的顶层说明）。
 
-use wslc_core::settings::{SETTING_KEYS, SettingKey, SettingKind};
+// 只用得到 SettingKey：SETTING_KEYS / SettingKind 是下面测试模块自己导入的
+// （clippy 之前在这条上一直报 unused import）。
+use wslc_core::settings::SettingKey;
 
 /// 各配置项的常用预设值。
 pub fn presets_for(key: &SettingKey) -> &'static [&'static str] {
