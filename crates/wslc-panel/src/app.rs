@@ -1841,6 +1841,9 @@ impl Shell {
 
         let wsl = self.state.wsl.clone();
         let target = distro.clone();
+        // 内层 `async move` 会把 `task_target` 吃掉；外层 `update` 还要用
+        // `target` 拼提示、恢复 keep-alive，所以这里分成两个名字。
+        let task_target = target.clone();
         cx.spawn(async move |this, cx| {
             let outcome = cx
                 .background_executor()
@@ -1850,14 +1853,14 @@ impl Shell {
                     let mut errors = Vec::new();
                     if let Some(user) = doc.get("user", "default") {
                         if !user.trim().is_empty()
-                            && !wslc_core::cmd::distro::user_exists(&wsl, &target, user)?
+                            && !wslc_core::cmd::distro::user_exists(&wsl, &task_target, user)?
                         {
                             errors.push(format!("发行版里没有用户「{user}」"));
                         }
                     }
                     if let Some(cmd) = doc.get("boot", "command") {
                         if !cmd.trim().is_empty()
-                            && !wslc_core::cmd::distro::path_exists(&wsl, &target, cmd)?
+                            && !wslc_core::cmd::distro::path_exists(&wsl, &task_target, cmd)?
                         {
                             errors.push(format!("找不到启动命令「{cmd}」"));
                         }
@@ -1867,11 +1870,11 @@ impl Shell {
                     }
 
                     // 3) 写（`write_wsl_conf` 内部会先备份到 .bak）
-                    wslc_core::cmd::distro::write_wsl_conf(&wsl, &target, &text)?;
+                    wslc_core::cmd::distro::write_wsl_conf(&wsl, &task_target, &text)?;
 
                     // 4) 重启：`wsl.conf` 要重启才被读
                     if restart {
-                        wslc_core::cmd::distro::terminate(&wsl, &target)?;
+                        wslc_core::cmd::distro::terminate(&wsl, &task_target)?;
                     }
                     Ok((errors, true))
                 })
