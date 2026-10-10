@@ -1689,7 +1689,7 @@ pub struct AppState {
     pub installing: Option<InstallProgress>,
     /// 在线可安装发行版的清单状态。
     pub online: OnlineDistroState,
-    /// 镜像站那一块的状态（内置表 + 探测结果 + 选中的那个）。
+    /// 「在线发行版（镜像源）」那一块的状态（动态清单 + 探测结果 + 选中的那个）。
     pub mirrors: MirrorState,
 }
 
