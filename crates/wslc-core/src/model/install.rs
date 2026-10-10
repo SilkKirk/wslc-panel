@@ -1832,7 +1832,7 @@ mod tests {
                 format: "tar.xz".to_owned(),
             },
         );
-        assert!(super::plan(&no_url, &ctx()).unwrap_err().contains("还没有选好镜像"));
+        assert!(super::plan(&no_url, &ctx()).unwrap_err().contains("还没有选好下载地址"));
         let bad_url = InstallSpec::new(
             "X",
             InstallSource::Mirror {
