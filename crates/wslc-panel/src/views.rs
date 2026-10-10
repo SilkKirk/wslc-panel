@@ -1370,9 +1370,10 @@ fn cell_distro_badge(state: DistroState) -> AnyElement {
 ///
 /// # 表单是懒创建的
 ///
-/// `InputState::new` 需要 `&mut Window`，所以表单在**点击导航时**才建
-/// （见 `Shell::ensure_install_form`）。正常路径下进得来就一定有表单；
-/// 万一没有（比如程序内部跳过来），给一句提示而不是 panic。
+/// `InputState::new` 需要 `&mut Window`，所以表单在**点击实例列表上那个
+/// 「添加实例」按钮时**才建（见 `Shell::ensure_install_form`）。
+/// 正常路径下进得来就一定有表单；万一没有（比如程序内部跳过来），
+/// 给一句提示而不是 panic。
 pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
     let Some(form) = shell.install_form.as_ref() else {
         return card(
@@ -1382,7 +1383,7 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
                 .gap_2()
                 .child(empty_state("表单还没准备好"))
                 .child(div().text_xs().text_color(theme::text_dim()).child(
-                    "从左侧导航再点一次「添加实例」即可 —— 输入框必须在点击时创建。",
+                    "回到「实例列表」，再点一次上面的「添加实例」按钮即可 —— 输入框必须在点击时创建。",
                 )),
         )
         .into_any_element();

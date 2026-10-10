@@ -74,13 +74,18 @@ impl Page {
     ///
     /// ⚠️ 同组的页面必须**连续** —— 侧边栏靠"组名变了就插一条标题"
     /// 来分组（见 `app.rs` 的 `render`）。
-    /// ⚠️ Config 和 WslConfig **故意不在这里** —— 它们已经变成
-    /// 「应用设置」页里的两个 tab（见 [SettingsTab]）。留在 ALL 里
-    /// 会让侧边栏多出两个和「应用设置」重复的入口。
-    pub const ALL: [Page; 9] = [
+    /// ⚠️ 有三页**故意不在这里**：
+    ///
+    /// - `Config` / `WslConfig` —— 已经变成「应用设置」页里的两个 tab
+    ///   （见 [`SettingsTab`]），留在 `ALL` 里会让侧边栏多出两个重复入口；
+    /// - `AddInstance` —— 只能从**实例列表页上那个「添加实例」按钮**进。
+    ///   侧边栏同时列「实例列表」和「添加实例」是冗余的：后者本来就是
+    ///   前者的一个动作，不是并列的一站。
+    ///
+    /// 所以 `ALL` 是"侧边栏列哪些页"，**不等于**"有哪些页"。
+    pub const ALL: [Page; 8] = [
         Page::Dashboard,
         Page::Instances,
-        Page::AddInstance,
         Page::Containers,
         Page::Images,
         Page::Networks,
@@ -1274,6 +1279,7 @@ mod tests {
         // v0.3 加了「实例列表」「添加实例」「应用设置」「WSL 配置」，从 6 个变成 10 个。
         // v0.4 把「wlsc 配置」「WSL 配置」收进「应用设置」的 tab、并加了「关于」，
         // 所以是 10 - 2 + 1 = 9。**总数少了不代表功能少了** —— 那两个只是换了入口。
+        // v0.4 接着把「添加实例」也从侧边栏拿掉了（改从实例列表页的按钮进），9 - 1 = 8。
         //
         // 这个断言存在的意义就是**逼人改它**：加页面时忘了同步导航分组，
         // 侧边栏会出现重复的组标题。历史上 commit 552a91c 就是被它抓到的；
@@ -1281,20 +1287,24 @@ mod tests {
         //
         // ⚠️ 注意 `cargo check --all-targets` 只编译不执行，
         // 所以它真的被跑到要靠 `cargo test -p wslc-panel-core`（见 SPIKE 7.8）。
-        assert_eq!(Page::ALL.len(), 9);
+        assert_eq!(Page::ALL.len(), 8);
     }
 
     #[test]
     fn only_the_add_instance_page_needs_a_window_to_enter() {
         // 有输入框的页面必须在点击时（有 window）把表单建好。
         // 哪天给别的页面加了输入框，这个测试会提醒你一起改。
+        //
+        // ⚠️ `Page::AddInstance` **不在 `Page::ALL` 里**（侧边栏不列它），
+        // 所以不能只遍历 `ALL` 就算完 —— 那样这条断言对它就是**空的**，
+        // 哪天真把它改坏了也抓不到。显式再查一遍。
         for page in Page::ALL {
-            assert_eq!(
-                page.needs_window_to_enter(),
-                page == Page::AddInstance,
-                "{page:?} 的 needs_window_to_enter 不对"
+            assert!(
+                !page.needs_window_to_enter(),
+                "{page:?} 突然需要 window 了 —— 那它得走「添加实例」那条懒创建路径"
             );
         }
+        assert!(Page::AddInstance.needs_window_to_enter());
     }
 
     #[test]
