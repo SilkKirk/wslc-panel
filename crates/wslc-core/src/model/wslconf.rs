@@ -11,112 +11,360 @@
 //! [`crate::wslconfig`]）—— 配置看着生效、其实没有。这两个文件是这台机器上
 //! 最常见的一处配置错位。
 //!
+//! # 表驱动
+//!
+//! 全部 16 个字段都列在 [`FIELDS`] 里（分在 [`SECTIONS`] 下）。界面**遍历**
+//! 这两张表来画表单，加一个字段只需要动这里一行 —— 不用改 UI 代码。
+//!
 //! # 和参考实现最大的不同：**保存时从原文改**
 //!
-//! `owu/wsl-dashboard`（GPL-3.0，只读来理解机制）的做法是把 `wsl.conf`
-//! 解析成一个结构体，保存时**从头重建**整个文件 —— 于是注释、空行、
-//! 以及它不认识的新键（微软以后加的）**全都会丢**。
+//! `owu/wsl-dashboard`（GPL-3.0，只读来理解机制）把 `wsl.conf` 解析成结构体，
+//! 保存时**从头重建**整个文件 —— 于是注释、空行、以及它不认识的新键
+//! **全都会丢**；而且它的 UI 把每个字段都 `unwrap_or(默认值)` 再 `Some(...)`
+//! 写回，所以"只改一个主机名"也会把 16 个键全写出来，
+//! **把 WSL 以后改默认值的机会钉死**。
 //!
-//! 这里改成：**以原文为底，只动我们管的那几行**。别的原样保留。
+//! 这里改成：
+//!
+//! - 以**原文为底**，只动我们管的那几行；
+//! - 值只在"文件里写过或用户动过"时才存在；没动过的项**不落进文件**，
+//!   界面上显示有效默认值 + 一个「默认」标记。
+//!
 //! 代价是代码复杂一点（见 [`WslConfDoc::render`]），换来的是
-//! "用户手写的注释不会因为我们点了一次保存就消失"。
-//!
-//! # 我们管哪几个键
-//!
-//! 只列表单上有的那几个（[`MANAGED`]）。其余的一律原样保留 ——
-//! 包括我们**能读懂但没做进表单**的（`automount.*` / `gpu.*` / `time.*`……），
-//! 以及**完全不认识**的。
+//! "用户手写的注释不会因为我们点了一次保存就消失"，
+//! 以及"没碰过的项不会被固化进配置文件"。
 
-/// 我们**管**的键：`(节, 键)`。
-///
-/// 只有在这张表里的键才会被 [`WslConfDoc::render`] 改写或删除；
-/// 不在表里的一律原样留着。
-///
-/// ⚠️ 大小写：节名和键名在 `.conf` 里是**大小写敏感**的（`appendWindowsPath`
-/// 不能写成 `appendwindowspath`），所以这里保持 WSL 文档里的驼峰写法，
-/// 比较时也按**原样**比 —— 和 [`crate::wslconfig`] 那边刻意不同：
-/// 那边是实测 WSL 自己忽略大小写，这边没有实测依据，不猜。
-pub const MANAGED: &[(&str, &str)] = &[
-    ("network", "hostname"),
-    ("interop", "enabled"),
-    ("interop", "appendWindowsPath"),
-    ("user", "default"),
-    ("boot", "command"),
-    ("boot", "systemd"),
-];
+use std::collections::BTreeMap;
 
-/// 我们管的那几个键的**当前值**。
-///
-/// `None` = 文件里没写（跟着 WSL 的默认走）。
-/// 空字符串是**有意义**的（比如 `hostname =`），所以不用空串表示"没写"。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct WslConfValues {
-    /// `[network] hostname` —— 自定义主机名。
-    pub hostname: Option<String>,
-    /// `[interop] enabled` —— 能不能从 Linux 里跑 Windows 程序。
-    pub interop_enabled: Option<String>,
-    /// `[interop] appendWindowsPath` —— 要不要把 Windows 的 PATH 追加进来。
-    pub append_windows_path: Option<String>,
-    /// `[user] default` —— 默认登录用户。
-    pub default_user: Option<String>,
-    /// `[boot] command` —— 开机跑的命令。
-    pub boot_command: Option<String>,
-    /// `[boot] systemd` —— 是否用 systemd 当 PID 1。
+/// 一个节（`[name]`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Section {
+    /// 写进文件里的节名。
+    pub name: &'static str,
+    /// 界面上的分组标题。
+    pub label: &'static str,
+    /// 这一节要求的最低 WSL 版本；`None` = 所有版本都支持。
     ///
-    /// 表单上是**只读**的（改它要重启发行版才生效，而且改坏了很难救），
-    /// 但**必须解析出来并在保存时原样写回** —— 不然用户点一次保存
-    /// 就把 systemd 配置抹了。
-    pub systemd: Option<String>,
+    /// 依据是参考项目 `check_wsl_version_support` 里的判断
+    /// （只读来理解机制，数字是 WSL 自己的发布节奏）：
+    /// `[boot]` 要 0.67.6+，`[gpu]` / `[time]` 要 1.0.0+。
+    pub requires: Option<&'static str>,
 }
 
-impl WslConfValues {
-    /// 按 `(节, 键)` 取一个值。
+/// 全部节，按界面上的顺序。
+pub const SECTIONS: &[Section] = &[
+    Section {
+        name: "automount",
+        label: "自动挂载",
+        requires: None,
+    },
+    Section {
+        name: "network",
+        label: "网络设置",
+        requires: None,
+    },
+    Section {
+        name: "interop",
+        label: "系统交互",
+        requires: None,
+    },
+    Section {
+        name: "user",
+        label: "用户设置",
+        requires: None,
+    },
+    Section {
+        name: "boot",
+        label: "启动设置",
+        requires: Some("0.67.6"),
+    },
+    Section {
+        name: "gpu",
+        label: "GPU",
+        requires: Some("1.0.0"),
+    },
+    Section {
+        name: "time",
+        label: "时间",
+        requires: Some("1.0.0"),
+    },
+];
+
+/// 字段的类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldKind {
+    /// 布尔开关（写进文件是 `true` / `false`）。
+    Bool,
+    /// 自由文本。
+    Text,
+}
+
+/// 一个字段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Field {
+    /// 所属节（必须能在 [`SECTIONS`] 里找到）。
+    pub section: &'static str,
+    /// 键名 —— **大小写敏感**，按 WSL 文档的驼峰写法。
+    pub key: &'static str,
+    /// 界面上的标签。
+    pub label: &'static str,
+    /// 类型。
+    pub kind: FieldKind,
+    /// 文件里没写时 WSL 用的**有效默认值**。
     ///
-    /// 找不到这个键（不在 [`MANAGED`] 里）时返回 `None` ——
-    /// 和"键存在但没写值"（`Some(None)`）是两回事。
-    fn lookup(&self, section: &str, key: &str) -> Option<&Option<String>> {
-        match (section, key) {
-            ("network", "hostname") => Some(&self.hostname),
-            ("interop", "enabled") => Some(&self.interop_enabled),
-            ("interop", "appendWindowsPath") => Some(&self.append_windows_path),
-            ("user", "default") => Some(&self.default_user),
-            ("boot", "command") => Some(&self.boot_command),
-            ("boot", "systemd") => Some(&self.systemd),
-            _ => None,
+    /// 界面上显示它，并标一个「默认」—— 让用户知道"不填就是什么"。
+    pub default: &'static str,
+    /// 文本字段的占位提示。
+    pub placeholder: &'static str,
+    /// 一句说明（界面上的小字）。
+    pub hint: &'static str,
+    /// 这一项是不是**只读**的。
+    ///
+    /// `[boot] systemd` 是唯一一个：改它要重启才生效，而发行版里没装
+    /// systemd 的话会**起不来**，很难救。但**必须解析出来并在保存时原样写回**
+    /// —— 不然用户点一次保存就把它抹了。
+    pub read_only: bool,
+}
+
+/// 全部字段，按界面上的顺序。
+///
+/// ⚠️ 大小写：节名和键名在 `wsl.conf` 里是**大小写敏感**的
+/// （`appendWindowsPath` 不能写成 `appendwindowspath`），所以这里保持
+/// WSL 文档里的驼峰写法，比较时也按**原样**比 —— 和 [`crate::wslconfig`]
+/// 那边刻意不同：那边是实测 WSL 自己忽略大小写，这边没有实测依据，不猜。
+pub const FIELDS: &[Field] = &[
+    // ---- [automount] ----
+    Field {
+        section: "automount",
+        key: "enabled",
+        label: "自动挂载磁盘",
+        kind: FieldKind::Bool,
+        default: "true",
+        placeholder: "",
+        hint: "关掉之后 /mnt/c 这类 Windows 盘符不会自动出现。",
+        read_only: false,
+    },
+    Field {
+        section: "automount",
+        key: "mountFsTab",
+        label: "处理 /etc/fstab",
+        kind: FieldKind::Bool,
+        default: "true",
+        placeholder: "",
+        hint: "启动时按发行版里的 /etc/fstab 挂载。",
+        read_only: false,
+    },
+    Field {
+        section: "automount",
+        key: "root",
+        label: "挂载根目录",
+        kind: FieldKind::Text,
+        default: "/mnt/",
+        placeholder: "/mnt/",
+        hint: "Windows 盘符挂到哪儿。改了之后路径都跟着变，注意别让已有脚本失效。",
+        read_only: false,
+    },
+    Field {
+        section: "automount",
+        key: "options",
+        label: "挂载参数",
+        kind: FieldKind::Text,
+        default: "",
+        placeholder: "例如: metadata,uid=1000",
+        hint: "逗号分隔，会传给 mount。`metadata` 能保留 Linux 权限位。",
+        read_only: false,
+    },
+    // ---- [network] ----
+    Field {
+        section: "network",
+        key: "generateHosts",
+        label: "生成 /etc/hosts",
+        kind: FieldKind::Bool,
+        default: "true",
+        placeholder: "",
+        hint: "关掉之后要自己维护 /etc/hosts。",
+        read_only: false,
+    },
+    Field {
+        section: "network",
+        key: "generateResolvConf",
+        label: "生成 /etc/resolv.conf",
+        kind: FieldKind::Bool,
+        default: "true",
+        placeholder: "",
+        hint: "关掉之后要自己配 DNS，通常和 systemd-resolved 一起用。",
+        read_only: false,
+    },
+    Field {
+        section: "network",
+        key: "hostname",
+        label: "计算机名",
+        kind: FieldKind::Text,
+        default: "",
+        placeholder: "自定义主机名",
+        hint: "留空就用 WSL 自己生成的名字。",
+        read_only: false,
+    },
+    // ---- [interop] ----
+    Field {
+        section: "interop",
+        key: "enabled",
+        label: "启用 Windows 交互",
+        kind: FieldKind::Bool,
+        default: "true",
+        placeholder: "",
+        hint: "关掉之后在 Linux 里跑不了 .exe。",
+        read_only: false,
+    },
+    Field {
+        section: "interop",
+        key: "appendWindowsPath",
+        label: "追加 Windows 路径",
+        kind: FieldKind::Bool,
+        default: "true",
+        placeholder: "",
+        hint: "关掉能让 Linux 里的命令解析快不少（PATH 里少一大串 /mnt/c/...）。",
+        read_only: false,
+    },
+    // ---- [user] ----
+    Field {
+        section: "user",
+        key: "default",
+        label: "默认登录用户",
+        kind: FieldKind::Text,
+        default: "",
+        placeholder: "例如: root, ubuntu",
+        hint: "保存前会检查这个用户在发行版里**是否存在** —— 写错了发行版下次启动会失败。",
+        read_only: false,
+    },
+    // ---- [boot] ----
+    Field {
+        section: "boot",
+        key: "systemd",
+        label: "启用 systemd",
+        kind: FieldKind::Bool,
+        default: "false",
+        placeholder: "",
+        hint: "只读：改它要重启才生效，而发行版里没装 systemd 的话会**起不来**。\
+               这里只负责把你原来的值原样写回，不会抹掉。",
+        read_only: true,
+    },
+    Field {
+        section: "boot",
+        key: "command",
+        label: "启动命令",
+        kind: FieldKind::Text,
+        default: "",
+        placeholder: "例如: /usr/local/bin/init.sh",
+        hint: "每次发行版启动时以 root 跑一次。保存前会检查这个路径是否存在。",
+        read_only: false,
+    },
+    Field {
+        section: "boot",
+        key: "protectBinfmt",
+        label: "保护 binfmt_misc",
+        kind: FieldKind::Bool,
+        default: "true",
+        placeholder: "",
+        hint: "防止发行版里的进程往共享的 binfmt_misc 里注册解释器。",
+        read_only: false,
+    },
+    // ---- [gpu] ----
+    Field {
+        section: "gpu",
+        key: "enabled",
+        label: "启用 GPU 直通",
+        kind: FieldKind::Bool,
+        default: "true",
+        placeholder: "",
+        hint: "关掉之后发行版里看不到宿主机的 GPU。",
+        read_only: false,
+    },
+    // ---- [time] ----
+    Field {
+        section: "time",
+        key: "useWindowsTimezone",
+        label: "使用 Windows 时区",
+        kind: FieldKind::Bool,
+        default: "true",
+        placeholder: "",
+        hint: "让 Linux 和 Windows 用同一个时区，省得双系统时钟来回跳。",
+        read_only: false,
+    },
+];
+
+/// 按 `(节, 键)` 找一个字段。
+pub fn find_field(section: &str, key: &str) -> Option<&'static Field> {
+    FIELDS
+        .iter()
+        .find(|f| f.section == section && f.key == key)
+}
+
+/// 找一个节。
+pub fn find_section(name: &str) -> Option<&'static Section> {
+    SECTIONS.iter().find(|s| s.name == name)
+}
+
+/// 这个节在给定 WSL 版本下受不受支持。
+///
+/// # 解析不出来时**返回 true**（和参考项目相反）
+///
+/// 参考实现检测失败时把 `[boot]` / `[gpu]` / `[time]` 整节**藏起来**。
+/// 这里选择**显示**：藏起来意味着用户根本没法配它，
+/// 而"版本没认出来"不该有这种后果；真写了不支持的键，
+/// WSL 也只会打一行"键未知"然后忽略，代价小得多。
+pub fn section_supported(name: &str, wsl_version: &str) -> bool {
+    let Some(section) = find_section(name) else {
+        return false;
+    };
+    match section.requires {
+        None => true,
+        Some(min) => version_at_least(wsl_version, min).unwrap_or(true),
+    }
+}
+
+/// `version >= min` 吗？任一边解析不出来就返回 `None`。
+///
+/// 版本号形如 `2.6.1.0`（`wsl --version` 里那行）。按**数字段**逐段比，
+/// 缺的段当 0（`2.6` 和 `2.6.0` 一样）。
+fn version_at_least(version: &str, min: &str) -> Option<bool> {
+    let parse = |text: &str| -> Option<Vec<u64>> {
+        let parts: Vec<u64> = text
+            .trim()
+            .split('.')
+            .map(|p| p.trim().parse::<u64>())
+            .collect::<std::result::Result<_, _>>()
+            .ok()?;
+        if parts.is_empty() { None } else { Some(parts) }
+    };
+
+    let actual = parse(version)?;
+    let required = parse(min)?;
+    let len = actual.len().max(required.len());
+
+    for i in 0..len {
+        let a = actual.get(i).copied().unwrap_or(0);
+        let b = required.get(i).copied().unwrap_or(0);
+        if a != b {
+            return Some(a > b);
         }
     }
-
-    /// 按 `(节, 键)` 写一个值。不在 [`MANAGED`] 里的键会被忽略。
-    fn assign(&mut self, section: &str, key: &str, value: Option<String>) {
-        let slot = match (section, key) {
-            ("network", "hostname") => &mut self.hostname,
-            ("interop", "enabled") => &mut self.interop_enabled,
-            ("interop", "appendWindowsPath") => &mut self.append_windows_path,
-            ("user", "default") => &mut self.default_user,
-            ("boot", "command") => &mut self.boot_command,
-            ("boot", "systemd") => &mut self.systemd,
-            _ => return,
-        };
-        *slot = value;
-    }
-
-    /// 这个键有没有值（界面上用它判断"这一项填了没有"）。
-    pub fn is_set(&self, section: &str, key: &str) -> bool {
-        self.lookup(section, key)
-            .is_some_and(|v| v.as_ref().is_some_and(|s| !s.trim().is_empty()))
-    }
+    Some(true)
 }
 
 /// 一份 `wsl.conf` 文档：原文 + 我们管的值。
 ///
 /// **`original` 必须留着** —— [`WslConfDoc::render`] 是在它的基础上改，
-/// 不是从 [`WslConfValues`] 重新生成。这是这个类型存在的全部理由。
+/// 不是从值重新生成。这是这个类型存在的全部理由。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WslConfDoc {
-    /// 读进来的原文（**逐字节**保留，含注释和空行）。
+    /// 读进来的原文（**逐字**保留，含注释和空行）。
     original: String,
-    /// 我们管的那几个键。
-    values: WslConfValues,
+    /// 我们管的键的**显式**值：`(节, 键) -> 值`。
+    ///
+    /// 只在文件里出现过、或用户改过的键才会在这里 ——
+    /// **不在 = 跟着 WSL 的默认走**，保存时不会被写出去。
+    values: BTreeMap<(String, String), String>,
 }
 
 impl WslConfDoc {
@@ -126,7 +374,7 @@ impl WslConfDoc {
     /// 不做转义、续行、多行值 —— `wsl.conf` 的语法本来就这么简单，
     /// 而且不认识的写法会被**原样保留**（不丢），所以"没解析到"不等于"丢了"。
     pub fn parse(text: &str) -> Self {
-        let mut values = WslConfValues::default();
+        let mut values = BTreeMap::new();
         let mut section = String::new();
 
         for raw in text.lines() {
@@ -139,7 +387,10 @@ impl WslConfDoc {
                 continue;
             }
             if let Some((key, value)) = split_kv(line) {
-                values.assign(&section, key, Some(value.to_owned()));
+                // 只收我们管的键；别的留着不动（`render` 会原样抄过去）
+                if find_field(&section, key).is_some() {
+                    values.insert((section.clone(), key.to_owned()), value.to_owned());
+                }
             }
         }
 
@@ -149,19 +400,67 @@ impl WslConfDoc {
         }
     }
 
-    /// 我们管的那几个值（只读）。
-    pub fn values(&self) -> &WslConfValues {
-        &self.values
-    }
-
-    /// 我们管的那几个值（可改）。
-    pub fn values_mut(&mut self) -> &mut WslConfValues {
-        &mut self.values
-    }
-
     /// 原文（界面上的"原始内容"用）。
     pub fn original(&self) -> &str {
         &self.original
+    }
+
+    /// 取一个键的**显式**值（文件里没写 = `None`）。
+    pub fn get(&self, section: &str, key: &str) -> Option<&str> {
+        self.values
+            .get(&(section.to_owned(), key.to_owned()))
+            .map(String::as_str)
+    }
+
+    /// 这一项是不是**文件里显式写了**。
+    ///
+    /// 界面用它决定要不要标一个「默认」—— 让用户分得清
+    /// "我看到的是 WSL 的默认"还是"明确设过"。
+    pub fn is_explicit(&self, section: &str, key: &str) -> bool {
+        self.get(section, key).is_some()
+    }
+
+    /// 取**有效值**：文件里写了就用它，没写就用字段的默认值。
+    ///
+    /// 界面显示用这个。只读字段（`systemd`）也靠它拿到"当前是什么"。
+    pub fn effective(&self, section: &str, key: &str) -> String {
+        match self.get(section, key) {
+            Some(v) => v.to_owned(),
+            None => find_field(section, key)
+                .map(|f| f.default.to_owned())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// 取**有效布尔值**。
+    ///
+    /// 认 `true` / `1` / `yes`（大小写不敏感），其余当 `false` ——
+    /// 和参考实现的判断一致。文件里没写就用字段默认值。
+    pub fn effective_bool(&self, section: &str, key: &str) -> bool {
+        let raw = self.effective(section, key);
+        matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "true" | "1" | "yes"
+        )
+    }
+
+    /// 设一个显式值。不在 [`FIELDS`] 里的键会被忽略。
+    pub fn set(&mut self, section: &str, key: &str, value: impl Into<String>) {
+        if find_field(section, key).is_none() {
+            return;
+        }
+        self.values
+            .insert((section.to_owned(), key.to_owned()), value.into());
+    }
+
+    /// 设一个布尔值（写成 `true` / `false`）。
+    pub fn set_bool(&mut self, section: &str, key: &str, value: bool) {
+        self.set(section, key, if value { "true" } else { "false" });
+    }
+
+    /// 清掉显式值 —— 让这一项**回到 WSL 的默认**（保存时会从文件里删掉）。
+    pub fn clear(&mut self, section: &str, key: &str) {
+        self.values.remove(&(section.to_owned(), key.to_owned()));
     }
 
     /// 生成新的文件内容。
@@ -169,9 +468,9 @@ impl WslConfDoc {
     /// # 算法
     ///
     /// 1. 逐行走过原文，记下当前在哪个节；
-    /// 2. 碰到**我们管的**键：有新值就替换那一行，没值就**删掉那一行**；
+    /// 2. 碰到**我们管的**键：有显式值就替换那一行，没有就**删掉那一行**；
     /// 3. 其余的行（注释、空行、别的键、我们看不懂的东西）**原样抄过去**；
-    /// 4. 最后，把"我们管、原文里没有、但现在有值"的键**补进它该在的节**；
+    /// 4. 最后，把"我们管、原文里没有、但现在有显式值"的键**补进它该在的节**；
     ///    节不存在就在文件末尾新建一个。
     ///
     /// 第 4 步的插入位置是**那一节内容的末尾**（下一个节头之前），
@@ -181,7 +480,7 @@ impl WslConfDoc {
         // 每个节的内容在 `out` 里的结束位置（用于第 4 步插入）
         let mut section_end: Vec<(String, usize)> = Vec::new();
         let mut section = String::new();
-        // 原文里已经出现过的 (节, 键)
+        // 原文里已经处理过的 (节, 键)
         let mut seen: Vec<(String, String)> = Vec::new();
 
         for raw in self.original.lines() {
@@ -195,29 +494,21 @@ impl WslConfDoc {
                 continue;
             }
 
-            let managed_key = if line.is_empty() || line.starts_with('#') || line.starts_with(';')
-            {
+            let managed = if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
                 None
             } else {
-                split_kv(line).and_then(|(k, _)| {
-                    MANAGED
-                        .iter()
-                        .find(|(s, key)| *s == section && *key == k)
-                        // ⚠️ 必须 `to_string()` 而不是 `to_owned()`：这里的
-                        // `key` 是 `&&str`，`to_owned()` 会命中 `Clone` 那个
-                        // blanket impl（`&str: Clone`）**返回 `&str`**，
-                        // 而我们要的是 `String`。踩过一次。
-                        .map(|(_, key)| key.to_string())
-                })
+                split_kv(line)
+                    .and_then(|(k, _)| find_field(&section, k))
+                    .map(|f| f.key)
             };
 
-            if let Some(key) = managed_key {
-                seen.push((section.clone(), key.clone()));
-                // 有值 → 用**规范化**的写法替换这一行（`key = value`）
-                if let Some(value) = self.values.lookup(&section, &key).and_then(|v| v.clone()) {
+            if let Some(key) = managed {
+                seen.push((section.clone(), key.to_owned()));
+                // 有显式值 → 用**规范化**的写法替换这一行（`key = value`）
+                if let Some(value) = self.get(&section, key) {
                     out.push(format!("{key} = {value}"));
                 }
-                // 没值 → 整行丢掉（用户把这一项清空了）
+                // 没有 → 整行丢掉（用户把这一项恢复成默认了）
             } else {
                 out.push(raw.to_owned());
             }
@@ -230,32 +521,32 @@ impl WslConfDoc {
             }
         }
 
-        // 第 4 步：补上"原文里没有、但现在有值"的键。
+        // 第 4 步：补上"原文里没有、但现在有显式值"的键。
         //
         // 从后往前插 —— 否则前面插一行会把后面记下的下标全推偏。
         let mut inserts: Vec<(usize, String, Vec<String>)> = Vec::new();
-        for (section_name, keys) in group_missing(&self.values, &seen) {
-            let lines: Vec<String> = keys
+        for section_def in SECTIONS {
+            let lines: Vec<String> = FIELDS
                 .iter()
-                .filter_map(|key| {
-                    self.values
-                        .lookup(&section_name, key)
-                        .and_then(|v| v.clone())
-                        .map(|value| format!("{key} = {value}"))
-                })
+                .filter(|f| f.section == section_def.name)
+                .filter(|f| !seen.iter().any(|(s, k)| s == f.section && k == f.key))
+                .filter_map(|f| self.get(f.section, f.key).map(|v| format!("{} = {v}", f.key)))
                 .collect();
             if lines.is_empty() {
                 continue;
             }
-            match section_end.iter().rev().find(|(s, _)| *s == section_name) {
-                Some((_, at)) => inserts.push((*at, section_name, lines)),
+            match section_end
+                .iter()
+                .rev()
+                .find(|(s, _)| *s == section_def.name)
+            {
+                Some((_, at)) => inserts.push((*at, section_def.name.to_owned(), lines)),
                 // 这一节原文里没有 → 在文件末尾新建
-                None => inserts.push((out.len(), section_name, lines)),
+                None => inserts.push((out.len(), section_def.name.to_owned(), lines)),
             }
         }
         inserts.sort_by_key(|(at, _, _)| std::cmp::Reverse(*at));
 
-        let had_sections = !section_end.is_empty();
         for (at, section_name, lines) in inserts {
             let mut block: Vec<String> = Vec::new();
             // 新建的节前面留一个空行（除非文件本来是空的）
@@ -270,7 +561,6 @@ impl WslConfDoc {
                 out.insert(at + offset, line);
             }
         }
-        let _ = had_sections;
 
         let mut text = out.join("\n");
         // 文件末尾留一个换行（POSIX 的规矩；`cat` 出来的东西不该少这一下）
@@ -303,33 +593,6 @@ fn split_kv(line: &str) -> Option<(&str, &str)> {
         return None;
     }
     Some((key, value.trim()))
-}
-
-/// 找出"我们管、原文里没有、但现在有值"的键，按节分组。
-///
-/// 节的顺序跟 [`MANAGED`] 走 —— 输出稳定，测试才好写。
-fn group_missing(values: &WslConfValues, seen: &[(String, String)]) -> Vec<(String, Vec<String>)> {
-    let mut out: Vec<(String, Vec<String>)> = Vec::new();
-
-    for (section, key) in MANAGED {
-        let already = seen.iter().any(|(s, k)| s == section && k == key);
-        if already {
-            continue;
-        }
-        // 没值就不用补
-        //
-        // 用 `is_some_and` 而不是 `is_none_or`：后者是 Rust 1.82 才稳定的，
-        // 而本 crate 声明 MSRV 1.75（见 `crates/wslc-core/Cargo.toml`）。
-        if !values.lookup(section, key).is_some_and(|v| v.is_some()) {
-            continue;
-        }
-        match out.iter_mut().find(|(s, _)| s == section) {
-            Some((_, keys)) => keys.push((*key).to_owned()),
-            None => out.push(((*section).to_owned(), vec![(*key).to_owned()])),
-        }
-    }
-
-    out
 }
 
 /// 生成把 `text` 写进 `/etc/wsl.conf` 的 `sh -c` 脚本。
@@ -392,21 +655,132 @@ enabled = true
 options = \"metadata,umask=22\"
 ";
 
+    // -- 字段表 ------------------------------------------------------------
+
+    #[test]
+    fn every_field_belongs_to_a_known_section() {
+        for f in FIELDS {
+            assert!(
+                find_section(f.section).is_some(),
+                "字段 {}.{} 的节不在 SECTIONS 里",
+                f.section,
+                f.key
+            );
+        }
+    }
+
+    #[test]
+    fn there_are_no_duplicate_fields() {
+        for (i, a) in FIELDS.iter().enumerate() {
+            for b in &FIELDS[i + 1..] {
+                assert!(
+                    !(a.section == b.section && a.key == b.key),
+                    "重复字段：{}.{}",
+                    a.section,
+                    a.key
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_bool_field_has_a_parseable_default() {
+        for f in FIELDS {
+            if f.kind == FieldKind::Bool {
+                assert!(
+                    matches!(f.default, "true" | "false"),
+                    "{}.{} 是布尔字段，默认值却是 {:?}",
+                    f.section,
+                    f.key,
+                    f.default
+                );
+            }
+            assert!(!f.label.is_empty(), "{}.{} 没有标签", f.section, f.key);
+        }
+    }
+
+    #[test]
+    fn the_field_table_covers_every_section() {
+        // 每一节都得有字段，否则界面上会出现一个空标题
+        for s in SECTIONS {
+            assert!(
+                FIELDS.iter().any(|f| f.section == s.name),
+                "节 {} 一个字段都没有",
+                s.name
+            );
+        }
+    }
+
+    #[test]
+    fn only_systemd_is_read_only() {
+        // 钉住这个事实：只读是特例，不是常态。
+        let ro: Vec<&str> = FIELDS
+            .iter()
+            .filter(|f| f.read_only)
+            .map(|f| f.key)
+            .collect();
+        assert_eq!(ro, vec!["systemd"], "{ro:?}");
+    }
+
+    #[test]
+    fn the_field_table_matches_the_reference_feature_set() {
+        // 参考项目 UI 上暴露的全部字段（只读来核对范围，没有抄代码）。
+        // 哪天漏掉一个，这条会说话。
+        let expected = [
+            ("automount", "enabled"),
+            ("automount", "mountFsTab"),
+            ("automount", "root"),
+            ("automount", "options"),
+            ("network", "generateHosts"),
+            ("network", "generateResolvConf"),
+            ("network", "hostname"),
+            ("interop", "enabled"),
+            ("interop", "appendWindowsPath"),
+            ("user", "default"),
+            ("boot", "systemd"),
+            ("boot", "command"),
+            ("boot", "protectBinfmt"),
+            ("gpu", "enabled"),
+            ("time", "useWindowsTimezone"),
+        ];
+        for (section, key) in expected {
+            assert!(
+                find_field(section, key).is_some(),
+                "少了字段 {section}.{key}"
+            );
+        }
+        assert_eq!(FIELDS.len(), expected.len(), "字段数量对不上");
+    }
+
+    // -- 解析 / 渲染 -------------------------------------------------------
+
     #[test]
     fn parses_the_keys_we_manage() {
         let doc = WslConfDoc::parse(REAL);
-        let v = doc.values();
-        assert_eq!(v.hostname.as_deref(), Some("my-box"));
-        assert_eq!(v.interop_enabled.as_deref(), Some("true"));
-        assert_eq!(v.append_windows_path.as_deref(), Some("false"));
-        assert_eq!(v.default_user.as_deref(), Some("ubuntu"));
-        assert_eq!(v.boot_command, None);
-        assert_eq!(v.systemd, None);
+        assert_eq!(doc.get("network", "hostname"), Some("my-box"));
+        assert_eq!(doc.get("interop", "enabled"), Some("true"));
+        assert_eq!(doc.get("interop", "appendWindowsPath"), Some("false"));
+        assert_eq!(doc.get("user", "default"), Some("ubuntu"));
+        assert_eq!(doc.get("automount", "enabled"), Some("true"));
+        // 没写的就是没写 —— 不能给一个"看起来设过"的值
+        assert_eq!(doc.get("boot", "command"), None);
+        assert!(!doc.is_explicit("boot", "systemd"));
+    }
+
+    #[test]
+    fn effective_falls_back_to_the_field_default() {
+        let doc = WslConfDoc::parse(REAL);
+        assert_eq!(doc.effective("interop", "enabled"), "true");
+        assert_eq!(doc.effective("boot", "systemd"), "false");
+        assert_eq!(doc.effective("automount", "root"), "/mnt/");
+        assert!(doc.effective_bool("automount", "mountFsTab"));
+        assert!(!doc.effective_bool("boot", "systemd"));
+        // 写了 false 的不能被默认值顶掉
+        assert!(!doc.effective_bool("interop", "appendWindowsPath"));
     }
 
     #[test]
     fn a_fresh_parse_is_not_dirty() {
-        // 打开又保存不该写出一个"看起来一样但字节不同"的文件
         let doc = WslConfDoc::parse(REAL);
         assert!(!doc.is_dirty(), "\n{}", doc.render());
     }
@@ -416,7 +790,7 @@ options = \"metadata,umask=22\"
         // **这是这个模块存在的全部理由。** 参考实现是重建整个文件，
         // 这些全都会丢。
         let mut doc = WslConfDoc::parse(REAL);
-        doc.values_mut().hostname = Some("renamed".to_owned());
+        doc.set("network", "hostname", "renamed");
         let out = doc.render();
 
         assert!(out.contains("# 我自己加的注释，别给我删了"), "{out}");
@@ -424,16 +798,35 @@ options = \"metadata,umask=22\"
         assert!(out.contains("[automount]"), "{out}");
         assert!(out.contains("options = \"metadata,umask=22\""), "{out}");
         assert!(out.contains("hostname = renamed"), "{out}");
-        // 被改掉的那一行不该还在
         assert!(!out.contains("hostname = my-box"), "{out}");
-        // 空行也得在（用它隔开的两段注释不能粘在一起）
         assert!(out.contains("\n\n"), "{out}");
+    }
+
+    #[test]
+    fn untouched_fields_are_not_materialized() {
+        // 参考实现的 UI 把每个字段都 unwrap_or(默认) 再写回，
+        // 于是"只改一个主机名"也会把 16 个键全写出来 ——
+        // **把 WSL 以后改默认值的机会钉死**。这里不能那样。
+        let mut doc = WslConfDoc::parse("[network]\nhostname = a\n");
+        doc.set("network", "hostname", "b");
+        let out = doc.render();
+
+        for f in FIELDS {
+            if f.key == "hostname" {
+                continue;
+            }
+            assert!(
+                !out.contains(&format!("{} =", f.key)),
+                "没碰过的 {} 被写进文件了：\n{out}",
+                f.key
+            );
+        }
     }
 
     #[test]
     fn clearing_a_value_deletes_its_line() {
         let mut doc = WslConfDoc::parse(REAL);
-        doc.values_mut().default_user = None;
+        doc.clear("user", "default");
         let out = doc.render();
         assert!(!out.contains("default = ubuntu"), "{out}");
         // 但 [user] 这个节头本身不是我们管的，留着
@@ -442,67 +835,89 @@ options = \"metadata,umask=22\"
     }
 
     #[test]
+    fn setting_a_value_that_was_only_a_default_makes_it_explicit() {
+        let mut doc = WslConfDoc::parse("[network]\nhostname = a\n");
+        assert!(!doc.is_explicit("automount", "root"));
+        // 用户没动 → 不写
+        assert!(!doc.render().contains("root ="));
+        // 用户动了 → 写
+        doc.set("automount", "root", "/win/");
+        assert!(doc.render().contains("root = /win/"));
+    }
+
+    #[test]
     fn adds_a_key_into_an_existing_section_at_its_end() {
         // 原文有 [interop]，但没写 enabled —— 补进去时应该落在这一节**末尾**，
         // 而不是插在节头正下方（那样会把用户的键挤到注释前面）
-        let text = "[network]\nhostname = x\n\n[interop]\nappendWindowsPath = false\n\n[user]\ndefault = u\n";
+        let text =
+            "[network]\nhostname = x\n\n[interop]\nappendWindowsPath = false\n\n[user]\ndefault = u\n";
         let mut doc = WslConfDoc::parse(text);
-        doc.values_mut().interop_enabled = Some("true".to_owned());
+        doc.set("interop", "enabled", "true");
         let out = doc.render();
 
         let lines: Vec<&str> = out.lines().collect();
         let interop_at = lines.iter().position(|l| *l == "[interop]").unwrap();
         let user_at = lines.iter().position(|l| *l == "[user]").unwrap();
-        let enabled_at = lines
-            .iter()
-            .position(|l| l.starts_with("enabled"))
-            .unwrap();
-        assert!(interop_at < enabled_at && enabled_at < user_at, "{out}");
-        // 而且要在 appendWindowsPath 之后（那是这一节原本的末尾）
+        let enabled_at = lines.iter().position(|l| l.starts_with("enabled")).unwrap();
         let append_at = lines
             .iter()
             .position(|l| l.starts_with("appendWindowsPath"))
             .unwrap();
-        assert!(append_at < enabled_at, "{out}");
+        assert!(interop_at < append_at && append_at < enabled_at, "{out}");
+        assert!(enabled_at < user_at, "{out}");
     }
 
     #[test]
     fn creates_a_missing_section_at_the_end() {
         let mut doc = WslConfDoc::parse("[network]\nhostname = x\n");
-        doc.values_mut().default_user = Some("ubuntu".to_owned());
+        doc.set("user", "default", "ubuntu");
         let out = doc.render();
         assert!(out.contains("[user]"), "{out}");
         assert!(out.contains("default = ubuntu"), "{out}");
-        // 新节应该在原文之后
         let net = out.find("[network]").unwrap();
         let user = out.find("[user]").unwrap();
         assert!(net < user, "{out}");
-        // 新节前面留一个空行，别和上一节粘在一起
         assert!(out.contains("\n\n[user]"), "{out:?}");
     }
 
     #[test]
     fn adds_a_whole_section_to_an_empty_file() {
         let mut doc = WslConfDoc::parse("");
-        doc.values_mut().interop_enabled = Some("true".to_owned());
+        doc.set_bool("interop", "enabled", true);
+        assert_eq!(doc.render(), "[interop]\nenabled = true\n");
+    }
+
+    #[test]
+    fn inserting_into_two_different_sections_does_not_shift_each_other() {
+        // 两个节都要插新键 —— 从后往前插，前面的下标才不会被推偏
+        let mut doc = WslConfDoc::parse("[network]\nhostname = x\n\n[user]\n");
+        doc.set("automount", "root", "/win/");
+        doc.set("time", "useWindowsTimezone", "true");
         let out = doc.render();
-        assert_eq!(out, "[interop]\nenabled = true\n");
+
+        assert!(out.contains("[automount]"), "{out}");
+        assert!(out.contains("root = /win/"), "{out}");
+        assert!(out.contains("[time]"), "{out}");
+        assert!(out.contains("useWindowsTimezone = true"), "{out}");
+        assert!(out.contains("[network]"), "{out}");
+        assert!(out.contains("hostname = x"), "{out}");
+        assert!(out.contains("[user]"), "{out}");
     }
 
     #[test]
     fn only_the_first_equals_sign_splits_a_pair() {
-        // `options = "metadata,umask=22"` 这种值里带 `=`，不能拆错
         let doc = WslConfDoc::parse("[automount]\noptions = a=b=c\n");
-        // 这个键不在 MANAGED 里，所以值取不到；但要确保解析没 panic、
-        // 而且它会被原样保留
+        // 这个键在 FIELDS 里，所以值应该被正确取到（`=` 后面的全部）
+        assert_eq!(doc.get("automount", "options"), Some("a=b=c"));
         assert!(doc.render().contains("options = a=b=c"));
     }
 
     #[test]
     fn comments_and_semicolons_are_not_treated_as_keys() {
-        let doc = WslConfDoc::parse("# hostname = nope\n; default = nope\n[network]\nhostname = real\n");
-        assert_eq!(doc.values().hostname.as_deref(), Some("real"));
-        assert_eq!(doc.values().default_user, None);
+        let doc =
+            WslConfDoc::parse("# hostname = nope\n; default = nope\n[network]\nhostname = real\n");
+        assert_eq!(doc.get("network", "hostname"), Some("real"));
+        assert_eq!(doc.get("user", "default"), None);
     }
 
     #[test]
@@ -510,10 +925,16 @@ options = \"metadata,umask=22\"
         // 我们**不**猜大小写：`[Network]` 不是 `[network]`（没有实测依据
         // 说 WSL 忽略大小写，所以不学 wslconfig 那边的做法）
         let doc = WslConfDoc::parse("[Network]\nhostname = x\n");
-        assert_eq!(doc.values().hostname, None);
-        // 但它必须被原样保留
+        assert_eq!(doc.get("network", "hostname"), None);
         assert!(doc.render().contains("[Network]"));
         assert!(doc.render().contains("hostname = x"));
+    }
+
+    #[test]
+    fn set_ignores_keys_that_are_not_in_the_field_table() {
+        let mut doc = WslConfDoc::parse("");
+        doc.set("automount", "madeUpKey", "x");
+        assert!(!doc.render().contains("madeUpKey"), "{}", doc.render());
     }
 
     #[test]
@@ -521,20 +942,99 @@ options = \"metadata,umask=22\"
         // 表单上 systemd 是只读的，但**必须**解析出来并在保存时写回 ——
         // 不然用户点一次保存就把 systemd 配置抹了
         let doc = WslConfDoc::parse("[boot]\nsystemd = true\n");
-        assert_eq!(doc.values().systemd.as_deref(), Some("true"));
+        assert_eq!(doc.get("boot", "systemd"), Some("true"));
+        assert!(doc.effective_bool("boot", "systemd"));
         assert!(!doc.is_dirty());
 
         let mut doc = doc;
-        doc.values_mut().default_user = Some("u".to_owned());
+        doc.set("user", "default", "u");
         let out = doc.render();
         assert!(out.contains("systemd = true"), "{out}");
     }
 
     #[test]
+    fn bool_parsing_accepts_the_usual_spellings() {
+        for text in ["true", "TRUE", "1", "yes", "Yes"] {
+            let doc = WslConfDoc::parse(&format!("[interop]\nenabled = {text}\n"));
+            assert!(doc.effective_bool("interop", "enabled"), "{text}");
+        }
+        for text in ["false", "FALSE", "0", "no", "whatever"] {
+            let doc = WslConfDoc::parse(&format!("[interop]\nenabled = {text}\n"));
+            assert!(!doc.effective_bool("interop", "enabled"), "{text}");
+        }
+    }
+
+    #[test]
+    fn round_trip_is_stable() {
+        let mut doc = WslConfDoc::parse(REAL);
+        doc.set("boot", "command", "/usr/local/bin/init.sh");
+        doc.set_bool("time", "useWindowsTimezone", false);
+        let once = doc.render();
+        let twice = WslConfDoc::parse(&once).render();
+        assert_eq!(
+            once, twice,
+            "\n--- once ---\n{once}\n--- twice ---\n{twice}"
+        );
+    }
+
+    // -- 版本门控 ----------------------------------------------------------
+
+    #[test]
+    fn version_comparison_handles_ragged_numbers() {
+        assert_eq!(version_at_least("2.6.1.0", "1.0.0"), Some(true));
+        assert_eq!(version_at_least("0.67.6", "0.67.6"), Some(true));
+        assert_eq!(version_at_least("0.67.5", "0.67.6"), Some(false));
+        assert_eq!(version_at_least("0.68.0", "0.67.6"), Some(true));
+        // 缺的段当 0：`2.6` 和 `2.6.0` 一样
+        assert_eq!(version_at_least("2.6", "2.6.0"), Some(true));
+        assert_eq!(version_at_least("2.6", "2.6.1"), Some(false));
+        // 高位决胜
+        assert_eq!(version_at_least("10.0.0", "9.9.9"), Some(true));
+        // 解析不出来
+        assert_eq!(version_at_least("", "1.0.0"), None);
+        assert_eq!(version_at_least("abc", "1.0.0"), None);
+    }
+
+    #[test]
+    fn sections_without_a_requirement_are_always_supported() {
+        for name in ["automount", "network", "interop", "user"] {
+            assert!(section_supported(name, ""), "{name}");
+            assert!(section_supported(name, "垃圾版本"), "{name}");
+        }
+        assert!(!section_supported("不存在的节", "2.0.0"));
+    }
+
+    #[test]
+    fn version_gating_matches_the_declared_requirements() {
+        assert!(!section_supported("boot", "0.60.0"));
+        assert!(!section_supported("gpu", "0.60.0"));
+        assert!(!section_supported("time", "0.60.0"));
+        assert!(section_supported("boot", "0.67.6"));
+        assert!(!section_supported("gpu", "0.67.6"));
+        assert!(section_supported("boot", "2.6.1.0"));
+        assert!(section_supported("gpu", "2.6.1.0"));
+        assert!(section_supported("time", "2.6.1.0"));
+    }
+
+    #[test]
+    fn undetectable_version_keeps_the_sections_visible() {
+        // **和参考项目刻意相反**：它检测失败时把这三节藏起来。
+        // 藏起来意味着用户根本没法配它，而"版本没认出来"不该有这种后果。
+        for name in ["boot", "gpu", "time"] {
+            assert!(section_supported(name, ""), "{name}");
+            assert!(section_supported(name, "版本号解析不了"), "{name}");
+        }
+    }
+
+    // -- 写入脚本 ----------------------------------------------------------
+
+    #[test]
     fn write_script_uses_a_quoted_heredoc() {
         let script = write_script("[user]\ndefault = u\n");
-        // 带引号的定界符：$ / 反引号 / 反斜杠都不会被展开（实测过）
-        assert!(script.starts_with("cat << 'WSL_CONF_EOF' > /etc/wsl.conf\n"), "{script}");
+        assert!(
+            script.starts_with("cat << 'WSL_CONF_EOF' > /etc/wsl.conf\n"),
+            "{script}"
+        );
         assert!(script.contains("[user]\ndefault = u\n"), "{script}");
         assert!(script.trim_end().ends_with("WSL_CONF_EOF"), "{script}");
     }
@@ -547,7 +1047,6 @@ options = \"metadata,umask=22\"
         let script = write_script(nasty);
         assert!(!script.starts_with("cat << 'WSL_CONF_EOF'"), "{script}");
         assert!(script.contains("WSL_CONF_EOF_1"), "{script}");
-        // 内容必须完整在脚本里（没被截断）
         assert!(script.contains("rm -rf /tmp/oops"), "{script}");
     }
 
@@ -556,15 +1055,5 @@ options = \"metadata,umask=22\"
         let nasty = "a\nWSL_CONF_EOF\nWSL_CONF_EOF_1\nWSL_CONF_EOF_2\n";
         let script = write_script(nasty);
         assert!(script.contains("WSL_CONF_EOF_3"), "{script}");
-    }
-
-    #[test]
-    fn round_trip_is_stable() {
-        // 解析 → 渲染 → 再解析，值必须一样（幂等）
-        let mut doc = WslConfDoc::parse(REAL);
-        doc.values_mut().boot_command = Some("/usr/local/bin/init.sh".to_owned());
-        let once = doc.render();
-        let twice = WslConfDoc::parse(&once).render();
-        assert_eq!(once, twice, "\n--- once ---\n{once}\n--- twice ---\n{twice}");
     }
 }
