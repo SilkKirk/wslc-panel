@@ -1272,13 +1272,16 @@ mod tests {
             assert!(!page.group().is_empty());
         }
         // v0.3 加了「实例列表」「添加实例」「应用设置」「WSL 配置」，从 6 个变成 10 个。
+        // v0.4 把「wlsc 配置」「WSL 配置」收进「应用设置」的 tab、并加了「关于」，
+        // 所以是 10 - 2 + 1 = 9。**总数少了不代表功能少了** —— 那两个只是换了入口。
         //
         // 这个断言存在的意义就是**逼人改它**：加页面时忘了同步导航分组，
-        // 侧边栏会出现重复的组标题。历史上 commit 552a91c 就是被它抓到的。
+        // 侧边栏会出现重复的组标题。历史上 commit 552a91c 就是被它抓到的；
+        // 加 `Page::About` 这次它又抓了一次（CI 的 `纯逻辑测试` 那一关）。
         //
         // ⚠️ 注意 `cargo check --all-targets` 只编译不执行，
-        // 所以它真的被跑到要靠 CI 里的 `cargo test -p wslc-panel --bins`（见 SPIKE 7.8）。
-        assert_eq!(Page::ALL.len(), 10);
+        // 所以它真的被跑到要靠 `cargo test -p wslc-panel-core`（见 SPIKE 7.8）。
+        assert_eq!(Page::ALL.len(), 9);
     }
 
     #[test]

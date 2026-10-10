@@ -2488,6 +2488,7 @@ fn nav_id(page: Page) -> &'static str {
         Page::AppSettings => "nav-app-settings",
         Page::Config => "nav-config",
         Page::WslConfig => "nav-wsl-config",
+        Page::About => "nav-about",
     }
 }
 
