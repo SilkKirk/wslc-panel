@@ -457,17 +457,24 @@ pub fn move_distro(wsl: &Wsl, name: &str, location: &str) -> Result<()> {
     run_action(wsl, &["--manage", name, "--move", location], DISK_TIMEOUT)
 }
 
-/// 开关稀疏 VHD（`wsl --manage <name> --set-sparse <true|false>`）。
+/// 开关稀疏 VHD（`wsl --manage <name> --set-sparse <true|false> [--allow-unsafe]`）。
 ///
 /// 开启后 WSL 会自动回收已释放的块 —— 相当于自动做压缩。
 /// ⚠️ 切换这个标志**可能触发一次压缩**，所以给的是磁盘级超时。
+///
+/// ⚠️ **开的时候要带 `--allow-unsafe`**：WSL 3.0.1.0 起默认拒绝开稀疏盘
+/// （理由是"潜在的数据损坏"），报错里自己给出的命令就是
+/// `wsl.exe --manage <分发> --set-sparse true --allow-unsafe`（实测输出，
+/// 见 `docs/PLAN-v0.5.md`）。不带的话这条动作在界面上永远失败。
+/// 关的时候不需要那个开关。
 pub fn set_sparse(wsl: &Wsl, name: &str, sparse: bool) -> Result<()> {
     let flag = if sparse { "true" } else { "false" };
-    run_action(
-        wsl,
-        &["--manage", name, "--set-sparse", flag],
-        DISK_TIMEOUT,
-    )
+    let args: Vec<&str> = if sparse {
+        vec!["--manage", name, "--set-sparse", flag, "--allow-unsafe"]
+    } else {
+        vec!["--manage", name, "--set-sparse", flag]
+    };
+    run_action(wsl, &args, DISK_TIMEOUT)
 }
 
 /// 调整发行版磁盘大小（`wsl --manage <name> --resize <size>`）。

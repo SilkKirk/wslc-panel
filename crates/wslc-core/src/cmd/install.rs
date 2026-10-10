@@ -204,6 +204,25 @@ pub fn run_plan(wsl: &Wsl, plan: &InstallPlan, opts: RunOptions) -> InstallSumma
                     detail: String::new(),
                 },
             ),
+            // 「尽力而为」的收尾步骤（比如按 `.wslconfig` 开稀疏盘）失败**不算安装失败** ——
+            // 发行版那一刻已经装好了，把整体判成失败会让人以为白装了。
+            Err(e) if step.best_effort && !matches!(e, Error::Cancelled { .. }) => {
+                let detail = e.to_string();
+                emit(
+                    &opts,
+                    InstallEvent::Line(format!(
+                        "这一步没做成，但它不影响已经装好的东西：{detail}"
+                    )),
+                );
+                emit(
+                    &opts,
+                    InstallEvent::StepDone {
+                        index: number,
+                        ok: false,
+                        detail: format!("（不影响安装）{detail}"),
+                    },
+                );
+            }
             Err(e) => {
                 let detail = e.to_string();
                 emit(
@@ -358,7 +377,7 @@ fn finish_stream(
     handle: StreamHandle,
     program: &'static str,
     args: &[String],
-    last: Arc<Mutex<String>>,
+    last: Arc<Mutex<Vec<String>>>,
     cancellable: bool,
     progress: Option<&ProgressSource>,
     opts: &RunOptions,
@@ -380,19 +399,12 @@ fn finish_stream(
                 if code == 0 {
                     return Ok(());
                 }
-                let detail = last
-                    .lock()
-                    .map(|guard| guard.clone())
-                    .unwrap_or_default();
+                let tail = last.lock().map(|guard| guard.clone()).unwrap_or_default();
                 return Err(Error::NonZeroExit {
                     program,
                     args: args.join(" "),
                     code,
-                    stderr: if detail.trim().is_empty() {
-                        "（它没有给出任何输出）".to_owned()
-                    } else {
-                        detail
-                    },
+                    stderr: failure_detail(&tail),
                 });
             }
             Ok(None) => {}
@@ -410,20 +422,59 @@ fn finish_stream(
     }
 }
 
-/// 造一个"把每行输出存下最后一行、同时发给界面"的回调。
-fn line_sink(opts: &RunOptions) -> (impl Fn(&str) + Send + Sync + 'static, Arc<Mutex<String>>) {
+/// 造一个"记住最后几行输出、同时发给界面"的回调。
+///
+/// ⚠️ 记**最后几行**而不是最后一行：`wsl.exe` 失败时会把真正的原因写在前面，
+/// 末尾跟一句固定的"如果此错误是意外错误，请考虑搜索现有问题…"。
+/// 只留最后一行，用户（和我们）看到的就是那句废话 —— 这个坑真的踩过一次：
+/// `--manage --move` 当时失败，界面上只有那句套话，查了半天才发现是
+/// "装完还没稳定"。
+fn line_sink(
+    opts: &RunOptions,
+) -> (impl Fn(&str) + Send + Sync + 'static, Arc<Mutex<Vec<String>>>) {
+    /// 留多少行。
+    const KEEP: usize = 6;
+
     let events = Arc::clone(&opts.on_event);
-    let last: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
-    let slot = Arc::clone(&last);
+    let tail: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let slot = Arc::clone(&tail);
 
     let sink = move |line: &str| {
         if let Ok(mut guard) = slot.lock() {
-            *guard = line.to_owned();
+            if !line.trim().is_empty() {
+                guard.push(line.to_owned());
+                if guard.len() > KEEP {
+                    guard.remove(0);
+                }
+            }
         }
         events(InstallEvent::Line(line.to_owned()));
     };
 
-    (sink, last)
+    (sink, tail)
+}
+
+/// 把"最后几行"拼成一句能给人看的失败原因。
+///
+/// 去掉 `wsl.exe` 那句固定套话（它每行都一样，且不含任何信息），
+/// 剩下的按行拼起来 —— 真正的错误码（`Wsl/InstallDistro/...`）就在里面。
+fn failure_detail(tail: &[String]) -> String {
+    let meaningful: Vec<&str> = tail
+        .iter()
+        .map(String::as_str)
+        .filter(|line| {
+            let line = line.trim();
+            !line.is_empty()
+                && !line.contains("如果此错误是意外错误")
+                && !line.contains("github.com/microsoft/WSL/issues")
+        })
+        .collect();
+
+    if meaningful.is_empty() {
+        "（它没有给出任何有用的输出）".to_owned()
+    } else {
+        meaningful.join(" / ")
+    }
 }
 
 /// 从 `curl` 的参数里找出 `-o` 指的文件。
@@ -595,23 +646,33 @@ fn ensure_relocated(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions) -> Result<
         emit(
             opts,
             InstallEvent::Line(format!(
-                "{to} 现在在 {}，要挪到 {dir}（用 `wsl --manage --move`）",
+                "{to} 现在在 {}，要挪到 {dir}（先用 `wsl --manage --move`）",
                 current.display()
             )),
         );
-        return run_wsl_args(
-            wsl,
-            &["--manage", to.as_str(), "--move", dir.as_str()],
-            false,
-            None,
+        // ① 先试 `--manage --move`：快，而且不需要中转文件。
+        //
+        // ⚠️ 它会因为"装完还没稳定"而失败（实测：紧接着 `--install` 之后跑，
+        // 返回 -1；隔一会儿手工再跑一次就 `操作成功完成`）。所以这里**重试几次**。
+        if move_with_retries(wsl, &to, &dir, opts).is_ok() {
+            return Ok(());
+        }
+        emit(
             opts,
+            InstallEvent::Line(
+                "`--manage --move` 试了几次都没成功 —— 改用「导出 → 注销 → 导入」这条更慢但更稳的路"
+                    .to_owned(),
+            ),
         );
+        // ② 落到下面那条通用路径（导出 → 注销 → 导入）。
+        //    它虽然慢（要拷一遍），但**不依赖 WSL 的临时状态**，是参考实现一直在用、
+        //    而且我们自己验证过的路。
     }
 
-    // 名字要改：WSL 没有改名命令，只能导出再导入。
+    // 名字要改（或者 `--move` 没成功）：WSL 没有改名命令，只能导出再导入。
     emit(
         opts,
-        InstallEvent::Line(format!("要把 {from} 改名成 {to}，先导出到 {temp_tar}")),
+        InstallEvent::Line(format!("准备把 {from} 导出到 {temp_tar}")),
     );
     if let Some(parent) = Path::new(&temp_tar).parent() {
         std::fs::create_dir_all(parent)
@@ -681,6 +742,54 @@ fn ensure_relocated(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions) -> Result<
             Err(e)
         }
     }
+}
+
+/// `wsl --manage <name> --move <dir>`，失败就等一下再试。
+///
+/// # 为什么要重试
+///
+/// 实测（2026-10-10）：紧接着 `--install` 之后跑 `--move`，WSL 返回 `-1`，
+/// 而且**不给任何有用的输出**（只有那句"如果此错误是意外错误…"的套话）；
+/// 隔一会儿在同一个发行版、同一条命令上手工再跑一次 → `操作成功完成`。
+/// 也就是装完那一刻 WSL 还没收尾。重试几次就能过去，而这里失败会退到
+/// 导出/注销/导入那条更慢的路（见调用点），所以重试次数不用太激进。
+fn move_with_retries(
+    wsl: &Wsl,
+    name: &str,
+    dir: &str,
+    opts: &RunOptions,
+) -> Result<()> {
+    /// 试着搬几次。
+    const TRIES: usize = 5;
+    /// 两次之间等多久（也顺便给 WSL 一点收尾时间）。
+    const WAIT: Duration = Duration::from_secs(2);
+
+    let mut last: Option<Error> = None;
+    for attempt in 1..=TRIES {
+        match run_wsl_args(wsl, &["--manage", name, "--move", dir], false, None, opts) {
+            Ok(()) => {
+                if attempt > 1 {
+                    emit(
+                        opts,
+                        InstallEvent::Line(format!("第 {attempt} 次搬成功了")),
+                    );
+                }
+                return Ok(());
+            }
+            Err(e) => {
+                emit(
+                    opts,
+                    InstallEvent::Line(format!(
+                        "第 {attempt}/{TRIES} 次搬没成功（{e}），等 {} 秒再试",
+                        WAIT.as_secs()
+                    )),
+                );
+                last = Some(e);
+                sleep_cancellable(WAIT, opts);
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| Error::Install(format!("搬不动 {name}"))))
 }
 
 /// 跑一条 `wsl.exe` 命令（内部用，参数是拼好的）。
@@ -761,6 +870,7 @@ mod tests {
             args: Vec::new(),
             cancellable: true,
             retry_other_source: false,
+            best_effort: false,
         };
         assert!(matches!(arg(&step, 0), Err(Error::Install(_))));
     }
@@ -806,6 +916,75 @@ mod tests {
     }
 
     #[test]
+    fn failure_detail_drops_the_useless_footer() {
+        // 真机上 `--manage --move` 失败时，最后一行永远是这句套话，
+        // 真正的原因（错误码）在它前面 —— 只留最后一行等于什么都没说
+        let tail = vec![
+            "无法与服务器建立连接".to_owned(),
+            "错误代码：Wsl/InstallDistro/WININET_E_CANNOT_CONNECT".to_owned(),
+            "如果此错误是意外错误，请考虑搜索现有问题或在 https://github.com/microsoft/WSL/issues 提交新问题。"
+                .to_owned(),
+        ];
+        let detail = failure_detail(&tail);
+        assert!(detail.contains("WININET_E_CANNOT_CONNECT"), "{detail}");
+        assert!(!detail.contains("如果此错误是意外错误"), "{detail}");
+
+        // 没有任何有用输出时也要给一句人话
+        assert!(failure_detail(&[]).contains("没有给出任何有用的输出"));
+        assert!(
+            failure_detail(&["".to_owned(), "  ".to_owned()]).contains("没有给出任何有用的输出")
+        );
+    }
+
+    #[test]
+    fn a_best_effort_step_failing_does_not_fail_the_install() {
+        // 场景：发行版已经装好，最后那条"按 .wslconfig 开稀疏盘"被 WSL 拒绝
+        // （实测它默认就拒绝）。那一刻**不能**把整体判成失败 ——
+        // 否则用户看到"安装失败"，去列表里一看发行版好好地在那儿。
+        let plan = InstallPlan {
+            name: "X".to_owned(),
+            install_dir: String::new(),
+            steps: vec![PlannedStep {
+                label: "按 .wslconfig 把 X 的 VHD 设成稀疏".to_owned(),
+                program: PlanProgram::Wsl,
+                args: vec!["--manage".to_owned(), "X".to_owned()],
+                cancellable: true,
+                retry_other_source: false,
+                best_effort: true,
+            }],
+            notes: Vec::new(),
+        };
+
+        let events: Arc<Mutex<Vec<InstallEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let opts = RunOptions::new(move |event| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(event);
+            }
+        });
+
+        // 起一个不存在的可执行文件 → 这一步必然失败（而且失败得很快）
+        let wsl = Wsl::with_program("definitely-not-a-real-binary");
+        let summary = run_plan(&wsl, &plan, opts);
+
+        assert!(summary.ok, "收尾步骤失败不该把安装判成失败：{summary:?}");
+        let events = events.lock().unwrap();
+        // 但界面上要说清"这一步没做成"（StepDone 里 ok=false）
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, InstallEvent::StepDone { ok: false, .. })),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, InstallEvent::Line(text) if text.contains("不影响"))),
+            "{events:?}"
+        );
+    }
+
+    #[test]
     fn a_plan_with_only_cleanup_steps_runs_to_completion() {
         // 这条测试**不起任何进程**：`CreateDir` 与 `RemoveFile` 是纯文件系统操作，
         // 所以能真跑一遍 executor 的主循环（包括事件顺序），
@@ -823,14 +1002,16 @@ mod tests {
                     program: PlanProgram::CreateDir,
                     args: vec![dir.to_string_lossy().into_owned()],
                     cancellable: true,
-            retry_other_source: false,
+                    retry_other_source: false,
+                    best_effort: false,
                 },
                 PlannedStep {
                     label: "删掉临时文件（本来就不在，也算成功）".to_owned(),
                     program: PlanProgram::RemoveFile,
                     args: vec![file.to_string_lossy().into_owned()],
                     cancellable: true,
-            retry_other_source: false,
+                    retry_other_source: false,
+                    best_effort: false,
                 },
             ],
             notes: Vec::new(),
@@ -885,14 +1066,16 @@ mod tests {
                     program: PlanProgram::Wsl,
                     args: vec!["--import".to_owned()],
                     cancellable: true,
-            retry_other_source: false,
+                    retry_other_source: false,
+                    best_effort: false,
                 },
                 PlannedStep {
                     label: "不该被执行到".to_owned(),
                     program: PlanProgram::CreateDir,
                     args: vec![std::env::temp_dir().to_string_lossy().into_owned()],
                     cancellable: true,
-            retry_other_source: false,
+                    retry_other_source: false,
+                    best_effort: false,
                 },
             ],
             notes: Vec::new(),
@@ -938,7 +1121,8 @@ mod tests {
                 program: PlanProgram::WaitRegistered,
                 args: vec!["X".to_owned()],
                 cancellable: true,
-            retry_other_source: false,
+                retry_other_source: false,
+                best_effort: false,
             }],
             notes: Vec::new(),
         };
