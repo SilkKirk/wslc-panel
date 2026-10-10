@@ -39,7 +39,7 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 pub const INTERACTIVE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(windows)]
 const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
 

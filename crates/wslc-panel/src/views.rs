@@ -1443,13 +1443,33 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
     )];
 
     if source.needs_path() {
-        fields.push(form_field(
-            "install-path",
-            source.path_label(),
-            &form.source_path,
-            cx,
-            true,
-        ));
+        // 「浏览…」和输入框并排。`flex_1 + min_w_0` 让输入框吃掉剩余宽度，
+        // 又在窗口很窄时允许它收缩（不写 `min_w_0` 会把它顶出去）。
+        let browse = {
+            let entity = entity.clone();
+            Button::new("install-browse")
+                .label("浏览…")
+                .small()
+                .on_click(move |_, window, cx| {
+                    entity.update(cx, |shell, cx| shell.browse_install_path(window, cx));
+                })
+        };
+
+        fields.push(
+            h_flex()
+                .w_full()
+                .gap_2()
+                .items_end()
+                .child(div().flex_1().min_w_0().child(form_field(
+                    "install-path",
+                    source.path_label(),
+                    &form.source_path,
+                    cx,
+                    true,
+                )))
+                .child(browse)
+                .into_any_element(),
+        );
     }
 
     fields.push(form_field(
@@ -2994,6 +3014,20 @@ pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEle
             })
     };
 
+    // 只有"要填路径"的那两种才给「浏览…」——
+    // 「调整大小」填的是 `50GB`，「设置默认用户」填的是用户名，
+    // 给它们这个按钮只会让人以为该去选一个文件。
+    let browse = kind.pick_target().map(|_| {
+        let entity = entity.clone();
+        Button::new("prompt-browse")
+            .label("浏览…")
+            .small()
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |shell, cx| shell.browse_prompt_path(window, cx));
+            })
+            .into_any_element()
+    });
+
     div()
         .absolute()
         .inset_0()
@@ -3027,13 +3061,22 @@ pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEle
                                 .child(format!("发行版：{}", prompt.distro)),
                         ),
                 )
-                .child(form_field(
-                    "prompt-input",
-                    kind.label(),
-                    &prompt.input,
-                    cx,
-                    true,
-                ))
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .items_end()
+                        // `flex_1 + min_w_0`：让输入框吃掉剩余宽度，
+                        // 又在很窄的时候允许它收缩（不写 min_w_0 会顶出去）
+                        .child(div().flex_1().min_w_0().child(form_field(
+                            "prompt-input",
+                            kind.label(),
+                            &prompt.input,
+                            cx,
+                            true,
+                        )))
+                        .children(browse),
+                )
                 .child(
                     div()
                         .text_xs()

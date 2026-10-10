@@ -216,6 +216,11 @@ pub struct Shell {
     /// 和 `pull_cancel` 并列：两者都是长任务，都能取消，但一个走 `wslc.exe`、
     /// 一个走 `wsl.exe`，句柄类型也不同，合并只会让这个字段变成 `enum`。
     export_cancel: Option<wslc_core::CancelToken>,
+    /// 是否正在等一个文件 / 目录选择器的结果。
+    ///
+    /// 用来**防止重复弹窗**：选择器没有超时（用户不点完它就一直开着），
+    /// 连点两下「浏览…」会堆出两个对话框。见 `cmd::picker` 的说明。
+    picking: bool,
     /// 「创建容器」弹窗；关闭时为 `None`。
     create_dialog: Option<CreateDialog>,
     /// 正在查看详情的容器名；关闭时为 None。
@@ -263,6 +268,7 @@ impl Shell {
             pull_input: None,
             pull_cancel: None,
             export_cancel: None,
+            picking: false,
             create_dialog: None,
             detail: None,
             distro_detail: None,
@@ -1391,6 +1397,128 @@ impl Shell {
             self.state.page = page;
             cx.notify();
         }
+    }
+
+    // -- 文件 / 目录选择器 --------------------------------------------------
+
+    /// 弹一个选择器，选完把路径写进 `input`。
+    ///
+    /// # 为什么能安心在这里 await
+    ///
+    /// 选择器跑在一个**独立进程**里（`cmd::picker` 的说明里讲了为什么不用
+    /// 原生 crate）。所以哪怕用户开着对话框去泡杯茶，界面线程也一点没被占住 ——
+    /// 这一点是**结构上**成立的，不依赖我对某个库的线程模型的判断。
+    ///
+    /// # 为什么用 `spawn_in` 而不是 `spawn`
+    ///
+    /// 写输入框要 `InputState::set_value(value, window, cx)`，**它要一个
+    /// `&mut Window`**。`cx.spawn` 给的回调里没有 window；
+    /// `cx.spawn_in(window, ...)` 才有 —— 配合 `update_in` 就能把 window 拿回来。
+    fn spawn_picker(
+        &mut self,
+        input: &Entity<InputState>,
+        folders: bool,
+        label: &'static str,
+        extensions: &'static [&'static str],
+        title: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.picking {
+            self.state
+                .notify(Toast::info("已经有一个选择框开着了，先处理它"));
+            cx.notify();
+            return;
+        }
+        self.picking = true;
+        let input = input.clone();
+        cx.notify();
+
+        cx.spawn_in(window, async move |this, cx| {
+            // 起进程等对话框 —— 这段在后台执行器上，不占界面线程。
+            let picked = cx
+                .background_executor()
+                .spawn(async move {
+                    if folders {
+                        wslc_core::cmd::picker::pick_directory(title)
+                    } else {
+                        wslc_core::cmd::picker::pick_file(label, extensions)
+                    }
+                })
+                .await;
+
+            let _ = this.update_in(cx, |shell, window, cx| {
+                shell.picking = false;
+
+                match picked {
+                    Ok(Some(path)) => {
+                        input.update(cx, |state, cx| state.set_value(path, window, cx));
+                    }
+                    // 用户点了取消 —— 这不是错误，什么都不做
+                    Ok(None) => {}
+                    Err(e) => shell
+                        .state
+                        .notify(Toast::error(format!("打开选择框失败：{e}"))),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 给提示弹窗的输入框弹选择器（移动位置选目录 / 导出选文件）。
+    pub fn browse_prompt_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = self
+            .prompt
+            .as_ref()
+            .and_then(|p| p.kind.pick_target().map(|t| (p.input.clone(), t)));
+
+        let Some((input, target)) = picked else {
+            return;
+        };
+
+        self.spawn_picker(
+            &input,
+            target.folders,
+            target.label,
+            target.extensions,
+            target.title,
+            window,
+            cx,
+        );
+    }
+
+    /// 给「添加实例」页的**来源文件**输入框弹选择器。
+    pub fn browse_install_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 后缀表写成常量而不是 `&["tar"][..]`：临时数组靠 rvalue 提升也能拿到
+        // `'static`，但显式写出来不必让人去推这件事。
+        const TAR_ONLY: &[&str] = &["tar"];
+        const INSTALL_FILES: &[&str] = &["tar", "gz", "vhdx"];
+
+        let picked = self.install_form.as_ref().and_then(|form| {
+            // 后缀按来源给 —— 用户看到的就是"只列 tar"或者"只列安装文件"
+            let (label, extensions) = match form.source {
+                InstallSourceKind::Tar => ("tar 文件", TAR_ONLY),
+                InstallSourceKind::File => ("安装文件", INSTALL_FILES),
+                // 在线安装没有文件路径这一项
+                InstallSourceKind::Online => return None,
+            };
+            Some((form.source_path.clone(), label, extensions))
+        });
+
+        let Some((input, label, extensions)) = picked else {
+            return;
+        };
+
+        self.spawn_picker(
+            &input,
+            false,
+            label,
+            extensions,
+            "选择安装文件",
+            window,
+            cx,
+        );
     }
 
     // -- 添加实例 ----------------------------------------------------------
