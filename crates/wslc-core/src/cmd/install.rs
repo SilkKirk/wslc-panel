@@ -1355,6 +1355,7 @@ mod tests {
                 id: "Ubuntu-24.04".to_owned(),
                 launch: false,
                 web_download: false,
+                fallback_id: None,
             },
         );
         let plan = crate::model::install::plan(&spec, &ctx).unwrap();

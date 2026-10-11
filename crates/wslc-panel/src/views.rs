@@ -1764,7 +1764,7 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
 
     // 装过 / 正在装 → 显示日志（装完之后留在页面上，用户要能读它）
     if state.installing.is_some() {
-        page = page.child(install_log_card(state, source, entity, cx));
+        page = page.child(install_log_card(state, source, entity));
     }
 
     page.into_any_element()
@@ -2233,7 +2233,6 @@ fn install_log_card(
     state: &AppState,
     source: InstallSourceKind,
     entity: &Entity<Shell>,
-    cx: &App,
 ) -> AnyElement {
     let Some(progress) = state.installing.as_ref() else {
         return div().into_any_element();
