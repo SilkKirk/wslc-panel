@@ -1321,6 +1321,63 @@ impl MirrorState {
         self.error = None;
         self.probing = false;
     }
+
+    /// 按**微软商店清单里的 id**去镜像清单里找同一个发行版。
+    ///
+    /// 用途：商店那条路装不上时（`wsl.exe` 自己的网络不通）一键换成镜像源，
+    /// 并且**尽量落在同一个发行版**上，不让用户自己在清单里翻一遍。
+    ///
+    /// 三轮匹配（都是"只比字母数字、忽略大小写与分隔符"）：
+    ///
+    /// 1. `名字 + 版本` 拼起来对上 —— `Ubuntu-24.04` ↔ `Ubuntu` + `24.04`；
+    /// 2. 只对上名字 —— 在线 id 常常不带版本（`Debian`、`Ubuntu`）；
+    /// 3. 名字**前缀**对上 —— 两边的叫法有出入时兜底，实测这几对就是靠它：
+    ///    `kali-linux` ↔ `Kali`、`FedoraLinux-44` ↔ `Fedora 44`、
+    ///    `archlinux` ↔ `Arch Linux`、`OracleLinux_9_5` ↔ `Oracle Linux`。
+    ///
+    /// 第 3 轮故意做得"宽"（可能落到同系列的另一个版本上）——反正选完能在界面上
+    /// 看到是哪个版本，比"什么都不选、让用户自己去翻"好。找不到返回 `None`。
+    pub fn match_online_id(&self, online_id: &str) -> Option<String> {
+        let want = normalize_id(online_id);
+        if want.is_empty() {
+            return None;
+        }
+
+        if let Some(offer) = self
+            .offers
+            .iter()
+            .find(|offer| normalize_id(&format!("{}{}", offer.name, offer.version)) == want)
+        {
+            return Some(offer.id());
+        }
+        if let Some(offer) = self
+            .offers
+            .iter()
+            .find(|offer| normalize_id(&offer.name) == want)
+        {
+            return Some(offer.id());
+        }
+        self.offers
+            .iter()
+            .filter_map(|offer| {
+                let name = normalize_id(&offer.name);
+                // 至少 4 个字符才敢做前缀匹配（`kali` 是 4，`or`/`os` 这种太容易误伤）
+                let hit = name.len() >= 4 && (want.starts_with(&name) || name.starts_with(&want));
+                hit.then(|| (name.len(), offer.id()))
+            })
+            .max_by_key(|(len, _)| *len)
+            .map(|(_, id)| id)
+    }
+}
+
+/// 只留字母数字、转小写 —— 用来比较"两个来源里的同一版发行版"。
+///
+/// `Ubuntu-24.04` / `Ubuntu 24.04` / `ubuntu24.04` 都归一成 `ubuntu2404`。
+fn normalize_id(text: &str) -> String {
+    text.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
 }
 
 /// 计划里已经走完的一步。
@@ -2040,6 +2097,76 @@ mod tests {
         online.clear();
         assert!(online.items.is_empty());
         assert!(online.selected.is_none());
+    }
+
+    #[test]
+    fn online_ids_match_the_mirror_catalog() {
+        fn offer(name: &str, version: &str) -> Offer {
+            Offer {
+                name: name.to_owned(),
+                version: version.to_owned(),
+                sources: vec![wslc_core::mirrors::OfferSource {
+                    mirror: "lxc-tuna".to_owned(),
+                    url: format!("https://mirrors.tuna.tsinghua.edu.cn/x/{name}-{version}.tar.xz"),
+                    format: "tar.xz".to_owned(),
+                }],
+            }
+        }
+
+        let mut state = MirrorState::new();
+        // 名字与版本都照真实清单（wslui 那份）写
+        state.set_offers(
+            vec![
+                offer("Ubuntu", "24.04"),
+                offer("Ubuntu", "22.04"),
+                offer("Debian", "13"),
+                offer("Kali", "current"),
+                offer("Arch Linux", "current"),
+                offer("Fedora", "44"),
+                offer("AlmaLinux", "9"),
+                offer("openSUSE", "tumbleweed"),
+            ],
+            String::new(),
+            None,
+        );
+
+        // ① 名字 + 版本拼起来对上
+        assert_eq!(
+            state.match_online_id("Ubuntu-24.04").as_deref(),
+            Some("Ubuntu 24.04")
+        );
+        assert_eq!(
+            state.match_online_id("ubuntu 22.04").as_deref(),
+            Some("Ubuntu 22.04")
+        );
+        assert_eq!(
+            state.match_online_id("AlmaLinux-9").as_deref(),
+            Some("AlmaLinux 9")
+        );
+        assert_eq!(
+            state.match_online_id("openSUSE-Tumbleweed").as_deref(),
+            Some("openSUSE tumbleweed")
+        );
+        // ② 只对上名字（在线 id 不带版本）
+        assert_eq!(state.match_online_id("Ubuntu").as_deref(), Some("Ubuntu 24.04"));
+        assert_eq!(state.match_online_id("Debian").as_deref(), Some("Debian 13"));
+        // ③ 名字前缀（两边叫法有出入）
+        assert_eq!(
+            state.match_online_id("kali-linux").as_deref(),
+            Some("Kali current")
+        );
+        assert_eq!(
+            state.match_online_id("archlinux").as_deref(),
+            Some("Arch Linux current")
+        );
+        assert_eq!(
+            state.match_online_id("FedoraLinux-44").as_deref(),
+            Some("Fedora 44")
+        );
+        // 认不出来 / 空串 → 不硬猜
+        assert_eq!(state.match_online_id("SUSE-Linux-Enterprise-15-SP7"), None);
+        assert_eq!(state.match_online_id(""), None);
+        assert_eq!(state.match_online_id("   "), None);
     }
 
     #[test]
