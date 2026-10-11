@@ -66,21 +66,66 @@ pub fn mode() -> Mode {
     }
 }
 
-/// 把"是不是深色"落到模式上，并返回**该给 gpui-component 的那个模式**。
+/// 把"是不是深色"落到模式上，并**两套配色一起切**。
 ///
-/// 两套配色（我们自己的 + 组件库的）必须一起切，所以把"算什么"和"给谁"放一处，
-/// 调用点只写一行：
+/// 两套：
 ///
-/// ```ignore
-/// gpui_kit::component::Theme::change(crate::theme::apply(is_dark), None, cx);
-/// ```
-pub fn apply(is_dark: bool) -> gpui_kit::component::ThemeMode {
+/// 1. 我们自己画的那些 `div` —— [`set_mode`] 那个全局；
+/// 2. gpui-component 的控件（`Input` / `Button` / `Select`…）—— `Theme::change`，
+///    之后还要把它的强调色换成我们自己的（[`tune_component_theme`]）。
+///
+/// ⚠️ 顺序不能反：`Theme::change` 会**重新加载**那套主题、把我们改过的颜色盖回去，
+/// 所以换色必须在它之后（组件库自己的文档也这么说）。
+pub fn apply(is_dark: bool, cx: &mut gpui_kit::App) {
     let mode = if is_dark { Mode::Dark } else { Mode::Light };
     set_mode(mode);
-    match mode {
-        Mode::Dark => gpui_kit::component::ThemeMode::Dark,
-        Mode::Light => gpui_kit::component::ThemeMode::Light,
-    }
+    gpui_kit::component::Theme::change(
+        match mode {
+            Mode::Dark => gpui_kit::component::ThemeMode::Dark,
+            Mode::Light => gpui_kit::component::ThemeMode::Light,
+        },
+        None,
+        cx,
+    );
+    tune_component_theme(cx);
+}
+
+/// 把组件库的**强调色 / 主按钮**换成我们自己的颜色。
+///
+/// # 为什么必须换
+///
+/// 组件库的强调色是 shadcn 那套**中性色**：深色模式下 `button_primary` 接近
+/// 白底黑字、浅色模式下接近黑底白字。而本面板自己的强调色是蓝的
+/// （链接、徽标、选中项都用 [`primary`]）—— 于是同一页里
+/// 「创建容器」（组件库的主按钮，一个白块）和蓝色链接并排放着，看着就像
+/// **两个来源的按钮**（用户就是拿这个来问的）。
+///
+/// # 为什么两组都要写
+///
+/// `button_primary*` 在主题加载时是"从 `primary*` 落下来"的（组件库
+/// `ThemeColor` 的字段注释写着 `fallback to primary`），**加载之后**再改
+/// `primary` 不会回头改它 —— 所以两组一起写。
+fn tune_component_theme(cx: &mut gpui_kit::App) {
+    let palette = palette();
+    let base: Hsla = rgb(palette.accent).into();
+    let hover: Hsla = rgb(palette.accent_hover).into();
+    let active: Hsla = rgb(palette.accent_active).into();
+    let foreground: Hsla = rgb(palette.accent_fg).into();
+
+    // `Theme::update` 是组件库给的"不会写歪"的写入口：它把 `colors` 与 `tokens`
+    // 两份颜色同步好、并刷新所有窗口（直接改 `Theme::global_mut` 会让两份颜色
+    // 对不上 —— 组件库文档专门警告过这件事）。
+    gpui_kit::component::Theme::update(cx, |theme| {
+        theme.colors.primary = base;
+        theme.colors.primary_hover = hover;
+        theme.colors.primary_active = active;
+        theme.colors.primary_foreground = foreground;
+
+        theme.colors.button_primary = base;
+        theme.colors.button_primary_hover = hover;
+        theme.colors.button_primary_active = active;
+        theme.colors.button_primary_foreground = foreground;
+    });
 }
 
 /// 一套配色。
@@ -113,6 +158,15 @@ struct Palette {
     dim_soft: u32,
     danger_edge: u32,
 
+    /// 给组件库用的强调色（主按钮底色 / 悬停 / 按下 / 字色）。
+    ///
+    /// 和 [`Palette::primary`] 是同一个色系但单独列出来：主按钮的**按下态**
+    /// 需要比 `primary` 更深一档，而那个颜色在我们自己的界面里用不到。
+    accent: u32,
+    accent_hover: u32,
+    accent_active: u32,
+    accent_fg: u32,
+
     /// 模态遮罩的不透明度（浅色主题下要浅一些，否则像"黑屏"）。
     scrim_alpha: f32,
 }
@@ -142,6 +196,11 @@ const DARK: Palette = Palette {
     neutral_soft: 0x1b_20_27,
     dim_soft: 0x18_1d_24,
     danger_edge: 0x5a_24_28,
+
+    accent: 0x3b_82_f6,
+    accent_hover: 0x5a_95_f8,
+    accent_active: 0x2f_6f_dc,
+    accent_fg: 0xff_ff_ff,
 
     scrim_alpha: 0.55,
 };
@@ -175,6 +234,11 @@ const LIGHT: Palette = Palette {
     neutral_soft: 0xf0_f1_f4,
     dim_soft: 0xf2_f3_f6,
     danger_edge: 0xf0_b4_b8,
+
+    accent: 0x1f_6f_eb,
+    accent_hover: 0x3a_84_f0,
+    accent_active: 0x18_5a_c2,
+    accent_fg: 0xff_ff_ff,
 
     scrim_alpha: 0.35,
 };

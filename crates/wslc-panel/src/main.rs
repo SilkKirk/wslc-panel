@@ -141,7 +141,7 @@ fn main() {
             // 读不到系统主题时按深色算（和默认值一致，不会突然变成浅色）
             let is_dark = prefs.theme.resolve_is_dark(system_is_dark.unwrap_or(true));
             // `theme::apply` 顺带把"我们自己那套配色"的全局模式也设了
-            gpui_kit::component::Theme::change(crate::theme::apply(is_dark), None, cx);
+            crate::theme::apply(is_dark, cx);
             tracing::info!(
                 "主题：{}（系统：{}）",
                 if is_dark { "深色" } else { "浅色" },
