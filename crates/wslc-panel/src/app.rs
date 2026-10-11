@@ -2891,7 +2891,7 @@ impl Shell {
     fn apply_theme(&mut self, is_dark: bool, cx: &mut Context<Self>) {
         // `theme::apply` 既设我们自己的全局模式，又给出组件库要的那个模式 ——
         // 两套配色只能一起切，写在一处才不会漏。
-        gpui_kit::component::Theme::change(crate::theme::apply(is_dark), None, cx);
+        crate::theme::apply(is_dark, cx);
         cx.notify();
     }
 

@@ -426,13 +426,22 @@ gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, c
 > "主题"这个开关以前只对一半界面有效。
 >
 > 现在 `theme.rs` 里存了**两张调色板**（`DARK` / `LIGHT`）和一个进程内的
-> 全局模式；切换的唯一入口是 `theme::apply(is_dark)`，它同时
-> ①设那个全局、②返回该给 `Theme::change` 的 `ThemeMode`，
-> 调用点写成一行就不漏：
+> 全局模式；切换的唯一入口是 `theme::apply(is_dark, cx)`：
 >
 > ```rust
-> gpui_kit::component::Theme::change(crate::theme::apply(is_dark), None, cx);
+> crate::theme::apply(is_dark, cx);   // ①我们自己的配色 ②组件库的主题 + 强调色
 > ```
+>
+> ⚠️ 组件库那边的颜色要在 `Theme::change` **之后**改：`change` 会重新加载那套主题、
+> 把我们改过的颜色盖回去（组件库 `Theme::update` 的文档里写着这件事）。
+> 改颜色要用 `Theme::update(cx, |theme| …)` 而不是 `Theme::global_mut` ——
+> 后者只改 `colors`、不改 `tokens`，同一个控件会出现"文字用了新色、背景还是旧色"。
+>
+> **为什么还要改它的强调色**：组件库默认那套是 shadcn 的**中性色**，深色模式下
+> "主按钮"是白底黑字、浅色模式下是黑底白字；而本面板自己的强调色是蓝的
+> （链接/徽标/选中项）。两边并排就出现"创建容器是个白块、旁边的链接是蓝的"，
+> 用户直接来问了。现在把 `primary*` 与 `button_primary*` 都换成我们自己的蓝
+> （`button_primary*` 是加载时从 `primary*` 落下来的，只改后者不生效）。
 >
 > 「跟随系统」读的是注册表
 > `HKCU\...\Themes\Personalize\AppsUseLightTheme`（**不是**管任务栏的
