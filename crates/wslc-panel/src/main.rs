@@ -130,18 +130,42 @@ fn main() {
             //
             // 用**上次保存的偏好**：没有偏好文件时 `Prefs::default()` 是深色，
             // 和 v0.2 的行为一致。
-            let mode = match crate::prefs::Prefs::load().theme {
-                crate::prefs::ThemePref::Dark => gpui_kit::component::ThemeMode::Dark,
-                crate::prefs::ThemePref::Light => gpui_kit::component::ThemeMode::Light,
+            let prefs = crate::prefs::Prefs::load();
+            // 「跟随系统」要读一次系统主题（起 `reg.exe`，实测 7~27 ms）。
+            // 这里是启动路径、窗口还没开，同步读一次最省事 —— 之后都读缓存。
+            let system_is_dark = if prefs.theme.fixed_is_dark().is_none() {
+                wslc_core::cmd::win_theme::system_is_dark()
+            } else {
+                None
             };
-            gpui_kit::component::Theme::change(mode, None, cx);
+            // 读不到系统主题时按深色算（和默认值一致，不会突然变成浅色）
+            let is_dark = prefs.theme.resolve_is_dark(system_is_dark.unwrap_or(true));
+            // `theme::apply` 顺带把"我们自己那套配色"的全局模式也设了
+            gpui_kit::component::Theme::change(crate::theme::apply(is_dark), None, cx);
+            tracing::info!(
+                "主题：{}（系统：{}）",
+                if is_dark { "深色" } else { "浅色" },
+                match system_is_dark {
+                    Some(true) => "深色",
+                    Some(false) => "浅色",
+                    None => "未知",
+                }
+            );
 
             let options = initial_window_options(cx);
             tracing::info!("窗口尺寸：{:?}", options.window_bounds);
 
             // `cx.new(app::Shell::new)` 而不是 `cx.new(|cx| Shell::new(cx))`：
             // 后者是 clippy 的 redundant_closure。
-            match gpui_kit::open_window(options, cx, |_, cx| cx.new(app::Shell::new)) {
+            match gpui_kit::open_window(options, cx, |_, cx| {
+                let shell = cx.new(app::Shell::new);
+                // 把启动时探测到的系统主题交给界面 —— 「跟随系统」和设置页
+                // 都读它，免得每次点按钮都去起一次 `reg.exe`。
+                shell.update(cx, |shell, _| {
+                    shell.state.system_is_dark = system_is_dark;
+                });
+                shell
+            }) {
                 Ok(_) => tracing::info!("窗口已打开"),
                 Err(e) => tracing::error!("打开窗口失败：{e}"),
             }

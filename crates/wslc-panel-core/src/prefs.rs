@@ -38,26 +38,53 @@ pub fn app_dir() -> Option<PathBuf> {
 /// 所以切换时必须同时调用 `gpui_kit::component::Theme::change` ——
 /// 光改 `theme.rs` 里的颜色，输入框还是浅色的白底浅灰字，根本看不清
 /// （`main.rs` 里那段注释记的就是这个坑）。
+///
+/// 现在是**三选一**：跟随系统 / 深色 / 浅色。`System` 要问系统（读注册表，
+/// 见 `wslc_core::cmd::win_theme`），所以本枚举只负责"要不要问"，
+/// 真正解析出来的模式由 [`ThemePref::resolve_is_dark`] 给出。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemePref {
     /// 深色（默认）。
+    ///
+    /// 默认值刻意留成深色而不是"跟随系统"：老版本的 `prefs.json` 没有这个键，
+    /// 一旦默认成 System，那些用户的界面会在升级后**自己变样**。
     #[default]
     Dark,
     /// 浅色。
     Light,
+    /// 跟随系统。
+    System,
 }
 
 impl ThemePref {
-    /// 全部可选值（决定界面上的按钮顺序）。
-    pub const ALL: [ThemePref; 2] = [ThemePref::Dark, ThemePref::Light];
+    /// 全部可选值（决定界面上的按钮顺序：先"跟随系统"再两个固定值）。
+    pub const ALL: [ThemePref; 3] = [ThemePref::System, ThemePref::Dark, ThemePref::Light];
 
     /// 界面标签。
     pub fn label(self) -> &'static str {
         match self {
+            Self::System => "跟随系统",
             Self::Dark => "深色",
             Self::Light => "浅色",
         }
+    }
+
+    /// 固定值直接给出"是不是深色"；[`ThemePref::System`] 给 `None`（要去问系统）。
+    pub fn fixed_is_dark(self) -> Option<bool> {
+        match self {
+            Self::Dark => Some(true),
+            Self::Light => Some(false),
+            Self::System => None,
+        }
+    }
+
+    /// 落到具体模式：`system_is_dark` 是**系统**当前的应用主题。
+    ///
+    /// 拿不到系统主题时调用方该传 `true`（退回深色，和默认值一致）——
+    /// 见 `main.rs` 里那句 `unwrap_or(true)`。
+    pub fn resolve_is_dark(self, system_is_dark: bool) -> bool {
+        self.fixed_is_dark().unwrap_or(system_is_dark)
     }
 }
 
@@ -258,6 +285,37 @@ mod tests {
             assert!(!theme.label().is_empty());
         }
         assert!(ThemePref::ALL.contains(&ThemePref::default()));
+        // 按钮顺序：先"跟随系统"，再两个固定值
+        assert_eq!(ThemePref::ALL[0], ThemePref::System);
+    }
+
+    #[test]
+    fn theme_resolution_covers_system_and_fixed_values() {
+        // 固定值不受系统影响
+        assert!(ThemePref::Dark.resolve_is_dark(false));
+        assert!(ThemePref::Dark.resolve_is_dark(true));
+        assert!(!ThemePref::Light.resolve_is_dark(true));
+        assert!(!ThemePref::Light.resolve_is_dark(false));
+        // 跟随系统：系统深就深、系统浅就浅
+        assert!(ThemePref::System.resolve_is_dark(true));
+        assert!(!ThemePref::System.resolve_is_dark(false));
+        // `fixed_is_dark` 只对固定值有值 —— UI 靠它决定"要不要去问系统"
+        assert_eq!(ThemePref::System.fixed_is_dark(), None);
+        assert_eq!(ThemePref::Dark.fixed_is_dark(), Some(true));
+        assert_eq!(ThemePref::Light.fixed_is_dark(), Some(false));
+    }
+
+    #[test]
+    fn the_system_theme_is_persisted_as_lowercase() {
+        use super::Prefs;
+        let json = serde_json::to_string(&Prefs {
+            theme: ThemePref::System,
+            ..Prefs::default()
+        })
+        .expect("应能序列化");
+        assert!(json.contains(r#""theme":"system""#), "{json}");
+        let back: Prefs = serde_json::from_str(&json).expect("应能反序列化");
+        assert_eq!(back.theme, ThemePref::System);
     }
 
     #[test]
