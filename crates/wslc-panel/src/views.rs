@@ -155,18 +155,29 @@ fn empty_state(text: &'static str) -> impl IntoElement {
 }
 
 /// 表格表头。
+///
+/// 列宽走 [`crate::columns::column_fractions`] 换成比例、再由 `flex_grow` 分配 ——
+/// 于是表格**永远占满整行**并随窗口伸缩。以前是固定像素：宽度之和小于窗口时，
+/// 右边留一大片空白，在宽窗口上看起来就是"前几列挤着、最后一列拖出去一截"。
+///
+/// 列之间的间隔用**单元格内边距**（`px_2`）而不是 `gap_2`：比例之和正好 100%，
+/// 不留缝隙给 flex 去收缩。
 fn table_header(columns: &'static [(&'static str, f32)]) -> impl IntoElement {
+    let fractions = crate::columns::column_fractions(columns);
     h_flex()
         .w_full()
-        .gap_2()
         .px_3()
         .py_2()
         .border_b_1()
         .border_color(theme::border())
-        .children(columns.iter().map(|(name, width)| {
+        .children(columns.iter().zip(fractions).map(|((name, _), fraction)| {
             div()
-                .w(px(*width))
-                .flex_none()
+                .flex_grow(fraction)
+                .flex_basis(px(0.))
+                // ⚠️ 必须允许收缩：flex 项默认 `min-width: auto`，
+                // 一个长路径会把那一列撑破、把别的列挤出去
+                .min_w_0()
+                .px_2()
                 .text_xs()
                 .font_semibold()
                 .text_color(theme::text_dim())
@@ -174,19 +185,25 @@ fn table_header(columns: &'static [(&'static str, f32)]) -> impl IntoElement {
         }))
 }
 
-/// 表格行容器。
+/// 表格行容器（列宽与 [`table_header`] 同一套比例，两边必须一致）。
 fn table_row(columns: &'static [(&'static str, f32)], cells: Vec<AnyElement>) -> impl IntoElement {
+    let fractions = crate::columns::column_fractions(columns);
+    // 行里多出来的 cell（列定义没写）按平均宽度兜底，别让它挤成一条线
+    let fallback = 1.0 / columns.len().max(1) as f32;
     h_flex()
         .w_full()
-        .gap_2()
         .px_3()
         .py_2()
         .border_b_1()
         .border_color(theme::border())
         .justify_start()
         .children(cells.into_iter().enumerate().map(|(i, cell)| {
-            let width = columns.get(i).map(|c| c.1).unwrap_or(120.0);
-            div().w(px(width)).flex_none().child(cell)
+            div()
+                .flex_grow(fractions.get(i).copied().unwrap_or(fallback))
+                .flex_basis(px(0.))
+                .min_w_0()
+                .px_2()
+                .child(cell)
         }))
 }
 
@@ -734,7 +751,7 @@ fn container_row_actions(name: &str, running: bool, entity: &Entity<Shell>) -> A
         .into_any_element(),
     );
 
-    h_flex().gap_2().children(actions).into_any_element()
+    h_flex().gap_2().flex_wrap().children(actions).into_any_element()
 }
 
 /// 全部容器页（含已退出）。
@@ -1357,7 +1374,7 @@ fn distro_row_actions(
     // 一个红色的「删除」和「打开终端」挨着，误点的代价太大；
     // 详情里地方宽，能把"要删掉多少"写清楚（见 `distro_detail_overlay`）。
 
-    h_flex().gap_2().children(actions).into_any_element()
+    h_flex().gap_2().flex_wrap().children(actions).into_any_element()
 }
 
 /// 发行版状态徽标单元格。
@@ -3727,7 +3744,7 @@ pub fn container_detail_overlay(
                     h_flex()
                         .w_full()
                         .justify_between()
-                        .child(h_flex().gap_2().children(actions))
+                        .child(h_flex().gap_2().flex_wrap().children(actions))
                         .child(close),
                 ),
         )

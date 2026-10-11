@@ -1,4 +1,4 @@
-//! 各页表格的列定义（表头 + 宽度）。
+//! 各页表格的列定义（表头 + 宽度**权重**）。
 //!
 //! 放在这个 crate 而不是 `views.rs`：它们是纯数据（`&[(&str, f32)]`），
 //! 一行 GPUI 都没有，但留在 `views.rs` 就意味着"为了跑几个列宽断言，
@@ -6,6 +6,16 @@
 //!
 //! `views.rs` 用 `table_header` / `table_row` 消费它们，改动这里要同步
 //! 改对应 `*_row` 函数里 push 的 cell 数量 —— 下面有测试盯着这件事。
+//!
+//! # 这里的数字是**权重**，不是像素
+//!
+//! 表格曾经按固定像素宽渲染：宽度之和小于窗口时，右边就留一大片空白 ——
+//! 在 2244 宽的窗口上，看起来就是"前几列挤在一起、最后一列拖出去一大截"。
+//! 现在按 [`column_fractions`] 换成比例（`宽度 / Σ宽度`），
+//! 由 `flex_grow` 分配实际宽度，于是**永远占满整行、随窗口伸缩**。
+//!
+//! 所以调这里的数字只影响**相对**宽窄：想让某列更宽就调大它，
+//! 想让整体更宽松就加窗口 —— 不会再有"总和超了/少了"的问题。
 
 /// 「全部容器」页的列。
 pub const ALL_COLUMNS: &[(&str, f32)] = &[
@@ -49,21 +59,36 @@ pub const VOLUME_COLUMNS: &[(&str, f32)] = &[
 ///
 /// 「磁盘」是 VHDX 的**虚拟大小**，不是实际占用 —— 见 `views::instances` 的说明。
 ///
-/// 列宽是**压着算的**：加上「操作」这一列之后总和约 860px，
-/// 刚好放得进主区域（窗口 1280 减去侧边栏 216 再减去内边距）。
-/// 所以「安装位置」从 330 缩到 170 —— 长路径会被截断，
-/// 完整路径在详情弹窗里看（那里用 `kv_block`，不截断）。
+/// 「安装位置」给得比别的列宽：路径长，宽一点少截断几个字
+/// （完整路径在详情弹窗里看，那里用 `kv_block`，不截断）。
+/// 「操作」要放最多 5 个按钮（打开终端 / 启动 / 终止 / 设为默认 / 删除），
+/// 权重给得最大。
 pub const DISTRO_COLUMNS: &[(&str, f32)] = &[
-    ("名称", 150.),
-    ("状态", 70.),
-    ("版本", 50.),
-    ("默认", 40.),
-    ("安装位置", 170.),
-    ("磁盘（虚拟）", 84.),
-    // 「操作」列要放最多 5 个按钮（打开终端 / 启动 / 终止 / 设为默认 / 删除），
-    // 所以给得比别的列宽。
-    ("操作", 340.),
+    ("名称", 170.),
+    ("状态", 85.),
+    ("版本", 70.),
+    ("默认", 55.),
+    ("安装位置", 260.),
+    ("磁盘（虚拟）", 100.),
+    ("操作", 320.),
 ];
+
+/// 把"权重"换算成**比例**（加起来正好 1），交给 `flex_grow` 分配实际宽度。
+///
+/// 全是 0 / 负数（不该发生，但别 panic）时退回等分。
+pub fn column_fractions(columns: &[(&str, f32)]) -> Vec<f32> {
+    let total: f32 = columns.iter().map(|(_, weight)| *weight).sum();
+    if columns.is_empty() {
+        return Vec::new();
+    }
+    if !(total > 0.0) {
+        return vec![1.0 / columns.len() as f32; columns.len()];
+    }
+    columns
+        .iter()
+        .map(|(_, weight)| weight / total)
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {
@@ -111,5 +136,29 @@ mod tests {
             7,
             "distro_row 里的 cell 数量必须与之同步"
         );
+    }
+
+    #[test]
+    fn column_fractions_add_up_to_one() {
+        // 表格是靠这些比例 + `flex_grow` 占满整行的：和不是 1 就会留白或者溢出
+        for columns in all_column_sets() {
+            let fractions = super::column_fractions(columns);
+            assert_eq!(fractions.len(), columns.len());
+            let sum: f32 = fractions.iter().sum();
+            assert!(
+                (sum - 1.0).abs() < 1e-5,
+                "比例之和应当是 1，实际 {sum}：{columns:?}"
+            );
+            assert!(fractions.iter().all(|f| *f > 0.0), "{fractions:?}");
+        }
+    }
+
+    #[test]
+    fn empty_or_zero_weights_still_give_a_usable_row() {
+        assert!(super::column_fractions(&[]).is_empty());
+        // 权重全是 0（不该发生）→ 等分，而不是 NaN 或 panic
+        let equal = super::column_fractions(&[("a", 0.0), ("b", 0.0)]);
+        assert_eq!(equal.len(), 2);
+        assert!((equal[0] - 0.5).abs() < 1e-6, "{equal:?}");
     }
 }
