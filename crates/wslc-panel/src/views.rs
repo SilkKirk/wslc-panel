@@ -1867,29 +1867,45 @@ fn online_block(
             ))
             .into_any_element()
     } else if !state.online.items.is_empty() {
-        let mut lines = vec![div().text_xs().text_color(theme::text_dim()).child(format!(
-            "共 {} 个，{} 个匹配。{}",
-            state.online.items.len(),
-            matches.len(),
-            state.online.source.label()
-        ))];
+        let mut lines: Vec<AnyElement> = vec![div()
+            .text_xs()
+            .text_color(theme::text_dim())
+            .child(format!(
+                "共 {} 个，{} 个匹配。{}",
+                state.online.items.len(),
+                matches.len(),
+                state.online.source.label()
+            ))
+            .into_any_element()];
         // ⚠️ 清单是**我们**用 curl 从 CDN 兜底拉到的（不是 wsl 自己拉的）时，
         // 说明 `wsl.exe` 连不上它要的那份 manifest —— 而安装那一步正是走它。
         // 实测（2026-10-10）这种状态下商店与 `--web-download` 会**双双**报
         // `Wsl/InstallDistro/WININET_E_CANNOT_CONNECT`。与其让用户装到一半才失败，
         // 不如现在就说清"这条来源现在多半装不上、该换哪条"。
-        if state.online.source == OnlineListSource::FallbackJson {
-            lines.push(
+        //
+        // 注意这句话**会过期**（实测同一小时内 `wsl -l -o` 从成功变成 500 又变回来），
+        // 所以它必须带上"怎么刷新"的出口，而不是一句判决。
+        match state.online.source {
+            OnlineListSource::FallbackJson => lines.push(
                 div()
                     .text_xs()
                     .text_color(theme::warning())
                     .child(
                         "注意：这份清单是面板自己从 CDN 拉的，说明 **wsl 自己**拉不到它要的那份 \
-                         manifest —— 现在用「微软商店」装多半会连不上。建议改用\
-                         「在线发行版（国内镜像源）」：那条是面板自己去国内镜像站下载，\
-                         不经过 wsl 的网络。",
-                    ),
-            );
+                         manifest —— 现在用「微软商店」装多半会连不上。\
+                         先试「在线发行版（国内镜像源）」（那条不经过 wsl 的网络）；\
+                         如果你刚把代理修好，点一下上面的「刷新商店清单」再看这行还在不在。",
+                    )
+                    .into_any_element(),
+            ),
+            OnlineListSource::Wsl => lines.push(
+                div()
+                    .text_xs()
+                    .text_color(theme::success())
+                    .child("wsl 自己拉到了清单 —— 这条来源现在是通的。")
+                    .into_any_element(),
+            ),
+            OnlineListSource::Unknown => {}
         }
         v_flex().w_full().gap_1().children(lines).into_any_element()
     } else {
