@@ -443,6 +443,13 @@ gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, c
 > 用户直接来问了。现在把 `primary*` 与 `button_primary*` 都换成我们自己的蓝
 > （`button_primary*` 是加载时从 `primary*` 落下来的，只改后者不生效）。
 >
+> **次要按钮也要一起改**：紧接着用户又说"『清理已停止』这种按钮在深色下看不清"。
+> 读 `button.rs` 才发现默认变体的**边框**取的是 `input` 那个 token
+> （`fn border_color`：`Self::Default => cx.theme().input`）、底色取 `tokens.button`，
+> 在深色主题里两者都贴近背景色 —— 看起来就是"一行字加一个几乎看不见的框"。
+> 所以 `button*` / `button_secondary*` 换成比卡片亮一档的"面"，
+> `input` 与 `border` 换成我们自己的边框色（顺带让输入框描边也更清楚）。
+>
 > 「跟随系统」读的是注册表
 > `HKCU\...\Themes\Personalize\AppsUseLightTheme`（**不是**管任务栏的
 > `SystemUsesLightTheme`），走 `reg.exe`、实测 7~27 ms，所以只在

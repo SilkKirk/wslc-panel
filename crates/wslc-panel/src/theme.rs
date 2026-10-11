@@ -90,7 +90,7 @@ pub fn apply(is_dark: bool, cx: &mut gpui_kit::App) {
     tune_component_theme(cx);
 }
 
-/// 把组件库的**强调色 / 主按钮**换成我们自己的颜色。
+/// 把组件库的**按钮配色**（主按钮 + 默认/次要按钮 + 边框）换成我们自己的。
 ///
 /// # 为什么必须换
 ///
@@ -105,12 +105,28 @@ pub fn apply(is_dark: bool, cx: &mut gpui_kit::App) {
 /// `button_primary*` 在主题加载时是"从 `primary*` 落下来"的（组件库
 /// `ThemeColor` 的字段注释写着 `fallback to primary`），**加载之后**再改
 /// `primary` 不会回头改它 —— 所以两组一起写。
+/// # 为什么次要按钮也要管
+///
+/// 用户接着反馈"『清理已停止』这种按钮在深色模式下有点看不清"。读了组件库
+/// `button.rs` 才明白：**默认变体**的边框取的是 `input` 那个 token
+/// （`fn border_color` 里 `Self::Default => cx.theme().input`），而底色取
+/// `tokens.button` —— 在深色主题里这两者都接近背景色，于是次要按钮看起来
+/// 就是"一行字加一个几乎看不见的框"。这里一并换掉：
+///
+/// - `button*`（默认变体的面）换成比卡片**亮一档**的 [`Palette::button_face`]；
+/// - `input` 与 `border` 换成我们自己的边框色（顺带让输入框的描边也更清楚）。
 fn tune_component_theme(cx: &mut gpui_kit::App) {
     let palette = palette();
     let base: Hsla = rgb(palette.accent).into();
     let hover: Hsla = rgb(palette.accent_hover).into();
     let active: Hsla = rgb(palette.accent_active).into();
     let foreground: Hsla = rgb(palette.accent_fg).into();
+
+    let face: Hsla = rgb(palette.button_face).into();
+    let face_hover: Hsla = rgb(palette.button_face_hover).into();
+    let face_active: Hsla = rgb(palette.button_face_active).into();
+    let face_text: Hsla = rgb(palette.text).into();
+    let line: Hsla = rgb(palette.border).into();
 
     // `Theme::update` 是组件库给的"不会写歪"的写入口：它把 `colors` 与 `tokens`
     // 两份颜色同步好、并刷新所有窗口（直接改 `Theme::global_mut` 会让两份颜色
@@ -125,6 +141,22 @@ fn tune_component_theme(cx: &mut gpui_kit::App) {
         theme.colors.button_primary_hover = hover;
         theme.colors.button_primary_active = active;
         theme.colors.button_primary_foreground = foreground;
+
+        // 默认变体（页面上"次要操作"都走这个）
+        theme.colors.button = face;
+        theme.colors.button_hover = face_hover;
+        theme.colors.button_active = face_active;
+        theme.colors.button_foreground = face_text;
+
+        // `.secondary()` 目前没人用，但换个主题文件时别让它掉队
+        theme.colors.button_secondary = face;
+        theme.colors.button_secondary_hover = face_hover;
+        theme.colors.button_secondary_active = face_active;
+        theme.colors.button_secondary_foreground = face_text;
+
+        // 默认变体的**边框**取的是 `input`
+        theme.colors.input = line;
+        theme.colors.border = line;
     });
 }
 
@@ -167,6 +199,14 @@ struct Palette {
     accent_active: u32,
     accent_fg: u32,
 
+    /// 次要按钮（组件库的**默认变体**）的"面"：常态 / 悬停 / 按下。
+    ///
+    /// 单独列一组而不是复用 `bg_card()`：次要按钮要比它所在的卡片**亮一档**
+    /// 才看得出是个按钮 —— 深色下原来几乎和背景同色，用户反馈"看不清"。
+    button_face: u32,
+    button_face_hover: u32,
+    button_face_active: u32,
+
     /// 模态遮罩的不透明度（浅色主题下要浅一些，否则像"黑屏"）。
     scrim_alpha: f32,
 }
@@ -201,6 +241,10 @@ const DARK: Palette = Palette {
     accent_hover: 0x5a_95_f8,
     accent_active: 0x2f_6f_dc,
     accent_fg: 0xff_ff_ff,
+
+    button_face: 0x21_28_33,
+    button_face_hover: 0x2a_33_40,
+    button_face_active: 0x1a_20_29,
 
     scrim_alpha: 0.55,
 };
@@ -239,6 +283,10 @@ const LIGHT: Palette = Palette {
     accent_hover: 0x3a_84_f0,
     accent_active: 0x18_5a_c2,
     accent_fg: 0xff_ff_ff,
+
+    button_face: 0xed_f0_f4,
+    button_face_hover: 0xe2_e7_ed,
+    button_face_active: 0xd7_dd_e5,
 
     scrim_alpha: 0.35,
 };

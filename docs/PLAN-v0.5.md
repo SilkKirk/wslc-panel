@@ -304,6 +304,20 @@ crates/wslc-core/src/
 >
 > 顺带：浅色模式下主按钮也不会再出现"白底白按钮"。
 
+> **v0.5.9 补记（次要按钮在深色下"看不清"）**
+>
+> 主按钮变成我们的蓝之后，用户紧接着指出「清理已停止」这类次要按钮在深色下
+> 看不清。读组件库 `button.rs` 找到直接原因：默认变体的**边框**取的是 `input`
+> 那个 token（`fn border_color`：`Self::Default => cx.theme().input`）、
+> 底色取 `tokens.button` —— 在深色主题里两者都贴近背景色，于是它看起来就是
+> "一行字加一个几乎看不见的框"。
+>
+> 同一处 `tune_component_theme` 里一并换掉：
+>
+> - `button*`（以及 `.secondary()` 用的 `button_secondary*`）换成比卡片**亮一档**
+>   的"面"（`Palette::button_face`，深/浅各一组，含悬停与按下）；
+> - `input` 与 `border` 换成我们自己的边框色 —— 顺带让输入框的描边也更清楚。
+
 ## 7. 测试与验证
 
 - **纯逻辑单测**（CI 的 `core` 任务，不链接 GPUI）：
