@@ -3088,29 +3088,38 @@ impl Render for Shell {
                 div()
                     .absolute()
                     .bottom(px(20.))
-                    .right(px(20.))
+                    // 放在**底部居中**，不是右下角。
+                    //
+                    // 右下角正好是「添加实例」这类页面的主操作按钮（「开始安装」）的位置：
+                    // 实测（用户截图）提示卡片会正好压在按钮上 —— 提示被按钮衬得看不清、
+                    // 按钮也被提示挡住。挪到中间之后，两侧的角落（右上「刷新」、
+                    // 右下主操作）都空着，谁都不会压到谁。
+                    .left(px(0.))
+                    .right(px(0.))
                     .child(
-                        h_flex()
-                            .max_w(px(560.))
-                            .gap_3()
-                            .px_4()
-                            .py_3()
-                            .rounded_md()
-                            .bg(theme::bg_card())
-                            .border_1()
-                            .border_color(color)
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(color)
-                                    .overflow_hidden()
-                                    .child(t.text.clone()),
-                            )
-                            .child(Button::new("toast-dismiss").label("关闭").small().on_click(
-                                move |_, _, cx| {
-                                    entity.update(cx, |shell, cx| shell.dismiss_toast(cx));
-                                },
-                            )),
+                        h_flex().w_full().justify_center().child(
+                            h_flex()
+                                .max_w(px(560.))
+                                .gap_3()
+                                .px_4()
+                                .py_3()
+                                .rounded_md()
+                                .bg(theme::bg_card())
+                                .border_1()
+                                .border_color(color)
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(color)
+                                        .overflow_hidden()
+                                        .child(t.text.clone()),
+                                )
+                                .child(Button::new("toast-dismiss").label("关闭").small().on_click(
+                                    move |_, _, cx| {
+                                        entity.update(cx, |shell, cx| shell.dismiss_toast(cx));
+                                    },
+                                )),
+                        ),
                     )
                     .into_any_element()
             }
