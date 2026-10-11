@@ -173,40 +173,75 @@ pub struct InstallSummary {
 pub fn run_plan(wsl: &Wsl, plan: &InstallPlan, opts: RunOptions) -> InstallSummary {
     let total = plan.steps.len();
 
+    // 在线安装"换了 id 才装上"时，**真实注册的名字**是那个新 id（比如 `Ubuntu-26.04`），
+    // 后面「等注册」「重定位」那两步必须按它来 —— 否则会去找一个不存在的发行版。
+    // 只改这两步的第 1 个参数（"源名"），第 2 个参数是用户想要的名字，不能动：
+    // 用户完全可能就把名字写成那个裸 id（默认就是），那一改就改错了。
+    let mut effective_id: Option<String> = None;
+    // 最终装出来的名字：默认是计划里的名字，真跑完「重定位」之后按那一步的目标名算。
+    let mut final_name = plan.name.clone();
+
     for (index, step) in plan.steps.iter().enumerate() {
         let number = index + 1;
+
+        let mut current = step.clone();
+        if let Some(effective) = effective_id.as_deref() {
+            current = retarget(&current, effective);
+        }
+
         emit(
             &opts,
             InstallEvent::Step {
                 index: number,
                 total,
-                label: step.label.clone(),
-                line: step.line(),
-                cancellable: step.cancellable,
+                label: current.label.clone(),
+                line: current.line(),
+                cancellable: current.cancellable,
             },
         );
 
-        let outcome = match step.program {
-            PlanProgram::Wsl => run_wsl_step(wsl, step, &opts),
-            PlanProgram::Curl => run_curl_step(step, &opts),
-            PlanProgram::CreateDir => create_dir(step),
-            PlanProgram::RemoveFile => remove_file(step),
-            PlanProgram::WaitRegistered => wait_registered(wsl, step, &opts),
-            PlanProgram::EnsureRelocated => ensure_relocated(wsl, step, &opts),
+        let outcome: Result<Option<String>> = match current.program {
+            PlanProgram::Wsl => run_wsl_step(wsl, &current, &opts),
+            PlanProgram::Curl => run_curl_step(&current, &opts).map(|()| None),
+            PlanProgram::CreateDir => create_dir(&current).map(|()| None),
+            PlanProgram::RemoveFile => remove_file(&current).map(|()| None),
+            PlanProgram::WaitRegistered => wait_registered(wsl, &current, &opts).map(|()| None),
+            PlanProgram::EnsureRelocated => {
+                let target = current.args.get(1).cloned();
+                ensure_relocated(wsl, &current, &opts).map(|()| {
+                    // 这一步成功 = 发行版现在叫这个名字了
+                    if let Some(target) = target {
+                        final_name = target;
+                    }
+                    None
+                })
+            }
         };
 
         match outcome {
-            Ok(()) => emit(
-                &opts,
-                InstallEvent::StepDone {
-                    index: number,
-                    ok: true,
-                    detail: String::new(),
-                },
-            ),
+            Ok(swapped) => {
+                if let Some(sibling) = swapped {
+                    emit(
+                        &opts,
+                        InstallEvent::Line(format!(
+                            "换上 {sibling} 装上了 —— 后面按这个名字继续（等注册 / 重定位）"
+                        )),
+                    );
+                    final_name = sibling.clone();
+                    effective_id = Some(sibling);
+                }
+                emit(
+                    &opts,
+                    InstallEvent::StepDone {
+                        index: number,
+                        ok: true,
+                        detail: String::new(),
+                    },
+                )
+            }
             // 「尽力而为」的收尾步骤（比如按 `.wslconfig` 开稀疏盘）失败**不算安装失败** ——
             // 发行版那一刻已经装好了，把整体判成失败会让人以为白装了。
-            Err(e) if step.best_effort && !matches!(e, Error::Cancelled { .. }) => {
+            Err(e) if current.best_effort && !matches!(e, Error::Cancelled { .. }) => {
                 let detail = e.to_string();
                 emit(
                     &opts,
@@ -234,29 +269,51 @@ pub fn run_plan(wsl: &Wsl, plan: &InstallPlan, opts: RunOptions) -> InstallSumma
                     },
                 );
                 return InstallSummary {
-                    name: plan.name.clone(),
+                    name: final_name,
                     install_dir: plan.install_dir.clone(),
                     ok: false,
                     cancelled: matches!(e, Error::Cancelled { .. }),
                     detail,
-                    failed_step: Some(step.label.clone()),
+                    failed_step: Some(current.label.clone()),
                 };
             }
         }
     }
 
     InstallSummary {
-        name: plan.name.clone(),
+        name: final_name.clone(),
         install_dir: plan.install_dir.clone(),
         ok: true,
         cancelled: false,
-        detail: format!("{} 已安装", plan.name),
+        detail: format!("{final_name} 已安装"),
         failed_step: None,
     }
 }
 
 fn emit(opts: &RunOptions, event: InstallEvent) {
     (opts.on_event)(event);
+}
+
+/// 在线安装"换了 id 才装上"时，把后面那两步的**源名**改成真实注册的名字。
+///
+/// ⚠️ 只改第 1 个参数（`WaitRegistered` 的 `args[0]`、`EnsureRelocated` 的
+/// `args[0] = 源名`）：
+///
+/// - `EnsureRelocated` 的 `args[1]` 是**用户想要的名字**，而它默认就等于那个裸 id
+///   （`Ubuntu`）—— 一起改的话，用户要的 `Ubuntu` 会被改成 `Ubuntu-26.04`，
+///   正好把重定位的目标名弄错；
+/// - `--set-sparse` 那一步用的是最终名字，等重定位做完才对，不用动。
+fn retarget(step: &PlannedStep, effective: &str) -> PlannedStep {
+    let mut out = step.clone();
+    if matches!(
+        out.program,
+        PlanProgram::WaitRegistered | PlanProgram::EnsureRelocated
+    ) {
+        if let Some(source) = out.args.first_mut() {
+            *source = effective.to_owned();
+        }
+    }
+    out
 }
 
 /// 取步骤里的第 `index` 个参数（计划是我们自己拼的，但执行器不该因此 panic）。
@@ -275,34 +332,64 @@ fn arg(step: &PlannedStep, index: usize) -> Result<&str> {
 /// 带 [`PlannedStep::retry_other_source`] 的步骤（只有在线安装那一步）失败时会
 /// **换一个下载源**（微软商店 ⇄ `--web-download`）重试一次：两条通道走的是不同的
 /// 下载实现，实测本机上一条秒失败、另一条能连上 —— 换一次比让用户自己猜好。
-fn run_wsl_step(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions) -> Result<()> {
+///
+/// 还不行的话，带 [`PlannedStep::retry_other_id`] 的步骤会**换一个 id** 再试
+/// （裸 `Ubuntu` → `Ubuntu-26.04`，见那个字段的说明）。换成功时返回
+/// `Ok(Some(真正装上的那个 id))` —— 调用方要拿它去改后面步骤的参数。
+fn run_wsl_step(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions) -> Result<Option<String>> {
     let first = run_wsl_once(wsl, &step.args, step.cancellable, opts);
-    if first.is_ok() || !step.retry_other_source {
-        return first;
+    if first.is_ok() {
+        return Ok(None);
+    }
+    if !step.retry_other_source && step.retry_other_id.is_none() {
+        return first.map(|()| None);
     }
 
     let Some(args) = args_with_source_toggled(&step.args) else {
-        return first;
+        return first.map(|()| None);
     };
     emit(
         opts,
         InstallEvent::Line("这一次没连上 —— 换一个下载源再试一次（微软商店 ⇄ GitHub）".to_owned()),
     );
     let retried = run_wsl_once(wsl, &args, step.cancellable, opts);
-    if retried.is_err() {
-        // 两条通道都不通 → 问题在 `wsl.exe` 自己的网络，不在我们选的源。
-        // 指一条**不经过 wsl 网络**的路，别让用户在那儿猜。
-        emit(
-            opts,
-            InstallEvent::Line(
-                "两条通道都没连上 —— 这条来源依赖 wsl.exe 自己的网络。\
-                 可以改用「在线发行版（国内镜像源）」：那是面板自己用 curl 从国内镜像站下载，\
-                 不经过 wsl 的网络。"
-                    .to_owned(),
-            ),
-        );
+    if retried.is_ok() {
+        return Ok(None);
     }
-    retried
+
+    // ③ 还不行就**换 id**：清单里排第一的裸家族名（`Ubuntu`）是旧的商店包，
+    //    实测本机 2 秒就 `WININET_E_CANNOT_CONNECT`，而同族的 `Ubuntu-24.04`
+    //    能照常下载。参考实现的列表第一项是「Ubuntu 26.04 LTS」，所以它没撞上。
+    if let Some(sibling) = step.retry_other_id.as_deref() {
+        if let Some(args) = args_with_id_replaced(&step.args, sibling) {
+            emit(
+                opts,
+                InstallEvent::Line(format!(
+                    "这两条还是不通 —— 换个带版本号的条目再试一次：{sibling}\
+                     （清单里不带版本号的那个常常是旧的商店包，实测在这台机器上装不动）"
+                )),
+            );
+            return match run_wsl_once(wsl, &args, step.cancellable, opts) {
+                // 装成了，但**注册的名字是兄弟那个**：告诉调用方，
+                // 后面「等注册」「重定位」要按它来（否则会找不到发行版）。
+                Ok(()) => Ok(Some(sibling.to_owned())),
+                Err(e) => Err(e),
+            };
+        }
+    }
+
+    // 都走不通 → 问题在 `wsl.exe` 自己的网络，不在我们选的源。
+    // 指一条**不经过 wsl 网络**的路，别让用户在那儿猜。
+    emit(
+        opts,
+        InstallEvent::Line(
+            "这几条都没走通 —— 这条来源依赖 wsl.exe 自己的网络。\
+             可以改用「在线发行版（国内镜像源）」：那是面板自己用 curl 从国内镜像站下载，\
+             不经过 wsl 的网络。"
+                .to_owned(),
+        ),
+    );
+    retried.map(|()| None)
 }
 
 /// 跑一条 `wsl.exe` 命令（一步，不重试）。
@@ -341,9 +428,25 @@ fn args_with_source_toggled(args: &[String]) -> Option<Vec<String>> {
     Some(out)
 }
 
+/// 把 `-d <id>` 后面那个名字换成另一个。
+///
+/// 返回 `None` 表示这条命令不是在装发行版（没有 `-d`）—— 那种情况不该乱改。
+///
+/// 用途见 [`PlannedStep::retry_other_id`]：裸 `Ubuntu` 在这台机器上装不动，
+/// 换成 `Ubuntu-26.04` 就能下。
+fn args_with_id_replaced(args: &[String], id: &str) -> Option<Vec<String>> {
+    let at = args.iter().position(|arg| arg == "-d")?;
+    let mut out = args.to_vec();
+    let slot = out.get_mut(at + 1)?;
+    if slot == id {
+        return None;
+    }
+    *slot = id.to_owned();
+    Some(out)
+}
+
 /// 起一个 `curl.exe` 步骤（下载），并轮询产物大小当进度。
-fn run_curl_step(step: &PlannedStep, opts: &RunOptions) -> Result<()> {
-    let out = output_path(&step.args)?;
+fn run_curl_step(step: &PlannedStep, opts: &RunOptions) -> Result<()> {    let out = output_path(&step.args)?;
     let (sink, last) = line_sink(opts);
     let handle = cli::spawn_streaming_program(
         CURL,
@@ -885,6 +988,7 @@ mod tests {
             cancellable: true,
             retry_other_source: false,
             best_effort: false,
+            retry_other_id: None,
         };
         assert!(matches!(arg(&step, 0), Err(Error::Install(_))));
     }
@@ -930,6 +1034,84 @@ mod tests {
     }
 
     #[test]
+    fn the_id_can_be_swapped_for_the_retry() {
+        let owned =
+            |items: &[&str]| -> Vec<String> { items.iter().map(|s| (*s).to_owned()).collect() };
+
+        let store = owned(&["--install", "-d", "Ubuntu", "--version", "2", "--no-launch"]);
+        assert_eq!(
+            args_with_id_replaced(&store, "Ubuntu-26.04").unwrap(),
+            owned(&[
+                "--install",
+                "-d",
+                "Ubuntu-26.04",
+                "--version",
+                "2",
+                "--no-launch"
+            ])
+        );
+        // 已经是它 → 不白跑一趟
+        assert_eq!(args_with_id_replaced(&store, "Ubuntu"), None);
+        // 不是安装命令 → 不乱改
+        assert_eq!(args_with_id_replaced(&owned(&["--list", "--online"]), "X"), None);
+        // `-d` 后面没有东西也不能 panic
+        assert_eq!(args_with_id_replaced(&owned(&["--install", "-d"]), "X"), None);
+    }
+
+    #[test]
+    fn a_swapped_id_retargets_the_wait_and_move_steps_only() {
+        // 换了 id 才装上时，「等注册」要等真实名字
+        let wait = PlannedStep {
+            label: "等 Ubuntu 注册完成".to_owned(),
+            program: PlanProgram::WaitRegistered,
+            args: vec!["Ubuntu".to_owned()],
+            cancellable: true,
+            retry_other_source: false,
+            best_effort: false,
+            retry_other_id: None,
+        };
+        assert_eq!(retarget(&wait, "Ubuntu-26.04").args, vec!["Ubuntu-26.04"]);
+
+        // 「重定位」只改源名：目标名是**用户要的名字**（默认就等于那个裸 id），
+        // 一起改就把用户要的 `Ubuntu` 改错了
+        let move_step = PlannedStep {
+            label: "必要时把 Ubuntu 重定位成 Ubuntu".to_owned(),
+            program: PlanProgram::EnsureRelocated,
+            args: vec![
+                "Ubuntu".to_owned(),
+                "Ubuntu".to_owned(),
+                r"D:\linux\Ubuntu".to_owned(),
+                r"C:\Temp\wslc-panel\x.tar".to_owned(),
+            ],
+            cancellable: false,
+            retry_other_source: false,
+            best_effort: false,
+            retry_other_id: None,
+        };
+        assert_eq!(
+            retarget(&move_step, "Ubuntu-26.04").args,
+            vec![
+                "Ubuntu-26.04",
+                "Ubuntu",
+                r"D:\linux\Ubuntu",
+                r"C:\Temp\wslc-panel\x.tar"
+            ]
+        );
+
+        // 别的步骤（`--set-sparse` 用的是最终名字）一个字都不动
+        let sparse = PlannedStep {
+            label: "开稀疏盘".to_owned(),
+            program: PlanProgram::Wsl,
+            args: vec!["--manage".to_owned(), "Ubuntu".to_owned()],
+            cancellable: true,
+            retry_other_source: false,
+            best_effort: true,
+            retry_other_id: None,
+        };
+        assert_eq!(retarget(&sparse, "Ubuntu-26.04").args, sparse.args);
+    }
+
+    #[test]
     fn failure_detail_drops_the_useless_footer() {
         // 真机上 `--manage --move` 失败时，最后一行永远是这句套话，
         // 真正的原因（错误码）在它前面 —— 只留最后一行等于什么都没说
@@ -965,6 +1147,7 @@ mod tests {
                 cancellable: true,
                 retry_other_source: false,
                 best_effort: true,
+                retry_other_id: None,
             }],
             notes: Vec::new(),
         };
@@ -1018,6 +1201,7 @@ mod tests {
                     cancellable: true,
                     retry_other_source: false,
                     best_effort: false,
+                    retry_other_id: None,
                 },
                 PlannedStep {
                     label: "删掉临时文件（本来就不在，也算成功）".to_owned(),
@@ -1026,6 +1210,7 @@ mod tests {
                     cancellable: true,
                     retry_other_source: false,
                     best_effort: false,
+                    retry_other_id: None,
                 },
             ],
             notes: Vec::new(),
@@ -1082,6 +1267,7 @@ mod tests {
                     cancellable: true,
                     retry_other_source: false,
                     best_effort: false,
+                    retry_other_id: None,
                 },
                 PlannedStep {
                     label: "不该被执行到".to_owned(),
@@ -1090,6 +1276,7 @@ mod tests {
                     cancellable: true,
                     retry_other_source: false,
                     best_effort: false,
+                    retry_other_id: None,
                 },
             ],
             notes: Vec::new(),
@@ -1137,6 +1324,7 @@ mod tests {
                 cancellable: true,
                 retry_other_source: false,
                 best_effort: false,
+                retry_other_id: None,
             }],
             notes: Vec::new(),
         };
@@ -1167,6 +1355,7 @@ mod tests {
                 id: "Ubuntu-24.04".to_owned(),
                 launch: false,
                 web_download: false,
+                fallback_id: None,
             },
         );
         let plan = crate::model::install::plan(&spec, &ctx).unwrap();

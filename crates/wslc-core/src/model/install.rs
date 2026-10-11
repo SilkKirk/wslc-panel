@@ -491,6 +491,13 @@ pub enum InstallSource {
         /// 参考实现会先探一下 GitHub 通不通再决定；本程序把探测结果当**默认值**，
         /// 但按钮在界面上，用户可以改。
         web_download: bool,
+        /// 这条装不上时，改用哪个 id 再试一次。
+        ///
+        /// 界面上算好传进来（`OnlineDistroState::sibling_id`）：用户选了裸家族名
+        /// （`Ubuntu`）时给它**带版本号的兄弟**（`Ubuntu-26.04`）。
+        /// 起因见 [`crate::model::install::PlannedStep::retry_other_id`] 的说明 ——
+        /// 实测本机 `-d Ubuntu` 必失败、`-d Ubuntu-24.04` 正常。
+        fallback_id: Option<String>,
     },
     /// 镜像源：下载官方 rootfs / `.wsl` 包，再装成本地发行版。
     ///
@@ -684,6 +691,18 @@ pub struct PlannedStep {
     /// —— WSL 完全可能因为自己的策略拒绝它（实测它默认就拒绝），
     /// 把整体判成失败会让人以为白装了（界面报"安装失败"、其实好好的）。
     pub best_effort: bool,
+    /// 失败时换成**另一个 id** 重试（`-d` 后面那个名字）。
+    ///
+    /// 只给在线安装那一步用，而且只在"用户选的是裸家族名"时才给。
+    /// 起因是实测（2026-10-11，本机）：`wsl -l -o` 排在**第一位**的裸 `Ubuntu`
+    /// 是清单里那条旧的商店包，`wsl --install -d Ubuntu` 2 秒就
+    /// `Wsl/InstallDistro/WININET_E_CANNOT_CONNECT`，而同一分钟的
+    /// `-d Ubuntu-24.04` / `-d Debian` 能照常下载 —— 参考实现的列表第一项是
+    /// 「Ubuntu 26.04 LTS」（`Ubuntu-26.04`），所以它一直没撞上。
+    ///
+    /// 换成功之后，**真实注册的名字**是那个新 id，执行器会把后面
+    /// 「等注册」「重定位」两步的参数一起改过来（见 `cmd::install::run_plan`）。
+    pub retry_other_id: Option<String>,
 }
 
 impl PlannedStep {
@@ -695,6 +714,7 @@ impl PlannedStep {
             cancellable: true,
             retry_other_source: false,
             best_effort: false,
+            retry_other_id: None,
         }
     }
 
@@ -706,6 +726,12 @@ impl PlannedStep {
     /// 失败时换一个下载源再试一次（只给在线安装那一步用，见字段说明）。
     fn with_source_fallback(mut self) -> Self {
         self.retry_other_source = true;
+        self
+    }
+
+    /// 失败时换成另一个 id 再试一次（见字段说明）。
+    fn with_id_fallback(mut self, id: impl Into<String>) -> Self {
+        self.retry_other_id = Some(id.into());
         self
     }
 
@@ -1018,10 +1044,16 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
             id,
             launch,
             web_download,
+            fallback_id,
         } => {
             let id = id.trim().to_owned();
             let same_name = id == name;
             let target_dir = dir.clone();
+            let fallback_id = fallback_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|candidate| !candidate.is_empty() && *candidate != id)
+                .map(str::to_owned);
 
             let mut args = own(&["--install", "-d", id.as_str()]);
             if *web_download {
@@ -1047,15 +1079,23 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
             if !launch {
                 args.push("--no-launch".to_owned());
             }
-            steps.push(
-                PlannedStep::new(
-                    format!("从在线源安装 {id}"),
-                    PlanProgram::Wsl,
-                    args,
-                )
-                // 商店 ⇄ GitHub 自动换一次：两条通道在不同网络环境下会各挂一条。
-                .with_source_fallback(),
-            );
+            let install_step = PlannedStep::new(
+                format!("从在线源安装 {id}"),
+                PlanProgram::Wsl,
+                args,
+            )
+            // 商店 ⇄ GitHub 自动换一次：两条通道在不同网络环境下会各挂一条。
+            .with_source_fallback();
+            // 裸名字（`Ubuntu`）→ 带版本号的兄弟（`Ubuntu-26.04`）再试一次。
+            // 实测（2026-10-11，本机）：`wsl -l -o` 排在第一位的裸 `Ubuntu` 是清单里
+            // 那条**旧的商店包**，`wsl --install -d Ubuntu` 2 秒就
+            // `WININET_E_CANNOT_CONNECT`，而 `-d Ubuntu-24.04` / `-d Debian` 照常下载。
+            // 参考实现的列表第一项是「Ubuntu 26.04 LTS」，所以它一直没撞上这个坑。
+            let install_step = match fallback_id.clone() {
+                Some(sibling) => install_step.with_id_fallback(sibling),
+                None => install_step,
+            };
+            steps.push(install_step);
 
             steps.push(PlannedStep::new(
                 format!("等 {id} 注册完成"),
@@ -1101,6 +1141,15 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
                          搬到 {target_dir}。"
                     ));
                 }
+            }
+
+            if let Some(sibling) = fallback_id.as_deref() {
+                notes.push(format!(
+                    "「{id}」在清单里是个**不带版本号的名字**（实测这类条目在这台机器上\
+                     装不动：`wsl --install -d {id}` 两秒就报 `WININET_E_CANNOT_CONNECT`），\
+                     所以上面那条命令失败时会自动换成「{sibling}」再试一次，\
+                     装好之后的名字仍然是你要的「{name}」。"
+                ));
             }
         }
         InstallSource::Mirror {
@@ -1600,6 +1649,7 @@ mod tests {
                 id: "Ubuntu-24.04".to_owned(),
                 launch: false,
                 web_download: false,
+                fallback_id: None,
             },
         );
         let plan = super::plan(&spec, &ctx()).unwrap();
@@ -1642,10 +1692,56 @@ mod tests {
             id: "Ubuntu-24.04".to_owned(),
             launch: true,
             web_download: true,
+            fallback_id: None,
         };
         let plan = super::plan(&spec, &ctx()).unwrap();
         assert!(plan.steps[0].args.iter().any(|a| a == "--web-download"));
         assert!(!plan.steps[0].args.iter().any(|a| a == "--no-launch"));
+    }
+
+    #[test]
+    fn a_bare_online_id_carries_a_versioned_fallback() {
+        // 本机实测：裸 `Ubuntu` 那条 2 秒就 WININET_E_CANNOT_CONNECT，
+        // 而 `Ubuntu-26.04` 能下 —— 所以清单里给了兄弟时，计划要带上"换 id 重试"
+        let spec = InstallSpec::new(
+            "Ubuntu",
+            InstallSource::Online {
+                id: "Ubuntu".to_owned(),
+                launch: false,
+                web_download: false,
+                fallback_id: Some("Ubuntu-26.04".to_owned()),
+            },
+        );
+        let plan = super::plan(&spec, &ctx()).unwrap();
+        assert_eq!(plan.steps[0].retry_other_id.as_deref(), Some("Ubuntu-26.04"));
+        // 换源那一手也要在（两条通道在不同网络下各会挂一条）
+        assert!(plan.steps[0].retry_other_source);
+
+        // 没给兄弟（`Debian`）时不能瞎猜
+        let spec = InstallSpec::new(
+            "Debian",
+            InstallSource::Online {
+                id: "Debian".to_owned(),
+                launch: false,
+                web_download: false,
+                fallback_id: None,
+            },
+        );
+        let plan = super::plan(&spec, &ctx()).unwrap();
+        assert_eq!(plan.steps[0].retry_other_id, None);
+
+        // 和主 id 一样的"兄弟"等于没给（防止上游算错时多跑一轮）
+        let spec = InstallSpec::new(
+            "Ubuntu-24.04",
+            InstallSource::Online {
+                id: "Ubuntu-24.04".to_owned(),
+                launch: false,
+                web_download: false,
+                fallback_id: Some("Ubuntu-24.04".to_owned()),
+            },
+        );
+        let plan = super::plan(&spec, &ctx()).unwrap();
+        assert_eq!(plan.steps[0].retry_other_id, None);
     }
 
     #[test]
@@ -1656,6 +1752,7 @@ mod tests {
                 id: "Ubuntu-24.04".to_owned(),
                 launch: false,
                 web_download: false,
+                fallback_id: None,
             },
         );
         let plan = super::plan(&spec, &ctx()).unwrap();
@@ -1848,6 +1945,7 @@ mod tests {
                 id: "  ".to_owned(),
                 launch: false,
                 web_download: false,
+                fallback_id: None,
             },
         );
         assert!(super::plan(&no_id, &ctx()).unwrap_err().contains("请先选"));
@@ -1858,6 +1956,7 @@ mod tests {
                 id: "Ubuntu".to_owned(),
                 launch: false,
                 web_download: false,
+                fallback_id: None,
             },
         );
         let err = super::plan(&no_dir, &bare).unwrap_err();
@@ -1918,6 +2017,7 @@ mod tests {
                 id: "Ubuntu-24.04".to_owned(),
                 launch: false,
                 web_download: false,
+                fallback_id: None,
             },
         );
         let check = preflight(&spec, &ctx(), &[], false);

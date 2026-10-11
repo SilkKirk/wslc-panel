@@ -114,7 +114,12 @@ impl InstallForm {
     /// 「自定义 URL」填了就用它，**忽略**探测出来的那个 ——
     /// 用户手输地址就是在表达"别管你探测到什么"。这也让"镜像站上没有我要的版本"
     /// 有个出口，而不是只能换来源。
-    pub(crate) fn to_spec(&self, cx: &App, mirrors: &crate::state::MirrorState) -> InstallSpec {
+    pub(crate) fn to_spec(
+        &self,
+        cx: &App,
+        mirrors: &crate::state::MirrorState,
+        online: &crate::state::OnlineDistroState,
+    ) -> InstallSpec {
         let text = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
         let typed_name = text(&self.name);
 
@@ -164,18 +169,26 @@ impl InstallForm {
                     },
                 }
             }
-            InstallSourceKind::Online => InstallSource::Online {
+            InstallSourceKind::Online => {
                 // 清单里选过就用它的 id（那才是 `wsl --install -d` 认的名字）；
                 // 没选过（清单拉不到）就把用户手输的名字当 id ——
                 // 这正是 v0.3 的那条老路：本机拉不到在线清单是常态。
-                id: self
+                let id = self
                     .online_id
                     .clone()
                     .filter(|id| !id.trim().is_empty())
-                    .unwrap_or_else(|| typed_name.clone()),
-                launch: self.launch,
-                web_download: self.web_download,
-            },
+                    .unwrap_or_else(|| typed_name.clone());
+                // 裸家族名（`Ubuntu`）在这台机器上装不动（实测 2 秒
+                // `WININET_E_CANNOT_CONNECT`），换成同族带版本号的那条。
+                // 见 `OnlineDistroState::sibling_id` 的说明。
+                let fallback_id = online.sibling_id(&id);
+                InstallSource::Online {
+                    id,
+                    launch: self.launch,
+                    web_download: self.web_download,
+                    fallback_id,
+                }
+            }
         };
 
         let mut spec = InstallSpec::new(text(&self.name), source);
@@ -2587,7 +2600,7 @@ impl Shell {
         let spec = self
             .install_form
             .as_ref()
-            .map(|form| form.to_spec(cx, &self.state.mirrors));
+            .map(|form| form.to_spec(cx, &self.state.mirrors, &self.state.online));
         let Some(spec) = spec else {
             self.state.notify(Toast::error("表单尚未创建"));
             cx.notify();
