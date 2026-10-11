@@ -2541,19 +2541,21 @@ pub fn about(_state: &AppState, _entity: &Entity<Shell>) -> AnyElement {
         .into_any_element()
 }
 
-/// 主题选择卡。
+/// 主题选择卡（跟随系统 / 深色 / 浅色）。
 ///
-/// ⚠️ 点击回调里必须**同时**做两件事：
-///
-/// 1. `Theme::change(...)` —— 切 gpui-component 自己的主题。
-///    不做这一步的话，`Input` / `Button` 这些控件仍是浅色的
-///    （白底浅灰字），在深色界面上根本看不清；
-/// 2. `Shell::set_theme(...)` —— 持久化到 `prefs.json`。
-///
-/// 第 1 步只能在**回调**里做：`Theme::change` 要 `&mut App`，
-/// 而 `Shell` 的方法拿到的是 `Context<Self>`。
+/// 切换本身在 [`Shell::set_theme`] 里做完（持久化 + 两套配色一起换）——
+/// 这里只负责画按钮。以前那一步必须写在点击回调里（`Theme::change` 要
+/// `&mut App`），现在 `Shell` 的方法里也能拿到，所以收成一处，
+/// 免得"回调里切了组件库、状态里忘了切自绘配色"这类两处不同步的 bug。
 fn theme_card(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     let current = state.prefs.theme;
+    // 「跟随系统」要显示系统当前是什么主题 —— 用的是启动时读到的缓存值
+    // （点按钮时会在后台再读一次，见 `Shell::set_theme`）。
+    let system_label = match state.system_is_dark {
+        Some(true) => "系统当前：深色",
+        Some(false) => "系统当前：浅色",
+        None => "系统当前：没读到（按深色算）",
+    };
 
     let buttons: Vec<AnyElement> = crate::prefs::ThemePref::ALL
         .iter()
@@ -2565,10 +2567,6 @@ fn theme_card(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                 .label(theme.label())
                 .small()
                 .on_click(move |_, _, cx| {
-                    // 传 `None` 而不是 `Some(window)`：`main.rs` 启动时就是
-                    // 这么调的，是本项目**已经编译通过**的那个形式。
-                    // 界面刷新由随后的 `cx.notify()` 触发。
-                    gpui_kit::component::Theme::change(theme_mode(theme), None, cx);
                     entity.update(cx, |shell, cx| shell.set_theme(theme, cx));
                 });
             if current == theme {
@@ -2584,21 +2582,18 @@ fn theme_card(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
             .w_full()
             .gap_3()
             .child(kv("主题", current.label()))
+            .child(kv("当前配色", theme::mode().label()))
             .child(h_flex().w_full().gap_2().flex_wrap().children(buttons))
+            .child(div().text_xs().text_color(theme::text_dim()).child(format!(
+                "主题同时作用于自绘的界面和组件库的控件（输入框、按钮……）。{system_label}。"
+            )))
             .child(div().text_xs().text_color(theme::text_dim()).child(
-                "主题要同时作用于自绘的界面和组件库的控件（输入框、按钮……），\
-                 所以两个主题都得显式切换，不能只改配色常量。",
+                "「跟随系统」读的是 Windows 的**应用**主题（`AppsUseLightTheme` 那个键，\
+                 不是管任务栏的 `SystemUsesLightTheme`）；在系统里改完主题之后，\
+                 再点一下「跟随系统」（或重启面板）就会跟上。",
             )),
     )
     .into_any_element()
-}
-
-/// 偏好里的主题 → 组件库的主题。
-fn theme_mode(theme: crate::prefs::ThemePref) -> gpui_kit::component::ThemeMode {
-    match theme {
-        crate::prefs::ThemePref::Dark => gpui_kit::component::ThemeMode::Dark,
-        crate::prefs::ThemePref::Light => gpui_kit::component::ThemeMode::Light,
-    }
 }
 
 // ---------------------------------------------------------------------------

@@ -1743,6 +1743,13 @@ pub struct AppState {
     ///
     /// **不是** `wslc` 的配置 —— 见 `prefs.rs` 的说明。
     pub prefs: crate::prefs::Prefs,
+    /// 系统的**应用主题**是不是深色（None = 没读到，按深色算）。
+    ///
+    /// 读一次是 7~27 ms（起 `reg.exe`，见 `wslc_core::cmd::win_theme`），
+    /// 所以**启动时读一次存这儿**，界面上的「跟随系统」用缓存值：
+    /// 点按钮是纯逻辑，不会因为读注册表把界面卡一下。
+    /// 点「跟随系统」时会顺手在后台再读一次（系统主题可能刚改过）。
+    pub system_is_dark: Option<bool>,
     /// 是否正在后台采集。
     pub busy: bool,
     /// 正在拉取的镜像；空闲时为 `None`。
@@ -1803,6 +1810,8 @@ impl AppState {
             settings: None,
             settings_error: None,
             prefs: crate::prefs::Prefs::load(),
+            // 真正的值由 `main.rs` 在开窗之前填（那里才知道要不要读注册表）
+            system_is_dark: None,
             busy: false,
             pulling: None,
             exporting: None,

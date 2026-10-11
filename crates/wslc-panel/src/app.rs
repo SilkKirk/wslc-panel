@@ -2837,20 +2837,66 @@ impl Shell {
         cx.notify();
     }
 
-    /// 记住界面主题（并写回偏好文件）。
+    /// 切主题：**持久化 + 两套配色一起换**。
     ///
-    /// ⚠️ **这里不切换组件库的主题** —— 那一步必须在**点击回调里**做，
-    /// 因为 `gpui_kit::component::Theme::change` 需要一个 `&mut App`，
-    /// 而 `Context<Self>` 给不出来。
+    /// 两套配色指：
     ///
-    /// 所以调用顺序是：点击回调先 `Theme::change(...)`，再调本方法持久化。
-    /// 见 `views.rs` 的 `theme_card`。
+    /// 1. gpui-component 自己的主题 —— `Input` / `Button` / `Select` 这些控件
+    ///    只认它（不切的话输入框还是白底浅灰字，实机看就是"字打了但读不出来"）；
+    /// 2. 我们自己画的那些 `div` —— 走 [`crate::theme::set_mode`] 那个全局。
+    ///
+    /// 「跟随系统」用**缓存**的系统主题立刻切一下（点下去立刻有反应），
+    /// 同时在后台再读一次：用户很可能刚在系统设置里改过主题才来点这个按钮。
+    /// **不在点击回调里同步读**（起 `reg.exe`，几十毫秒，但那是界面线程 ——
+    /// `AGENTS.md` §7.1）。
     pub fn set_theme(&mut self, theme: crate::prefs::ThemePref, cx: &mut Context<Self>) {
-        if self.state.prefs.theme == theme {
+        let changed = self.state.prefs.theme != theme;
+        self.state.prefs.theme = theme;
+
+        if let Some(is_dark) = theme.fixed_is_dark() {
+            self.apply_theme(is_dark, cx);
+            if changed {
+                self.persist_theme(theme, cx);
+            }
             return;
         }
 
-        self.state.prefs.theme = theme;
+        // 跟随系统
+        let cached = self.state.system_is_dark.unwrap_or(true);
+        self.apply_theme(theme.resolve_is_dark(cached), cx);
+        if changed {
+            self.persist_theme(theme, cx);
+        }
+
+        cx.spawn(async move |this, cx| {
+            let probed = cx
+                .background_executor()
+                .spawn(async { wslc_core::cmd::win_theme::system_is_dark() })
+                .await;
+            let _ = this.update(cx, |shell, cx| {
+                shell.state.system_is_dark = probed;
+                // 探到的和缓存不一致 → 现在就跟上（用户多半刚改过系统主题）
+                if let Some(is_dark) = probed {
+                    if shell.state.prefs.theme.fixed_is_dark().is_none() {
+                        shell.apply_theme(is_dark, cx);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 真正落地一次主题切换（两套配色）。
+    fn apply_theme(&mut self, is_dark: bool, cx: &mut Context<Self>) {
+        // `theme::apply` 既设我们自己的全局模式，又给出组件库要的那个模式 ——
+        // 两套配色只能一起切，写在一处才不会漏。
+        gpui_kit::component::Theme::change(crate::theme::apply(is_dark), None, cx);
+        cx.notify();
+    }
+
+    /// 写回偏好文件（+ 提示）。
+    fn persist_theme(&mut self, theme: crate::prefs::ThemePref, cx: &mut Context<Self>) {
         match self.state.prefs.save() {
             Ok(()) => {
                 tracing::info!("主题已改为{}", theme.label());

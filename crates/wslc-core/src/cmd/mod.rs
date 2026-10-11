@@ -10,7 +10,8 @@
 //! - [`install`] —— 把"添加实例"的**计划**执行出来（起进程、流式读输出、
 //!   轮询进度、取消），计划本身的纯逻辑在 [`crate::model::install`] 里；
 //! - [`catalog`] —— 拉「在线发行版（镜像源）」那份清单（两个 HTTP 请求走 `curl.exe`），
-//!   解析在 [`crate::mirrors`] 里。
+//!   解析在 [`crate::mirrors`] 里；
+//! - [`win_theme`] —— 读系统"应用主题"（浅色/深色），给界面上的「跟随系统」用。
 
 pub mod catalog;
 pub mod container;
@@ -21,5 +22,6 @@ pub mod network;
 pub mod picker;
 pub mod system;
 pub mod volume;
+pub mod win_theme;
 
 pub use container::{LogOptions, RunSpec};

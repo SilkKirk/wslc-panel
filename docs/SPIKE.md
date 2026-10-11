@@ -419,6 +419,32 @@ gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, c
 不可用状态用"守卫 + 文案"表达，可读性反而更好 ——
 比如"已保存"本来就是个**状态**，一行绿色文字比灰按钮更准确。
 
+> **2026-10 补记：两套配色得一起切，而且各自都要有浅色**
+>
+> 上面这一步只解决了"控件"那一半。用起来才发现：切到浅色时，
+> **控件变白了，我们自己画的那些 `div` 还是深色** —— 换句话说
+> "主题"这个开关以前只对一半界面有效。
+>
+> 现在 `theme.rs` 里存了**两张调色板**（`DARK` / `LIGHT`）和一个进程内的
+> 全局模式；切换的唯一入口是 `theme::apply(is_dark)`，它同时
+> ①设那个全局、②返回该给 `Theme::change` 的 `ThemeMode`，
+> 调用点写成一行就不漏：
+>
+> ```rust
+> gpui_kit::component::Theme::change(crate::theme::apply(is_dark), None, cx);
+> ```
+>
+> 「跟随系统」读的是注册表
+> `HKCU\...\Themes\Personalize\AppsUseLightTheme`（**不是**管任务栏的
+> `SystemUsesLightTheme`），走 `reg.exe`、实测 7~27 ms，所以只在
+> 启动时读一次并缓存；点「跟随系统」时再在后台复核一次。
+> 详见 `wslc_core::cmd::win_theme` 的模块说明。
+>
+> ⚠️ 顺带确认了一件以前注释里写错的事：`Context<T>` **可以**当 `&mut App` 用
+> （`Deref`/`DerefMut` 到 `App`；`Shell::ensure_install_form(&mut self, window, cx: &mut Context<Self>)`
+> 里那句 `cx.new(...)` 就是证据）。所以 `Theme::change(..., cx)` 写在
+> `Context<Self>` 的方法里没问题，不必非得挤在点击回调里。
+
 ### 7.8 `cargo check --all-targets` **不会执行**测试
 
 一个差点被漏掉的验证缺口：
