@@ -288,7 +288,21 @@ fn run_wsl_step(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions) -> Result<()> 
         opts,
         InstallEvent::Line("这一次没连上 —— 换一个下载源再试一次（微软商店 ⇄ GitHub）".to_owned()),
     );
-    run_wsl_once(wsl, &args, step.cancellable, opts)
+    let retried = run_wsl_once(wsl, &args, step.cancellable, opts);
+    if retried.is_err() {
+        // 两条通道都不通 → 问题在 `wsl.exe` 自己的网络，不在我们选的源。
+        // 指一条**不经过 wsl 网络**的路，别让用户在那儿猜。
+        emit(
+            opts,
+            InstallEvent::Line(
+                "两条通道都没连上 —— 这条来源依赖 wsl.exe 自己的网络。\
+                 可以改用「在线发行版（国内镜像源）」：那是面板自己用 curl 从国内镜像站下载，\
+                 不经过 wsl 的网络。"
+                    .to_owned(),
+            ),
+        );
+    }
+    retried
 }
 
 /// 跑一条 `wsl.exe` 命令（一步，不重试）。

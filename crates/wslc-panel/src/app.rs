@@ -2218,6 +2218,46 @@ impl Shell {
         cx.notify();
     }
 
+    /// 「微软商店」装不上时的一键出口：换成镜像源，并尽量选中同一个发行版。
+    ///
+    /// # 为什么要有这个
+    ///
+    /// 商店那条路**依赖 `wsl.exe` 自己的网络**：实测这台机器上
+    /// `wsl -l -o` 被 `raw.githubusercontent.com` 拦掉（500）时，商店与
+    /// `--web-download` 会双双报 `Wsl/InstallDistro/WININET_E_CANNOT_CONNECT`，
+    /// 而镜像源是**面板自己**用 `curl.exe` 从国内镜像站下载（同一时刻清华 200），
+    /// 完全不经过 wsl 的网络。同一个发行版往往在镜像清单里也有
+    /// （Ubuntu / Debian / Alpine / Arch / Fedora / Rocky / Kali / …），
+    /// 所以直接帮他切过去、并选中对应的那一版，比让他自己去翻清单强。
+    pub fn switch_to_mirror_source(&mut self, cx: &mut Context<Self>) {
+        // 在线清单里选过的那个 id（没选过就用输入框里的名字）
+        let online_id = self
+            .install_form
+            .as_ref()
+            .map(|form| {
+                form.online_id.clone().unwrap_or_else(|| {
+                    form.name.read(cx).value().trim().to_owned()
+                })
+            })
+            .unwrap_or_default();
+
+        let matched = self.state.mirrors.match_online_id(&online_id);
+        if let Some(offer) = matched.clone() {
+            self.state.mirrors.select_distro(offer);
+        }
+        self.set_install_source(InstallSourceKind::Mirror, cx);
+
+        match matched {
+            Some(offer) => self.state.notify(Toast::success(format!(
+                "已切到镜像源，并选中了「{offer}」—— 点「探测最快镜像」再装"
+            ))),
+            None => self.state.notify(Toast::info(
+                "已切到镜像源 —— 在清单里挑一个版本，或填自定义下载地址",
+            )),
+        }
+        cx.notify();
+    }
+
     /// 切换"装完启动"。
     pub fn toggle_install_launch(&mut self, cx: &mut Context<Self>) {
         if let Some(form) = self.install_form.as_mut() {

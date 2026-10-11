@@ -35,7 +35,8 @@ use crate::columns::{ALL_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS
 use crate::presets::presets_for;
 use crate::state::{
     AppState, DistroAction, ImmediateAction, InstallOutcome, InstallProgress, InstallSourceKind,
-    Page, PendingAction, PromptKind, PullProgress, SettingsTab, WslConfState, format_bytes,
+    OnlineListSource, Page, PendingAction, PromptKind, PullProgress, SettingsTab, WslConfState,
+    format_bytes,
 };
 use crate::theme;
 
@@ -1763,7 +1764,7 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
 
     // 装过 / 正在装 → 显示日志（装完之后留在页面上，用户要能读它）
     if state.installing.is_some() {
-        page = page.child(install_log_card(state));
+        page = page.child(install_log_card(state, source, entity, cx));
     }
 
     page.into_any_element()
@@ -1844,7 +1845,7 @@ fn online_block(
         })
         .collect();
 
-    // 状态：正在拉 / 失败原因（原文，包含 wsl 那句"连接被重置"）/ 来源说明
+    // 状态：正在拉 / 失败原因（原文）/ 来源说明
     let status: AnyElement = if state.online.loading {
         div()
             .text_xs()
@@ -1866,16 +1867,31 @@ fn online_block(
             ))
             .into_any_element()
     } else if !state.online.items.is_empty() {
-        div()
-            .text_xs()
-            .text_color(theme::text_dim())
-            .child(format!(
-                "共 {} 个，{} 个匹配。{}",
-                state.online.items.len(),
-                matches.len(),
-                state.online.source.label()
-            ))
-            .into_any_element()
+        let mut lines = vec![div().text_xs().text_color(theme::text_dim()).child(format!(
+            "共 {} 个，{} 个匹配。{}",
+            state.online.items.len(),
+            matches.len(),
+            state.online.source.label()
+        ))];
+        // ⚠️ 清单是**我们**用 curl 从 CDN 兜底拉到的（不是 wsl 自己拉的）时，
+        // 说明 `wsl.exe` 连不上它要的那份 manifest —— 而安装那一步正是走它。
+        // 实测（2026-10-10）这种状态下商店与 `--web-download` 会**双双**报
+        // `Wsl/InstallDistro/WININET_E_CANNOT_CONNECT`。与其让用户装到一半才失败，
+        // 不如现在就说清"这条来源现在多半装不上、该换哪条"。
+        if state.online.source == OnlineListSource::FallbackJson {
+            lines.push(
+                div()
+                    .text_xs()
+                    .text_color(theme::warning())
+                    .child(
+                        "注意：这份清单是面板自己从 CDN 拉的，说明 **wsl 自己**拉不到它要的那份 \
+                         manifest —— 现在用「微软商店」装多半会连不上。建议改用\
+                         「在线发行版（国内镜像源）」：那条是面板自己去国内镜像站下载，\
+                         不经过 wsl 的网络。",
+                    ),
+            );
+        }
+        v_flex().w_full().gap_1().children(lines).into_any_element()
     } else {
         div()
             .text_xs()
@@ -2180,7 +2196,12 @@ fn human_secs(secs: u64) -> String {
 ///
 /// 装完之后**留在页面上**（不自动清空）：失败了用户要读日志，
 /// 成功了也能对一下"到底跑了哪些步骤"。下次点「再装一个」时被替换掉。
-fn install_log_card(state: &AppState) -> AnyElement {
+fn install_log_card(
+    state: &AppState,
+    source: InstallSourceKind,
+    entity: &Entity<Shell>,
+    cx: &App,
+) -> AnyElement {
     let Some(progress) = state.installing.as_ref() else {
         return div().into_any_element();
     };
@@ -2247,6 +2268,41 @@ fn install_log_card(state: &AppState) -> AnyElement {
             .into_any_element(),
     };
 
+    // 微软商店那条路失败时的**一键出口**：换成镜像源，并尽量选中同一个发行版。
+    //
+    // 为什么值得单独做个按钮：那条路依赖 `wsl.exe` 自己的网络（实测：它的清单
+    // 拉不到时商店与 `--web-download` 会双双报 `WININET_E_CANNOT_CONNECT`），
+    // 而镜像源是**我们自己去国内镜像站下载**、不经过 wsl 的网络 —— 同一个发行版
+    // 往往在那边也有（Ubuntu/Debian/Alpine/Arch/Fedora/…）。让用户自己去
+    // 清单里翻一遍、再手动对齐版本，是没必要付出的代价。
+    let fallback: AnyElement = if source.is_online()
+        && matches!(progress.outcome, Some(InstallOutcome::Failed { .. }))
+    {
+        let entity = entity.clone();
+        h_flex()
+            .w_full()
+            .items_center()
+            .gap_3()
+            .child(
+                Button::new("install-switch-to-mirror")
+                    .label("改用「在线发行版（国内镜像源）」再试")
+                    .small()
+                    .primary()
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |shell, cx| shell.switch_to_mirror_source(cx));
+                    }),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child("那条是面板自己从国内镜像站下载，不依赖 wsl 的网络。"),
+            )
+            .into_any_element()
+    } else {
+        div().into_any_element()
+    };
+
     // ⚠️ 滚动容器必须带 `.id(...)`（见 online_block 的注释）。
     //
     // 只画**最后** 400 行：日志上限是 2000 行，一帧往界面里塞 2000 个元素
@@ -2291,6 +2347,7 @@ fn install_log_card(state: &AppState) -> AnyElement {
             .child(head)
             .children(finished)
             .child(outcome)
+            .child(fallback)
             .child(log)
             .child(
                 div()
