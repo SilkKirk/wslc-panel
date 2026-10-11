@@ -1409,7 +1409,7 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
     };
 
     let source = form.source;
-    let spec = form.to_spec(cx, &state.mirrors);
+    let spec = form.to_spec(cx, &state.mirrors, &state.online);
     let check = state.preflight(&spec, false);
     let plan = install_model::plan(&spec, &state.plan_context());
     let running = state
@@ -1906,6 +1906,23 @@ fn online_block(
                     .into_any_element(),
             ),
             OnlineListSource::Unknown => {}
+        }
+        // 选中了"不带版本号的家族名"（`Ubuntu`）时提醒一句：实测这类条目在这台机器上
+        // **装不动**（`wsl --install -d Ubuntu` 两秒就 `WININET_E_CANNOT_CONNECT`），
+        // 装的时候会自动换成带版本的那条（见 `OnlineDistroState::sibling_id`）。
+        if let Some(picked) = state.online.selected.as_deref() {
+            if let Some(sibling) = state.online.sibling_id(picked) {
+                lines.push(
+                    div()
+                        .text_xs()
+                        .text_color(theme::warning())
+                        .child(format!(
+                            "「{picked}」不带版本号 —— 实测这类条目在本机装不动\
+                             （2 秒就报连接失败），装的时候会自动改用「{sibling}」再试一次。"
+                        ))
+                        .into_any_element(),
+                );
+            }
         }
         v_flex().w_full().gap_1().children(lines).into_any_element()
     } else {

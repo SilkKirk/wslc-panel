@@ -227,6 +227,40 @@ crates/wslc-core/src/
 >   （`MirrorState::match_online_id`：`Ubuntu-24.04` ↔ `Ubuntu 24.04`、
 >   `kali-linux` ↔ `Kali`、`FedoraLinux-44` ↔ `Fedora 44`…）。
 
+> **v0.5.5 补记（真凶找到了：是那个不带版本号的 id）**
+>
+> 用户一直问"参考实现明明能装，为什么你这个不行"。把参考实现那段
+> （`install_logic.rs` 第 154–430 行）**逐行**读完：它跑的就是
+> `wsl --install -d <id> --no-launch`（± `--web-download`），**不存在自己的下载器**
+> （全仓库也没有 `winget` / `ms-windows-store://` / `Add-AppxPackage`）。
+> 于是在同一台机器、同一分钟把这些命令都跑了一遍：
+>
+> | 命令 | 结果 |
+> |---|---|
+> | `wsl --install -d **Ubuntu** --no-launch`（我们列表第一项，一直用的那个） | **2~5 秒失败**：`Wsl/InstallDistro/WININET_E_CANNOT_CONNECT` |
+> | `wsl --install -d Ubuntu --version 2 --no-launch`（我们的完整命令） | 同样失败 |
+> | `wsl --install -d **Ubuntu-24.04** --no-launch` | **正常下载**（并真的装上了） |
+> | `wsl --install -d **Debian** --no-launch` | **正常下载** |
+> | `wsl --list --online` | 0.5 秒成功（列出 21 个） |
+>
+> 同一分钟、同一个 `wsl.exe`，**只有 `-d` 后面那个名字不同**。原因在微软那份清单里：
+> 裸 `Ubuntu` 是**旧的商店包**（`PackageFamilyName =
+> CanonicalGroupLimited.Ubuntu_79rhkp1fndgsc`，而且它的 `Amd64Url`/`Arm64Url` 都是空的），
+> WSL 对这条走商店部署栈，在这台机器上 2 秒就被掐断；带版本号的 id 走的是另一条
+> （下 `.wsl` 再装）通道。**参考实现的列表第一项是「Ubuntu 26.04 LTS」，
+> 传的是 `Ubuntu-26.04`** —— 所以它从来不撞这个坑；我们的列表照搬 `wsl -l -o` 的顺序，
+> 裸 `Ubuntu` 正好排第一，用户一上手就点中了它。
+>
+> 于是这一版：
+>
+> - 界面上选中"不带版本号的家族名"时给一行黄字提醒；
+> - 计划里带上**兄弟 id**（`InstallSource::Online::fallback_id` ←
+>   `OnlineDistroState::sibling_id`，取同族里版本号最大的那个），
+>   在线安装失败时执行器**换 id 再试一次**（`PlannedStep::retry_other_id`）；
+> - 换 id 装上之后**真实注册的名字**是新 id，所以执行器会把后面「等注册」「重定位」
+>   两步的**源名**改过来（`retarget`）—— ⚠️ 只改源名：`EnsureRelocated` 的第 2 个参数
+>   是"用户想要的名字"，而它默认就等于那个裸 id，一起改就正好改错了。
+
 ## 7. 测试与验证
 
 - **纯逻辑单测**（CI 的 `core` 任务，不链接 GPUI）：

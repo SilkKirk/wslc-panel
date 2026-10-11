@@ -1165,6 +1165,46 @@ impl OnlineDistroState {
         self.items.clear();
         self.selected = None;
     }
+
+    /// 给一个"家族名"（比如 `Ubuntu`）找一个**带版本号的兄弟 id**（比如 `Ubuntu-26.04`）。
+    ///
+    /// # 为什么需要它（实测 2026-10-11，本机）
+    ///
+    /// `wsl -l -o` 把裸名字（`Ubuntu`）排在列表**第一位**，而它是清单里那条**旧的
+    /// 商店包**（`PackageFamilyName = CanonicalGroupLimited.Ubuntu_79rhkp1fndgsc`，
+    /// 而且清单里它的 `Amd64Url`/`Arm64Url` 都是空的）：
+    ///
+    /// | 命令 | 结果 |
+    /// |---|---|
+    /// | `wsl --install -d Ubuntu --no-launch` | **2~5 秒失败**：`Wsl/InstallDistro/WININET_E_CANNOT_CONNECT` |
+    /// | `wsl --install -d Ubuntu-24.04 --no-launch` | 正常下载 |
+    /// | `wsl --install -d Debian --no-launch` | 正常下载 |
+    ///
+    /// 同一分钟、同一台机器、同一个 `wsl.exe` —— 只有 id 不同。参考实现的列表第一项是
+    /// 「Ubuntu 26.04 LTS」（传的是 `Ubuntu-26.04`），所以它一直没事；我们照搬
+    /// `wsl -l -o` 的顺序，用户一上手就正好点在这个坏条目上。
+    ///
+    /// 规则：取 `<id>-…` 里版本号最大的那个（`Ubuntu-26.04` > `Ubuntu-24.04`）。
+    /// 没有兄弟（`Debian`、`kali-linux`）就返回 `None`，绝不硬猜。
+    pub fn sibling_id(&self, id: &str) -> Option<String> {
+        let prefix = format!("{id}-");
+        self.items
+            .iter()
+            .filter(|item| item.id.starts_with(&prefix) && item.id.len() > prefix.len())
+            .max_by(|left, right| version_key(&left.id).cmp(&version_key(&right.id)))
+            .map(|item| item.id.clone())
+    }
+}
+
+/// 把一个 id 里的数字段抽出来做排序键（`Ubuntu-26.04` → `[26, 4]`）。
+///
+/// 只用于"哪个版本更新"这种比较：数字段按数值比、段数多的更大，
+/// 没有数字的 id（`Ubuntu`、`kali-linux`）得到空键 —— 排在最后，不会被选成兄弟。
+fn version_key(id: &str) -> Vec<u32> {
+    id.split(|c: char| !c.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| part.parse::<u32>().ok())
+        .collect()
 }
 
 /// 一个镜像候选的探测结果。
@@ -2167,6 +2207,34 @@ mod tests {
         assert_eq!(state.match_online_id("SUSE-Linux-Enterprise-15-SP7"), None);
         assert_eq!(state.match_online_id(""), None);
         assert_eq!(state.match_online_id("   "), None);
+    }
+
+    #[test]
+    fn a_bare_family_name_falls_back_to_its_newest_versioned_sibling() {
+        // 就是本机的真实清单（顺序也照 `wsl -l -o`：裸名字在最前）
+        let mut online = OnlineDistroState::new();
+        online.items = vec![
+            OnlineDistro::new("Ubuntu", "Ubuntu"),
+            OnlineDistro::new("Ubuntu-26.04", "Ubuntu 26.04 LTS"),
+            OnlineDistro::new("Ubuntu-24.04", "Ubuntu 24.04 LTS"),
+            OnlineDistro::new("Ubuntu-22.04", "Ubuntu 22.04 LTS"),
+            OnlineDistro::new("Debian", "Debian GNU/Linux"),
+            OnlineDistro::new("kali-linux", "Kali Linux Rolling"),
+            OnlineDistro::new("AlmaLinux-10", "AlmaLinux OS 10"),
+            OnlineDistro::new("AlmaLinux-9", "AlmaLinux OS 9"),
+        ];
+
+        // 裸 `Ubuntu` → 最新的那个版本号（不是列表里的下一个）
+        assert_eq!(online.sibling_id("Ubuntu").as_deref(), Some("Ubuntu-26.04"));
+        // 带版本的 id 自己不再往下找
+        assert_eq!(online.sibling_id("Ubuntu-24.04"), None);
+        assert_eq!(online.sibling_id("AlmaLinux-10"), None);
+        // 没有兄弟的不硬猜
+        assert_eq!(online.sibling_id("Debian"), None);
+        assert_eq!(online.sibling_id("kali-linux"), None);
+        assert_eq!(online.sibling_id(""), None);
+        // 版本比较按数值而不是按字典序（22 < 24 < 26）
+        assert_ne!(online.sibling_id("Ubuntu").as_deref(), Some("Ubuntu-22.04"));
     }
 
     #[test]
