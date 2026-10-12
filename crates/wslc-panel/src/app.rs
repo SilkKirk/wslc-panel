@@ -1582,10 +1582,13 @@ impl Shell {
         let wslc = self.state.wslc.clone();
         cx.spawn(async move |this, cx| {
             let target = container.clone();
+            // 给异步任务一份克隆：`options` 本身在下面还要用来比对
+            // （"回来时档位还是不是当初那一档"），不能移进去。
+            let for_call = options.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    wslc_core::cmd::container::logs(&wslc, &target, &options)
+                    wslc_core::cmd::container::logs(&wslc, &target, &for_call)
                         .map_err(|e| e.to_string())
                 })
                 .await;
