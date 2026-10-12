@@ -42,9 +42,9 @@ use wslc_core::settings::SettingKey;
 use wslc_core::{Wsl, Wslc};
 
 use crate::state::{
-    self, AppState, ConfirmAction, DistroAction, ExportProgress, ImmediateAction, InstallOutcome,
-    InstallProgress, InstallSourceKind, MirrorChoice, MirrorProbeResult, Page, PendingAction,
-    PromptKind, Toast, ToastKind,
+    self, AppState, ConfirmAction, DistroAction, ExecState, ExportProgress, ImmediateAction,
+    InstallOutcome, InstallProgress, InstallSourceKind, LogsState, MirrorChoice, MirrorProbeResult,
+    Page, PendingAction, PromptKind, Toast, ToastKind, exec_argv,
 };
 use crate::theme;
 // `split_list` / `refresh_label` 是纯函数，住在不依赖 GPUI 的 `wslc-panel-core` 里
@@ -411,6 +411,11 @@ pub struct Shell {
     pub(crate) wslconf_dialog: Option<WslConfDialog>,
     /// 「创建容器」弹窗；关闭时为 `None`。
     create_dialog: Option<CreateDialog>,
+    /// 「容器 exec」浮层的命令输入框；浮层关闭时为 `None`。
+    ///
+    /// 和 `create_dialog` 一样懒创建（`InputState::new` 要 `&mut Window`）。
+    /// 纯数据部分（跑过什么、输出是什么）在 `AppState::exec` 里。
+    pub(crate) exec_input: Option<Entity<InputState>>,
     /// 正在查看详情的容器名；关闭时为 None。
     detail: Option<String>,
     /// 正在查看详情的**发行版名**；关闭时为 None。
@@ -492,6 +497,7 @@ impl Shell {
             keep_alive: Vec::new(),
             wslconf_dialog: None,
             create_dialog: None,
+            exec_input: None,
             detail: None,
             distro_detail: None,
             install_form: None,
@@ -670,6 +676,15 @@ impl Shell {
             return;
         }
 
+        // 创建卷也先分流：它走 `wslc.exe` 而不是 `wsl.exe`，而且**不属于
+        // 任何发行版**（`distro` 是空串）。放进下面那个 match 的话，
+        // 那一整块都得同时拿着两个调用器。
+        if kind == PromptKind::CreateVolume {
+            self.prompt = None;
+            self.create_volume(value, cx);
+            return;
+        }
+
         let title = kind.title();
         self.prompt = None;
         self.state
@@ -700,6 +715,10 @@ impl Shell {
                         PromptKind::ExportDistro => Err(wslc_core::Error::InvalidArgument(
                             "导出不走这条同步路径".to_owned(),
                         )),
+                        // 创建卷也已经在上面分流（它走 `wslc`，不在这里）。
+                        PromptKind::CreateVolume => Err(wslc_core::Error::InvalidArgument(
+                            "创建卷不走这条发行版路径".to_owned(),
+                        )),
                     }
                 })
                 .await;
@@ -711,6 +730,57 @@ impl Shell {
                         .state
                         .notify(Toast::error(format!("{title}失败：{e}"))),
                 }
+                shell.refresh(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 创建卷（`wslc volume create <名字>`）。
+    ///
+    /// 名字先在本地挡一道（[`state::validate_volume_name`]）：以 `-` 开头的
+    /// 名字会被 `wslc` 当成**选项**而不是卷名 —— 用户会以为建成功了，
+    /// 实际什么都没建。这类"看着成功其实没做"必须先挡。
+    ///
+    /// 别的合法性（字符集 / 长度）交给 `wslc` 自己判：它的规则我们没实测过，
+    /// 自己编一套只会把合法名字挡在外面。
+    fn create_volume(&mut self, name: String, cx: &mut Context<Self>) {
+        if let Err(reason) = state::validate_volume_name(&name) {
+            self.state.notify(Toast::error(reason));
+            cx.notify();
+            return;
+        }
+
+        self.state
+            .notify(Toast::info(format!("正在创建卷 {name}…")));
+        cx.notify();
+
+        let wslc = self.state.wslc.clone();
+        cx.spawn(async move |this, cx| {
+            let target = name.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { wslc_core::cmd::volume::create(&wslc, &target) })
+                .await;
+
+            let _ = this.update(cx, |shell, cx| {
+                match result {
+                    Ok(out) => {
+                        // `wslc volume create` 成功时会回显一行（卷名或 ID）。
+                        // 有就带上，没有也不编。
+                        let out = out.trim().to_owned();
+                        shell.state.notify(Toast::success(if out.is_empty() {
+                            format!("已创建卷 {name}")
+                        } else {
+                            format!("已创建卷 {name}：{out}")
+                        }));
+                    }
+                    Err(e) => shell
+                        .state
+                        .notify(Toast::error(format!("创建卷 {name} 失败：{e}"))),
+                }
+                // 列表要立刻反映出新卷
                 shell.refresh(cx);
                 cx.notify();
             });
@@ -1096,6 +1166,9 @@ impl Shell {
             ImmediateAction::StartDistro(name) => self.start_distro(name, cx),
             ImmediateAction::OpenDistroTerminal(name) => self.open_distro_terminal(name, cx),
             ImmediateAction::SetDefaultDistro(name) => self.set_default_distro(name, cx),
+            ImmediateAction::OpenContainerShell(name) => self.open_container_shell(name, cx),
+            ImmediateAction::AttachContainer(name) => self.attach_container(name, cx),
+            ImmediateAction::FollowContainerLogs(name) => self.follow_container_logs(name, cx),
         }
     }
 
@@ -1451,6 +1524,248 @@ impl Shell {
         cx.notify();
     }
 
+    // -- 容器日志浮层 --------------------------------------------------------
+
+    /// 打开容器日志浮层，并立刻拉一次。
+    ///
+    /// 停止的容器也能看日志（`wslc logs` 读的是它留下的日志），
+    /// 所以列表里那个按钮不做"运行中才显示"的限制。
+    pub fn open_logs(&mut self, name: String, cx: &mut Context<Self>) {
+        self.state.logs = Some(LogsState::new(name));
+        cx.notify();
+        self.reload_logs(cx);
+    }
+
+    /// 关闭日志浮层。
+    ///
+    /// 在飞的请求不用管：回来时 `AppState::logs` 已经是 `None`，
+    /// 那一支直接丢掉结果（见 [`Shell::reload_logs`]）。
+    pub fn close_logs(&mut self, cx: &mut Context<Self>) {
+        self.state.logs = None;
+        cx.notify();
+    }
+
+    /// 换行数档位并重拉。
+    pub fn set_logs_tail(&mut self, tail: Option<u32>, cx: &mut Context<Self>) {
+        if let Some(logs) = self.state.logs.as_mut() {
+            logs.tail = tail;
+        }
+        cx.notify();
+        self.reload_logs(cx);
+    }
+
+    /// 开关时间戳并重拉。
+    pub fn toggle_logs_timestamps(&mut self, cx: &mut Context<Self>) {
+        if let Some(logs) = self.state.logs.as_mut() {
+            logs.timestamps = !logs.timestamps;
+        }
+        cx.notify();
+        self.reload_logs(cx);
+    }
+
+    /// 后台拉一次日志。
+    ///
+    /// `wslc logs` 是**同步等子进程**的，所以必须走后台执行器
+    /// （`AGENTS.md` §7.1）—— 大容器的日志可能要读好几秒。
+    ///
+    /// 结果用**票据**认领（[`LogsState::begin_load`]）：连点两个档位时
+    /// 两个请求都在飞，先发的可能后回，不认票据就会显示上一次选择的内容。
+    pub fn reload_logs(&mut self, cx: &mut Context<Self>) {
+        let Some(logs) = self.state.logs.as_mut() else {
+            return;
+        };
+        let container = logs.container.clone();
+        let options = logs.options();
+        let ticket = logs.begin_load();
+        cx.notify();
+
+        let wslc = self.state.wslc.clone();
+        cx.spawn(async move |this, cx| {
+            let target = container.clone();
+            // 给异步任务一份克隆：`options` 本身在下面还要用来比对
+            // （"回来时档位还是不是当初那一档"），不能移进去。
+            let for_call = options.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    wslc_core::cmd::container::logs(&wslc, &target, &for_call)
+                        .map_err(|e| e.to_string())
+                })
+                .await;
+
+            let _ = this.update(cx, |shell, cx| {
+                // 浮层可能已经被关掉、或者换成了别的容器 / 别的档位 ——
+                // 那就丢掉这份结果（`finish_load` 自己还会再认一次票据，
+                // 这里多判一次是为了盖住"关了又开、`load_seq` 从 1 重新数"
+                // 那种票据撞车的情况）。
+                if let Some(logs) = shell.state.logs.as_mut() {
+                    if logs.container == container && logs.options() == options {
+                        logs.finish_load(ticket, result);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    // -- 容器 exec 浮层 ------------------------------------------------------
+
+    /// 打开 exec 浮层（要 `&mut Window` 才能建输入框）。
+    pub fn open_exec(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        let input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("ls -la /  （可以用管道、重定向、&&）")
+        });
+        let handle = input.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+
+        self.state.exec = Some(ExecState::new(name));
+        self.exec_input = Some(input);
+        cx.notify();
+    }
+
+    /// 关闭 exec 浮层，输入框一起丢掉。
+    ///
+    /// 刻意**不保留**上次的命令：这个浮层的用途是"临时跑一条看看"，
+    /// 留着上一条会让下次打开时手一抖又跑一遍。
+    pub fn close_exec(&mut self, cx: &mut Context<Self>) {
+        self.state.exec = None;
+        self.exec_input = None;
+        cx.notify();
+    }
+
+    /// 执行输入框里那条命令，结果填回浮层。
+    ///
+    /// 命令走 `/bin/sh -c`（见 [`exec_argv`] 的说明：管道 / 重定向 / `&&`
+    /// 都要能用，而且 `/bin/sh` 是 POSIX 保证存在的）。
+    ///
+    /// **非交互**：`wslc exec` 不带 `-it`，所以 `vi`、`top` 这类要终端的
+    /// 程序在这里没法用 —— 那是「打开终端」那个按钮的事。
+    pub fn run_exec(&mut self, cx: &mut Context<Self>) {
+        let Some(exec) = self.state.exec.as_ref() else {
+            return;
+        };
+        // 正在跑就不再起一条：按钮那边也已经换成"执行中…"了，
+        // 但连点两下仍然可能挤进两次事件。
+        if exec.running {
+            return;
+        }
+        let Some(input) = self.exec_input.as_ref() else {
+            return;
+        };
+
+        let command = input.read(cx).value().trim().to_owned();
+        if command.is_empty() {
+            self.state.notify(Toast::error("请先填写要执行的命令"));
+            cx.notify();
+            return;
+        }
+
+        let container = exec.container.clone();
+        let argv = exec_argv(&command);
+
+        if let Some(exec) = self.state.exec.as_mut() {
+            exec.running = true;
+            exec.error = None;
+            exec.last_command = command;
+        }
+        cx.notify();
+
+        let wslc = self.state.wslc.clone();
+        cx.spawn(async move |this, cx| {
+            let target = container.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    wslc_core::cmd::container::exec(&wslc, &target, &argv)
+                        .map_err(|e| e.to_string())
+                })
+                .await;
+
+            let _ = this.update(cx, |shell, cx| {
+                if let Some(exec) = shell.state.exec.as_mut() {
+                    if exec.container == container {
+                        exec.running = false;
+                        match result {
+                            Ok(out) => {
+                                exec.output = Some(out);
+                                exec.error = None;
+                            }
+                            Err(e) => exec.error = Some(e),
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    // -- 在新终端窗口里打开的东西 --------------------------------------------
+
+    /// 在新终端窗口里打开容器的交互式 shell。
+    ///
+    /// **同步**：`spawn_in_new_console` 只把窗口拉起来就返回，不等它关闭
+    /// （用户可能在里面待几个小时）—— `AGENTS.md` §7.1 允许这类同步调用。
+    ///
+    /// 用 `/bin/sh` 而不是 `/bin/bash`：POSIX 保证有 `sh`，而 alpine
+    /// 这类镜像里**没有** bash —— 用 bash 会让一部分容器点下去就报错。
+    /// 需要 bash 的话进去再敲（提示条里也这么说）。
+    pub fn open_container_shell(&mut self, name: String, cx: &mut Context<Self>) {
+        let wslc = self.state.wslc.clone();
+        let toast = match wslc_core::cmd::container::open_interactive_shell(&wslc, &name, "/bin/sh")
+        {
+            Ok(()) => Toast::success(format!(
+                "已打开 {name} 的终端（/bin/sh —— 镜像里有 bash 的话进去敲 bash 就行）"
+            )),
+            Err(e) => Toast::error(format!("打开终端失败：{e}")),
+        };
+        self.state.notify(toast);
+        cx.notify();
+    }
+
+    /// 在新终端窗口里 attach 到容器主进程。
+    ///
+    /// ⚠️ 和「打开终端」的区别：`attach` 接的是容器**主进程**的
+    /// stdin/stdout。主进程不是交互式的（比如 `nginx`）时，接上去什么
+    /// 也敲不了 —— 那个窗口只用来**看**它的输出。这一点写进按钮的说明里。
+    pub fn attach_container(&mut self, name: String, cx: &mut Context<Self>) {
+        let wslc = self.state.wslc.clone();
+        let toast = match wslc_core::cmd::container::attach_in_new_console(&wslc, &name) {
+            Ok(()) => Toast::success(format!(
+                "已在新窗口里 attach 到 {name}（接的是它的主进程，通常只能看输出）"
+            )),
+            Err(e) => Toast::error(format!("attach 失败：{e}")),
+        };
+        self.state.notify(toast);
+        cx.notify();
+    }
+
+    /// 在新终端窗口里跟随容器日志。
+    ///
+    /// 行数 / 时间戳沿用日志浮层上刚选的那两个开关 —— 用户点这个按钮时
+    /// 看到的就是他要的那份视图。浮层不在（理论上到不了）就用默认值。
+    pub fn follow_container_logs(&mut self, name: String, cx: &mut Context<Self>) {
+        let options = self
+            .state
+            .logs
+            .as_ref()
+            .filter(|l| l.container == name)
+            .map(LogsState::options)
+            .unwrap_or_default();
+
+        let wslc = self.state.wslc.clone();
+        let toast =
+            match wslc_core::cmd::container::logs_follow_in_new_console(&wslc, &name, &options) {
+                Ok(()) => Toast::info(format!(
+                    "已在新窗口里跟随 {name} 的日志（关掉那个窗口就停止）"
+                )),
+                Err(e) => Toast::error(format!("打开跟随窗口失败：{e}")),
+            };
+        self.state.notify(toast);
+        cx.notify();
+    }
+
     /// 打开**发行版**详情弹窗。
     ///
     /// 低频但重要的动作（改版本 / 压缩 / 打开安装位置）都收在这里，
@@ -1786,6 +2101,11 @@ impl Shell {
             }),
             // 容器域和发行版安装互不相干：一个走 `wslc.exe`、一个走 `wsl.exe`，
             // 各自的发行版/会话也不重叠。拦下来只会平白挡住正常的容器操作。
+            //
+            // 「终止会话」也归在这里，理由同上：它终止的是 **wslc 的容器会话**，
+            // 而安装 / 导出动的是 `wsl.exe` 注册的**发行版**（新实例的 `--import`
+            // 会新建一个自己的发行版），两者不共享进程也不共享文件。
+            // 唯一的交集是它们都要占 CPU/IO —— 那不该成为"禁止操作"的理由。
             ConfirmAction::Container(_) => None,
         }
     }
@@ -3282,6 +3602,12 @@ impl Render for Shell {
         // 发行版配置（/etc/wsl.conf）弹窗。要 `cx` 才能读输入框的值。
         let wslconf_dialog: AnyElement = views::wslconf_overlay(self, &entity);
 
+        // 容器日志浮层（状态全在 `AppState::logs` 里，不需要 `cx`）。
+        let logs_dialog: AnyElement = views::logs_overlay(state, &entity);
+
+        // 容器 exec 浮层。要 `cx` 才能读命令输入框的值。
+        let exec_dialog: AnyElement = views::exec_overlay(self, &entity, cx);
+
         // 页面渲染要 `&Shell`（不只是 `&AppState`）——「添加实例」页有输入框，
         // 而输入框的 `InputState` 住在 `Shell` 里。
         // `cx` 也只有那一页用得上（要实时读输入框的值做命令预览）。
@@ -3395,6 +3721,9 @@ impl Render for Shell {
             .child(prompt_dialog)
             .child(export_overlay)
             .child(wslconf_dialog)
+            // 日志和 exec 都可能是从容器详情里打开的，所以排在它之后。
+            .child(logs_dialog)
+            .child(exec_dialog)
     }
 }
 

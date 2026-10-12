@@ -531,7 +531,10 @@ pub fn load_settings(info: Option<&SystemInfo>) -> std::result::Result<SettingsD
     SettingsDoc::load(&path).map_err(|e| e.to_string())
 }
 
-/// 需要用户二次确认的危险操作。
+/// 需要用户二次确认的危险操作（**`wslc.exe` 这一域**）。
+///
+/// 容器 / 镜像 / 网络 / 卷 / 会话都属于 `wslc`；`wsl.exe` 那一域见
+/// [`DistroAction`]。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingAction {
     /// 停止容器。
@@ -548,6 +551,21 @@ pub enum PendingAction {
     RemoveNetwork(String),
     /// 删除卷。
     RemoveVolume(String),
+    /// 清理所有**没有被任何容器使用**的卷。
+    PruneVolumes,
+    /// 终止一个 wslc 会话。
+    ///
+    /// 会话是 `wslc` 的运行单元：每个会话有自己的 `storage.vhdx`
+    /// （镜像 / 容器 / 卷都在里面，见 `wslc_core::storage` 的说明）。
+    /// 所以终止它会**连带停掉这个会话里正在运行的容器** —— 这也是它
+    /// 需要二次确认的原因。数据不会因此被删（终止的是运行状态，不是文件）。
+    TerminateSession {
+        /// 会话 ID，对应 `wslc system session terminate <id>`。
+        id: u32,
+        /// 显示名（`wslc-cli-76434` 这种），只用于文案 —— 只给一个数字
+        /// 用户没法确认自己点的是哪一个。
+        name: String,
+    },
 }
 
 impl PendingAction {
@@ -561,6 +579,8 @@ impl PendingAction {
             PendingAction::RemoveImage(_) => "删除镜像",
             PendingAction::RemoveNetwork(_) => "删除网络",
             PendingAction::RemoveVolume(_) => "删除卷",
+            PendingAction::PruneVolumes => "清理未使用的卷",
+            PendingAction::TerminateSession { .. } => "终止会话",
         }
     }
 
@@ -588,6 +608,15 @@ impl PendingAction {
             PendingAction::RemoveVolume(name) => {
                 format!("将删除卷 {name} 及其中的数据。此操作不可撤销。")
             }
+            PendingAction::PruneVolumes => {
+                "将删除所有**没有被任何容器使用**的卷及其中的数据。此操作不可撤销。\
+                 正在被使用的卷不受影响；一个都没有时什么也不会发生。"
+                    .to_owned()
+            }
+            PendingAction::TerminateSession { id, name } => format!(
+                "将终止会话 {name}（#{id}）。这个会话里**正在运行**的容器会一起停下。\
+                 镜像 / 容器 / 卷都在这个会话的 storage.vhdx 里，终止会话不删它们。"
+            ),
         }
     }
 
@@ -600,6 +629,8 @@ impl PendingAction {
             PendingAction::RemoveImage(_) => "删除镜像",
             PendingAction::RemoveNetwork(_) => "删除网络",
             PendingAction::RemoveVolume(_) => "删除卷",
+            PendingAction::PruneVolumes => "清理",
+            PendingAction::TerminateSession { .. } => "终止会话",
         }
     }
 
@@ -637,6 +668,18 @@ impl PendingAction {
             PendingAction::RemoveVolume(name) => {
                 cmd::volume::remove(wslc, std::slice::from_ref(name), true)?;
                 Ok(format!("已删除卷：{name}"))
+            }
+            PendingAction::PruneVolumes => {
+                let out = cmd::volume::prune(wslc)?;
+                Ok(if out.is_empty() {
+                    "没有需要清理的卷".to_owned()
+                } else {
+                    out
+                })
+            }
+            PendingAction::TerminateSession { id, name } => {
+                cmd::system::terminate_session(wslc, *id)?;
+                Ok(format!("已终止会话：{name}"))
             }
         }
     }
@@ -865,7 +908,7 @@ impl ConfirmAction {
 
 /// 「单输入框提示弹窗」要做什么。
 ///
-/// 这三种动作都需要一个**文本参数**（位置 / 大小 / 用户名），
+/// 这几种动作都需要一个**文本参数**（位置 / 大小 / 用户名 / 卷名），
 /// 所以共用一个弹窗 —— 标签、占位、说明和提交后调用的命令各不相同。
 ///
 /// 弹窗本身**就是确认**（表单里带着说明和等效命令），提交后直接执行，
@@ -884,6 +927,16 @@ pub enum PromptKind {
     /// 而是起一个长时间、可取消的流式任务 —— 见 `Shell::start_export`。
     /// 复用的只是"要用户填一个文本参数"这个外形。
     ExportDistro,
+    /// 创建一个卷（`wslc volume create <名字>`）。
+    ///
+    /// ⚠️ 它有两处和前四个都不一样，是**刻意**收进来的：
+    /// - 走的是 `wslc.exe` 而不是 `wsl.exe`（前四个全是发行版动作）；
+    /// - 它**不属于任何发行版** —— 卷是全局的，所以弹窗里那一行
+    ///   「发行版：…」不画（`TextPrompt::distro` 是空串）。
+    ///
+    /// 收进来而不是另做一个弹窗：外形完全一致（一个标签 + 一个输入框 +
+    /// 一句说明 + 等效命令预览），另做一份就是把这套布局抄第二遍。
+    CreateVolume,
 }
 
 impl PromptKind {
@@ -894,6 +947,7 @@ impl PromptKind {
             Self::ResizeDistro => "调整磁盘大小",
             Self::SetDefaultUser => "设置默认用户",
             Self::ExportDistro => "导出发行版",
+            Self::CreateVolume => "创建卷",
         }
     }
 
@@ -904,6 +958,7 @@ impl PromptKind {
             Self::ResizeDistro => "新的磁盘大小",
             Self::SetDefaultUser => "用户名",
             Self::ExportDistro => "导出到（绝对路径，要含文件名）",
+            Self::CreateVolume => "卷名",
         }
     }
 
@@ -914,6 +969,7 @@ impl PromptKind {
             Self::ResizeDistro => "50GB",
             Self::SetDefaultUser => "myuser",
             Self::ExportDistro => r"D:\backup\MyDistro.tar",
+            Self::CreateVolume => "webdata",
         }
     }
 
@@ -937,6 +993,11 @@ impl PromptKind {
                  也能拷到别的机器上用。18 GB 的盘要几分钟到几十分钟，\
                  期间有进度条、随时可以取消；取消留下的是**不完整**的文件，要自己删。"
             }
+            Self::CreateVolume => {
+                "命名卷：名字由你指定，容器里用 `-v 名字:/路径` 挂载它，\
+                 数据存在这个会话的 storage.vhdx 里。\
+                 名字重复时会失败 —— wslc 不会替你改名或复用。"
+            }
         }
     }
 
@@ -947,13 +1008,15 @@ impl PromptKind {
             Self::ResizeDistro => "调整大小",
             Self::SetDefaultUser => "设为默认用户",
             Self::ExportDistro => "开始导出",
+            Self::CreateVolume => "创建",
         }
     }
 
     /// 这一种要不要选路径；要的话是**文件**还是**目录**。
     ///
     /// 不是每种都有 —— 「调整大小」填的是 `50GB` 这种数字，
-    /// 「设置默认用户」填的是用户名，给它们一个「浏览…」按钮只会让人困惑。
+    /// 「设置默认用户」填的是用户名，「创建卷」填的是卷名，
+    /// 给它们一个「浏览…」按钮只会让人困惑。
     pub fn pick_target(self) -> Option<PickTarget> {
         match self {
             // 移动位置要的是一个**目录**（新的安装位置）
@@ -970,9 +1033,35 @@ impl PromptKind {
                 extensions: &["tar"],
                 title: "导出到",
             }),
-            Self::ResizeDistro | Self::SetDefaultUser => None,
+            Self::ResizeDistro | Self::SetDefaultUser | Self::CreateVolume => None,
         }
     }
+}
+
+/// 卷名能不能直接用。
+///
+/// # 只挡一类：以 `-` 开头的名字
+///
+/// 卷名会被当成 `wslc volume create` 的**裸 argv**。`wslc volume create --help`
+/// 里的 `--help` 会被解析成选项而不是卷名 —— 用户以为建了个卷，
+/// 实际什么都没建（或者某个开关被静默生效）。这类"看着成功其实没做"
+/// 是最难查的，所以在**本地**先挡掉，不白起一个进程。
+///
+/// # 别的规则**故意**不自己编
+///
+/// 字符集、长度、大小写这些 `wslc` 自己的规则没在真机上测过
+/// （采集环境里一个卷都没有，见 `model/volume.rs` 的说明）。
+/// 自己编一套只会把合法名字挡在外面 —— 那是比"让 wslc 报错"更糟的结果：
+/// 用户找不到任何理由。
+pub fn validate_volume_name(name: &str) -> std::result::Result<(), &'static str> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("卷名不能为空");
+    }
+    if trimmed.starts_with('-') {
+        return Err("卷名不能以 - 开头（会被 wslc 当成选项，而不是名字）");
+    }
+    Ok(())
 }
 
 /// 文件 / 目录选择器的目标。见 [`PromptKind::pick_target`]。
@@ -1058,6 +1147,173 @@ pub enum ImmediateAction {
     OpenDistroTerminal(String),
     /// 把发行版设为默认。
     SetDefaultDistro(String),
+    /// 在新终端窗口里打开容器的交互式 shell（`wslc exec -it <容器> /bin/sh`）。
+    ///
+    /// 交互式程序不能内嵌进 GPUI，也不该被捕获输出 —— 和
+    /// [`ImmediateAction::OpenDistroTerminal`] 是同一个理由。
+    OpenContainerShell(String),
+    /// 在新终端窗口里 attach 到容器主进程（`wslc attach <容器>`）。
+    AttachContainer(String),
+    /// 在新终端窗口里跟随容器日志（`wslc logs --follow`）。
+    ///
+    /// 不带行数 / 时间戳参数：那两项从 `AppState::logs` 里现读
+    /// （按钮就在日志浮层上，用户刚选的就是他要的）。
+    FollowContainerLogs(String),
+}
+
+/// 「容器日志」浮层的状态。
+///
+/// 纯数据（不含任何 GPUI 类型），所以住在 `AppState` 里 —— 因此它也能被
+/// 测试。这一屏只有按钮没有输入框，所以 `Shell` 那边一个字段都不用加。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogsState {
+    /// 看的是哪个容器。
+    pub container: String,
+    /// 只取末尾多少行；`None` = 全部。
+    ///
+    /// 默认**不是** `None`：大容器"全部"可能是几百 MB，而且是每一轮
+    /// 切档位都要重新拉一遍。
+    pub tail: Option<u32>,
+    /// 要不要时间戳。
+    pub timestamps: bool,
+    /// 正在加载（后台那条 `wslc logs` 还没回来）。
+    pub loading: bool,
+    /// 拿到的日志原文；还没加载过时是 `None`（和"加载出来是空的"区分开）。
+    pub text: Option<String>,
+    /// 上一次加载的错误。
+    pub error: Option<String>,
+    /// 已经发起了多少轮加载。用来**丢弃过期响应**，见 [`LogsState::begin_load`]。
+    load_seq: u64,
+}
+
+impl LogsState {
+    /// 可选的"末尾多少行"档位。`None` 放在最后：它是代价最大的那个。
+    pub const TAILS: [Option<u32>; 4] = [Some(200), Some(1000), Some(5000), None];
+
+    /// 默认档位。
+    const DEFAULT_TAIL: Option<u32> = Some(200);
+
+    /// 打开日志浮层时的初始状态。
+    pub fn new(container: impl Into<String>) -> Self {
+        Self {
+            container: container.into(),
+            tail: Self::DEFAULT_TAIL,
+            timestamps: false,
+            loading: false,
+            text: None,
+            error: None,
+            load_seq: 0,
+        }
+    }
+
+    /// 这一档在界面上的名字。
+    pub fn tail_label(tail: Option<u32>) -> String {
+        match tail {
+            Some(n) => format!("{n} 行"),
+            None => "全部".to_owned(),
+        }
+    }
+
+    /// 交给 `cmd::container::logs` 的选项。
+    ///
+    /// 单独一个方法而不是在调用处现拼：`tail` / `timestamps` 各对应一个
+    /// 界面控件，映射关系写错只表现为"日志内容不对"（少了行、时间戳没出来），
+    /// 是最不容易被发现的那类错。
+    pub fn options(&self) -> wslc_core::cmd::container::LogOptions {
+        wslc_core::cmd::container::LogOptions {
+            tail: self.tail,
+            timestamps: self.timestamps,
+            // 「详细」目前没有界面控件。开着它会让输出里多出 `wslc` 自己的
+            // 元信息行 —— 想加控件时再打开，别默认打开。
+            details: false,
+        }
+    }
+
+    /// 开始一轮加载，返回这一轮的**票据**。
+    ///
+    /// # 为什么需要票据
+    ///
+    /// 用户连点「1000 行」→「全部」会有两个请求在飞，**先发的可能后回**。
+    /// 不认票据的话，后到的旧响应会把新结果覆盖掉 —— 表现为
+    /// "选了 5000 行，显示的却是 1000 行的内容"。
+    pub fn begin_load(&mut self) -> u64 {
+        self.load_seq += 1;
+        self.loading = true;
+        self.error = None;
+        self.load_seq
+    }
+
+    /// 这一轮的响应还作数吗？（期间没有发起更新的加载才作数）
+    pub fn accepts(&self, ticket: u64) -> bool {
+        self.load_seq == ticket
+    }
+
+    /// 收下一轮加载的结果；过期的票据会被丢掉并返回 `false`。
+    pub fn finish_load(
+        &mut self,
+        ticket: u64,
+        result: std::result::Result<String, String>,
+    ) -> bool {
+        if !self.accepts(ticket) {
+            return false;
+        }
+        self.loading = false;
+        match result {
+            Ok(text) => {
+                self.text = Some(text);
+                self.error = None;
+            }
+            Err(e) => self.error = Some(e),
+        }
+        true
+    }
+}
+
+/// 「容器 exec」浮层的状态。
+///
+/// 输入框（`Entity<InputState>`）不在这里 —— 它是 GPUI 类型，住在
+/// `Shell::exec_input` 里；这里只放"跑过什么、结果是什么"。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExecState {
+    /// 在哪个容器里执行。
+    pub container: String,
+    /// 正在执行（那条 `wslc exec` 还没回来）。
+    pub running: bool,
+    /// 上一次执行的**原文**（界面上回显，让用户知道这份输出是哪条命令的）。
+    pub last_command: String,
+    /// 输出；还没跑过时是 `None`。
+    pub output: Option<String>,
+    /// 上一次的错误。
+    pub error: Option<String>,
+}
+
+impl ExecState {
+    /// 打开 exec 浮层时的初始状态。
+    pub fn new(container: impl Into<String>) -> Self {
+        Self {
+            container: container.into(),
+            ..Default::default()
+        }
+    }
+}
+
+/// 把用户敲的一行命令变成 `wslc exec` 的 argv。
+///
+/// # 为什么走 `/bin/sh -c` 而不是自己按空格切
+///
+/// - 按空格切的话 `ls -la /tmp | head` 会被当成一串参数丢给 `ls` ——
+///   管道没生效，但命令**看起来成功返回了**，这种"看着对、结果不对"
+///   是最难查的一类；
+/// - 用容器面板的人默认预期能写管道、重定向、`&&`（`docker exec` 就是这样）；
+/// - `/bin/sh` 是 POSIX 保证存在的（busybox / dash / bash-as-sh 都算），
+///   而 `/bin/bash` 在 alpine 这类镜像里**没有**，用它会让一部分容器点下去就报错。
+///
+/// 代价要说清：这样一来 `;` `&&` `$()` 全都能用，也就是**等于把整个
+/// shell 交给用户**。这不是漏洞 —— 用户本来就能在自己的机器上跑这些；
+/// 面板要防的是"参数被当成选项"（那是容器名那一侧的事），
+/// 而不是拦用户自己想执行的命令。
+pub fn exec_argv(text: &str) -> Vec<String> {
+    vec!["/bin/sh".to_owned(), "-c".to_owned(), text.to_owned()]
 }
 
 /// 拉取镜像的实时进度。
@@ -1843,6 +2099,16 @@ pub struct AppState {
     /// 安装可能几十分钟（下载 rootfs、铺开文件系统），期间界面显示
     /// 步骤清单 + 日志 + 进度，并且可以取消。
     pub installing: Option<InstallProgress>,
+    /// 容器日志浮层；关闭时为 `None`。
+    ///
+    /// 放在 `AppState`（而不是 `Shell`）是因为它**全是纯数据** ——
+    /// 这一屏只有按钮没有输入框，所以没有 `Entity<InputState>` 要存。
+    pub logs: Option<LogsState>,
+    /// 容器 exec 浮层；关闭时为 `None`。
+    ///
+    /// 命令文本本身在 `Shell::exec_input` 里（那是 GPUI 类型），
+    /// 这里只放"跑过什么、结果是什么"。
+    pub exec: Option<ExecState>,
     /// 在线可安装发行版的清单状态。
     pub online: OnlineDistroState,
     /// 「在线发行版（镜像源）」那一块的状态（动态清单 + 探测结果 + 选中的那个）。
@@ -1873,6 +2139,8 @@ impl AppState {
             confirm: None,
             toast: None,
             installing: None,
+            logs: None,
+            exec: None,
             online: OnlineDistroState::new(),
             mirrors: MirrorState::new(),
         }
@@ -2633,12 +2901,41 @@ mod tests {
             PendingAction::RemoveImage("img".into()),
             PendingAction::RemoveNetwork("net".into()),
             PendingAction::RemoveVolume("vol".into()),
+            PendingAction::PruneVolumes,
+            PendingAction::TerminateSession {
+                id: 1,
+                name: "wslc-cli-76434".into(),
+            },
         ];
         for action in actions {
             assert!(!action.title().is_empty());
             assert!(!action.body().is_empty());
             assert!(!action.confirm_label().is_empty());
         }
+    }
+
+    #[test]
+    fn terminate_session_body_names_which_session() {
+        // 界面上同时可能有好几个会话。只写"将终止会话"用户没法确认
+        // 自己点的是哪一个 —— 名字和编号都要在。
+        let action = PendingAction::TerminateSession {
+            id: 7,
+            name: "wslc-cli-76434".into(),
+        };
+        let body = action.body();
+        assert!(body.contains("wslc-cli-76434"), "{body}");
+        assert!(body.contains("#7"), "{body}");
+        // 还得说清"运行中的容器会停"以及"数据不会被删"这两件事
+        assert!(body.contains("容器"), "{body}");
+        assert!(body.contains("storage.vhdx"), "{body}");
+    }
+
+    #[test]
+    fn prune_volumes_says_it_only_touches_unused_ones() {
+        // 「清理」这个词本身很含糊，用户最怕的是"把我正在用的卷删了"。
+        let body = PendingAction::PruneVolumes.body();
+        assert!(body.contains("没有被任何容器使用"), "{body}");
+        assert!(body.contains("不可撤销"), "{body}");
     }
 
     #[test]
@@ -2692,6 +2989,7 @@ mod tests {
             PromptKind::ResizeDistro,
             PromptKind::SetDefaultUser,
             PromptKind::ExportDistro,
+            PromptKind::CreateVolume,
         ] {
             assert!(!kind.title().is_empty(), "{kind:?}");
             assert!(!kind.label().is_empty(), "{kind:?}");
@@ -2699,6 +2997,125 @@ mod tests {
             assert!(!kind.note().is_empty(), "{kind:?}");
             assert!(!kind.confirm_label().is_empty(), "{kind:?}");
         }
+    }
+
+    #[test]
+    fn only_the_two_path_prompts_offer_a_picker() {
+        // 「浏览…」只对"要填路径"的那两种有意义。给「创建卷」加一个
+        // 会让用户以为该去选一个文件。
+        assert!(PromptKind::MoveDistro.pick_target().is_some());
+        assert!(PromptKind::ExportDistro.pick_target().is_some());
+        assert!(PromptKind::ResizeDistro.pick_target().is_none());
+        assert!(PromptKind::SetDefaultUser.pick_target().is_none());
+        assert!(PromptKind::CreateVolume.pick_target().is_none());
+    }
+
+    // -- 卷名与 exec 命令的纯逻辑 ------------------------------------------
+
+    #[test]
+    fn volume_name_refuses_anything_that_looks_like_a_flag() {
+        // 这条是本地挡下来的**唯一**一类：卷名会变成裸 argv，
+        // `--help` 之类会被 wslc 当选项而不是名字。
+        assert!(validate_volume_name("webdata").is_ok());
+        assert!(validate_volume_name("  webdata  ").is_ok());
+        // 名字**中间**有横线是正常的，不该被挡
+        assert!(validate_volume_name("web-data_1").is_ok());
+
+        assert!(validate_volume_name("--help").is_err());
+        assert!(validate_volume_name("-x").is_err());
+        assert!(validate_volume_name("").is_err());
+        assert!(validate_volume_name("   ").is_err());
+        // 前导空格不能让 `-` 蒙混过去（trim 之后再判）
+        assert!(validate_volume_name("  --force").is_err());
+    }
+
+    #[test]
+    fn exec_argv_goes_through_a_shell() {
+        // 锁住这个形状：**不要**改成按空格切分。管道 / 重定向 / `&&`
+        // 是用户预期能用的，切开之后它们会静默失效（命令看起来还成功了）。
+        assert_eq!(
+            exec_argv("ls -la /tmp | head -5"),
+            vec!["/bin/sh", "-c", "ls -la /tmp | head -5"]
+        );
+        // `/bin/sh` 而不是 `/bin/bash`：alpine 这类镜像里没有 bash
+        assert_eq!(exec_argv("true")[0], "/bin/sh");
+        // 原文一个字都不改地传下去（包括引号）
+        assert_eq!(exec_argv("echo 'a b'")[2], "echo 'a b'");
+    }
+
+    // -- 日志浮层的状态 ----------------------------------------------------
+
+    #[test]
+    fn logs_state_maps_its_controls_to_log_options() {
+        let mut logs = LogsState::new("web");
+        // 默认给一个有限的档位 —— "全部"在大容器上可能是几百 MB
+        assert_eq!(logs.tail, Some(200));
+        assert_eq!(logs.options().tail, Some(200));
+        assert!(!logs.options().timestamps);
+        assert!(!logs.options().details, "详细默认不开");
+
+        logs.tail = None;
+        logs.timestamps = true;
+        let opts = logs.options();
+        assert_eq!(opts.tail, None, "None 是「全部」");
+        assert!(opts.timestamps);
+    }
+
+    #[test]
+    fn log_tail_labels_cover_every_preset() {
+        assert_eq!(LogsState::tail_label(Some(200)), "200 行");
+        assert_eq!(LogsState::tail_label(None), "全部");
+        // 档位表里那个"全部"必须真的是 None，不然界面上点它没反应
+        assert_eq!(LogsState::TAILS[3], None);
+    }
+
+    #[test]
+    fn a_stale_log_response_is_dropped() {
+        // 连点「1000 行」→「全部」会有两个请求在飞，先发的可能后回。
+        // 只认最后一次发起的那个 —— 否则界面会显示上一次选择的结果。
+        let mut logs = LogsState::new("web");
+
+        let first = logs.begin_load();
+        assert!(logs.loading);
+        let second = logs.begin_load();
+        assert_ne!(first, second, "每轮票据必须不同");
+
+        // 旧的那个后到了：必须被丢掉
+        assert!(!logs.finish_load(first, Ok("旧结果".into())));
+        assert!(logs.loading, "还在等新的那个，不能因为旧响应到了就收工");
+        assert_eq!(logs.text, None, "旧结果不能覆盖");
+
+        // 新的那个到了：收下
+        assert!(logs.finish_load(second, Ok("新结果".into())));
+        assert!(!logs.loading);
+        assert_eq!(logs.text.as_deref(), Some("新结果"));
+    }
+
+    #[test]
+    fn a_failed_log_load_keeps_the_previous_text() {
+        // 拉失败时**不该**把上一次的内容擦掉：用户宁可看着旧日志，
+        // 也不想面对一片空白（而且错误信息会单独显示）。
+        let mut logs = LogsState::new("web");
+        let t = logs.begin_load();
+        assert!(logs.finish_load(t, Ok("上一次的内容".into())));
+
+        let t2 = logs.begin_load();
+        assert!(logs.finish_load(t2, Err("连不上".into())));
+        assert_eq!(logs.text.as_deref(), Some("上一次的内容"));
+        assert_eq!(logs.error.as_deref(), Some("连不上"));
+        assert!(!logs.loading);
+    }
+
+    #[test]
+    fn begin_load_clears_the_previous_error() {
+        // 重试时上一条错误必须先消失，否则界面会一直挂着它
+        let mut logs = LogsState::new("web");
+        let t = logs.begin_load();
+        logs.finish_load(t, Err("第一次失败".into()));
+        assert!(logs.error.is_some());
+
+        logs.begin_load();
+        assert_eq!(logs.error, None);
     }
 
     #[test]

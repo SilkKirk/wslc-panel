@@ -125,11 +125,16 @@ pub struct LogOptions {
     pub details: bool,
 }
 
-/// 读取容器日志。
+/// 拼 `logs` 的参数。
 ///
-/// ⚠️ **不支持 `--follow`**：跟随模式永不返回，会挂住调用方。
-/// 需要跟随时请用 [`Wslc::spawn_in_new_console`] 开独立终端窗口。
-pub fn logs(wslc: &Wslc, container: &str, options: &LogOptions) -> Result<String> {
+/// 单独一个函数是为了能测：有两条不变量容易在后续改动里被破坏 ——
+///
+/// 1. **容器名必须是最后一个参数**。`wslc` 的位置参数解析在遇到第一个
+///    非选项之后就只认位置参数了，名字跑到开关前面会让后面的开关当成
+///    容器名的一部分。
+/// 2. `tail: None` 表示**全部**，这时**不能**出现 `--tail` ——
+///    写成 `--tail 0` 之类会变成"一行都不给"。
+fn logs_args(container: &str, options: &LogOptions) -> Vec<String> {
     let mut args: Vec<String> = vec!["logs".into()];
     if let Some(tail) = options.tail {
         args.push("--tail".into());
@@ -142,7 +147,17 @@ pub fn logs(wslc: &Wslc, container: &str, options: &LogOptions) -> Result<String
         args.push("--details".into());
     }
     args.push(container.to_owned());
+    args
+}
 
+/// 读取容器日志。
+///
+/// ⚠️ 这里**不用 `--follow`**：跟随模式永不返回（会一直阻塞到容器退出），
+/// 而走这条路的调用都在后台执行器里等着拿结果 —— 一旦跟上去，
+/// 那一路的"正在加载"就再也不会结束。
+/// 想跟随时请用 [`logs_follow_in_new_console`]，让独立终端窗口去跟。
+pub fn logs(wslc: &Wslc, container: &str, options: &LogOptions) -> Result<String> {
+    let args = logs_args(container, options);
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let out = wslc.run_checked(&refs)?;
     // `wslc logs` 把容器 stdout/stderr 混在一起，分别解码后拼回。
@@ -154,6 +169,28 @@ pub fn logs(wslc: &Wslc, container: &str, options: &LogOptions) -> Result<String
         combined.push_str(&out.stderr);
     }
     Ok(combined)
+}
+
+/// 在**新控制台窗口**里跟随容器日志（`wslc logs --follow`）。
+///
+/// 为什么不把跟随做进面板里：`--follow` 永不返回，内嵌就意味着一条
+/// 永远不结束的后台任务 + 需要自己实现的"停止跟随"，而输出还是得
+/// 攒在一个文本块里。开一个真正的终端窗口既简单又更好用
+/// （用户可以滚、可以 Ctrl+C）。和 `exec -it` / `attach` 是同一套理由。
+///
+/// 这是**同步**的：`spawn_in_new_console` 只把窗口拉起来就返回，
+/// 不等它关闭 —— 跟随可能持续几个小时（`AGENTS.md` §7.1）。
+pub fn logs_follow_in_new_console(
+    wslc: &Wslc,
+    container: &str,
+    options: &LogOptions,
+) -> Result<()> {
+    // 复用 `logs_args` 保证"名字在最后"这条不变量，再把 `--follow`
+    // 插在子命令之后 —— 不重新拼一遍，免得两份参数形状慢慢长歪。
+    let mut args = logs_args(container, options);
+    args.insert(1, "--follow".to_owned());
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    wslc.spawn_in_new_console(&refs)
 }
 
 /// 在运行中的容器里执行命令（**非交互**）。
@@ -390,6 +427,69 @@ fn run_names(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- logs 参数形状 -----------------------------------------------------
+
+    #[test]
+    fn logs_args_put_the_container_name_last() {
+        // 名字跑到开关前面会被 `wslc` 当位置参数吃掉，后面的开关就变成
+        // 容器名的一部分 —— 这条不变量必须是显式断言。
+        let args = logs_args("web", &LogOptions::default());
+        assert_eq!(args, vec!["logs", "web"]);
+
+        let full = logs_args(
+            "web",
+            &LogOptions {
+                tail: Some(200),
+                timestamps: true,
+                details: true,
+            },
+        );
+        assert_eq!(
+            full,
+            vec!["logs", "--tail", "200", "--timestamps", "--details", "web"]
+        );
+        assert_eq!(full.last().map(String::as_str), Some("web"));
+    }
+
+    #[test]
+    fn logs_args_omit_tail_when_the_limit_is_none() {
+        // `None` 是"全部"，**不是** 0 —— 多写一个 `--tail` 就等于
+        // 一行日志都不给（或者说行为取决于 wslc 怎么解释空值）。
+        let args = logs_args("web", &LogOptions::default());
+        assert!(!args.iter().any(|a| a == "--tail"), "{args:?}");
+
+        // 而 `Some(0)` 是调用方明确要的 0 行，要照样传下去
+        let zero = logs_args(
+            "web",
+            &LogOptions {
+                tail: Some(0),
+                ..Default::default()
+            },
+        );
+        assert_eq!(zero, vec!["logs", "--tail", "0", "web"]);
+    }
+
+    #[test]
+    fn follow_args_keep_the_name_last_and_follow_first() {
+        // `logs_follow_in_new_console` 不重新拼参数，而是在 `logs_args`
+        // 的结果里插入 `--follow` —— 这里锁住插入位置：
+        // 必须是 `logs --follow …` 而不是 `logs … --follow` 之外的怪形状。
+        let mut args = logs_args(
+            "web",
+            &LogOptions {
+                tail: Some(50),
+                timestamps: true,
+                details: false,
+            },
+        );
+        args.insert(1, "--follow".to_owned());
+        assert_eq!(
+            args,
+            vec!["logs", "--follow", "--tail", "50", "--timestamps", "web"]
+        );
+        assert_eq!(args.last().map(String::as_str), Some("web"));
+    }
 
     #[test]
     fn run_spec_generates_expected_args() {
