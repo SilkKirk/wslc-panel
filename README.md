@@ -14,20 +14,24 @@
 │              │                                                      │
 │ 概览         │  ┌────────┬────────┬──────┬──────┬─────┐             │
 │  基本信息    │  │运行中 3│全部 7  │镜像 12│网络 3│卷 2 │             │
-│              │  └────────┴────────┴──────┴──────┴─────┘             │
-│ 容器         │  ┌───────────────────┬───────────────────────┐       │
-│  当前运行    │  │ 客户端            │ 服务器                │       │
-│  全部容器    │  │ WSL      3.0.1.0  │ 会话管理器    3.0.1   │       │
-│              │  │ 内核     6.18.40  │ 活动会话表            │       │
-│ 资源         │  │ Windows  10.0.26  │                       │       │
-│  镜像        │  └───────────────────┴───────────────────────┘       │
-│  网络        │                                                      │
+│ WSL 实例     │  └────────┴────────┴──────┴──────┴─────┘             │
+│  实例列表    │  ┌───────────────────┬───────────────────────┐       │
+│ 容器         │  │ 客户端            │ 服务器                │       │
+│  容器        │  │ WSL      3.0.1.0  │ 会话管理器    3.0.1   │       │
+│ 资源         │  │ 内核     6.18.40  │ 活动会话表            │       │
+│  镜像        │  │ Windows  10.0.26  │                       │       │
+│  网络        │  └───────────────────┴───────────────────────┘       │
 │  卷          │                                                      │
-│              │                                                      │
 │ 设置         │                                                      │
-│  wlsc 配置   │                                                      │
+│  应用设置    │                                                      │
+│  关于        │                                                      │
 └──────────────┴──────────────────────────────────────────────────────┘
 ```
+
+> 侧边栏就是上面这 8 页（`Page::ALL`）。**「添加实例」不在这里** —— 它从
+> 「实例列表」页上的按钮进（同时列「实例列表」和「添加实例」是冗余的：
+> 后者本来就是前者的一个动作）。「wlsc 配置」与「WSL 配置」也不是页面，
+> 而是「应用设置」里的两个 tab。
 
 ---
 
@@ -88,10 +92,13 @@
 
 ### 方式一：直接下载（推荐）
 
-到 [Releases](https://github.com/SilkKirk/wslc-panel/releases) 下载
-`wslc-panel-vX.Y.Z-windows-x64.zip`，解压后直接运行 `wslc-panel.exe`。
+到 [Releases](https://github.com/SilkKirk/wslc-panel/releases) 下载 **`wslc-panel.exe`**
+（单文件，直接运行，**不用解压**）。
 
-单文件、无需安装、不依赖 WebView2 或任何运行时。
+`wslc-panel-vX.Y.Z-windows-x64.zip` 是同一个程序的压缩包，里面多带了 README 与 `docs/`，
+要归档或离线分发时用它 —— 两者内容相同，不需要都下。
+
+无需安装、不依赖 WebView2 或任何运行时。
 
 ### 方式二：从源码编译
 
@@ -106,8 +113,9 @@ winget install --id Microsoft.VisualStudio.2022.BuildTools `
 rustc --version ; cargo --version
 
 # 1) 先验证纯逻辑（不需要 GPU / 窗口，最快）
-cargo test -p wslc-core
-cargo test -p wslc-panel-core
+#    和 CI 的 core 任务同一条命令 —— 刻意**不写死包名**：写死的话，
+#    以后往 workspace 里加第 4 个 crate 时它的测试永远不会跑，而 CI 照样绿。
+cargo test --workspace --exclude wslc-panel
 
 # 2) 编译并运行界面（首次会拉取并编译 GPUI，耗时较长）
 cargo run -p wslc-panel
@@ -119,7 +127,7 @@ cargo run -p wslc-panel
 
 | Workflow | 触发 | 作用 |
 |---|---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | 推 `main` / 任意 PR（纯文档 PR 跳过） | `--workspace` 的纯逻辑测试（**排除** `wslc-panel`，以免把整棵 GPUI 链接回来）+ 整个 workspace 的 `cargo check --all-targets` |
+| [`ci.yml`](.github/workflows/ci.yml) | 推 `main` / 任意 PR（纯文档 PR 跳过） | 三个 job：**纯逻辑测试**（`--workspace --exclude wslc-panel`，以免把整棵 GPUI 链接回来）、**`wslc-panel` 编译检查**（`cargo check --workspace --all-targets` + `-p wslc-panel --bins`）、**格式与 clippy** |
 | [`fmt.yml`](.github/workflows/fmt.yml) | 手动触发 | 跑 `cargo fmt --all` 并把结果提交回仓库 —— 本机没有 rustfmt 时**唯一**能格式化代码的入口 |
 | [`release.yml`](.github/workflows/release.yml) | 推 `v*` 标签，或手动触发 | 编译 release、打包 zip、建 Release |
 | [`gen-lock.yml`](.github/workflows/gen-lock.yml) | 推 `ci/gen-lock` 分支，或手动触发 | 生成 / 更新 `Cargo.lock` 并提交回分支 —— 本机没有 Rust 工具链时，这是唯一能更新锁文件的办法 |
@@ -127,6 +135,15 @@ cargo run -p wslc-panel
 > ⚠️ 功能分支的 push **不会**触发 `ci.yml`（`on.push.branches` 只写了 `main`）。
 > 这是刻意的：否则「推分支 + 开 PR」会把同一套 job 跑两遍。
 > **功能分支的结果要去 PR 里看**，别在本地干等。
+
+> ⚠️ 三个 job 里只有前两个是真正的"门"：`lint` 是 `continue-on-error` + `exit 0`，
+> **它绿不代表格式和 clippy 干净**（v0.5.10 时实测有 5 条 clippy 告警 +
+> 147 处 rustfmt 差异，而那个 job 照样是绿的）。要拿真实结果得去读它的日志。
+
+> ⚠️ 还有一个容易误判的红叉：`fmt.yml` 用 `GITHUB_TOKEN` 推的那条
+> `style: cargo fmt` 提交，会留下一条**零 job 的 failure**（`pull_request` 事件，
+> check suite 里一个 check run 都没有）—— 那不是代码问题，同一个提交重跑就是绿的。
+> 判据见 [`AGENTS.md`](AGENTS.md) §3。
 
 在 Actions 页手动触发 `release.yml`，就能在不打标签的情况下验证"exe 能不能产出"。
 
@@ -154,8 +171,8 @@ crates/
 │
 └─ wslc-panel/       GPUI 应用
    ├─ main.rs        窗口与生命周期、日志（发布版写文件）+ 对 core 的 re-export 垫片
-   ├─ app.rs         Shell：导航、异步刷新、确认弹窗（唯一接触 GPUI 异步 API 的文件）
-   ├─ views.rs       各页面渲染（纯函数）
+   ├─ app.rs         Shell：导航、异步刷新、所有动作与弹窗（唯一接触 GPUI 异步 API 的文件）
+   ├─ views.rs       各页面渲染 + 全部弹窗浮层（约 180 KB，**很大**）
    └─ theme.rs       配色
 ```
 
@@ -188,7 +205,12 @@ base, component, and assets, so a Rust application lists a single dependency.」
 
 ## 文档
 
-- [`docs/PLAN.md`](docs/PLAN.md) —— 实施方案、里程碑、风险对策
+- [`AGENTS.md`](AGENTS.md) —— **给 AI 代理看的**仓库约定与踩坑记录（本机没有 Rust 工具链、
+  CI 怎么读、发布流程、弹窗约定……）。人也能看：里面全是"不知道就会踩坑"的那类东西。
+- [`docs/PLAN.md`](docs/PLAN.md) —— **当前**的实施方案、里程碑、风险对策
+- [`docs/PLAN-v0.2.md`](docs/PLAN-v0.2.md) / [`PLAN-v0.3.md`](docs/PLAN-v0.3.md) /
+  [`PLAN-v0.5.md`](docs/PLAN-v0.5.md) —— 各阶段的**历史**计划。里面的"未做"
+  说的是**当时**的状态，不是现状。
 - [`docs/wslc-schema.md`](docs/wslc-schema.md) —— **实测采集**的 `wslc` 输出字段字典（踩坑记录）
 - [`docs/SPIKE.md`](docs/SPIKE.md) —— M0 选型验证清单与回退方案
 

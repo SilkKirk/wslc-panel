@@ -17,7 +17,10 @@ Rust + [gpui-kit](https://github.com/longbridge/gpui-kit)（GPUI）。
 **这台开发机上 `cargo` / `rustc` / `rustup` 都不存在。** 这不是"偶尔忘了装"，
 是这个仓库的既定工作方式：
 
-- **写下的每一行 Rust 都没编译过**；
+- **写下的每一行 Rust 都没在本地编译过** —— 但 **CI 会真的编译它、也真的跑测试**：
+  `ui` job 跑 `cargo check`，`core` job 跑 `cargo test`（见 §3）。
+  ⚠️ 别把这条读成"代码没验证过"：它说的是**本机没有工具链**，不是"没人验过"。
+  真正没被覆盖的只有 §8 那几项（渲染 / 布局 / 真实交互）；
 - **CI 是唯一的编译验证通道**，也是唯一能拿到 `rustfmt` diff 的地方；
 - 所以：**改完就推，然后看 CI**。不要在本地"应该没问题"。
 
@@ -51,10 +54,13 @@ crates/
 │
 └── wslc-panel/       只有 UI。edition 2024，rust-version 1.85
     ├── main.rs       入口、启动日志、应用主题
-    ├── app.rs        Shell（GPUI 实体）+ 所有动作 + 弹窗浮层
-    ├── views.rs      渲染（**很大会很大**，约 114 KB）
+    ├── app.rs        Shell（GPUI 实体）+ 所有动作 + 弹窗浮层（约 160 KB）
+    ├── views.rs      渲染 + 全部弹窗浮层（约 180 KB / 5000 行，**很大**）
     └── theme.rs      颜色
 ```
+
+> 这两个文件大是**已知**的：往里加东西之前先问一句"这能不能放
+> `wslc-panel-core`"，判断标准就是下面那节（"这个文件 `use gpui` 吗"）。
 
 ### 为什么把 `wslc-panel-core` 拆出来
 
@@ -160,15 +166,35 @@ Invoke-RestMethod -Headers $H -Uri "$api/commits/<sha>/check-runs"
 **别把它当成"格式提交需要再验一次"** —— 同一个提交重跑（close + reopen PR，
 或者手动 `workflow_dispatch`）就是绿的。
 
+### 用 PowerShell 调 REST API 的三个坑（都踩过）
+
+1. **`/git/commits/{sha}` 只吃完整 SHA** —— 短 SHA 返回 404，而且重试六次
+   还是 404（不是网络问题，别去查网络）。而 `/commits/{ref}` 吃短的、也吃分支名。
+   两个端点别混用。
+2. **PowerShell 会把多行输出和 JSON 数组"套成一层数组"**：
+   `git log -1 --format=%B` 的多行结果、`Invoke-RestMethod` 返回的数组，
+   拿到的 `.Count` 会是 1、`.message` 会是**数组** —— 拼进请求体后 API 回你
+   `422 ... 'properties/message', [...] is not a string`。
+   对策：多行文本 `| Out-String` 再 `.TrimEnd()`，单值用 `[string]` 强转，
+   数组先判 `$x.Count -eq 1 -and $x[0] -is [array]` 再展开。
+3. **`git rev-parse 'v1.2.3^{commit}'` 在 PowerShell 里会被拆坏**
+   （报 `unknown switch 'e'`）。要判"这个标签在不在 main 的祖先链上"，
+   用 `git merge-base --is-ancestor <tag> origin/main`（参数别带 `^{}`），
+   或者 `git log -1 --format=%H <tag>` 拿到提交号再比。
+
 ---
 
 ## 4. 发布流程
 
 1. **先让 CI 在 main 上全绿**（尤其是 `ui`）。
-2. 升版本号：
+2. 升版本号（**四个文件、六行**，少一处 CI 就会红）：
    - 根 `Cargo.toml` 的 `[workspace.package] version`
    - `crates/wslc-core/Cargo.toml` 里那个**显式**的 `version`（它还没改成
      `version.workspace = true`，是个小遗留）
+   - **`Cargo.lock` 里三个 workspace 成员的 `version`** —— 锁文件记着成员版本，
+     不改的话 `--locked` 直接报"锁文件与清单不一致"。本机没有 cargo 只能手改：
+     先 `Select-String` 确认**只有那三处**（都在 `[[package]]` 的成员条目下），
+     再整体替换。不放心就用 `gen-lock.yml` 重新生成。
    - `README.md` 里那行启动日志样例（`版本 x.y.z，构建 <短 sha>`）
 3. 推 main → **等 CI 全绿** → 打 `vX.Y.Z` 标签 → 推标签。
 4. `release.yml` 由 `push: tags: ["v*"]` 触发，编译并发布
@@ -182,6 +208,15 @@ Invoke-RestMethod -Headers $H -Uri "$api/commits/<sha>/check-runs"
 # tag 解引用到的 commit，树应该和 main 的一样
 (Invoke-RestMethod -Headers $H -Uri "$api/git/tags/<tag-object-sha>").object.sha
 ```
+
+⚠️ **用 REST API 建标签不会触发 `release.yml`**：`POST /git/refs` 只发 `create`
+事件，而那个 workflow 监听的是 `push: tags`（`release.yml` 顶部就写着这件事）。
+所以要么 `git push origin vX.Y.Z`，要么走 `release.yml` 的
+`workflow_dispatch` + `release_tag=vX.Y.Z` —— 那条路径就是为"git push 不通"留的。
+
+⚠️ Release 的说明是**固定模板**（`release.yml` 里那段 `$notes`），**没有 changelog**。
+想让下载页显示"本版变化"，得在发布之后 `PATCH /repos/{o}/{r}/releases/{id}` 把正文补上
+（重跑工作流会用模板覆盖它）。发布页是用户唯一会读的地方，值得补。
 
 ---
 
@@ -220,6 +255,19 @@ Invoke-RestMethod -Headers $H -Uri "$api/commits/<sha>/check-runs"
 
 中文，conventional commits 风格：`feat:` / `fix:` / `perf:` / `chore:` / `docs:` / `refactor:`。
 正文写清**为什么**，以及被否掉的替代方案。
+
+### 界面：同一个动作只给一个入口
+
+列表行放**高频**动作，详情弹窗放**低频 / 危险**的 —— 同一个动作**不要两边都摆**。
+
+理由不是"省地方"：两个入口背后是同一个 `ImmediateAction` / `PendingAction`，
+行为完全一样，用户却要判断该点哪个。（v0.5.11 实机踩到：停止的容器在列表行和
+详情里各有一份一模一样的「启动 / 日志 / 删除」。根因是一条注释写着
+"照 1Panel：列表里不放操作按钮"，而本项目的列表行**一直有**按钮 ——
+**注释和实现不一致时，后来的人会照着注释继续加重复**。）
+
+推论：如果详情里某个状态下**一个动作都没有**（比如停止的容器），要写一句话
+说明其余动作在哪儿，别让用户以为按钮没画出来。
 
 ### 计划文档
 
@@ -271,6 +319,9 @@ https://github.com/owu/wsl-dashboard
 - 参考 `Shell::spawn_distro_action` / `Shell::spawn_container_action`；
 - **点下去先发一条「正在…」** —— 没有它，从点击到结果出来这段时间界面上
   什么都没发生，用户会以为按钮坏了然后去点第二次；
+- **"即时反馈"不只等于 toast**：浮层里的按钮换成「加载中…」/「执行中…」同样算
+  （日志浮层、exec 浮层就是这么做的 —— 那儿不发 toast，因为结果本来就填在
+  同一个浮层里）。关键是"从点击到有结果之间，界面上必须有变化"；
 - 真的只是"把进程拉起来、不等待"的才可以同步：
   `spawn_in_new_console`（`CREATE_NEW_CONSOLE` + `spawn()`）、
   `explorer.exe`、`spawn_detached`。
@@ -333,6 +384,12 @@ cx.spawn_in(window, async move |this, cx| {
   `handle` 来自公开的 `InputState::focus_handle(cx)`（`InputState::focus` 是 `pub(crate)`）。
 - 全项目**不用 `.disabled()`**（不导入 `Disableable`）——
   要"不可用"就用条件不渲染那个按钮，或者给一句说明。
+- **模态遮罩必须挂 `.occlude()`** —— 一个只画底色的 `div` **不参与命中测试**
+  （GPUI 只给注册过交互的元素建 hitbox），于是遮罩开着的时候点击会**穿到背后的
+  页面上**。v0.5.10 时 8 个弹窗全有这个问题（实机：打开「创建容器」还能点到它
+  背后那一列的按钮，而那个动作会重建表单、把用户打的字清掉）。
+  现在遮罩统一走 `views::modal_scrim()`，行为只有一份，理由写在
+  `theme::scrim()` 的文档里。
 
 ### 7.6 网络：`github.com` 经常不通
 
@@ -352,6 +409,10 @@ PATCH /git/refs/heads/X  { sha: <新 commit>, force: true }
 ```
 
 标签同理：`POST /git/tags` 建 tag 对象 → `POST /git/refs` 建 `refs/tags/vX.Y.Z`。
+⚠️ **但这样建的标签不会触发 `release.yml`** —— `POST /git/refs` 只发 `create`
+事件，而那个 workflow 监听的是 `push: tags`。要发版就用 `git push origin vX.Y.Z`，
+或者走 `release.yml` 的 `workflow_dispatch` + `release_tag`（见 §4）。
+
 **用 API 建的提交和本地提交 sha 会不一样** —— 事后记得
 `git fetch --tags --prune && git reset --hard origin/main` 对齐本地。
 
