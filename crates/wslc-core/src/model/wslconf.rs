@@ -300,9 +300,7 @@ pub const FIELDS: &[Field] = &[
 
 /// 按 `(节, 键)` 找一个字段。
 pub fn find_field(section: &str, key: &str) -> Option<&'static Field> {
-    FIELDS
-        .iter()
-        .find(|f| f.section == section && f.key == key)
+    FIELDS.iter().find(|f| f.section == section && f.key == key)
 }
 
 /// 找一个节。
@@ -340,7 +338,11 @@ fn version_at_least(version: &str, min: &str) -> Option<bool> {
             .map(|p| p.trim().parse::<u64>())
             .collect::<std::result::Result<_, _>>()
             .ok()?;
-        if parts.is_empty() { None } else { Some(parts) }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts)
+        }
     };
 
     let actual = parse(version)?;
@@ -535,7 +537,10 @@ impl WslConfDoc {
                 .iter()
                 .filter(|f| f.section == section_def.name)
                 .filter(|f| !seen.iter().any(|(s, k)| s == f.section && k == f.key))
-                .filter_map(|f| self.get(f.section, f.key).map(|v| format!("{} = {v}", f.key)))
+                .filter_map(|f| {
+                    self.get(f.section, f.key)
+                        .map(|v| format!("{} = {v}", f.key))
+                })
                 .collect();
             if lines.is_empty() {
                 continue;
@@ -1024,12 +1029,12 @@ options = \"metadata,umask=22\"
         // 注意：我们管的键本来就会被规范化成 `key = value`（见 `render` 第 3 步），
         // 所以这里的输入都用**规范写法**，否则测的就不是"不动点"而是规范化了。
         for text in [
-            "[network]\r\nhostname = my-box\r\n",      // CRLF
-            "[network]\r\nhostname = my-box\r\n\r\n",  // CRLF + 结尾空行
-            "[network]\nhostname = my-box\n",          // LF
-            "[network]\nhostname = my-box\n\n",        // LF + 结尾空行
-            "[network]\nhostname = my-box",            // LF，**没有**结尾换行
-            "",                                        // 空文件
+            "[network]\r\nhostname = my-box\r\n",     // CRLF
+            "[network]\r\nhostname = my-box\r\n\r\n", // CRLF + 结尾空行
+            "[network]\nhostname = my-box\n",         // LF
+            "[network]\nhostname = my-box\n\n",       // LF + 结尾空行
+            "[network]\nhostname = my-box",           // LF，**没有**结尾换行
+            "",                                       // 空文件
         ] {
             let doc = WslConfDoc::parse(text);
             assert_eq!(
@@ -1048,10 +1053,7 @@ options = \"metadata,umask=22\"
         doc.set("network", "hostname", "renamed");
         let out = doc.render();
         assert!(out.contains("hostname = renamed\r\n"), "{out:?}");
-        assert!(
-            !out.contains("renamed\n"),
-            "CRLF 被改成了 LF：{out:?}"
-        );
+        assert!(!out.contains("renamed\n"), "CRLF 被改成了 LF：{out:?}");
         // 结尾也得还是 CRLF，不能变成裸 LF
         assert!(out.ends_with("\r\n"), "{out:?}");
     }
@@ -1147,7 +1149,10 @@ options = \"metadata,umask=22\"
 
         // 空输入也该给出一个合法的空文件写入脚本
         let empty = write_script("");
-        assert_eq!(empty, "cat << 'WSL_CONF_EOF' > /etc/wsl.conf\nWSL_CONF_EOF\n");
+        assert_eq!(
+            empty,
+            "cat << 'WSL_CONF_EOF' > /etc/wsl.conf\nWSL_CONF_EOF\n"
+        );
     }
 
     #[test]

@@ -91,10 +91,7 @@ pub fn column_fractions(columns: &[(&str, f32)]) -> Vec<f32> {
     if !(total > 0.0) {
         return vec![1.0 / columns.len() as f32; columns.len()];
     }
-    columns
-        .iter()
-        .map(|(_, weight)| weight / total)
-        .collect()
+    columns.iter().map(|(_, weight)| weight / total).collect()
 }
 
 #[cfg(test)]
@@ -179,12 +176,17 @@ mod tests {
         let with_nan = super::column_fractions(&[("a", f32::NAN), ("b", 1.0)]);
         assert_eq!(with_nan.len(), 2);
         assert!(
-            with_nan.iter().all(|f| f.is_finite() && (*f - 0.5).abs() < 1e-6),
+            with_nan
+                .iter()
+                .all(|f| f.is_finite() && (*f - 0.5).abs() < 1e-6),
             "NaN 权重必须退回等分，而不是算出 NaN：{with_nan:?}"
         );
 
         // 权重里混一个负的（也不该发生）同样按"不是正数"处理
         let negative = super::column_fractions(&[("a", -1.0), ("b", -1.0)]);
-        assert!(negative.iter().all(|f| (*f - 0.5).abs() < 1e-6), "{negative:?}");
+        assert!(
+            negative.iter().all(|f| (*f - 0.5).abs() < 1e-6),
+            "{negative:?}"
+        );
     }
 }

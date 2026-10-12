@@ -66,7 +66,8 @@ pub fn sanitize_name(raw: &str) -> String {
         if c.is_ascii_alphanumeric() || c == '.' {
             out.push(c);
             last_was_hyphen = false;
-        } else if (c == '-' || c == '_' || c.is_whitespace()) && !last_was_hyphen && !out.is_empty() {
+        } else if (c == '-' || c == '_' || c.is_whitespace()) && !last_was_hyphen && !out.is_empty()
+        {
             out.push('-');
             last_was_hyphen = true;
         }
@@ -866,7 +867,10 @@ pub fn preflight(
     }
 
     let mut warnings = Vec::new();
-    if let InstallSource::Online { id, web_download, .. } = &spec.source {
+    if let InstallSource::Online {
+        id, web_download, ..
+    } = &spec.source
+    {
         let id = id.trim();
         if !id.is_empty() && id != name {
             warnings.push(format!(
@@ -1001,7 +1005,14 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
             steps.push(PlannedStep::new(
                 format!("把 {path} 展开成发行版 {name}"),
                 PlanProgram::Wsl,
-                own(&["--import", name.as_str(), dir.as_str(), path, "--version", "2"]),
+                own(&[
+                    "--import",
+                    name.as_str(),
+                    dir.as_str(),
+                    path,
+                    "--version",
+                    "2",
+                ]),
             ));
             notes.push(
                 "`--import` 只是把文件系统铺开，**不会**做首次启动初始化（不建默认用户）。\
@@ -1089,13 +1100,10 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
             if !launch {
                 args.push("--no-launch".to_owned());
             }
-            let install_step = PlannedStep::new(
-                format!("从在线源安装 {id}"),
-                PlanProgram::Wsl,
-                args,
-            )
-            // 商店 ⇄ GitHub 自动换一次：两条通道在不同网络环境下会各挂一条。
-            .with_source_fallback();
+            let install_step =
+                PlannedStep::new(format!("从在线源安装 {id}"), PlanProgram::Wsl, args)
+                    // 商店 ⇄ GitHub 自动换一次：两条通道在不同网络环境下会各挂一条。
+                    .with_source_fallback();
             // 裸名字（`Ubuntu`）→ 带版本号的兄弟（`Ubuntu-26.04`）再试一次。
             // 实测（2026-10-11，本机）：`wsl -l -o` 排在第一位的裸 `Ubuntu` 是清单里
             // 那条**旧的商店包**，`wsl --install -d Ubuntu` 2 秒就
@@ -1173,7 +1181,8 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
             let bundle = InstallSource::mirror_is_bundle(format, url);
             let extension = if bundle {
                 ".wsl"
-            } else if format.eq_ignore_ascii_case("tar.gz") || url.to_lowercase().ends_with(".tar.gz")
+            } else if format.eq_ignore_ascii_case("tar.gz")
+                || url.to_lowercase().ends_with(".tar.gz")
             {
                 ".tar.gz"
             } else {
@@ -1188,7 +1197,10 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
             );
 
             steps.push(PlannedStep::new(
-                format!("从 {mirror} 下载{}（{release}）", if bundle { " .wsl 包" } else { " rootfs" }),
+                format!(
+                    "从 {mirror} 下载{}（{release}）",
+                    if bundle { " .wsl 包" } else { " rootfs" }
+                ),
                 PlanProgram::Curl,
                 crate::mirrors::download_args(url, temp_file.as_str()),
             ));
@@ -1384,10 +1396,22 @@ mod tests {
     #[test]
     fn suggest_name_from_file_strips_suffix_and_platform() {
         // 参考实现的例子：`rootfs` 与平台尾巴都不该进名字
-        assert_eq!(suggest_name_from_file(r"D:\img\ubuntu-rootfs-amd64.tar.gz"), "ubuntu");
-        assert_eq!(suggest_name_from_file("alpine-minirootfs-3.21.0-x86_64.tar.gz"), "alpine-mini-3.21.0");
-        assert_eq!(suggest_name_from_file(r"E:\a\Ubuntu-24.04.tar"), "Ubuntu-24.04");
-        assert_eq!(suggest_name_from_file("noble-server-cloudimg-amd64-root.tar.xz"), "noble-server-cloudimg");
+        assert_eq!(
+            suggest_name_from_file(r"D:\img\ubuntu-rootfs-amd64.tar.gz"),
+            "ubuntu"
+        );
+        assert_eq!(
+            suggest_name_from_file("alpine-minirootfs-3.21.0-x86_64.tar.gz"),
+            "alpine-mini-3.21.0"
+        );
+        assert_eq!(
+            suggest_name_from_file(r"E:\a\Ubuntu-24.04.tar"),
+            "Ubuntu-24.04"
+        );
+        assert_eq!(
+            suggest_name_from_file("noble-server-cloudimg-amd64-root.tar.xz"),
+            "noble-server-cloudimg"
+        );
         assert_eq!(suggest_name_from_file("Debian.tar.xz"), "Debian");
         assert_eq!(suggest_name_from_file("ext4.vhdx"), "ext4");
     }
@@ -1411,14 +1435,14 @@ mod tests {
         assert!(name_syntax_errors("Ubuntu-24.04").is_empty());
         assert!(name_syntax_errors("a_b.c-d").is_empty());
 
-        assert!(name_syntax_errors("").iter().any(|e| e.contains("不能为空")));
+        assert!(name_syntax_errors("")
+            .iter()
+            .any(|e| e.contains("不能为空")));
         assert!(name_syntax_errors("a b").iter().any(|e| e.contains(' ')));
         assert!(name_syntax_errors("中文").iter().any(|e| e.contains('中')));
-        assert!(
-            name_syntax_errors(&"a".repeat(MAX_NAME_LEN + 1))
-                .iter()
-                .any(|e| e.contains("不能超过"))
-        );
+        assert!(name_syntax_errors(&"a".repeat(MAX_NAME_LEN + 1))
+            .iter()
+            .any(|e| e.contains("不能超过")));
         // 恰好等于上限是合法的
         assert!(name_syntax_errors(&"a".repeat(MAX_NAME_LEN)).is_empty());
     }
@@ -1455,7 +1479,10 @@ mod tests {
             derive_install_dir(Some(r"D:\wsl\"), "Ubuntu"),
             Some(r"D:\wsl\Ubuntu".to_owned())
         );
-        assert_eq!(derive_install_dir(Some("D:/wsl/"), "Ubuntu"), Some("D:/wsl/Ubuntu".to_owned()));
+        assert_eq!(
+            derive_install_dir(Some("D:/wsl/"), "Ubuntu"),
+            Some("D:/wsl/Ubuntu".to_owned())
+        );
         // 缺一半就给 None（调用方据此要求用户自己填）
         assert_eq!(derive_install_dir(None, "Ubuntu"), None);
         assert_eq!(derive_install_dir(Some("   "), "Ubuntu"), None);
@@ -1489,7 +1516,10 @@ mod tests {
         assert!(items.len() >= 15, "只解析出 {} 项：{items:?}", items.len());
 
         // 提示语与表头之间的空行、以及中文提示行都不能进来
-        assert!(!items.iter().any(|item| item.id.contains("以下是")), "{items:?}");
+        assert!(
+            !items.iter().any(|item| item.id.contains("以下是")),
+            "{items:?}"
+        );
         // 两列的名字要拆对：id 是第一列，友好名可能是**带空格**的多个词
         let ubuntu = items
             .iter()
@@ -1497,7 +1527,10 @@ mod tests {
             .expect("应该有 Ubuntu-24.04");
         assert_eq!(ubuntu.label, "Ubuntu 24.04 LTS");
         // 不带版本号的那个是默认项，它两列同名
-        let default = items.iter().find(|item| item.id == "Ubuntu").expect("应该有 Ubuntu");
+        let default = items
+            .iter()
+            .find(|item| item.id == "Ubuntu")
+            .expect("应该有 Ubuntu");
         assert_eq!(default.label, "Ubuntu");
     }
 
@@ -1525,7 +1558,11 @@ mod tests {
             .expect("清单里应该有 Ubuntu-24.04");
         assert_eq!(ubuntu.label, "Ubuntu 24.04 LTS");
         // 默认项排最前（不带版本号的那个）
-        assert_eq!(items[0].id, "Ubuntu", "默认发行版应该排第一：{:?}", items[0]);
+        assert_eq!(
+            items[0].id, "Ubuntu",
+            "默认发行版应该排第一：{:?}",
+            items[0]
+        );
         // 每项都要有 id 和非空 label
         for item in &items {
             assert!(!item.id.is_empty());
@@ -1570,7 +1607,10 @@ mod tests {
     }
 
     fn labels(plan: &InstallPlan) -> Vec<String> {
-        plan.steps.iter().map(|s| format!("{:?}", s.program)).collect()
+        plan.steps
+            .iter()
+            .map(|s| format!("{:?}", s.program))
+            .collect()
     }
 
     #[test]
@@ -1713,7 +1753,11 @@ mod tests {
             ]
         );
         // 说明里要讲清这一段在干什么
-        assert!(plan.notes.iter().any(|n| n.contains("--unregister")), "{:?}", plan.notes);
+        assert!(
+            plan.notes.iter().any(|n| n.contains("--unregister")),
+            "{:?}",
+            plan.notes
+        );
 
         // 要求装完启动时不加 --no-launch
         spec.source = InstallSource::Online {
@@ -1741,7 +1785,10 @@ mod tests {
             },
         );
         let plan = super::plan(&spec, &ctx()).unwrap();
-        assert_eq!(plan.steps[0].retry_other_id.as_deref(), Some("Ubuntu-26.04"));
+        assert_eq!(
+            plan.steps[0].retry_other_id.as_deref(),
+            Some("Ubuntu-26.04")
+        );
         // 换源那一手也要在（两条通道在不同网络下各会挂一条）
         assert!(plan.steps[0].retry_other_source);
 
@@ -1875,7 +1922,11 @@ mod tests {
             vec!["Curl", "Wsl", "EnsureRelocated", "RemoveFile"]
         );
         // 临时文件按格式取后缀
-        assert!(plan.steps[0].args[8].ends_with(".wsl"), "{:?}", plan.steps[0].args);
+        assert!(
+            plan.steps[0].args[8].ends_with(".wsl"),
+            "{:?}",
+            plan.steps[0].args
+        );
         assert_eq!(
             plan.steps[1].args,
             vec![
@@ -1922,7 +1973,11 @@ mod tests {
         let last = plan.steps.last().unwrap();
         assert_eq!(last.program, PlanProgram::Wsl);
         assert_eq!(last.args, vec!["--set-default", "Ubuntu"]);
-        assert!(plan.preview_lines().last().unwrap().contains("--set-default"));
+        assert!(plan
+            .preview_lines()
+            .last()
+            .unwrap()
+            .contains("--set-default"));
 
         // `.wslconfig` 要求稀疏 → 在设默认之前插一步
         let sparse_ctx = PlanContext {
@@ -1960,7 +2015,12 @@ mod tests {
             default_dir: None,
             ..ctx()
         };
-        let spec = InstallSpec::new("  ", InstallSource::Tar { path: " ".to_owned() });
+        let spec = InstallSpec::new(
+            "  ",
+            InstallSource::Tar {
+                path: " ".to_owned(),
+            },
+        );
         let err = super::plan(&spec, &bare).unwrap_err();
         assert!(err.contains("发行版名不能为空"), "{err}");
         assert!(err.contains("tar 文件路径不能为空"), "{err}");
@@ -2011,7 +2071,9 @@ mod tests {
                 format: "tar.xz".to_owned(),
             },
         );
-        assert!(super::plan(&no_url, &ctx()).unwrap_err().contains("还没有选好下载地址"));
+        assert!(super::plan(&no_url, &ctx())
+            .unwrap_err()
+            .contains("还没有选好下载地址"));
         let bad_url = InstallSpec::new(
             "X",
             InstallSource::Mirror {
@@ -2080,7 +2142,10 @@ mod tests {
             },
         );
         let duplicate = preflight(&spec, &ctx(), &["ubuntu".to_owned()], false);
-        assert!(duplicate.error_text().unwrap().contains("已经有一个"), "{duplicate:?}");
+        assert!(
+            duplicate.error_text().unwrap().contains("已经有一个"),
+            "{duplicate:?}"
+        );
 
         // 前后空白不算差异 —— 用户在名字框里多打一个空格不该被当成重名
         // ⚠️ 必须断言**具体那条错误**：只断言 `!ok()` 的话，
@@ -2092,7 +2157,10 @@ mod tests {
             },
         );
         let duplicate = preflight(&spec, &ctx(), &["Ubuntu".to_owned()], false);
-        assert!(duplicate.error_text().unwrap().contains("已经有一个"), "{duplicate:?}");
+        assert!(
+            duplicate.error_text().unwrap().contains("已经有一个"),
+            "{duplicate:?}"
+        );
 
         // 真的是不同的名字就照旧放行
         let spec = InstallSpec::new(
@@ -2127,11 +2195,12 @@ mod tests {
         let step = PlannedStep::new(
             "x",
             PlanProgram::Wsl,
-            vec!["--import".to_owned(), "My Distro".to_owned(), r"D:\a b\x".to_owned()],
+            vec![
+                "--import".to_owned(),
+                "My Distro".to_owned(),
+                r"D:\a b\x".to_owned(),
+            ],
         );
-        assert_eq!(
-            step.line(),
-            r#"wsl --import "My Distro" "D:\a b\x""#
-        );
+        assert_eq!(step.line(), r#"wsl --import "My Distro" "D:\a b\x""#);
     }
 }

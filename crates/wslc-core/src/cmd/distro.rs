@@ -259,9 +259,9 @@ pub fn start(wsl: &Wsl, name: &str) -> Result<std::process::Child> {
 // （见 `AGENTS.md` §1、§2）。
 //
 // 这里只留"起进程"的那部分，并把类型转出去，免得调用方到处改 import。
-pub use crate::model::install::{parse_online_list, InstallSource, InstallSpec, OnlineDistro};
 pub use crate::model::install::WSL_VERSION;
-use crate::model::install::{OnlineListSource, OnlineListing, parse_distribution_info};
+use crate::model::install::{parse_distribution_info, OnlineListSource, OnlineListing};
+pub use crate::model::install::{parse_online_list, InstallSource, InstallSpec, OnlineDistro};
 
 /// `wsl --list --online` 的超时。
 ///
@@ -382,11 +382,8 @@ pub fn online_distros(wsl: &Wsl) -> OnlineListing {
                 Err(e) => fallback_error = format!("{url}：{e}"),
             },
             Ok(out) => {
-                fallback_error = format!(
-                    "{url} 返回退出码 {:?}：{}",
-                    out.code,
-                    out.combined().trim()
-                )
+                fallback_error =
+                    format!("{url} 返回退出码 {:?}：{}", out.code, out.combined().trim())
             }
             Err(e) => fallback_error = format!("{url}：{e}"),
         }
@@ -757,11 +754,7 @@ pub fn read_registry() -> Vec<RegistryEntry> {
     match cli::run_helper("reg.exe", "reg", &["query", LXSS_KEY, "/s"], REG_TIMEOUT) {
         Ok(out) if out.success() => parse_registry(&out.stdout),
         Ok(out) => {
-            tracing::warn!(
-                "reg query 退出码 {:?}：{}",
-                out.code,
-                out.combined().trim()
-            );
+            tracing::warn!("reg query 退出码 {:?}：{}", out.code, out.combined().trim());
             Vec::new()
         }
         Err(e) => {
@@ -985,7 +978,10 @@ mod tests {
 
         let e = &entries[0];
         assert_eq!(e.name, "Ubuntu-26.04");
-        assert_eq!(e.base_path.as_deref(), Some(Path::new(r"D:\linux\Ubuntu-26.04")));
+        assert_eq!(
+            e.base_path.as_deref(),
+            Some(Path::new(r"D:\linux\Ubuntu-26.04"))
+        );
         assert_eq!(e.vhd_file_name.as_deref(), Some("ext4.vhdx"));
         assert_eq!(e.default_uid, Some(0));
         assert_eq!(e.version, Some(2));
@@ -1065,10 +1061,7 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{ccc}\r
         );
         assert_eq!(
             parse_registry_value("    ShortcutPath    REG_EXPAND_SZ    %USERPROFILE%\\x.lnk"),
-            Some((
-                "ShortcutPath".to_owned(),
-                "%USERPROFILE%\\x.lnk".to_owned()
-            ))
+            Some(("ShortcutPath".to_owned(), "%USERPROFILE%\\x.lnk".to_owned()))
         );
         // 键头 / 空行 / 没有类型词的行都不该被当成值
         assert_eq!(parse_registry_value("HKEY_CURRENT_USER\\Software"), None);
@@ -1095,8 +1088,18 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{ccc}\r
     #[test]
     fn default_distro_picks_the_starred_entry() {
         let distros = vec![
-            Distro::new("Debian", crate::model::distro::DistroState::Stopped, Some(2), false),
-            Distro::new("Ubuntu", crate::model::distro::DistroState::Running, Some(2), true),
+            Distro::new(
+                "Debian",
+                crate::model::distro::DistroState::Stopped,
+                Some(2),
+                false,
+            ),
+            Distro::new(
+                "Ubuntu",
+                crate::model::distro::DistroState::Running,
+                Some(2),
+                true,
+            ),
         ];
         assert_eq!(default_distro(&distros), Some("Ubuntu"));
         assert_eq!(default_distro(&[]), None);
@@ -1131,7 +1134,10 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{ccc}\r
         assert_eq!(strip_config_warnings("操作成功完成。"), "操作成功完成。");
         // 只想去掉行首的 `wsl: ` 前缀行，正文里的 "wsl" 不受影响
         let text = "wsl: 某条告警\n真正的错误：wsl 拒绝了这个参数";
-        assert_eq!(strip_config_warnings(text), "真正的错误：wsl 拒绝了这个参数");
+        assert_eq!(
+            strip_config_warnings(text),
+            "真正的错误：wsl 拒绝了这个参数"
+        );
         // 全被过滤掉时是空串，调用方据此给兜底文案
         assert!(strip_config_warnings("wsl: a\nwsl: b").is_empty());
         assert!(strip_config_warnings("").is_empty());
@@ -1257,7 +1263,10 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{ccc}\r
         // 这些在单引号里都只是普通字符
         for nasty in ["; rm -rf /", "$(whoami)", "`id`", "a b", "a\"b", "a\\b"] {
             let quoted = shell_quote(nasty);
-            assert!(quoted.starts_with('\'') && quoted.ends_with('\''), "{quoted}");
+            assert!(
+                quoted.starts_with('\'') && quoted.ends_with('\''),
+                "{quoted}"
+            );
             // 关键：**不能**出现未被包裹的引号 —— 那才是能逃出去的地方
             assert!(
                 !quoted[1..quoted.len() - 1].contains('\''),

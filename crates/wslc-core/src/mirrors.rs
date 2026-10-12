@@ -212,7 +212,10 @@ fn envelope_data(json: &str) -> Result<serde_json::Value, String> {
     let value: serde_json::Value =
         serde_json::from_str(clean).map_err(|e| format!("接口返回的不是 JSON：{e}"))?;
 
-    let err = value.get("err").and_then(serde_json::Value::as_i64).unwrap_or(0);
+    let err = value
+        .get("err")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0);
     if err != 0 {
         let msg = value
             .get("msg")
@@ -507,8 +510,14 @@ fn header_content_length(json: &str) -> Option<u64> {
 pub fn pick_fastest(probes: &[(Candidate, Option<Probe>)]) -> Option<(Candidate, Probe)> {
     probes
         .iter()
-        .filter_map(|(candidate, probe)| probe.as_ref().filter(|p| p.is_ok()).map(|p| (candidate, p)))
-        .min_by(|(_, a), (_, b)| a.secs.partial_cmp(&b.secs).unwrap_or(std::cmp::Ordering::Equal))
+        .filter_map(|(candidate, probe)| {
+            probe.as_ref().filter(|p| p.is_ok()).map(|p| (candidate, p))
+        })
+        .min_by(|(_, a), (_, b)| {
+            a.secs
+                .partial_cmp(&b.secs)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
         .map(|(candidate, probe)| (candidate.clone(), probe.clone()))
 }
 
@@ -620,11 +629,16 @@ mod tests {
         // 让调用方自己决定要不要退到兜底地址（而不是这里偷偷给个空串）
         assert!(parse_discovery("").is_err());
         assert!(parse_discovery("<html>502</html>").is_err());
-        assert!(parse_discovery(r#"{"err":1001,"msg":"bad sign","data":{}}"#)
-            .unwrap_err()
-            .contains("1001"));
+        assert!(
+            parse_discovery(r#"{"err":1001,"msg":"bad sign","data":{}}"#)
+                .unwrap_err()
+                .contains("1001")
+        );
         assert!(parse_discovery(r#"{"err":0,"msg":"ok","data":{}}"#).is_err());
-        assert!(parse_discovery(r#"{"err":0,"msg":"ok","data":{"online_distros":{"url":"  "}}}"#).is_err());
+        assert!(
+            parse_discovery(r#"{"err":0,"msg":"ok","data":{"online_distros":{"url":"  "}}}"#)
+                .is_err()
+        );
     }
 
     #[test]
@@ -678,9 +692,11 @@ mod tests {
         }
 
         // 正常的 https 照旧放行
-        let good =
-            r#"{"err":0,"msg":"ok","data":{"online_distros":{"url":"https://api2.wslui.com/x.json"}}}"#;
-        assert_eq!(parse_discovery(good).unwrap(), "https://api2.wslui.com/x.json");
+        let good = r#"{"err":0,"msg":"ok","data":{"online_distros":{"url":"https://api2.wslui.com/x.json"}}}"#;
+        assert_eq!(
+            parse_discovery(good).unwrap(),
+            "https://api2.wslui.com/x.json"
+        );
     }
 
     #[test]
@@ -690,7 +706,10 @@ mod tests {
 
         let amd64 = parse_catalog(json, false).expect("amd64 清单应该能解析");
         assert!(amd64.len() >= 20, "只解析出 {} 项", amd64.len());
-        assert_eq!(parse_update_time(json).as_deref(), Some("2026-10-09T21:35:03.166313241Z"));
+        assert_eq!(
+            parse_update_time(json).as_deref(),
+            Some("2026-10-09T21:35:03.166313241Z")
+        );
 
         let ubuntu = amd64
             .iter()
@@ -704,7 +723,11 @@ mod tests {
         // Ubuntu 24.04 的绝大多数来源是 .wsl 包 —— 这正是"不能一律 --import"的原因
         let bundles = ubuntu.sources.iter().filter(|s| s.is_bundle()).count();
         assert!(bundles >= 5, "Ubuntu 24.04 应该有多个 .wsl 来源：{bundles}");
-        assert!(ubuntu.format_summary().contains("wsl"), "{}", ubuntu.format_summary());
+        assert!(
+            ubuntu.format_summary().contains("wsl"),
+            "{}",
+            ubuntu.format_summary()
+        );
 
         // arm64 那一份是另一组 URL（文件名里带 arm64）
         let arm64 = parse_catalog(json, true).expect("arm64 清单应该能解析");
@@ -750,7 +773,10 @@ mod tests {
         assert!(offers.iter().all(|o| o.name != "EvilOnly"), "{offers:?}");
 
         // 好坏混在一起时只留好的那个 —— 一条坏记录不该牵连同一条目的其它镜像
-        let mixed = offers.iter().find(|o| o.name == "Mixed").expect("Mixed 应该还在");
+        let mixed = offers
+            .iter()
+            .find(|o| o.name == "Mixed")
+            .expect("Mixed 应该还在");
         assert_eq!(mixed.sources.len(), 1, "{mixed:?}");
         assert_eq!(mixed.sources[0].url, "https://a/ok");
 
@@ -801,7 +827,15 @@ mod tests {
         let args = curl_json_args("https://api1.wslui.com/x");
         assert_eq!(
             args,
-            vec!["-s", "-L", "-m", "25", "-A", BROWSER_UA, "https://api1.wslui.com/x"]
+            vec![
+                "-s",
+                "-L",
+                "-m",
+                "25",
+                "-A",
+                BROWSER_UA,
+                "https://api1.wslui.com/x"
+            ]
         );
     }
 

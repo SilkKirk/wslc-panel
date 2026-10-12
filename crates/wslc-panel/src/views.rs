@@ -762,7 +762,11 @@ fn container_row_actions(name: &str, running: bool, entity: &Entity<Shell>) -> A
         .into_any_element(),
     );
 
-    h_flex().gap_2().flex_wrap().children(actions).into_any_element()
+    h_flex()
+        .gap_2()
+        .flex_wrap()
+        .children(actions)
+        .into_any_element()
 }
 
 /// 全部容器页（含已退出）。
@@ -1142,19 +1146,16 @@ pub fn instances(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                 .w_full()
                 .justify_between()
                 .child(
-                    h_flex()
-                        .gap_3()
-                        .child(add_instance_button(entity))
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(theme::text_muted())
-                                .child(format!(
-                                    "共 {} 个发行版，{} 个在运行",
-                                    distros.len(),
-                                    running
-                                )),
-                        ),
+                    h_flex().gap_3().child(add_instance_button(entity)).child(
+                        div()
+                            .text_sm()
+                            .text_color(theme::text_muted())
+                            .child(format!(
+                                "共 {} 个发行版，{} 个在运行",
+                                distros.len(),
+                                running
+                            )),
+                    ),
                 )
                 .child(shutdown_all),
         )
@@ -1207,7 +1208,11 @@ fn distro_summary_card(state: &AppState, distros: &[Distro]) -> AnyElement {
                     .w_full()
                     .gap_3()
                     .child(stat_tile("运行中", running.to_string(), theme::success()))
-                    .child(stat_tile("全部", distros.len().to_string(), theme::primary()))
+                    .child(stat_tile(
+                        "全部",
+                        distros.len().to_string(),
+                        theme::primary(),
+                    ))
                     .child(stat_tile(
                         "磁盘合计",
                         format_bytes(total_bytes),
@@ -1215,7 +1220,12 @@ fn distro_summary_card(state: &AppState, distros: &[Distro]) -> AnyElement {
                     )),
             )
             .child(kv("默认发行版", default))
-            .child(div().text_xs().text_color(theme::text_dim()).child(disk_note)),
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child(disk_note),
+            ),
     )
     .into_any_element()
 }
@@ -1385,7 +1395,11 @@ fn distro_row_actions(
     // 一个红色的「删除」和「打开终端」挨着，误点的代价太大；
     // 详情里地方宽，能把"要删掉多少"写清楚（见 `distro_detail_overlay`）。
 
-    h_flex().gap_2().flex_wrap().children(actions).into_any_element()
+    h_flex()
+        .gap_2()
+        .flex_wrap()
+        .children(actions)
+        .into_any_element()
 }
 
 /// 发行版状态徽标单元格。
@@ -1549,9 +1563,11 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
                     .child(browse_dir)
                     .child(remember_dir),
             )
-            .child(div().text_xs().text_color(theme::text_dim()).child(
-                "留空时会用「默认安装目录 + 发行版名」；点「存为默认」把当前这个路径记住。",
-            ))
+            .child(
+                div().text_xs().text_color(theme::text_dim()).child(
+                    "留空时会用「默认安装目录 + 发行版名」；点「存为默认」把当前这个路径记住。",
+                ),
+            )
             .into_any_element(),
     );
 
@@ -1702,57 +1718,55 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
         .map(|progress| progress.cancellable)
         .unwrap_or(true);
 
-    let action: AnyElement = if running && cancellable {
-        let entity_cancel = entity.clone();
-        h_flex()
-            .w_full()
-            .items_center()
-            .gap_3()
-            .child(
-                Button::new("cancel-install")
-                    .label("取消安装")
-                    .small()
-                    .danger()
-                    .on_click(move |_, _, cx| {
-                        entity_cancel.update(cx, |shell, cx| shell.cancel_install(cx));
-                    }),
-            )
-            .child(elapsed_label(state))
-            .into_any_element()
-    } else if running {
-        h_flex()
-            .w_full()
-            .items_center()
-            .gap_3()
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme::warning())
-                    .child("正在改名/挪位置 —— 这一步不能取消（中途停下会把刚装好的东西删掉）"),
-            )
-            .child(elapsed_label(state))
-            .into_any_element()
-    } else {
-        // 取消过 / 装完之后按钮要能再点一次：文案跟着状态走。
-        let label = if state.installing.is_some() {
-            "再装一个"
+    let action: AnyElement =
+        if running && cancellable {
+            let entity_cancel = entity.clone();
+            h_flex()
+                .w_full()
+                .items_center()
+                .gap_3()
+                .child(
+                    Button::new("cancel-install")
+                        .label("取消安装")
+                        .small()
+                        .danger()
+                        .on_click(move |_, _, cx| {
+                            entity_cancel.update(cx, |shell, cx| shell.cancel_install(cx));
+                        }),
+                )
+                .child(elapsed_label(state))
+                .into_any_element()
+        } else if running {
+            h_flex()
+                .w_full()
+                .items_center()
+                .gap_3()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::warning())
+                        .child("正在改名/挪位置 —— 这一步不能取消（中途停下会把刚装好的东西删掉）"),
+                )
+                .child(elapsed_label(state))
+                .into_any_element()
         } else {
-            "开始安装"
-        };
-        let entity = entity.clone();
-        h_flex()
-            .w_full()
-            .justify_end()
-            .child(
-                Button::new("do-install")
-                    .label(label)
-                    .primary()
-                    .on_click(move |_, _, cx| {
+            // 取消过 / 装完之后按钮要能再点一次：文案跟着状态走。
+            let label = if state.installing.is_some() {
+                "再装一个"
+            } else {
+                "开始安装"
+            };
+            let entity = entity.clone();
+            h_flex()
+                .w_full()
+                .justify_end()
+                .child(Button::new("do-install").label(label).primary().on_click(
+                    move |_, _, cx| {
                         entity.update(cx, |shell, cx| shell.confirm_install(cx));
-                    }),
-            )
-            .into_any_element()
-    };
+                    },
+                ))
+                .into_any_element()
+        };
 
     let mut page = v_flex()
         .w_full()
@@ -1778,17 +1792,22 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
         ))
         .child(card(
             "参数",
-            v_flex().w_full().gap_3().children(fields).child(source_block),
+            v_flex()
+                .w_full()
+                .gap_3()
+                .children(fields)
+                .child(source_block),
         ))
         .child(card("选项", v_flex().w_full().gap_3().children(options)));
 
     if !problems.is_empty() {
-        page = page.child(card("装前检查", v_flex().w_full().gap_2().children(problems)));
+        page = page.child(card(
+            "装前检查",
+            v_flex().w_full().gap_2().children(problems),
+        ));
     }
 
-    page = page
-        .child(card("要执行的步骤", preview_body))
-        .child(action);
+    page = page.child(card("要执行的步骤", preview_body)).child(action);
 
     // 装过 / 正在装 → 显示日志（装完之后留在页面上，用户要能读它）
     if state.installing.is_some() {
@@ -1854,103 +1873,101 @@ fn online_block(
                 .gap_2()
                 .items_center()
                 .child(button)
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_dim())
-                        .child(id_text),
-                )
+                .child(div().text_xs().text_color(theme::text_dim()).child(id_text))
                 .into_any_element()
         })
         .collect();
 
     // 状态：正在拉 / 失败原因（原文）/ 来源说明
-    let status: AnyElement = if state.online.loading {
-        div()
-            .text_xs()
-            .text_color(theme::text_muted())
-            .child("正在拉取在线清单…")
-            .into_any_element()
-    } else if !state.online.error.trim().is_empty() {
-        v_flex()
-            .w_full()
-            .gap_1()
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme::warning())
-                    .child(format!("清单有问题：{}", state.online.error)),
-            )
-            .child(div().text_xs().text_color(theme::text_dim()).child(
-                "拉不到清单也能装：直接在「发行版名」里填在线 id（例如 Ubuntu-24.04）。",
-            ))
-            .into_any_element()
-    } else if !state.online.items.is_empty() {
-        let mut lines: Vec<AnyElement> = vec![div()
-            .text_xs()
-            .text_color(theme::text_dim())
-            .child(format!(
-                "共 {} 个，{} 个匹配。{}",
-                state.online.items.len(),
-                matches.len(),
-                state.online.source.label()
-            ))
-            .into_any_element()];
-        // ⚠️ 清单是**我们**用 curl 从 CDN 兜底拉到的（不是 wsl 自己拉的）时，
-        // 说明 `wsl.exe` 连不上它要的那份 manifest —— 而安装那一步正是走它。
-        // 实测（2026-10-10）这种状态下商店与 `--web-download` 会**双双**报
-        // `Wsl/InstallDistro/WININET_E_CANNOT_CONNECT`。与其让用户装到一半才失败，
-        // 不如现在就说清"这条来源现在多半装不上、该换哪条"。
-        //
-        // 注意这句话**会过期**（实测同一小时内 `wsl -l -o` 从成功变成 500 又变回来），
-        // 所以它必须带上"怎么刷新"的出口，而不是一句判决。
-        match state.online.source {
-            OnlineListSource::FallbackJson => lines.push(
-                div()
-                    .text_xs()
-                    .text_color(theme::warning())
-                    .child(
-                        "注意：这份清单是面板自己从 CDN 拉的，说明 wsl 自己拉不到它要的那份 \
-                         manifest —— 现在用「微软商店」装多半会连不上。\
-                         先试「在线发行版（国内镜像源）」（那条不经过 wsl 的网络）；\
-                         如果你刚把代理修好，点一下上面的「刷新商店清单」再看这行还在不在。",
-                    )
-                    .into_any_element(),
-            ),
-            OnlineListSource::Wsl => lines.push(
-                div()
-                    .text_xs()
-                    .text_color(theme::success())
-                    .child("wsl 自己拉到了清单 —— 这条来源现在是通的。")
-                    .into_any_element(),
-            ),
-            OnlineListSource::Unknown => {}
-        }
-        // 选中了"不带版本号的家族名"（`Ubuntu`）时提醒一句：实测这类条目在这台机器上
-        // **装不动**（`wsl --install -d Ubuntu` 两秒就 `WININET_E_CANNOT_CONNECT`），
-        // 装的时候会自动换成带版本的那条（见 `OnlineDistroState::sibling_id`）。
-        if let Some(picked) = state.online.selected.as_deref() {
-            if let Some(sibling) = state.online.sibling_id(picked) {
-                lines.push(
+    let status: AnyElement =
+        if state.online.loading {
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child("正在拉取在线清单…")
+                .into_any_element()
+        } else if !state.online.error.trim().is_empty() {
+            v_flex()
+                .w_full()
+                .gap_1()
+                .child(
                     div()
                         .text_xs()
                         .text_color(theme::warning())
-                        .child(format!(
-                            "「{picked}」不带版本号 —— 实测这类条目在本机装不动\
-                             （2 秒就报连接失败），装的时候会自动改用「{sibling}」再试一次。"
-                        ))
+                        .child(format!("清单有问题：{}", state.online.error)),
+                )
+                .child(div().text_xs().text_color(theme::text_dim()).child(
+                    "拉不到清单也能装：直接在「发行版名」里填在线 id（例如 Ubuntu-24.04）。",
+                ))
+                .into_any_element()
+        } else if !state.online.items.is_empty() {
+            let mut lines: Vec<AnyElement> = vec![
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child(format!(
+                        "共 {} 个，{} 个匹配。{}",
+                        state.online.items.len(),
+                        matches.len(),
+                        state.online.source.label()
+                    ))
+                    .into_any_element(),
+            ];
+            // ⚠️ 清单是**我们**用 curl 从 CDN 兜底拉到的（不是 wsl 自己拉的）时，
+            // 说明 `wsl.exe` 连不上它要的那份 manifest —— 而安装那一步正是走它。
+            // 实测（2026-10-10）这种状态下商店与 `--web-download` 会**双双**报
+            // `Wsl/InstallDistro/WININET_E_CANNOT_CONNECT`。与其让用户装到一半才失败，
+            // 不如现在就说清"这条来源现在多半装不上、该换哪条"。
+            //
+            // 注意这句话**会过期**（实测同一小时内 `wsl -l -o` 从成功变成 500 又变回来），
+            // 所以它必须带上"怎么刷新"的出口，而不是一句判决。
+            match state.online.source {
+                OnlineListSource::FallbackJson => lines.push(
+                    div()
+                        .text_xs()
+                        .text_color(theme::warning())
+                        .child(
+                            "注意：这份清单是面板自己从 CDN 拉的，说明 wsl 自己拉不到它要的那份 \
+                         manifest —— 现在用「微软商店」装多半会连不上。\
+                         先试「在线发行版（国内镜像源）」（那条不经过 wsl 的网络）；\
+                         如果你刚把代理修好，点一下上面的「刷新商店清单」再看这行还在不在。",
+                        )
                         .into_any_element(),
-                );
+                ),
+                OnlineListSource::Wsl => lines.push(
+                    div()
+                        .text_xs()
+                        .text_color(theme::success())
+                        .child("wsl 自己拉到了清单 —— 这条来源现在是通的。")
+                        .into_any_element(),
+                ),
+                OnlineListSource::Unknown => {}
             }
-        }
-        v_flex().w_full().gap_1().children(lines).into_any_element()
-    } else {
-        div()
-            .text_xs()
-            .text_color(theme::text_dim())
-            .child("还没拉过清单 —— 点上面的按钮，或者直接在「发行版名」里手输 id。")
-            .into_any_element()
-    };
+            // 选中了"不带版本号的家族名"（`Ubuntu`）时提醒一句：实测这类条目在这台机器上
+            // **装不动**（`wsl --install -d Ubuntu` 两秒就 `WININET_E_CANNOT_CONNECT`），
+            // 装的时候会自动换成带版本的那条（见 `OnlineDistroState::sibling_id`）。
+            if let Some(picked) = state.online.selected.as_deref() {
+                if let Some(sibling) = state.online.sibling_id(picked) {
+                    lines.push(
+                        div()
+                            .text_xs()
+                            .text_color(theme::warning())
+                            .child(format!(
+                                "「{picked}」不带版本号 —— 实测这类条目在本机装不动\
+                             （2 秒就报连接失败），装的时候会自动改用「{sibling}」再试一次。"
+                            ))
+                            .into_any_element(),
+                    );
+                }
+            }
+            v_flex().w_full().gap_1().children(lines).into_any_element()
+        } else {
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child("还没拉过清单 —— 点上面的按钮，或者直接在「发行版名」里手输 id。")
+                .into_any_element()
+        };
 
     v_flex()
         .w_full()
@@ -1961,20 +1978,15 @@ fn online_block(
                 .text_color(theme::text_muted())
                 .child("选择发行版（微软商店 / Microsoft Store）"),
         )
-        .child(
-            h_flex()
-                .w_full()
-                .gap_2()
-                .items_end()
-                .child(refresh)
-                .child(div().flex_1().min_w_0().child(form_field(
-                    "install-online-filter",
-                    "搜索（id 与友好名都匹配）",
-                    &form.online_filter,
-                    cx,
-                    true,
-                ))),
-        )
+        .child(h_flex().w_full().gap_2().items_end().child(refresh).child(
+            div().flex_1().min_w_0().child(form_field(
+                "install-online-filter",
+                "搜索（id 与友好名都匹配）",
+                &form.online_filter,
+                cx,
+                true,
+            )),
+        ))
         .child(status)
         .child(
             // ⚠️ 滚动容器必须先有 `.id(...)`：`overflow_y_scroll` 来自
@@ -2216,9 +2228,9 @@ fn elapsed_label(state: &AppState) -> AnyElement {
         .as_ref()
         .map(|progress| {
             let mut parts = vec![format!(
-            "已用 {}",
-            crate::util::human_secs(progress.elapsed_secs)
-        )];
+                "已用 {}",
+                crate::util::human_secs(progress.elapsed_secs)
+            )];
             if let Some(percent) = progress.percent() {
                 parts.push(format!("{percent:.1}%"));
             }
@@ -2318,33 +2330,32 @@ fn install_log_card(
     // 而镜像源是**我们自己去国内镜像站下载**、不经过 wsl 的网络 —— 同一个发行版
     // 往往在那边也有（Ubuntu/Debian/Alpine/Arch/Fedora/…）。让用户自己去
     // 清单里翻一遍、再手动对齐版本，是没必要付出的代价。
-    let fallback: AnyElement = if source.is_online()
-        && matches!(progress.outcome, Some(InstallOutcome::Failed { .. }))
-    {
-        let entity = entity.clone();
-        h_flex()
-            .w_full()
-            .items_center()
-            .gap_3()
-            .child(
-                Button::new("install-switch-to-mirror")
-                    .label("改用「在线发行版（国内镜像源）」再试")
-                    .small()
-                    .primary()
-                    .on_click(move |_, _, cx| {
-                        entity.update(cx, |shell, cx| shell.switch_to_mirror_source(cx));
-                    }),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme::text_dim())
-                    .child("那条是面板自己从国内镜像站下载，不依赖 wsl 的网络。"),
-            )
-            .into_any_element()
-    } else {
-        div().into_any_element()
-    };
+    let fallback: AnyElement =
+        if source.is_online() && matches!(progress.outcome, Some(InstallOutcome::Failed { .. })) {
+            let entity = entity.clone();
+            h_flex()
+                .w_full()
+                .items_center()
+                .gap_3()
+                .child(
+                    Button::new("install-switch-to-mirror")
+                        .label("改用「在线发行版（国内镜像源）」再试")
+                        .small()
+                        .primary()
+                        .on_click(move |_, _, cx| {
+                            entity.update(cx, |shell, cx| shell.switch_to_mirror_source(cx));
+                        }),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child("那条是面板自己从国内镜像站下载，不依赖 wsl 的网络。"),
+                )
+                .into_any_element()
+        } else {
+            div().into_any_element()
+        };
 
     // ⚠️ 滚动容器必须带 `.id(...)`（见 online_block 的注释）。
     //
@@ -2814,9 +2825,12 @@ pub fn wsl_config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
         v_flex()
             .w_full()
             .gap_2()
-            .child(div().text_xs().text_color(theme::text_muted()).child(
-                "这几行 WSL 明确报过「未知键」，会被忽略 —— 配置看着生效、其实没有。",
-            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child("这几行 WSL 明确报过「未知键」，会被忽略 —— 配置看着生效、其实没有。"),
+            )
             .children(rows)
             .into_any_element()
     };
@@ -2842,20 +2856,16 @@ pub fn wsl_config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
             v_flex()
                 .w_full()
                 .gap_2()
-                .child(
-                    div().text_xs().text_color(theme::text_muted()).child(
-                        "实测（WSL 3.0.1.0）：wsl --status / --version / -l -v / --terminate \
+                .child(div().text_xs().text_color(theme::text_muted()).child(
+                    "实测（WSL 3.0.1.0）：wsl --status / --version / -l -v / --terminate \
                          都不报配置告警；只有 wsl --shutdown 之后第一条进发行版的命令会报，\
                          紧接着的第二、三条就静默了。",
-                    ),
-                )
-                .child(
-                    div().text_xs().text_color(theme::text_muted()).child(
-                        "也就是说这些告警来自 WSL2 虚拟机启动时读一次 .wslconfig。\
+                ))
+                .child(div().text_xs().text_color(theme::text_muted()).child(
+                    "也就是说这些告警来自 WSL2 虚拟机启动时读一次 .wslconfig。\
                          想主动触发就得先 wsl --shutdown —— 那会打断所有正在跑的发行版。\
                          为了校验一个配置文件付这个代价不值得，所以这里只做不依赖 WSL 的静态检查。",
-                    ),
-                ),
+                )),
         ))
         .child(h_flex().w_full().justify_end().child(open))
         .into_any_element()
@@ -3130,24 +3140,24 @@ pub fn pull_dialog_overlay(
     };
 
     modal_scrim(
-            v_flex()
-                .w(px(620.))
-                .gap_4()
-                .p_5()
-                .rounded_lg()
-                .bg(theme::bg_card())
-                .border_1()
-                .border_color(theme::border())
-                .child(
-                    div()
-                        .text_lg()
-                        .font_bold()
-                        .text_color(theme::text())
-                        .child("拉取镜像"),
-                )
-                .child(body),
-        )
-        .into_any_element()
+        v_flex()
+            .w(px(620.))
+            .gap_4()
+            .p_5()
+            .rounded_lg()
+            .bg(theme::bg_card())
+            .border_1()
+            .border_color(theme::border())
+            .child(
+                div()
+                    .text_lg()
+                    .font_bold()
+                    .text_color(theme::text())
+                    .child("拉取镜像"),
+            )
+            .child(body),
+    )
+    .into_any_element()
 }
 
 /// 弹窗的**表单**形态（还没开始拉）。
@@ -3436,136 +3446,136 @@ pub fn create_dialog_overlay(
     };
 
     modal_scrim(
-            v_flex()
-                // 字段多，窗口矮时允许滚动，别把底部按钮挤没
-                .id("create-dialog-card")
-                .w(px(780.))
-                .max_h(px(880.))
-                .overflow_y_scroll()
-                .gap_4()
-                .p_5()
-                .rounded_lg()
-                .bg(theme::bg_card())
-                .border_1()
-                .border_color(theme::border())
-                .child(
-                    div()
-                        .text_lg()
-                        .font_bold()
-                        .text_color(theme::text())
-                        .child("创建容器"),
-                )
-                .child(form_field(
-                    "create-image",
-                    "镜像引用（必填，例如 nginx:latest）",
-                    &dialog.image,
-                    cx,
-                    true,
-                ))
-                .child(form_field(
-                    "create-name",
-                    "容器名（留空自动命名）",
-                    &dialog.name,
-                    cx,
-                    true,
-                ))
-                .child(
-                    h_flex()
-                        .w_full()
-                        .gap_3()
-                        .child(form_field(
-                            "create-ports",
-                            "端口映射（逗号或换行分隔，如 8080:80）",
-                            &dialog.ports,
-                            cx,
-                            false,
-                        ))
-                        .child(form_field(
-                            "create-env",
-                            "环境变量 KEY=VALUE（逗号或换行分隔）",
-                            &dialog.env,
-                            cx,
-                            false,
-                        )),
-                )
-                .child(
-                    h_flex()
-                        .w_full()
-                        .gap_3()
-                        .child(form_field(
-                            "create-volumes",
-                            "卷挂载 卷名:/容器内路径",
-                            &dialog.volumes,
-                            cx,
-                            false,
-                        ))
-                        .child(form_field(
-                            "create-network",
-                            "网络（留空用 bridge）",
-                            &dialog.network,
-                            cx,
-                            false,
-                        )),
-                )
-                .child(
-                    h_flex()
-                        .w_full()
-                        .gap_3()
-                        .child(form_field(
-                            "create-memory",
-                            "内存上限（如 512M）",
-                            &dialog.memory,
-                            cx,
-                            false,
-                        ))
-                        .child(form_field(
-                            "create-cpus",
-                            "CPU 数（如 0.5）",
-                            &dialog.cpus,
-                            cx,
-                            false,
-                        )),
-                )
-                .child(pull_policy_row(&dialog.pull, entity))
-                .child(
-                    v_flex()
-                        .w_full()
-                        .gap_1()
-                        .rounded_md()
-                        .bg(theme::bg())
-                        .p_3()
-                        .child(div().text_xs().text_color(theme::text_muted()).child(
-                            "容器以「后台方式」(-d) 启动。前台模式会一直占着子进程，\
+        v_flex()
+            // 字段多，窗口矮时允许滚动，别把底部按钮挤没
+            .id("create-dialog-card")
+            .w(px(780.))
+            .max_h(px(880.))
+            .overflow_y_scroll()
+            .gap_4()
+            .p_5()
+            .rounded_lg()
+            .bg(theme::bg_card())
+            .border_1()
+            .border_color(theme::border())
+            .child(
+                div()
+                    .text_lg()
+                    .font_bold()
+                    .text_color(theme::text())
+                    .child("创建容器"),
+            )
+            .child(form_field(
+                "create-image",
+                "镜像引用（必填，例如 nginx:latest）",
+                &dialog.image,
+                cx,
+                true,
+            ))
+            .child(form_field(
+                "create-name",
+                "容器名（留空自动命名）",
+                &dialog.name,
+                cx,
+                true,
+            ))
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_3()
+                    .child(form_field(
+                        "create-ports",
+                        "端口映射（逗号或换行分隔，如 8080:80）",
+                        &dialog.ports,
+                        cx,
+                        false,
+                    ))
+                    .child(form_field(
+                        "create-env",
+                        "环境变量 KEY=VALUE（逗号或换行分隔）",
+                        &dialog.env,
+                        cx,
+                        false,
+                    )),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_3()
+                    .child(form_field(
+                        "create-volumes",
+                        "卷挂载 卷名:/容器内路径",
+                        &dialog.volumes,
+                        cx,
+                        false,
+                    ))
+                    .child(form_field(
+                        "create-network",
+                        "网络（留空用 bridge）",
+                        &dialog.network,
+                        cx,
+                        false,
+                    )),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_3()
+                    .child(form_field(
+                        "create-memory",
+                        "内存上限（如 512M）",
+                        &dialog.memory,
+                        cx,
+                        false,
+                    ))
+                    .child(form_field(
+                        "create-cpus",
+                        "CPU 数（如 0.5）",
+                        &dialog.cpus,
+                        cx,
+                        false,
+                    )),
+            )
+            .child(pull_policy_row(&dialog.pull, entity))
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap_1()
+                    .rounded_md()
+                    .bg(theme::bg())
+                    .p_3()
+                    .child(div().text_xs().text_color(theme::text_muted()).child(
+                        "容器以「后台方式」(-d) 启动。前台模式会一直占着子进程，\
                                        超时后连容器一起被杀，所以这里不提供。",
-                        ))
-                        .child(div().text_xs().text_color(theme::warning()).child(
-                            "实测本机连不上 Docker Hub：请先在「镜像」页用加速地址\
+                    ))
+                    .child(div().text_xs().text_color(theme::warning()).child(
+                        "实测本机连不上 Docker Hub：请先在「镜像」页用加速地址\
                                        拉好镜像，再把这里的策略选成「只用本地镜像」。",
-                        )),
-                )
-                .child(command_preview(&spec))
-                .child(
-                    h_flex()
-                        .w_full()
-                        .justify_between()
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(if image_missing {
-                                    theme::warning()
-                                } else {
-                                    theme::text_dim()
-                                })
-                                .child(if image_missing {
-                                    "还差一个镜像引用"
-                                } else {
-                                    ""
-                                }),
-                        )
-                        .child(h_flex().gap_2().child(cancel).child(confirm)),
-                ),
-        )
-        .into_any_element()
+                    )),
+            )
+            .child(command_preview(&spec))
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(if image_missing {
+                                theme::warning()
+                            } else {
+                                theme::text_dim()
+                            })
+                            .child(if image_missing {
+                                "还差一个镜像引用"
+                            } else {
+                                ""
+                            }),
+                    )
+                    .child(h_flex().gap_2().child(cancel).child(confirm)),
+            ),
+    )
+    .into_any_element()
 }
 
 /// 容器详情弹窗。
@@ -3689,34 +3699,34 @@ pub fn container_detail_overlay(
     }
 
     modal_scrim(
-            v_flex()
-                .id("detail-card")
-                .w(px(700.))
-                .max_h(px(860.))
-                .overflow_y_scroll()
-                .gap_4()
-                .p_5()
-                .rounded_lg()
-                .bg(theme::bg_card())
-                .border_1()
-                .border_color(theme::border())
-                .child(
-                    div()
-                        .text_lg()
-                        .font_bold()
-                        .text_color(theme::text())
-                        .child(name.to_owned()),
-                )
-                .child(v_flex().w_full().gap_2().children(rows))
-                .child(
-                    h_flex()
-                        .w_full()
-                        .justify_between()
-                        .child(h_flex().gap_2().flex_wrap().children(actions))
-                        .child(close),
-                ),
-        )
-        .into_any_element()
+        v_flex()
+            .id("detail-card")
+            .w(px(700.))
+            .max_h(px(860.))
+            .overflow_y_scroll()
+            .gap_4()
+            .p_5()
+            .rounded_lg()
+            .bg(theme::bg_card())
+            .border_1()
+            .border_color(theme::border())
+            .child(
+                div()
+                    .text_lg()
+                    .font_bold()
+                    .text_color(theme::text())
+                    .child(name.to_owned()),
+            )
+            .child(v_flex().w_full().gap_2().children(rows))
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_between()
+                    .child(h_flex().gap_2().flex_wrap().children(actions))
+                    .child(close),
+            ),
+    )
+    .into_any_element()
 }
 
 /// 发行版详情弹窗。
@@ -3928,55 +3938,56 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
         );
     }
 
-    let mut buttons: Vec<AnyElement> = vec![
-        reveal.into_any_element(),
-        edit_conf.into_any_element(),
-    ];
+    let mut buttons: Vec<AnyElement> =
+        vec![reveal.into_any_element(), edit_conf.into_any_element()];
     buttons.extend(actions);
 
     modal_scrim(
-            v_flex()
-                .id("distro-detail-card")
-                .w(px(760.))
-                .max_h(px(860.))
-                .overflow_y_scroll()
-                .gap_4()
-                .p_5()
-                .rounded_lg()
-                .bg(theme::bg_card())
-                .border_1()
-                .border_color(theme::border())
-                .child(
-                    v_flex()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_lg()
-                                .font_bold()
-                                .text_color(theme::text())
-                                .child(name.to_owned()),
-                        )
-                        .child(div().text_xs().text_color(theme::text_dim()).child(
-                            "低频动作都收在这里；列表行里只留了最常用的几个。",
-                        )),
-                )
-                .child(v_flex().w_full().gap_2().children(rows))
-                .child(
-                    v_flex()
-                        .w_full()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_semibold()
-                                .text_color(theme::text_dim())
-                                .child("操作"),
-                        )
-                        .child(h_flex().w_full().gap_2().flex_wrap().children(buttons)),
-                )
-                .child(h_flex().w_full().justify_end().child(close)),
-        )
-        .into_any_element()
+        v_flex()
+            .id("distro-detail-card")
+            .w(px(760.))
+            .max_h(px(860.))
+            .overflow_y_scroll()
+            .gap_4()
+            .p_5()
+            .rounded_lg()
+            .bg(theme::bg_card())
+            .border_1()
+            .border_color(theme::border())
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_bold()
+                            .text_color(theme::text())
+                            .child(name.to_owned()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_dim())
+                            .child("低频动作都收在这里；列表行里只留了最常用的几个。"),
+                    ),
+            )
+            .child(v_flex().w_full().gap_2().children(rows))
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_semibold()
+                            .text_color(theme::text_dim())
+                            .child("操作"),
+                    )
+                    .child(h_flex().w_full().gap_2().flex_wrap().children(buttons)),
+            )
+            .child(h_flex().w_full().justify_end().child(close)),
+    )
+    .into_any_element()
 }
 
 /// 单输入框提示弹窗（移动位置 / 调整大小 / 设置默认用户）。
@@ -4046,81 +4057,81 @@ pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEle
     });
 
     modal_scrim(
-            v_flex()
-                .w(px(620.))
-                .gap_4()
-                .p_5()
-                .rounded_lg()
-                .bg(theme::bg_card())
-                .border_1()
-                .border_color(theme::border())
-                .child(
-                    v_flex()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_lg()
-                                .font_bold()
-                                .text_color(theme::text())
-                                .child(kind.title()),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme::text_dim())
-                                .child(format!("发行版：{}", prompt.distro)),
-                        ),
-                )
-                .child(
-                    h_flex()
-                        .w_full()
-                        .gap_2()
-                        .items_end()
-                        // `flex_1 + min_w_0`：让输入框吃掉剩余宽度，
-                        // 又在很窄的时候允许它收缩（不写 min_w_0 会顶出去）
-                        .child(div().flex_1().min_w_0().child(form_field(
-                            "prompt-input",
-                            kind.label(),
-                            &prompt.input,
-                            cx,
-                            true,
-                        )))
-                        .children(browse),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_muted())
-                        .child(crate::util::strip_md(kind.note())),
-                )
-                .child(
-                    v_flex()
-                        .w_full()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme::text_dim())
-                                .child("等效命令"),
-                        )
-                        .child(
-                            div()
-                                .font_family("Consolas")
-                                .text_xs()
-                                .text_color(theme::text())
-                                .child(preview),
-                        ),
-                )
-                .child(
-                    h_flex()
-                        .w_full()
-                        .justify_end()
-                        .gap_2()
-                        .child(cancel)
-                        .child(confirm),
-                ),
-        )
-        .into_any_element()
+        v_flex()
+            .w(px(620.))
+            .gap_4()
+            .p_5()
+            .rounded_lg()
+            .bg(theme::bg_card())
+            .border_1()
+            .border_color(theme::border())
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_bold()
+                            .text_color(theme::text())
+                            .child(kind.title()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_dim())
+                            .child(format!("发行版：{}", prompt.distro)),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .items_end()
+                    // `flex_1 + min_w_0`：让输入框吃掉剩余宽度，
+                    // 又在很窄的时候允许它收缩（不写 min_w_0 会顶出去）
+                    .child(div().flex_1().min_w_0().child(form_field(
+                        "prompt-input",
+                        kind.label(),
+                        &prompt.input,
+                        cx,
+                        true,
+                    )))
+                    .children(browse),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child(crate::util::strip_md(kind.note())),
+            )
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_dim())
+                            .child("等效命令"),
+                    )
+                    .child(
+                        div()
+                            .font_family("Consolas")
+                            .text_xs()
+                            .text_color(theme::text())
+                            .child(preview),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_end()
+                    .gap_2()
+                    .child(cancel)
+                    .child(confirm),
+            ),
+    )
+    .into_any_element()
 }
 
 /// 导出进度浮层。
@@ -4158,45 +4169,47 @@ pub fn export_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     };
 
     modal_scrim(
-            v_flex()
-                .w(px(680.))
-                .gap_4()
-                .p_5()
-                .rounded_lg()
-                .bg(theme::bg_card())
-                .border_1()
-                .border_color(theme::border())
-                .child(
-                    div()
-                        .text_lg()
-                        .font_bold()
-                        .text_color(theme::text())
-                        .child(format!("正在导出 {}", progress.name)),
-                )
-                .child(
-                    v_flex()
-                        .w_full()
-                        .gap_2()
-                        .child(kv_block("目标文件", progress.path.clone()).into_any_element())
-                        .child(kv("已写入", written).into_any_element())
-                        .child(kv("已用时", format!("{} 秒", progress.elapsed_secs)).into_any_element()),
-                )
-                .child(div().text_xs().text_color(theme::text_dim()).child(
-                    "wsl 不报告导出百分比，所以「已写入」是目标文件当前的大小 —— \
+        v_flex()
+            .w(px(680.))
+            .gap_4()
+            .p_5()
+            .rounded_lg()
+            .bg(theme::bg_card())
+            .border_1()
+            .border_color(theme::border())
+            .child(
+                div()
+                    .text_lg()
+                    .font_bold()
+                    .text_color(theme::text())
+                    .child(format!("正在导出 {}", progress.name)),
+            )
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap_2()
+                    .child(kv_block("目标文件", progress.path.clone()).into_any_element())
+                    .child(kv("已写入", written).into_any_element())
+                    .child(
+                        kv("已用时", format!("{} 秒", progress.elapsed_secs)).into_any_element(),
+                    ),
+            )
+            .child(div().text_xs().text_color(theme::text_dim()).child(
+                "wsl 不报告导出百分比，所以「已写入」是目标文件当前的大小 —— \
                      它是连续增长的，可以据此估还要多久。",
-                ))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_muted())
-                        .child(format!(
-                            "导出期间请勿关机。取消会留下一个不完整的 tar，需要你自己删。\
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child(format!(
+                        "导出期间请勿关机。取消会留下一个不完整的 tar，需要你自己删。\
                              最后一行输出：{last}"
-                        )),
-                )
-                .child(h_flex().w_full().justify_end().child(cancel)),
-        )
-        .into_any_element()
+                    )),
+            )
+            .child(h_flex().w_full().justify_end().child(cancel)),
+    )
+    .into_any_element()
 }
 
 // ---------------------------------------------------------------------------
@@ -4322,10 +4335,8 @@ fn wslconf_row(
 /// 表单是**表驱动**的：遍历 [`wslconf::SECTIONS`] / [`wslconf::FIELDS`] 画出来，
 /// 所以加字段不用改这里 —— 改 `wslc-core` 的那两张表就够了。
 pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyElement {
-    let (Some(state), Some(dialog)) = (
-        shell.state.wslconf.as_ref(),
-        shell.wslconf_dialog.as_ref(),
-    ) else {
+    let (Some(state), Some(dialog)) = (shell.state.wslconf.as_ref(), shell.wslconf_dialog.as_ref())
+    else {
         return div().into_any_element();
     };
 
@@ -4502,53 +4513,53 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEl
     };
 
     modal_scrim(
-            v_flex()
-                .id("wslconf-card")
-                // 高度上限卡在 620：16 个字段全展开会顶满整屏
-                // （用户反馈"上下太长"）。超了就滚 —— 与其把窗口撑到
-                // 遮住上下文，不如让用户滚动。
-                .w(px(780.))
-                .max_h(px(620.))
-                .overflow_y_scroll()
-                .gap_4()
-                .p_4()
-                .rounded_lg()
-                .bg(theme::bg_card())
-                .border_1()
-                .border_color(theme::border())
-                .child(
-                    v_flex()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_lg()
-                                .font_bold()
-                                .text_color(theme::text())
-                                .child(format!("{} 配置（/etc/wsl.conf）", state.distro)),
-                        )
-                        .child(div().text_xs().text_color(theme::text_dim()).child(format!(
-                            "{}　·　保存前会先备份到 /etc/wsl.conf.bak；\
+        v_flex()
+            .id("wslconf-card")
+            // 高度上限卡在 620：16 个字段全展开会顶满整屏
+            // （用户反馈"上下太长"）。超了就滚 —— 与其把窗口撑到
+            // 遮住上下文，不如让用户滚动。
+            .w(px(780.))
+            .max_h(px(620.))
+            .overflow_y_scroll()
+            .gap_4()
+            .p_4()
+            .rounded_lg()
+            .bg(theme::bg_card())
+            .border_1()
+            .border_color(theme::border())
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_bold()
+                            .text_color(theme::text())
+                            .child(format!("{} 配置（/etc/wsl.conf）", state.distro)),
+                    )
+                    .child(div().text_xs().text_color(theme::text_dim()).child(format!(
+                        "{}　·　保存前会先备份到 /etc/wsl.conf.bak；\
                              注释和本程序不认识的键都会原样保留。",
-                            if state.wsl_version.is_empty() {
-                                "WSL 版本未知".to_owned()
-                            } else {
-                                format!("WSL {}", state.wsl_version)
-                            }
-                        ))),
-                )
-                .child(v_flex().w_full().gap_4().children(sections))
-                .child(v_flex().w_full().gap_1().children(errors))
-                .child(preview)
-                .child(
-                    h_flex()
-                        .w_full()
-                        .gap_2()
-                        .justify_end()
-                        .child(preview_btn)
-                        .child(cancel)
-                        // 保存中这两个按钮会消失、换成"正在保存…"（见 `save_actions`）
-                        .children(save_actions),
-                ),
-        )
-        .into_any_element()
+                        if state.wsl_version.is_empty() {
+                            "WSL 版本未知".to_owned()
+                        } else {
+                            format!("WSL {}", state.wsl_version)
+                        }
+                    ))),
+            )
+            .child(v_flex().w_full().gap_4().children(sections))
+            .child(v_flex().w_full().gap_1().children(errors))
+            .child(preview)
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .justify_end()
+                    .child(preview_btn)
+                    .child(cancel)
+                    // 保存中这两个按钮会消失、换成"正在保存…"（见 `save_actions`）
+                    .children(save_actions),
+            ),
+    )
+    .into_any_element()
 }

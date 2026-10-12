@@ -102,11 +102,7 @@ fn build_sha() -> &'static str {
 /// 提交号前 7 位（短号）。
 fn short_build_sha() -> &'static str {
     let sha = build_sha();
-    if sha.len() >= 7 {
-        &sha[..7]
-    } else {
-        sha
-    }
+    if sha.len() >= 7 { &sha[..7] } else { sha }
 }
 
 fn main() {

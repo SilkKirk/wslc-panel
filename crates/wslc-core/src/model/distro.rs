@@ -98,7 +98,10 @@ impl DistroState {
     /// 过渡态下**不能**对发行版做任何写操作 —— `wsl` 自己会拒绝，
     /// 界面应该把按钮灰掉而不是让用户点出一个错误。
     pub fn is_transitional(self) -> bool {
-        matches!(self, Self::Installing | Self::Uninstalling | Self::Converting)
+        matches!(
+            self,
+            Self::Installing | Self::Uninstalling | Self::Converting
+        )
     }
 }
 
@@ -134,7 +137,12 @@ pub struct Distro {
 
 impl Distro {
     /// 用 `wsl -l -v` 那一行的信息构造；注册表字段留空。
-    pub fn new(name: impl Into<String>, state: DistroState, version: Option<u8>, is_default: bool) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        state: DistroState,
+        version: Option<u8>,
+        is_default: bool,
+    ) -> Self {
         Self {
             name: name.into(),
             state,
@@ -212,7 +220,9 @@ pub fn parse_distro_list(stdout: &str) -> (Vec<Distro>, Vec<String>) {
 
         match parse_distro_row(line) {
             Ok(distro) => distros.push(distro),
-            Err(reason) => warnings.push(format!("第 {} 行没认出来（{reason}）：{line}", index + 1)),
+            Err(reason) => {
+                warnings.push(format!("第 {} 行没认出来（{reason}）：{line}", index + 1))
+            }
         }
     }
 
@@ -289,9 +299,7 @@ impl WslStatus {
         let mut status = Self::default();
 
         for line in stdout.lines() {
-            let Some((_key, value)) = line
-                .split_once(':')
-                .or_else(|| line.split_once('：'))
+            let Some((_key, value)) = line.split_once(':').or_else(|| line.split_once('：'))
             else {
                 continue;
             };
@@ -506,6 +514,9 @@ mod tests {
     fn status_parsing_of_empty_output_is_all_none() {
         assert_eq!(WslStatus::parse(""), WslStatus::default());
         // 只有冒号没有值
-        assert_eq!(WslStatus::parse("默认分发:\n默认版本:\n"), WslStatus::default());
+        assert_eq!(
+            WslStatus::parse("默认分发:\n默认版本:\n"),
+            WslStatus::default()
+        );
     }
 }

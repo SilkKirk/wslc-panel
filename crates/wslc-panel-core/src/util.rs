@@ -129,11 +129,10 @@ mod tests {
 
         // 真机样本：`container_list.jsonl` 里那个 `127.0.0.1:18080->80/tcp`。
         // 刻意不自己编 Ports 字符串 —— 那样测的是"我以为的解析规则"。
-        let items: Vec<ContainerListItem> =
-            wslc_core::jsonl::parse_lines(include_str!(
-                "../../wslc-core/tests/fixtures/container_list.jsonl"
-            ))
-            .expect("夹具应该解析得动");
+        let items: Vec<ContainerListItem> = wslc_core::jsonl::parse_lines(include_str!(
+            "../../wslc-core/tests/fixtures/container_list.jsonl"
+        ))
+        .expect("夹具应该解析得动");
         let real = ContainerSummary {
             item: items.into_iter().next().expect("夹具里有一条"),
             stats: None,

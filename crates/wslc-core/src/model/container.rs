@@ -606,8 +606,7 @@ impl ContainerInspect {
     /// ⚠️ 同 [`ContainerListItem::short_id`]：`get(..n)` 而不是切片，
     /// 避免第 12 个字节踩在多字节字符中间时 panic。
     pub fn short_id(&self) -> Option<&str> {
-        self.id()
-            .map(|s| s.get(..s.len().min(12)).unwrap_or(s))
+        self.id().map(|s| s.get(..s.len().min(12)).unwrap_or(s))
     }
 
     /// 容器名，**已去掉 `inspect` 特有的前导 `/`**。
@@ -890,10 +889,7 @@ mod tests {
         assert_eq!(volumes[0].host_path, r"E:\code");
         assert_eq!(volumes[0].container_path, "/etc/nginx/conf.d/");
         assert!(!volumes[0].read_only);
-        assert_eq!(
-            volumes[0].summary(),
-            r"E:\code → /etc/nginx/conf.d/"
-        );
+        assert_eq!(volumes[0].summary(), r"E:\code → /etc/nginx/conf.d/");
     }
 
     #[test]
@@ -952,10 +948,7 @@ mod tests {
             labels: labels.to_owned(),
             ..Default::default()
         };
-        assert_eq!(
-            item.mounts_summary().unwrap(),
-            r"C:\a → /a; C:\b → /b"
-        );
+        assert_eq!(item.mounts_summary().unwrap(), r"C:\a → /a; C:\b → /b");
     }
 
     #[test]

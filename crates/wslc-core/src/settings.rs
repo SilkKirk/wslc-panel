@@ -403,8 +403,9 @@ impl SettingsDoc {
             // 推不出临时文件路径（极罕见：`path` 没有文件名部分）。
             // 退回直接写 —— 不原子，但总比"保存不了"好。
             None => {
-                fs::write(&self.path, &self.raw)
-                    .map_err(|e| Error::Settings(format!("写入 {} 失败：{e}", self.path.display())))?;
+                fs::write(&self.path, &self.raw).map_err(|e| {
+                    Error::Settings(format!("写入 {} 失败：{e}", self.path.display()))
+                })?;
             }
         }
         self.mark_saved();
@@ -851,7 +852,8 @@ mod tests {
     fn saving_backs_up_and_leaves_no_temp_file_behind() {
         // 真的落一次盘：这条覆盖的是备份、原子写、以及"别在用户目录里
         // 留临时文件"这三件在纯字符串测试里看不到的事。
-        let dir = std::env::temp_dir().join(format!("wslc-panel-settings-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("wslc-panel-settings-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("应能建临时目录");
         let path = dir.join("settings.yaml");

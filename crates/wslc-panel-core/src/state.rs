@@ -20,7 +20,9 @@ use std::time::Duration;
 
 use wslc_core::cmd::install::InstallEvent;
 use wslc_core::mirrors::{self, Offer};
-use wslc_core::model::install::{online_matches, InstallSpec, OnlineDistro, PlanContext, Preflight};
+use wslc_core::model::install::{
+    InstallSpec, OnlineDistro, PlanContext, Preflight, online_matches,
+};
 // 「在线清单来自哪儿」是**数据**（`wsl -l -o` 还是兜底 JSON），
 // 定义在 `wslc-core` 里；这里转出去，界面按它显示那句说明。
 pub use wslc_core::model::install::OnlineListSource;
@@ -197,7 +199,9 @@ impl InstallSourceKind {
         match self {
             Self::Tar => "最可靠：本地 tar 文件，不需要联网。只是把文件系统铺开。",
             Self::Vhdx => "本地 ext4 虚拟磁盘（`.vhdx`）会被**拷贝**一份到安装目录，原始文件不动。",
-            Self::File => "交给 WSL 自己的安装器（`.wsl` 或 rootfs 都行），会做首次启动初始化（建默认用户）。",
+            Self::File => {
+                "交给 WSL 自己的安装器（`.wsl` 或 rootfs 都行），会做首次启动初始化（建默认用户）。"
+            }
             Self::Online => {
                 "走 WSL 官方的在线安装（`wsl --install -d`）：默认从微软商店装，\
                  商店拉不动时可以切到 GitHub（`--web-download`）。\
@@ -737,11 +741,9 @@ impl DistroAction {
                 "将立即终止发行版 {name}。里面**没有保存**的东西会丢失，\
                  正在跑的服务会中断。"
             ),
-            DistroAction::ShutdownAll => {
-                "将关停**所有**发行版和 WSL2 轻量工具虚拟机。\
+            DistroAction::ShutdownAll => "将关停**所有**发行版和 WSL2 轻量工具虚拟机。\
                  所有发行版里没保存的东西都会丢失。"
-                    .to_owned()
-            }
+                .to_owned(),
             DistroAction::Unregister { name, vhdx_bytes } => {
                 let size = match vhdx_bytes {
                     Some(bytes) => format!("（虚拟磁盘约 {}）", format_bytes(*bytes)),
@@ -1336,7 +1338,11 @@ impl MirrorState {
     /// 当前选中的那一条（没显式选过就是第一条）。
     pub fn selected_offer(&self) -> Option<&Offer> {
         if !self.distro_id.trim().is_empty() {
-            if let Some(found) = self.offers.iter().find(|offer| offer.id() == self.distro_id) {
+            if let Some(found) = self
+                .offers
+                .iter()
+                .find(|offer| offer.id() == self.distro_id)
+            {
                 return Some(found);
             }
         }
@@ -1624,9 +1630,8 @@ impl InstallProgress {
                 true
             }
             InstallEvent::Progress { have, total, secs } => {
-                let changed = self.have != *have
-                    || self.total_bytes != *total
-                    || self.step_secs != *secs;
+                let changed =
+                    self.have != *have || self.total_bytes != *total || self.step_secs != *secs;
                 self.have = *have;
                 self.total_bytes = *total;
                 self.step_secs = *secs;
@@ -2245,10 +2250,13 @@ mod tests {
         }
         assert_eq!(progress.log.len(), InstallProgress::MAX_LOG_LINES);
         // 留下的是**最后**那些行（用户要看的是最新的）
-        assert!(progress.log.last().unwrap().contains(&format!(
-            "第 {} 行",
-            InstallProgress::MAX_LOG_LINES + 49
-        )));
+        assert!(
+            progress
+                .log
+                .last()
+                .unwrap()
+                .contains(&format!("第 {} 行", InstallProgress::MAX_LOG_LINES + 49))
+        );
     }
 
     #[test]
@@ -2326,8 +2334,14 @@ mod tests {
             Some("openSUSE tumbleweed")
         );
         // ② 只对上名字（在线 id 不带版本）
-        assert_eq!(state.match_online_id("Ubuntu").as_deref(), Some("Ubuntu 24.04"));
-        assert_eq!(state.match_online_id("Debian").as_deref(), Some("Debian 13"));
+        assert_eq!(
+            state.match_online_id("Ubuntu").as_deref(),
+            Some("Ubuntu 24.04")
+        );
+        assert_eq!(
+            state.match_online_id("Debian").as_deref(),
+            Some("Debian 13")
+        );
         // ③ 名字前缀（两边叫法有出入）
         assert_eq!(
             state.match_online_id("kali-linux").as_deref(),
@@ -2493,7 +2507,11 @@ mod tests {
             bytes: None,
             ..ok.clone()
         };
-        assert!(unknown.summary().contains("大小未知"), "{}", unknown.summary());
+        assert!(
+            unknown.summary().contains("大小未知"),
+            "{}",
+            unknown.summary()
+        );
     }
 
     #[test]
@@ -2559,10 +2577,7 @@ mod tests {
         for g in &deduped {
             assert!(seen.insert(*g), "分组 {g} 在导航里被拆成了多段");
         }
-        assert_eq!(
-            deduped,
-            vec!["概览", "WSL 实例", "容器", "资源", "设置"]
-        );
+        assert_eq!(deduped, vec!["概览", "WSL 实例", "容器", "资源", "设置"]);
     }
 
     #[test]

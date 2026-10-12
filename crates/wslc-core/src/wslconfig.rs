@@ -194,10 +194,7 @@ pub fn sparse_vhd(text: &str) -> bool {
         // 也会被当成节，而这行本来是无效配置 —— 两个解析器对
         // "什么算节头"给出不同答案，是日后最难查的一类不一致。
         if line.starts_with('[') && line.ends_with(']') {
-            let section = line
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .trim();
+            let section = line.trim_start_matches('[').trim_end_matches(']').trim();
             in_experimental = section.eq_ignore_ascii_case("experimental");
             continue;
         }
