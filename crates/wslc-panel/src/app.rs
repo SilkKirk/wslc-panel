@@ -1713,13 +1713,13 @@ impl Shell {
     /// 需要 bash 的话进去再敲（提示条里也这么说）。
     pub fn open_container_shell(&mut self, name: String, cx: &mut Context<Self>) {
         let wslc = self.state.wslc.clone();
-        let toast =
-            match wslc_core::cmd::container::open_interactive_shell(&wslc, &name, "/bin/sh") {
-                Ok(()) => Toast::success(format!(
-                    "已打开 {name} 的终端（/bin/sh —— 镜像里有 bash 的话进去敲 bash 就行）"
-                )),
-                Err(e) => Toast::error(format!("打开终端失败：{e}")),
-            };
+        let toast = match wslc_core::cmd::container::open_interactive_shell(&wslc, &name, "/bin/sh")
+        {
+            Ok(()) => Toast::success(format!(
+                "已打开 {name} 的终端（/bin/sh —— 镜像里有 bash 的话进去敲 bash 就行）"
+            )),
+            Err(e) => Toast::error(format!("打开终端失败：{e}")),
+        };
         self.state.notify(toast);
         cx.notify();
     }
@@ -1755,14 +1755,13 @@ impl Shell {
             .unwrap_or_default();
 
         let wslc = self.state.wslc.clone();
-        let toast = match wslc_core::cmd::container::logs_follow_in_new_console(
-            &wslc, &name, &options,
-        ) {
-            Ok(()) => Toast::info(format!(
-                "已在新窗口里跟随 {name} 的日志（关掉那个窗口就停止）"
-            )),
-            Err(e) => Toast::error(format!("打开跟随窗口失败：{e}")),
-        };
+        let toast =
+            match wslc_core::cmd::container::logs_follow_in_new_console(&wslc, &name, &options) {
+                Ok(()) => Toast::info(format!(
+                    "已在新窗口里跟随 {name} 的日志（关掉那个窗口就停止）"
+                )),
+                Err(e) => Toast::error(format!("打开跟随窗口失败：{e}")),
+            };
         self.state.notify(toast);
         cx.notify();
     }

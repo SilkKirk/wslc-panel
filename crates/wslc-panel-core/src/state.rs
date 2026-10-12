@@ -1249,7 +1249,11 @@ impl LogsState {
     }
 
     /// 收下一轮加载的结果；过期的票据会被丢掉并返回 `false`。
-    pub fn finish_load(&mut self, ticket: u64, result: std::result::Result<String, String>) -> bool {
+    pub fn finish_load(
+        &mut self,
+        ticket: u64,
+        result: std::result::Result<String, String>,
+    ) -> bool {
         if !self.accepts(ticket) {
             return false;
         }

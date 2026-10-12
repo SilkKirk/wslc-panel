@@ -1123,25 +1123,21 @@ pub fn volumes(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                 ),
         );
 
-    v_flex()
-        .w_full()
-        .gap_3()
-        .child(header)
-        .child(
-            v_flex()
-                .w_full()
-                .rounded_lg()
-                .bg(theme::bg_card())
-                .border_1()
-                .border_color(theme::border())
-                .overflow_hidden()
-                .child(table_header(VOLUME_COLUMNS))
-                .child(if rows.is_empty() {
-                    empty_state("没有卷（无卷时 wslc 输出为空）").into_any_element()
-                } else {
-                    v_flex().w_full().children(rows).into_any_element()
-                }),
-        )
+    v_flex().w_full().gap_3().child(header).child(
+        v_flex()
+            .w_full()
+            .rounded_lg()
+            .bg(theme::bg_card())
+            .border_1()
+            .border_color(theme::border())
+            .overflow_hidden()
+            .child(table_header(VOLUME_COLUMNS))
+            .child(if rows.is_empty() {
+                empty_state("没有卷（无卷时 wslc 输出为空）").into_any_element()
+            } else {
+                v_flex().w_full().children(rows).into_any_element()
+            }),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -4371,7 +4367,11 @@ pub fn logs_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     let refresh = {
         let entity = entity.clone();
         Button::new("logs-refresh")
-            .label(if logs.loading { "加载中…" } else { "刷新" })
+            .label(if logs.loading {
+                "加载中…"
+            } else {
+                "刷新"
+            })
             .small()
             .on_click(move |_, _, cx| {
                 entity.update(cx, |shell, cx| shell.reload_logs(cx));
@@ -4445,15 +4445,10 @@ pub fn logs_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                             .text_color(theme::text())
                             .child(format!("日志 —— {}", logs.container)),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::text_dim())
-                            .child(
-                                "这是一份快照，不会自动更新（点「刷新」重新拉）。\
+                    .child(div().text_xs().text_color(theme::text_dim()).child(
+                        "这是一份快照，不会自动更新（点「刷新」重新拉）。\
                                  要实时跟着看就点「在终端里跟随」，它会开一个独立窗口。",
-                            ),
-                    ),
+                    )),
             )
             .child(
                 h_flex()
