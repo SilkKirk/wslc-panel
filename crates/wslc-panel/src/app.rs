@@ -3280,7 +3280,7 @@ impl Render for Shell {
         let export_overlay: AnyElement = views::export_overlay(state, &entity);
 
         // 发行版配置（/etc/wsl.conf）弹窗。要 `cx` 才能读输入框的值。
-        let wslconf_dialog: AnyElement = views::wslconf_overlay(self, &entity, cx);
+        let wslconf_dialog: AnyElement = views::wslconf_overlay(self, &entity);
 
         // 页面渲染要 `&Shell`（不只是 `&AppState`）——「添加实例」页有输入框，
         // 而输入框的 `InputState` 住在 `Shell` 里。
@@ -3431,18 +3431,21 @@ fn nav_item(page: Page, current: Page, entity: &Entity<Shell>) -> AnyElement {
 ///
 /// 用 `&'static str` 而不是格式化出来的 `String`：
 /// GPUI 的交互元素要求 ID 稳定，静态字符串最不容易出错。
+///
+/// ⚠️ 这个 match 只覆盖 `Page::ALL` 里那 8 页 —— `AddInstance` 不是导航项
+/// （它从实例列表页的按钮进），所以这里也不需要它的 id。
 fn nav_id(page: Page) -> &'static str {
     match page {
         Page::Dashboard => "nav-dashboard",
         Page::Instances => "nav-instances",
+        // 侧边栏不列它，但 `Page` 是穷尽的，这一支必须有；
+        // 真走到这儿也只是给一个不会被用到的 id。
         Page::AddInstance => "nav-add-instance",
         Page::Containers => "nav-containers",
         Page::Images => "nav-images",
         Page::Networks => "nav-networks",
         Page::Volumes => "nav-volumes",
         Page::AppSettings => "nav-app-settings",
-        Page::Config => "nav-config",
-        Page::WslConfig => "nav-wsl-config",
         Page::About => "nav-about",
     }
 }

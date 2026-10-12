@@ -375,7 +375,6 @@ pub fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
         Page::Volumes => volumes(state, entity).into_any_element(),
         Page::AppSettings => app_settings(state, entity),
         Page::About => about(state, entity),
-        Page::Config | Page::WslConfig => app_settings(state, entity),
     }
 }
 
@@ -4228,12 +4227,15 @@ fn default_tag(explicit: bool) -> Option<AnyElement> {
 }
 
 /// 表单里的一行。
+///
+/// 不需要 `cx`：`Input::new(input)` / `Checkbox::new(id)` 都只吃 `Entity`，
+/// 不用 `App`。（原先它多收一个 `cx` 却在函数里写着 `let _ = cx;` ——
+/// 那是"我其实不需要它"的标记，一并去掉了。）
 fn wslconf_row(
     state: &WslConfState,
     dialog: &WslConfDialog,
     field: &'static wslconf::Field,
     entity: &Entity<Shell>,
-    cx: &App,
 ) -> AnyElement {
     let explicit = state.doc.is_explicit(field.section, field.key);
 
@@ -4324,7 +4326,6 @@ fn wslconf_row(
                         .child(field.hint),
                 );
             }
-            let _ = cx;
             row.into_any_element()
         }
     }
@@ -4334,7 +4335,7 @@ fn wslconf_row(
 ///
 /// 表单是**表驱动**的：遍历 [`wslconf::SECTIONS`] / [`wslconf::FIELDS`] 画出来，
 /// 所以加字段不用改这里 —— 改 `wslc-core` 的那两张表就够了。
-pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyElement {
+pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     let (Some(state), Some(dialog)) = (shell.state.wslconf.as_ref(), shell.wslconf_dialog.as_ref())
     else {
         return div().into_any_element();
@@ -4382,7 +4383,7 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEl
                     .map(|f| {
                         div()
                             .w(px(350.))
-                            .child(wslconf_row(state, dialog, f, entity, cx))
+                            .child(wslconf_row(state, dialog, f, entity))
                             .into_any_element()
                     })
                     .collect();
@@ -4405,7 +4406,7 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEl
                 .children(
                     other_fields
                         .iter()
-                        .map(|f| wslconf_row(state, dialog, f, entity, cx))
+                        .map(|f| wslconf_row(state, dialog, f, entity))
                         .collect::<Vec<_>>(),
                 )
                 .into_any_element(),

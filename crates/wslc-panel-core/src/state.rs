@@ -60,17 +60,15 @@ pub enum Page {
     Volumes,
     /// 应用自己的设置（刷新间隔、主题……）。
     ///
-    /// 和 [`Page::Config`] 的区别：这里存的是**本程序的偏好**
-    /// （`%LOCALAPPDATA%\wslc-panel\prefs.json`），
-    /// 而 `Config` 管的是 `wslc` 自己的 `settings.yaml`。
-    AppSettings,
-    /// wlsc 配置。
-    Config,
-    /// WSL 自己的全局配置（`%USERPROFILE%\.wslconfig`）。
+    /// 这里存的是**本程序的偏好**（`%LOCALAPPDATA%\wslc-panel\prefs.json`）。
+    /// `wslc` 自己的 `settings.yaml` 和 WSL 自己的 `.wslconfig` 是这一页里的
+    /// 两个 **tab**（见 [`SettingsTab`]），不是并列的页面。
     ///
-    /// 和 [`Page::Config`] 的区别：那个是 **wslc** 的 `settings.yaml`，
-    /// 这个是 **WSL 本身**的配置；两者互不相干，连文件位置都不同。
-    WslConfig,
+    /// ⚠️ 它们曾经是 `Page::Config` / `Page::WslConfig` 两个变体。v0.4 把它们
+    /// 收进这一页的 tab 之后就没**人**能导航到它们了（`ALL` 里没有、界面上
+    /// 也不构造），却一直留在枚举里：`nav_id` 与页面分发里各留了两个永远走不到
+    /// 的分支。已删。
+    AppSettings,
     /// 关于：应用介绍、版本、构建、地址。
     ///
     /// 和「应用设置」分开：那一页是**可改**的偏好，这一页只是**看**。
@@ -82,15 +80,15 @@ impl Page {
     ///
     /// ⚠️ 同组的页面必须**连续** —— 侧边栏靠"组名变了就插一条标题"
     /// 来分组（见 `app.rs` 的 `render`）。
-    /// ⚠️ 有三页**故意不在这里**：
+    /// ⚠️ 有一页**故意不在这里**：
     ///
-    /// - `Config` / `WslConfig` —— 已经变成「应用设置」页里的两个 tab
-    ///   （见 [`SettingsTab`]），留在 `ALL` 里会让侧边栏多出两个重复入口；
     /// - `AddInstance` —— 只能从**实例列表页上那个「添加实例」按钮**进。
     ///   侧边栏同时列「实例列表」和「添加实例」是冗余的：后者本来就是
     ///   前者的一个动作，不是并列的一站。
     ///
     /// 所以 `ALL` 是"侧边栏列哪些页"，**不等于**"有哪些页"。
+    /// （`wlsc 配置` / `WSL 配置` 曾经也在"不在这里"之列，但它们现在是
+    /// [`SettingsTab`] 的两个 tab、不再是页面了。）
     pub const ALL: [Page; 8] = [
         Page::Dashboard,
         Page::Instances,
@@ -113,8 +111,6 @@ impl Page {
             Page::Networks => "网络",
             Page::Volumes => "卷",
             Page::AppSettings => "应用设置",
-            Page::Config => "wlsc 配置",
-            Page::WslConfig => "WSL 配置",
             Page::About => "关于",
         }
     }
@@ -126,7 +122,7 @@ impl Page {
             Page::Instances | Page::AddInstance => "WSL 实例",
             Page::Containers => "容器",
             Page::Images | Page::Networks | Page::Volumes => "资源",
-            Page::AppSettings | Page::Config | Page::WslConfig | Page::About => "设置",
+            Page::AppSettings | Page::About => "设置",
         }
     }
 
