@@ -274,11 +274,22 @@ WSL 实例  实例列表        ← v0.3 新增（对应参考项目首页）
 | 克隆 | 导出 + 导入 | 否 | 长任务 |
 | 移动位置 | `wsl --manage <name> --move <dir>` | 有风险 | |
 | 压缩 VHD | `wsl --manage <name> --compact` | 否 | 长任务，回收空间 |
-| 稀疏 VHD | `wsl --manage <name> --set-sparse true\|false` | 否 | |
+| 稀疏 VHD | `wsl --manage <name> --set-sparse true\|false` | 否 | 见下面那条注记 |
 | 调整磁盘大小 | `wsl --manage <name> --resize <size>` | 有风险 | |
 | 打开终端 | `wsl -d <name>` | 否 | 需 `CREATE_NEW_CONSOLE`（已有） |
 | 在资源管理器打开 | `explorer.exe <BasePath>` | 否 | 已有同类实现（`reveal_storage`） |
 | 编辑 `wsl.conf` | `wsl -d <name> -u root -e cat /etc/wsl.conf` | **会启动发行版** | 见 §3.8 |
+
+> ⚠️ 关于「稀疏 VHD」那一行，后来的实测改了两件事（细节见
+> [`PLAN-v0.5.md`](./PLAN-v0.5.md) 的 v0.5.2 补记）：
+>
+> 1. **开的方向必须带 `--allow-unsafe`**：WSL 3.0.1.0 起默认拒绝开稀疏盘，
+>    报错里自己给出的命令就带这个开关。所以是
+>    `wsl --manage <name> --set-sparse true --allow-unsafe`（关的方向不带）。
+> 2. **界面上那个手动开关后来去掉了**（见 `views.rs` 里 `DistroAction::SetSparse`
+>    旁边的注释）：新建发行版时会照 `.wslconfig` 的 `[experimental] sparseVhd`
+>    自动补这一步，没必要让用户为它单独做一个按钮。`DistroAction::SetSparse`
+>    与 `cmd::distro::set_sparse` 因此**在界面上不可达**。
 
 > 参考项目 README 自述这一块是
 > 「One-click **Start, Stop, Terminate, and Unregister**. Real-time status monitoring

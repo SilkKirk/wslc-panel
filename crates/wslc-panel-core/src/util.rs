@@ -51,8 +51,12 @@ pub fn strip_md(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    // 这个 crate 里没有 `gpui_kit`，所以不存在 views.rs / app.rs 里那个
-    // "`use super::*` 会把 gpui 的 `test` 属性宏继承进来"的坑。
+    // 这个 crate 里没有 `gpui_kit` —— 所以也不存在"`use super::*` 会把 gpui
+    // 再导出的 `test` 属性宏继承进来、遮蔽内建 `#[test]`"那个坑。
+    //
+    // 这正是纯逻辑测试应该住在这里的原因：CI 的测试任务会把
+    // `wslc-panel` **排除**掉（`cargo test --workspace --exclude wslc-panel`），
+    // 写在那个 crate 里的断言根本不会被执行。
     use super::{refresh_label, split_list, strip_md};
 
     #[test]

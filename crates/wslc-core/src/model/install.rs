@@ -293,9 +293,12 @@ impl OnlineDistro {
 ///
 /// - **失败输出必须被安静地吃成空列表**（配 `strip_config_warnings` 一起用），
 ///   而不是抛一个解析错误 —— 上层会用另一个来源兜底（见 `cmd::distro::list_online`）；
-/// - ⚠️ 下面测试里那条"成功形状"的样本**不是本机抓的**（本机抓不到），
-///   它来自微软文档与 `wsl --help` 的说明，属于**未在本机验证的假设**。
-///   真机上第一次成功拉到列表时，应当把输出存成 fixture 替换掉它。
+/// - ⚠️ 下面测试里那条"成功形状"的样本**原本不是本机抓的**（一开始本机抓不到，
+///   只有上面那份失败输出）。**后来补上了**：2026-10-10 开着 dev-sidecar
+///   系统代理时抓到了真实成功输出，存成了
+///   `tests/fixtures/wsl_list_online.txt`，`online_list_parses_the_two_column_table`
+///   用的就是它。所以那一条现在是**实测过的**，不再是假设 ——
+///   详情见那个测试自己的注释。
 pub fn parse_online_list(text: &str) -> Vec<OnlineDistro> {
     let mut out = Vec::new();
     let mut header_seen = false;

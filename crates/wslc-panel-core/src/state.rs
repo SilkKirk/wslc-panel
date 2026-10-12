@@ -1650,7 +1650,11 @@ pub struct WslConfState {
     ///
     /// 界面用它做版本门控（`[boot]` / `[gpu]` / `[time]` 要不要显示）。
     pub wsl_version: String,
-    /// 正在读或者正在写。
+    /// 正在**保存**（写 `/etc/wsl.conf`）。
+    ///
+    /// ⚠️ 只有保存时会置位 —— 打开弹窗时读文件那一趟**没有**置位
+    /// （原先这里的注释写着"正在读或者正在写"，与实现不符）。
+    /// 界面据此把两个保存按钮换成一行「正在保存…」，见 `views::wslconf_overlay`。
     pub busy: bool,
     /// 保存前的校验错误；非空时挡下保存。
     pub errors: Vec<String>,

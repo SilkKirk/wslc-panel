@@ -1997,6 +1997,9 @@ impl Shell {
             target.label,
             target.extensions,
             target.title,
+            // 移动位置 / 导出只填输入框，选完不需要额外做什么
+            //（安装目录那一份才要清 `last_derived_dir`）。
+            AfterPick::Nothing,
             window,
             cx,
         );

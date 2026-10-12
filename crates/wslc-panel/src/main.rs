@@ -27,7 +27,13 @@
 // 如果遇到 `error: recursion limit reached while expanding #[test]`，
 // 不要靠调大这个上限去解决 —— 真正的原因是 `use super::*;` 把 gpui 再导出的
 // `test` 属性宏继承进了测试模块，遮蔽了 Rust 内建的 `#[test]`。
-// 完整说明见 views.rs 的测试模块。
+//
+// ⚠️ 但这个 crate 里**现在没有**测试模块，而且不该有：纯逻辑测试请写到
+// `wslc-panel-core` 去。原因是 CI 的测试任务是
+// `cargo test --workspace --exclude wslc-panel`（理由见 `ci.yml`）——
+// **写在 `wslc-panel` 里的单测根本不会被执行**。加在这里的断言跑不起来，
+// 只会让 `--all-targets` 多编译一遍，而失败永远不会让 CI 变红。
+// 上面那个 `#[test]` 宏被遮蔽的坑因此也不会在这里遇到。
 
 mod app;
 mod theme;
