@@ -3662,8 +3662,13 @@ pub fn create_dialog_overlay(
 
 /// 容器详情弹窗。
 ///
-/// 照 1Panel：列表里不放操作按钮，**点名字开这里** ——
-/// 挂载、端口这些占地方的信息在这儿看全，操作按钮也集中在这儿。
+/// 挂载、端口这些占地方的信息在这儿看全；动作只放**列表行里没有**的那几个
+/// （强杀 / 执行命令 / 打开终端 / attach 主进程），高频动作留在列表行。
+///
+/// ⚠️ 这里原先写着"列表里不放操作按钮，操作按钮集中在这儿" —— 那是照 1Panel
+/// 写的，但本项目的列表行一直有操作按钮（启动 / 重启 / 停止 / 日志 / 删除），
+/// 于是详情里又摆了一份一模一样的，实机上看起来就是"同一排按钮出现两次"。
+/// 现在按"不重复"来分：列表放高频的，详情放低频或危险的。
 ///
 /// 挂载用 `kv_block`（换行不截断）：`E:\code → /etc/nginx/conf.d/`
 /// 这种长路径用 `kv` 会被截成 `E:\...\con...`，等于没显示。
@@ -3685,26 +3690,25 @@ pub fn container_detail_overlay(
     let item = &summary.item;
     let running = item.is_running();
 
+    // -- 动作 --------------------------------------------------------------
+    //
+    // ⚠️ **列表行里已经有的动作，这里一个都不重复。**
+    //
+    // 容器列表那一行给的是高频动作：启动 / 重启 / 停止 / 日志 / 删除。
+    // 详情里再摆一遍没有意义 —— 同一个动作两个入口，用户还得判断该点哪个，
+    // 而两个入口背后是同一个 `ImmediateAction` / `PendingAction`，行为完全一样。
+    // （这一点是**实机看出来的**：发布版里停止的容器在列表行和详情里各有一份
+    // 一模一样的「启动 / 日志 / 删除」。）
+    //
+    // 详情留给**列表里没有、而且低频或危险**的那几个：强杀（列表里只有优雅停止）、
+    // 执行命令、打开终端、attach 主进程。
+    //
+    // 所以**停止的容器在详情里一个动作都没有** —— 那是对的，它能做的三件事
+    // 列表行里全有。下面给一句话说明，免得看起来像按钮坏了。
+    //
+    // 发行版详情是同一条规矩（那边不重复 打开终端 / 启动 / 终止 / 设为默认）。
     let mut actions: Vec<AnyElement> = Vec::new();
     if running {
-        actions.push(
-            immediate_button(
-                "detail-restart",
-                "重启",
-                ImmediateAction::RestartContainer(name.to_owned()),
-                entity,
-            )
-            .into_any_element(),
-        );
-        actions.push(
-            danger_button(
-                "detail-stop",
-                "停止",
-                PendingAction::StopContainer(name.to_owned()),
-                entity,
-            )
-            .into_any_element(),
-        );
         actions.push(
             danger_button(
                 "detail-kill",
@@ -3714,33 +3718,6 @@ pub fn container_detail_overlay(
             )
             .into_any_element(),
         );
-    } else {
-        actions.push(
-            immediate_button(
-                "detail-start",
-                "启动",
-                ImmediateAction::StartContainer(name.to_owned()),
-                entity,
-            )
-            .into_any_element(),
-        );
-    }
-
-    // -- 日志与"进容器" --------------------------------------------------
-    //
-    // 「日志」对停止的容器也成立（读的是它留下的日志）。
-    // 另外三个都要求容器**在跑**：`wslc exec` 对已停止的容器会直接报错，
-    // 与其让用户点了看报错，不如不给按钮。
-    actions.push(overlay_button(
-        "detail-logs",
-        "日志",
-        {
-            let target = name.to_owned();
-            move |shell, _, cx| shell.open_logs(target.clone(), cx)
-        },
-        entity,
-    ));
-    if running {
         actions.push(overlay_button(
             "detail-exec",
             "执行命令",
@@ -3772,15 +3749,13 @@ pub fn container_detail_overlay(
         );
     }
 
-    actions.push(
-        danger_button(
-            "detail-remove",
-            "删除",
-            PendingAction::RemoveContainer(name.to_owned()),
-            entity,
-        )
-        .into_any_element(),
-    );
+    // 一行说明：其余动作为什么不在这儿。
+    // 没有它，用户会以为详情里少了按钮（或者按钮没画出来）。
+    let hint = if running {
+        "停止 / 重启 / 日志 / 删除 在列表那一行里"
+    } else {
+        "这个容器已经停止 —— 启动 / 日志 / 删除 都在列表那一行里"
+    };
 
     let close = {
         let entity = entity.clone();
@@ -3848,11 +3823,21 @@ pub fn container_detail_overlay(
             )
             .child(v_flex().w_full().gap_2().children(rows))
             .child(
-                h_flex()
+                v_flex()
                     .w_full()
-                    .justify_between()
-                    .child(h_flex().gap_2().flex_wrap().children(actions))
-                    .child(close),
+                    .gap_2()
+                    // 先说明"其余动作在列表里"，再是这一页独有的那几个。
+                    // 顺序反过来的话，停止的容器那一条会只剩右下角一个「关闭」，
+                    // 看起来像界面坏了。
+                    .child(div().text_xs().text_color(theme::text_dim()).child(hint))
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .justify_between()
+                            .items_center()
+                            .child(h_flex().gap_2().flex_wrap().children(actions))
+                            .child(close),
+                    ),
             ),
     )
     .into_any_element()
@@ -3860,8 +3845,10 @@ pub fn container_detail_overlay(
 
 /// 发行版详情弹窗。
 ///
-/// 低频但重要的动作都在这儿：设为默认 / 改版本 / 压缩 / 打开安装位置。
-/// 列表行里只留高频的 —— 和容器页同一套取舍。
+/// **低频或危险**的动作在这儿：压缩 / 移动 / 调整大小 / 导出 / 删除，
+/// 外加只读的「打开安装位置」「编辑配置」。高频动作（打开终端 / 启动 /
+/// 终止 / 设为默认）只在列表行里 —— 同一件事给两个入口，用户还得判断点哪个。
+/// 和容器详情同一套取舍。
 ///
 /// 「安装位置」「虚拟磁盘」用 `kv_block`（换行不截断）：
 /// `D:\linux\Ubuntu-26.04` 这种路径在列表里被截成 `D:\linux\Ubu...`，
@@ -3884,26 +3871,17 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
 
     // -- 动作 --------------------------------------------------------------
 
-    // 列表行里已经有的动作（打开终端 / 启动 / 终止）这里**不再重复** ——
-    // 详情是留给"低频、危险、需要看清代价"的操作的。
+    // ⚠️ **列表行里已经有的动作，这里一个都不重复。**
+    //
+    // 发行版列表那一行给的是：打开终端 / 启动 / 终止 / 设为默认。
+    // 详情留给"低频、危险、需要看清代价"的操作：压缩 / 移动 / 调整大小 /
+    // 导出 / 删除，外加只读的「打开安装位置」和「编辑配置」。
+    //
+    // 「设为默认」原先**两边都有** —— 而这一行注释当时只列了
+    // 「打开终端 / 启动 / 终止」，把它漏了。实机看出来之后删掉：
+    // 它的条件（`!is_default && !transitional`）和列表行那一份完全一样，
+    // 删掉不丢任何能力。
     let mut actions: Vec<AnyElement> = Vec::new();
-
-    // 过渡态下也必须挡住：`wsl --set-default` 是**写**命令，而
-    // `DistroState::is_transitional` 的文档（见 wslc-core 的 `model/distro.rs`）
-    // 明确写着"过渡态下不能对发行版做任何写操作，`wsl` 自己会拒绝"。
-    // 同一个 `actions` 里的压缩 / 移动 / 调整大小 / 导出 / 删除都带了这个守卫，
-    // 只有「设为默认」曾经漏掉 —— 于是安装中的发行版会得到一个"点了必错"的按钮。
-    if !is_default && !transitional {
-        actions.push(
-            immediate_button(
-                "distro-detail-default",
-                "设为默认",
-                ImmediateAction::SetDefaultDistro(name.to_owned()),
-                entity,
-            )
-            .into_any_element(),
-        );
-    }
 
     // `--compact` 要求发行版处于**已停止**状态；运行中给出这个按钮是误导。
     // WSL 1 根本没有 VHDX，压缩无从谈起。
