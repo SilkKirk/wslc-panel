@@ -3829,12 +3829,7 @@ pub fn container_detail_overlay(
                     // 先说明"其余动作在列表里"，再是这一页独有的那几个。
                     // 顺序反过来的话，停止的容器那一条会只剩右下角一个「关闭」，
                     // 看起来像界面坏了。
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::text_dim())
-                            .child(hint),
-                    )
+                    .child(div().text_xs().text_color(theme::text_dim()).child(hint))
                     .child(
                         h_flex()
                             .w_full()
