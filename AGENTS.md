@@ -141,6 +141,25 @@ Invoke-RestMethod -Headers $H -Uri "$api/commits/<sha>/check-runs"
 就会把"取消"读成"绿了"。收工条件应该是
 `status == 'completed'` **且** `conclusion in ('success','neutral','skipped')`。
 
+⚠️ **还有一个不是你的错的红叉，别去查代码。**
+`.github/workflows/fmt.yml` 用 `GITHUB_TOKEN` 推的那条 `style: cargo fmt`
+提交，会留下一条 **`pull_request` 事件、零 job、`conclusion=failure`** 的运行
+（它的 check suite 里一个 check run 都没有）。看上去像"格式提交把 CI 弄挂了"，
+其实只是"事件创建了、但 GitHub 不为 bot 的推送执行 job"。
+
+已复现两次：`fix/review-followups` 的 `e2b44aa` → run `38206351029`、
+`feat/container-logs-exec` 的 `8e83dcc` → run `38214971652`，两次都是 0 job。
+
+判据（两条都满足就无视它，或者对那次运行点 "Delete run"）：
+
+```powershell
+(Invoke-RestMethod -Headers $H -Uri "$api/actions/runs/<run-id>/jobs").jobs.Count   # 0
+(Invoke-RestMethod -Headers $H -Uri "$api/check-suites/<suite-id>/check-runs").total_count  # 0
+```
+
+**别把它当成"格式提交需要再验一次"** —— 同一个提交重跑（close + reopen PR，
+或者手动 `workflow_dispatch`）就是绿的。
+
 ---
 
 ## 4. 发布流程
