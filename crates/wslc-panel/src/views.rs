@@ -64,6 +64,36 @@ fn card(title: &'static str, body: impl IntoElement) -> impl IntoElement {
         .child(body)
 }
 
+/// 模态浮层的**外壳**：满屏遮罩 + 居中的卡片槽。
+///
+/// # 为什么只抽"外壳"这一层
+///
+/// 里面那张卡片的宽度 / 内边距 / 标题 / 是否带 `id` / 要不要 `max_h` ——
+/// 8 个弹窗各不相同，把它们都做成参数只会让每个调用点更长
+/// （同一个判断见本文件里那四个按钮包装的注释）。
+///
+/// # 但这一层必须抽
+///
+/// 遮罩的**行为**（`.occlude()`）以前在 8 处各写一份，于是漏了 ——
+/// 结果 8 个弹窗开着的时候都能点到背后的页面（实测：打开「创建容器」
+/// 还能点它背后那一列的按钮）。行为只有一份，才不会下次又漏一处。
+///
+/// 没有遮罩相关的参数是**故意**的：要改遮罩就改这里，别再加开关。
+pub fn modal_scrim(card: impl IntoElement) -> AnyElement {
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme::scrim())
+        // 见 `theme::scrim()`：不带 `occlude()` 的遮罩吃不到点击，
+        // 点下去会穿到背后的页面上。
+        .occlude()
+        .child(card)
+        .into_any_element()
+}
+
 /// 键值对行。
 fn kv(label: &'static str, value: impl Into<SharedString>) -> impl IntoElement {
     h_flex()
@@ -3099,17 +3129,7 @@ pub fn pull_dialog_overlay(
         None => pull_form_body(input, entity),
     };
 
-    div()
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(theme::scrim())
-        // 见 `theme::scrim()`：不带 `occlude()` 的遮罩吃不到点击，
-        // 点下去会穿到背后的页面上。
-        .occlude()
-        .child(
+    modal_scrim(
             v_flex()
                 .w(px(620.))
                 .gap_4()
@@ -3415,17 +3435,7 @@ pub fn create_dialog_overlay(
             })
     };
 
-    div()
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(theme::scrim())
-        // 见 `theme::scrim()`：不带 `occlude()` 的遮罩吃不到点击，
-        // 点下去会穿到背后的页面上。
-        .occlude()
-        .child(
+    modal_scrim(
             v_flex()
                 // 字段多，窗口矮时允许滚动，别把底部按钮挤没
                 .id("create-dialog-card")
@@ -3678,17 +3688,7 @@ pub fn container_detail_overlay(
         rows.push(kv("PID", stats.pids.to_string()).into_any_element());
     }
 
-    div()
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(theme::scrim())
-        // 见 `theme::scrim()`：不带 `occlude()` 的遮罩吃不到点击，
-        // 点下去会穿到背后的页面上。
-        .occlude()
-        .child(
+    modal_scrim(
             v_flex()
                 .id("detail-card")
                 .w(px(700.))
@@ -3934,17 +3934,7 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
     ];
     buttons.extend(actions);
 
-    div()
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(theme::scrim())
-        // 见 `theme::scrim()`：不带 `occlude()` 的遮罩吃不到点击，
-        // 点下去会穿到背后的页面上。
-        .occlude()
-        .child(
+    modal_scrim(
             v_flex()
                 .id("distro-detail-card")
                 .w(px(760.))
@@ -4055,17 +4045,7 @@ pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEle
             .into_any_element()
     });
 
-    div()
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(theme::scrim())
-        // 见 `theme::scrim()`：不带 `occlude()` 的遮罩吃不到点击，
-        // 点下去会穿到背后的页面上。
-        .occlude()
-        .child(
+    modal_scrim(
             v_flex()
                 .w(px(620.))
                 .gap_4()
@@ -4177,17 +4157,7 @@ pub fn export_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
             })
     };
 
-    div()
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(theme::scrim())
-        // 见 `theme::scrim()`：不带 `occlude()` 的遮罩吃不到点击，
-        // 点下去会穿到背后的页面上。
-        .occlude()
-        .child(
+    modal_scrim(
             v_flex()
                 .w(px(680.))
                 .gap_4()
@@ -4531,17 +4501,7 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEl
         vec![save.into_any_element(), save_restart.into_any_element()]
     };
 
-    div()
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(theme::scrim())
-        // 见 `theme::scrim()`：不带 `occlude()` 的遮罩吃不到点击，
-        // 点下去会穿到背后的页面上。
-        .occlude()
-        .child(
+    modal_scrim(
             v_flex()
                 .id("wslconf-card")
                 // 高度上限卡在 620：16 个字段全展开会顶满整屏

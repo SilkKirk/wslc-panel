@@ -5,7 +5,11 @@ members = ["crates/wslc-core", "crates/wslc-panel", "crates/wslc-panel-core"]
 [workspace.package]
 version = "0.5.10"
 license = "Apache-2.0"
-repository = ""
+# 原先这里是空串。`publish = false` 所以不影响发布，但它是"关于"页与各种
+# 工具读元数据的地方 —— 空着只会让人以为这个仓库没有来源。
+# 改这个字段**不会**影响 `Cargo.lock`（锁文件不记录 repository），
+# 所以 CI 的 `--locked` 不会因此报错。
+repository = "https://github.com/SilkKirk/wslc-panel"
 publish = false
 
 [workspace.dependencies]

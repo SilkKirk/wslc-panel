@@ -3488,17 +3488,7 @@ fn confirm_overlay(action: &ConfirmAction, entity: &Entity<Shell>) -> AnyElement
             })
     };
 
-    div()
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(theme::scrim())
-        // 见 `theme::scrim()`：不带 `occlude()` 的遮罩吃不到点击，
-        // 点下去会穿到背后的页面上。
-        .occlude()
-        .child(
+    views::modal_scrim(
             v_flex()
                 .w(px(460.))
                 .gap_4()
