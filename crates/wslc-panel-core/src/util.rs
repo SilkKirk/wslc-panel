@@ -27,11 +27,33 @@ pub fn refresh_label(busy: bool, user_initiated: bool) -> &'static str {
     }
 }
 
+/// 去掉文案里的 `**粗体**` 与 `` `代码` `` 标记。
+///
+/// # 为什么需要它
+///
+/// 这些文案最终都是**纯文本**渲染的（`div().child(String)`，GPUI 不解析
+/// Markdown），标记会原样露给用户。本机实测过：删除发行版的确认框里显示的
+/// 就是「将注销发行版 X 并\*\*删除它的根文件系统\*\*」——**恰好出现在最需要
+/// 一眼看懂的那一屏**。
+///
+/// 这个仓库的注释与文案风格就是 Markdown，作者会一直这么写；与其在每条文案里
+/// 手工删标记（下一个新文案还会漏），不如在**渲染处**统一清掉。于是它是个
+/// "守卫"而不是一次性的修补。
+///
+/// 只认这两个标记 —— 它们是实际用到的全部语法。刻意**不做**通用 Markdown
+/// 解析：那要么引依赖（本仓库不能加，见 `AGENTS.md` §1／§3 的 `--locked`），
+/// 要么写一个半成品。
+///
+/// 单个 `*` 不受影响（命令行里的通配符之类要原样显示）。
+pub fn strip_md(text: &str) -> String {
+    text.replace("**", "").replace('`', "")
+}
+
 #[cfg(test)]
 mod tests {
     // 这个 crate 里没有 `gpui_kit`，所以不存在 views.rs / app.rs 里那个
     // "`use super::*` 会把 gpui 的 `test` 属性宏继承进来"的坑。
-    use super::{refresh_label, split_list};
+    use super::{refresh_label, split_list, strip_md};
 
     #[test]
     fn split_list_handles_commas_and_newlines() {
@@ -67,5 +89,35 @@ mod tests {
         // 空闲时当然是「刷新」。
         assert_eq!(refresh_label(false, false), "刷新");
         assert_eq!(refresh_label(false, true), "刷新");
+    }
+
+    #[test]
+    fn strip_md_removes_bold_and_code_markers() {
+        // 这两条是**本机实测撞到**的原话（确认框正文 / 来源说明）
+        assert_eq!(
+            strip_md("将删除所有**已停止**的容器及其可写层。"),
+            "将删除所有已停止的容器及其可写层。"
+        );
+        assert_eq!(
+            strip_md("本地 ext4 虚拟磁盘（`.vhdx`）会被**拷贝**一份到安装目录。"),
+            "本地 ext4 虚拟磁盘（.vhdx）会被拷贝一份到安装目录。"
+        );
+        // 多个标记混在一起
+        assert_eq!(strip_md("**a** 和 `b` 和 **c**"), "a 和 b 和 c");
+        assert_eq!(strip_md(""), "");
+        // 没有标记的原样返回
+        assert_eq!(strip_md("普通文案"), "普通文案");
+    }
+
+    #[test]
+    fn strip_md_leaves_single_markers_alone() {
+        // ⚠️ 只删**成对**的粗体标记，单个 `*` 必须原样留着 ——
+        // 命令行里的通配符、`--tail *` 这类东西被吃掉就成了另一条命令。
+        assert_eq!(strip_md("wslc ps *"), "wslc ps *");
+        assert_eq!(strip_md("*"), "*");
+        assert_eq!(strip_md("2 * 3"), "2 * 3");
+        // 三个星号里那一对会被删掉（`**` 优先匹配），剩下的单个留着 ——
+        // 这是明确取舍：文案里不会出现三个连续星号。
+        assert_eq!(strip_md("***"), "*");
     }
 }

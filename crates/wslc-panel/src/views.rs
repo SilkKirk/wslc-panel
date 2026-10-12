@@ -1176,10 +1176,10 @@ fn distro_summary_card(state: &AppState, distros: &[Distro]) -> AnyElement {
         .unwrap_or_else(|| "（未设置）".to_owned());
 
     let disk_note = if known == distros.len() {
-        "磁盘合计是 VHDX 的**虚拟大小**，不是磁盘实际占用。".to_owned()
+        "磁盘合计是 VHDX 的虚拟大小，不是磁盘实际占用。".to_owned()
     } else {
         format!(
-            "磁盘合计是 VHDX 的**虚拟大小**；{} / {} 个实例没读到大小\
+            "磁盘合计是 VHDX 的虚拟大小；{} / {} 个实例没读到大小\
              （注册表读不到，或磁盘文件不在）。",
             distros.len() - known,
             distros.len()
@@ -1762,7 +1762,7 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
                     div()
                         .text_xs()
                         .text_color(theme::text_dim())
-                        .child(source.hint()),
+                        .child(crate::util::strip_md(source.hint())),
                 ),
         ))
         .child(card(
@@ -1908,7 +1908,7 @@ fn online_block(
                     .text_xs()
                     .text_color(theme::warning())
                     .child(
-                        "注意：这份清单是面板自己从 CDN 拉的，说明 **wsl 自己**拉不到它要的那份 \
+                        "注意：这份清单是面板自己从 CDN 拉的，说明 wsl 自己拉不到它要的那份 \
                          manifest —— 现在用「微软商店」装多半会连不上。\
                          先试「在线发行版（国内镜像源）」（那条不经过 wsl 的网络）；\
                          如果你刚把代理修好，点一下上面的「刷新商店清单」再看这行还在不在。",
@@ -2199,7 +2199,7 @@ fn mirror_block(
         .child(chosen_line)
         .child(form_field(
             "install-mirror-url",
-            "自定义下载地址（留空 = 用上面探测出来的；`.wsl` 包和 tar 都支持）",
+            "自定义下载地址（留空 = 用上面探测出来的；.wsl 包和 tar 都支持）",
             &form.mirror_url,
             cx,
             true,
@@ -2588,8 +2588,8 @@ fn theme_card(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                 "主题同时作用于自绘的界面和组件库的控件（输入框、按钮……）。{system_label}。"
             )))
             .child(div().text_xs().text_color(theme::text_dim()).child(
-                "「跟随系统」读的是 Windows 的**应用**主题（`AppsUseLightTheme` 那个键，\
-                 不是管任务栏的 `SystemUsesLightTheme`）；在系统里改完主题之后，\
+                "「跟随系统」读的是 Windows 的应用主题（AppsUseLightTheme 那个键，\
+                 不是管任务栏的 SystemUsesLightTheme）；在系统里改完主题之后，\
                  再点一下「跟随系统」（或重启面板）就会跟上。",
             )),
     )
@@ -2785,7 +2785,7 @@ pub fn wsl_config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                     .child("没有发现实测已知的「键放错文件」写法。"),
             )
             .child(div().text_xs().text_color(theme::text_dim()).child(
-                "⚠️ 这**不等于**配置没问题 —— 这里只比对实测确认过的那几条，\
+                "⚠️ 这并不等于配置没问题 —— 这里只比对实测确认过的那几条，\
                  不是 WSL 的完整键表。宁可少报，不要错报：错报会让人改坏本来正常的配置。",
             ))
             .into_any_element()
@@ -2821,7 +2821,7 @@ pub fn wsl_config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
             .w_full()
             .gap_2()
             .child(div().text_xs().text_color(theme::text_muted()).child(
-                "这几行 WSL **明确报过**「未知键」，会被忽略 —— 配置看着生效、其实没有。",
+                "这几行 WSL 明确报过「未知键」，会被忽略 —— 配置看着生效、其实没有。",
             ))
             .children(rows)
             .into_any_element()
@@ -2837,7 +2837,7 @@ pub fn wsl_config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                 .gap_2()
                 .child(kv_block("位置", path_text).into_any_element())
                 .child(div().text_xs().text_color(theme::text_dim()).child(
-                    "这是 **WSL 本身**的全局配置（管 WSL2 虚拟机：内存、网络模式、内核命令行……）。\
+                    "这是 WSL 本身的全局配置（管 WSL2 虚拟机：内存、网络模式、内核命令行……）。\
                      发行版自己的配置是各发行版里的 /etc/wsl.conf，两者互不相干、键也不能混用。",
                 )),
         ))
@@ -2850,15 +2850,15 @@ pub fn wsl_config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                 .gap_2()
                 .child(
                     div().text_xs().text_color(theme::text_muted()).child(
-                        "实测（WSL 3.0.1.0）：`wsl --status` / `--version` / `-l -v` / `--terminate` \
-                         都**不报**配置告警；只有 `wsl --shutdown` 之后**第一条**进发行版的命令会报，\
+                        "实测（WSL 3.0.1.0）：wsl --status / --version / -l -v / --terminate \
+                         都不报配置告警；只有 wsl --shutdown 之后第一条进发行版的命令会报，\
                          紧接着的第二、三条就静默了。",
                     ),
                 )
                 .child(
                     div().text_xs().text_color(theme::text_muted()).child(
-                        "也就是说这些告警来自 **WSL2 虚拟机启动时读一次 .wslconfig**。\
-                         想主动触发就得先 `wsl --shutdown` —— 那会**打断所有正在跑的发行版**。\
+                        "也就是说这些告警来自 WSL2 虚拟机启动时读一次 .wslconfig。\
+                         想主动触发就得先 wsl --shutdown —— 那会打断所有正在跑的发行版。\
                          为了校验一个配置文件付这个代价不值得，所以这里只做不依赖 WSL 的静态检查。",
                     ),
                 ),
@@ -3142,6 +3142,9 @@ pub fn pull_dialog_overlay(
         .items_center()
         .justify_center()
         .bg(theme::scrim())
+        // 见 `theme::scrim()`：不带 `occlude()` 的遮罩吃不到点击，
+        // 点下去会穿到背后的页面上。
+        .occlude()
         .child(
             v_flex()
                 .w(px(620.))
@@ -3455,6 +3458,9 @@ pub fn create_dialog_overlay(
         .items_center()
         .justify_center()
         .bg(theme::scrim())
+        // 见 `theme::scrim()`：不带 `occlude()` 的遮罩吃不到点击，
+        // 点下去会穿到背后的页面上。
+        .occlude()
         .child(
             v_flex()
                 // 字段多，窗口矮时允许滚动，别把底部按钮挤没
@@ -3715,6 +3721,9 @@ pub fn container_detail_overlay(
         .items_center()
         .justify_center()
         .bg(theme::scrim())
+        // 见 `theme::scrim()`：不带 `occlude()` 的遮罩吃不到点击，
+        // 点下去会穿到背后的页面上。
+        .occlude()
         .child(
             v_flex()
                 .id("detail-card")
@@ -3968,6 +3977,9 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
         .items_center()
         .justify_center()
         .bg(theme::scrim())
+        // 见 `theme::scrim()`：不带 `occlude()` 的遮罩吃不到点击，
+        // 点下去会穿到背后的页面上。
+        .occlude()
         .child(
             v_flex()
                 .id("distro-detail-card")
@@ -4086,6 +4098,9 @@ pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEle
         .items_center()
         .justify_center()
         .bg(theme::scrim())
+        // 见 `theme::scrim()`：不带 `occlude()` 的遮罩吃不到点击，
+        // 点下去会穿到背后的页面上。
+        .occlude()
         .child(
             v_flex()
                 .w(px(620.))
@@ -4132,7 +4147,7 @@ pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEle
                     div()
                         .text_xs()
                         .text_color(theme::text_muted())
-                        .child(kind.note()),
+                        .child(crate::util::strip_md(kind.note())),
                 )
                 .child(
                     v_flex()
@@ -4205,6 +4220,9 @@ pub fn export_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
         .items_center()
         .justify_center()
         .bg(theme::scrim())
+        // 见 `theme::scrim()`：不带 `occlude()` 的遮罩吃不到点击，
+        // 点下去会穿到背后的页面上。
+        .occlude()
         .child(
             v_flex()
                 .w(px(680.))
@@ -4230,7 +4248,7 @@ pub fn export_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                         .child(kv("已用时", format!("{} 秒", progress.elapsed_secs)).into_any_element()),
                 )
                 .child(div().text_xs().text_color(theme::text_dim()).child(
-                    "wsl 不报告导出百分比，所以「已写入」是**目标文件当前的大小** —— \
+                    "wsl 不报告导出百分比，所以「已写入」是目标文件当前的大小 —— \
                      它是连续增长的，可以据此估还要多久。",
                 ))
                 .child(
@@ -4238,7 +4256,7 @@ pub fn export_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                         .text_xs()
                         .text_color(theme::text_muted())
                         .child(format!(
-                            "导出期间请勿关机。**取消会留下一个不完整的 tar**，需要你自己删。\
+                            "导出期间请勿关机。取消会留下一个不完整的 tar，需要你自己删。\
                              最后一行输出：{last}"
                         )),
                 )
@@ -4553,6 +4571,27 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEl
             })
     };
 
+    // 保存中就把两个保存按钮**换成一行字**。
+    //
+    // `save_wslconf` 要串起 `user_exists` + `path_exists`（两条 `wsl.exe`）
+    // + 写 `/etc/wsl.conf` + 可选的 terminate，秒级到十几秒。原先这段时间
+    // 弹窗一点变化都没有，两个按钮也照样能点 —— 连点会并发出两轮 `wsl.exe`，
+    // 重复写一遍配置、再 terminate 一次发行版。
+    //
+    // 项目约定**不用** `.disabled()`（禁用态的文字几乎看不清，见 §7.5），
+    // 所以这里是换掉元素、不是置灰。
+    let save_actions: Vec<AnyElement> = if state.busy {
+        vec![
+            div()
+                .text_sm()
+                .text_color(theme::text_muted())
+                .child("正在保存…（要读发行版状态并写文件，可能要十几秒）")
+                .into_any_element(),
+        ]
+    } else {
+        vec![save.into_any_element(), save_restart.into_any_element()]
+    };
+
     div()
         .absolute()
         .inset_0()
@@ -4560,6 +4599,9 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEl
         .items_center()
         .justify_center()
         .bg(theme::scrim())
+        // 见 `theme::scrim()`：不带 `occlude()` 的遮罩吃不到点击，
+        // 点下去会穿到背后的页面上。
+        .occlude()
         .child(
             v_flex()
                 .id("wslconf-card")
@@ -4605,8 +4647,8 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEl
                         .justify_end()
                         .child(preview_btn)
                         .child(cancel)
-                        .child(save)
-                        .child(save_restart),
+                        // 保存中这两个按钮会消失、换成"正在保存…"（见 `save_actions`）
+                        .children(save_actions),
                 ),
         )
         .into_any_element()

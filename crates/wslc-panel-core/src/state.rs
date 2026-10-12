@@ -687,6 +687,19 @@ pub enum DistroAction {
 }
 
 impl DistroAction {
+    /// 这个动作作用在哪个发行版上。
+    ///
+    /// `ShutdownAll` 返回 `None`：它压的是 `wsl --shutdown`，作用在**所有**
+    /// 发行版上，比"动某一个"更粗暴 —— 调用方要单独处理它
+    /// （见 [`AppState::long_task`]），别把它当成"碰不到特定的那个"而放行。
+    pub fn distro_name(&self) -> Option<&str> {
+        match self {
+            Self::ShutdownAll => None,
+            Self::Terminate(name) | Self::Compact(name) => Some(name),
+            Self::Unregister { name, .. } | Self::SetSparse { name, .. } => Some(name),
+        }
+    }
+
     /// 确认弹窗标题。
     pub fn title(&self) -> &'static str {
         match self {
@@ -1820,6 +1833,55 @@ impl AppState {
             .iter()
             .map(|distro| distro.name.clone())
             .collect()
+    }
+
+    /// 有长任务正在**动这个发行版**吗？有就返回它在干什么（`"安装"` / `"导出"`）。
+    ///
+    /// # 为什么需要它
+    ///
+    /// 安装和「终止 / 删除 / 压缩 / 导出 / 移动」之间原先**没有任何互斥**。
+    /// 安装的重定位阶段是「导出 → 注销 → 导入」，而 `cmd::install` 自己的
+    /// 注释写着"中途停下等于把刚装好的删了" —— 这时对**同一个**发行版点一下
+    /// 终止或导出就能把它打断，代价是不可逆的。
+    ///
+    /// 名字比较用 [`wslc_core::model::distro::same_name`]：安装时源名与用户
+    /// 想要的名字可能只差大小写，用 `==` 会漏掉。
+    pub fn busy_with(&self, distro: &str) -> Option<&'static str> {
+        // 这里用 `is_some_and` 而不是嵌套的 `if let`：后者会被 clippy 的
+        // `collapsible_if` 建议改成 let-chain，而 let-chain 要 Rust 1.88，
+        // 本 crate 声明的 MSRV 是 1.85（见 `Cargo.toml` 的 `rust-version`）。
+        let installing = self.installing.as_ref().is_some_and(|install| {
+            install.is_running() && wslc_core::model::distro::same_name(&install.name, distro)
+        });
+        if installing {
+            return Some("安装");
+        }
+        let exporting = self
+            .exporting
+            .as_ref()
+            .is_some_and(|export| wslc_core::model::distro::same_name(&export.name, distro));
+        if exporting {
+            return Some("导出");
+        }
+        None
+    }
+
+    /// 有**任何**长任务在跑吗？返回一句话说明在干什么。
+    ///
+    /// 「关停全部」（`wsl --shutdown`）要用它：那个动作压的是整个 WSL 服务，
+    /// 会把安装 / 导出正在跑的 `wsl.exe` 一起掐掉 —— 它不是"动某一个发行版"，
+    /// 所以 [`AppState::busy_with`] 拦不住它。
+    pub fn long_task(&self) -> Option<String> {
+        if let Some(install) = self.installing.as_ref().filter(|i| i.is_running()) {
+            return Some(format!("正在安装 {}", install.name));
+        }
+        if let Some(export) = self.exporting.as_ref() {
+            return Some(format!("正在导出 {}", export.name));
+        }
+        if let Some(pull) = self.pulling.as_ref() {
+            return Some(format!("正在拉取 {}", pull.image));
+        }
+        None
     }
 
     /// 拼一个"添加实例"用的计划上下文。

@@ -389,6 +389,19 @@ pub fn danger_edge() -> Rgba {
 ///
 /// 用 `hsla` 而不是 `rgb(...).opacity(...)`：前者是 GPUI 里
 /// 与 `rgb` 同级的基础构造器，`gpui-base` 自己也在用（见 `styled.rs`）。
+///
+/// # ⚠️ 用它的时候**必须**同时挂 `.occlude()`
+///
+/// 一个只有背景色的 `div` **不参与命中测试** —— GPUI 只给注册过交互
+/// （`on_click` / `on_mouse_down` / `occlude` / …）的元素建 hitbox。
+/// 所以只画底色的话，遮罩开着的时候点击会**直接穿到后面的页面上**。
+///
+/// 这不是理论问题：本机实测过 —— 打开「创建容器」后能点到它背后那一列的
+/// 按钮，而那个动作会在点击时重建表单、把用户已经打进去的字清空。
+///
+/// `InteractiveElement::occlude()` 把命中行为设成 `BlockMouse`：
+/// 吃掉所有鼠标事件，不让它们到达下面的任何元素（滚动也一起挡住，
+/// 这正是模态该有的行为）。
 pub fn scrim() -> Hsla {
     hsla(0., 0., 0., palette().scrim_alpha)
 }

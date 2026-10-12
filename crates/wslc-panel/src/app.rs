@@ -467,6 +467,19 @@ pub struct Shell {
 /// 列表（`wsl --list --verbose`）仍然跟随自动刷新 —— 状态变化要看得到。
 const DISTRO_STATUS_SECS: u64 = 30;
 
+/// 选到路径之后，除了填进输入框还要不要额外做一件事。
+///
+/// 单独一个类型而不是 `bool`：两种意图完全不同，`true` / `false`
+/// 在调用处读不出来是哪个。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterPick {
+    /// 只填输入框，别的什么都不做。
+    Nothing,
+    /// 把「安装目录」标成**用户亲手选的** —— 那之后名字联动就不能再改它
+    /// （见 [`Shell::resync_install_dir`] 的 `last_derived_dir`）。
+    InstallDirIsNowUserChosen,
+}
+
 impl Shell {
     /// 创建外壳：立刻触发一次采集、加载配置、启动自动刷新。
     pub fn new(cx: &mut Context<Self>) -> Self {
@@ -633,6 +646,22 @@ impl Shell {
                 cx.notify();
                 return;
             }
+        }
+
+        // 移动和调整大小都要动这个发行版的虚拟磁盘，和正在进行的
+        // 安装 / 导出抢同一个文件。弹窗可能是几分钟前打开的，
+        // 那期间安装可能已经开始 —— 所以判在**提交这一刻**。
+        let touches_disk = matches!(kind, PromptKind::MoveDistro | PromptKind::ResizeDistro);
+        let busy = if touches_disk {
+            self.state.busy_with(&distro)
+        } else {
+            None
+        };
+        if let Some(what) = busy {
+            self.state
+                .notify(Toast::error(format!("{distro} 正在{what}，等它结束再操作")));
+            cx.notify();
+            return;
         }
 
         // 导出是**长任务**（要进度条、要能取消），走的是完全不同的一条路 ——
@@ -924,6 +953,15 @@ impl Shell {
         // 不让它们同时跑，否则浮层会打架。
         if self.state.pulling.is_some() {
             self.state.notify(Toast::error("正在拉取镜像，等它结束再导出"));
+            cx.notify();
+            return;
+        }
+        // 别导出正在被安装的那个发行版：安装的重定位阶段（导出 → 注销 → 导入）
+        // 本来就在导出它，两条流式任务会抢同一个 VHD，而且它随时可能被
+        // `--unregister` 掉 —— 用户拿到的会是一个半截的 tar。
+        if let Some(what) = self.state.busy_with(&name) {
+            self.state
+                .notify(Toast::error(format!("{name} 正在{what}，等它结束再导出")));
             cx.notify();
             return;
         }
@@ -1267,6 +1305,16 @@ impl Shell {
         action: fn(&Wslc, &[String]) -> wslc_core::Result<Vec<String>>,
         cx: &mut Context<Self>,
     ) {
+        // 点下去先给个回应 —— 和发行版那条（[`Shell::spawn_distro_action`]）
+        // 保持一致。
+        //
+        // 没有这一条的话，从点击到结果出来这段时间界面上什么都没变。
+        // `wslc start/restart` 通常是秒级，但容器多、镜像要拉、或者 WSL
+        // 刚被唤醒时会明显更久 —— 那期间用户只会觉得按钮坏了然后去点第二次
+        // （`AGENTS.md` §7.1 第二条）。
+        self.state.notify(Toast::info(format!("正在{verb} {name}…")));
+        cx.notify();
+
         let wslc = self.state.wslc.clone();
         let target = name.clone();
         cx.spawn(async move |this, cx| {
@@ -1717,6 +1765,37 @@ impl Shell {
         cx.notify();
     }
 
+    /// 这个危险操作会不会和正在跑的长任务打架？会的话给出拒绝的理由。
+    ///
+    /// 放在 [`Shell::confirm_pending`] 里而不是渲染层：渲染层决定"按钮画不画"
+    /// 会随刷新闪来闪去（安装开始/结束都在变），而**点下去的那一刻**才是
+    /// 真正要判的地方 —— 弹窗可能是几分钟前打开的，那期间安装可能已经开始了。
+    fn blocking_reason(&self, action: &ConfirmAction) -> Option<String> {
+        match action {
+            // 「关停全部」压的是 `wsl --shutdown`，作用在所有发行版上，
+            // 会把安装 / 导出正在跑的 `wsl.exe` 一起掐掉。
+            // 名义上"关停发行版"不该影响正在安装的那个（它还没注册完），
+            // 但它掐的是整个 WSL 服务 —— 实测里重定位那一步被打断
+            // 等于把刚装好的删掉（见 `cmd::install` 的模块说明）。
+            ConfirmAction::Distro(DistroAction::ShutdownAll) => self
+                .state
+                .long_task()
+                .map(|what| format!("{what} —— 这时「关停全部」会把它一起掐掉，等它结束再动")),
+            // 动某一个发行版：只在这个动作碰的正是那个正在被安装/导出的
+            // 发行版时才拦（别的一律放行 —— 安装要几十分钟，把整页操作
+            // 全锁住比这个 bug 更烦人）。`distro_name()` 对 `ShutdownAll`
+            // 返回 `None`，上面那条已经处理过它了。
+            ConfirmAction::Distro(other) => other.distro_name().and_then(|name| {
+                self.state.busy_with(name).map(|what| {
+                    format!("{name} 正在{what} —— 这时对它做别的写操作会把那一步弄坏，等它结束再动")
+                })
+            }),
+            // 容器域和发行版安装互不相干：一个走 `wslc.exe`、一个走 `wsl.exe`，
+            // 各自的发行版/会话也不重叠。拦下来只会平白挡住正常的容器操作。
+            ConfirmAction::Container(_) => None,
+        }
+    }
+
     /// 确认并执行。
     ///
     /// 两个域共用这一个入口：[`ConfirmAction::execute`] 内部按域分派到
@@ -1729,6 +1808,14 @@ impl Shell {
         let Some(action) = self.state.confirm.take() else {
             return;
         };
+
+        // 确认框**无论如何都要关掉**（上面已经 take 走了）——
+        // 拒绝执行时留一个"点了没反应又关不掉"的弹窗是最糟的结果。
+        if let Some(reason) = self.blocking_reason(&action) {
+            self.state.notify(Toast::error(reason));
+            cx.notify();
+            return;
+        }
 
         // 发行版被删掉之后它的详情弹窗就没有对象了 —— 现在先判断好，
         // 待会儿 `action` 要移进异步块。
@@ -1834,6 +1921,7 @@ impl Shell {
         label: &'static str,
         extensions: &'static [&'static str],
         title: &'static str,
+        after: AfterPick,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1866,6 +1954,19 @@ impl Shell {
                 match picked {
                     Ok(Some(path)) => {
                         input.update(cx, |state, cx| state.set_value(path, window, cx));
+                        if after == AfterPick::InstallDirIsNowUserChosen {
+                            // ⚠️ 这行**只能在真的选到东西时**执行。
+                            //
+                            // 原先它写在 `browse_install_dir` 里、`spawn_picker`
+                            // 调用之后，于是"点了浏览又点了取消"也会把它清掉：
+                            // 用户什么都没选，却永久失去了"安装目录跟着发行版名
+                            // 联动"，之后只能自己手敲路径。
+                            // （选择器还可能因为 `picking` 已经在跑而直接返回，
+                            // 那种情况下更不该动。）
+                            if let Some(form) = shell.install_form.as_mut() {
+                                form.last_derived_dir = None;
+                            }
+                        }
                     }
                     // 用户点了取消 —— 这不是错误，什么都不做
                     Ok(None) => {}
@@ -2348,16 +2449,27 @@ impl Shell {
 
     /// 选一个目录填进「安装目录」。
     ///
-    /// 选完要把 [`InstallForm::last_derived_dir`] 清掉：那之后这个名字联动
+    /// 选完之后要把 [`InstallForm::last_derived_dir`] 清掉：那之后这个名字联动
     /// 就不能再动它了 —— 用户亲手选的目录被我们改掉是最恼人的一类 bug。
+    ///
+    /// ⚠️ 但**只能真的选到东西时**才清，所以这件事交给 `spawn_picker`
+    /// 在选中的分支里做（见 [`AfterPick::InstallDirIsNowUserChosen`]）。
+    /// 写在这一行之后的话，"点了取消"也会清 —— 用户什么都没选，
+    /// 却永久失去了名字联动。
     pub fn browse_install_dir(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(input) = self.install_form.as_ref().map(|form| form.install_dir.clone()) else {
             return;
         };
-        self.spawn_picker(&input, true, "目录", &[], "选择安装目录", window, cx);
-        if let Some(form) = self.install_form.as_mut() {
-            form.last_derived_dir = None;
-        }
+        self.spawn_picker(
+            &input,
+            true,
+            "目录",
+            &[],
+            "选择安装目录",
+            AfterPick::InstallDirIsNowUserChosen,
+            window,
+            cx,
+        );
     }
 
     // -- 添加实例：在线清单与镜像站 ----------------------------------------
@@ -3087,6 +3199,17 @@ impl Render for Shell {
             div().into_any_element()
         };
 
+        // 提示条：主内容列里的一个**布局项**，不是浮层。
+        //
+        // 原先它是挂在根元素上的 `.absolute().bottom(20).left(0).right(0)`，
+        // 横跨整个窗口宽度。v0.5.10 把它从右下角挪到底部居中，理由是右下角
+        // 正好压着「开始安装」；但居中之后它变成压住**底部中间**的东西了 ——
+        // 本机实测过，底部那一带的按钮会被它盖住。
+        //
+        // 浮层方案无论放哪儿都必然压住**某个**控件（这正是 v0.5.10 那次
+        // 修复的成因），所以这里改成布局项：提示条出现时主内容区让出一条
+        // 高度，谁都不会被盖住，也不需要再挑位置。
+        // 代价是它出现 / 消失时内容会上下动一下 —— 比"有按钮点不到"好。
         let toast: AnyElement = match &state.toast {
             None => div().into_any_element(),
             Some(t) => {
@@ -3096,41 +3219,37 @@ impl Render for Shell {
                     ToastKind::Success => theme::success(),
                     ToastKind::Error => theme::danger(),
                 };
-                div()
-                    .absolute()
-                    .bottom(px(20.))
-                    // 放在**底部居中**，不是右下角。
-                    //
-                    // 右下角正好是「添加实例」这类页面的主操作按钮（「开始安装」）的位置：
-                    // 实测（用户截图）提示卡片会正好压在按钮上 —— 提示被按钮衬得看不清、
-                    // 按钮也被提示挡住。挪到中间之后，两侧的角落（右上「刷新」、
-                    // 右下主操作）都空着，谁都不会压到谁。
-                    .left(px(0.))
-                    .right(px(0.))
+                h_flex()
+                    .w_full()
+                    // `flex_none`：别让它被上面那个 `flex_1` 的滚动区挤扁。
+                    .flex_none()
+                    .justify_center()
+                    .px_5()
+                    .pb_4()
                     .child(
-                        h_flex().w_full().justify_center().child(
-                            h_flex()
-                                .max_w(px(560.))
-                                .gap_3()
-                                .px_4()
-                                .py_3()
-                                .rounded_md()
-                                .bg(theme::bg_card())
-                                .border_1()
-                                .border_color(color)
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(color)
-                                        .overflow_hidden()
-                                        .child(t.text.clone()),
-                                )
-                                .child(Button::new("toast-dismiss").label("关闭").small().on_click(
-                                    move |_, _, cx| {
-                                        entity.update(cx, |shell, cx| shell.dismiss_toast(cx));
-                                    },
-                                )),
-                        ),
+                        h_flex()
+                            .max_w(px(560.))
+                            .gap_3()
+                            .px_4()
+                            .py_3()
+                            .rounded_md()
+                            .bg(theme::bg_card())
+                            .border_1()
+                            .border_color(color)
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(color)
+                                    .overflow_hidden()
+                                    // 见 `util::strip_md`：提示条里也有写
+                                    // `**不完整**` 这类标记的文案。
+                                    .child(crate::util::strip_md(&t.text)),
+                            )
+                            .child(Button::new("toast-dismiss").label("关闭").small().on_click(
+                                move |_, _, cx| {
+                                    entity.update(cx, |shell, cx| shell.dismiss_toast(cx));
+                                },
+                            )),
                     )
                     .into_any_element()
             }
@@ -3272,10 +3391,13 @@ impl Render for Shell {
                                     .overflow_y_scroll()
                                     .child(error_banner)
                                     .child(page_body),
-                            ),
+                            )
+                            // 提示条放在主内容列**最后**：它是一条贴底的布局项，
+                            // 出现时把上面那个 `flex_1` 的滚动区挤矮一点，
+                            // 而不是盖在它上面（见 `toast` 的说明）。
+                            .child(toast),
                     ),
             )
-            .child(toast)
             .child(confirm)
             .child(pull_dialog)
             .child(create_dialog)
@@ -3370,6 +3492,9 @@ fn confirm_overlay(action: &ConfirmAction, entity: &Entity<Shell>) -> AnyElement
         .items_center()
         .justify_center()
         .bg(theme::scrim())
+        // 见 `theme::scrim()`：不带 `occlude()` 的遮罩吃不到点击，
+        // 点下去会穿到背后的页面上。
+        .occlude()
         .child(
             v_flex()
                 .w(px(460.))
@@ -3390,7 +3515,10 @@ fn confirm_overlay(action: &ConfirmAction, entity: &Entity<Shell>) -> AnyElement
                     div()
                         .text_sm()
                         .text_color(theme::text_muted())
-                        .child(action.body()),
+                        // 文案里写的是 Markdown（`**已停止**`），而这里是纯文本
+                        // 渲染 —— 不清掉的话用户看到的是字面星号，
+                        // 而这恰好是"不可撤销"那类确认框。见 `util::strip_md`。
+                        .child(crate::util::strip_md(&action.body())),
                 )
                 .child(
                     h_flex()
