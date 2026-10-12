@@ -35,10 +35,10 @@
 
 | 页面 | 内容 | 数据来源 |
 |---|---|---|
-| **基本信息** | WSL/内核/Windows/Direct3D 版本、活动会话、`settings.yaml` 路径与 `storagePath`、容器/镜像/网络/卷统计 | `wslc info`、`wslc system session list` |
+| **基本信息** | WSL/内核/Windows/Direct3D 版本、活动会话（可**终止**）、`settings.yaml` 路径与 `storagePath`、容器/镜像/网络/卷统计 | `wslc info`、`wslc system session list` / `terminate` |
 | **当前运行** | 运行中容器 + **实时资源**（CPU%、内存、网络 I/O、块 I/O、PID） | `wslc list`、`wslc stats` |
-| **全部容器** | 含已退出容器、状态徽标、端口映射、批量停止/删除/`prune` | `wslc list -a`、`wslc stats -a` |
-| **镜像 / 网络 / 卷** | 镜像（同一 ID 多仓库引用会标注）、网络（内置网络禁止删除）、卷 | `wslc images` / `network list` / `volume list` |
+| **全部容器** | 含已退出容器、状态徽标、端口映射、行内启动/重启/停止/**日志**/删除、批量停止/删除/`prune`；详情里强杀、**执行命令**（`exec`）、**打开终端**（`exec -it`）、**`attach` 主进程** | `wslc list -a`、`wslc stats -a`、`wslc logs` / `exec` / `attach` |
+| **镜像 / 网络 / 卷** | 镜像（同一 ID 多仓库引用会标注）、网络（内置网络禁止删除）、卷（**创建命名卷** / 删除 / **清理未使用**） | `wslc images` / `network list` / `volume list` / `volume create` / `volume prune` |
 | **wlsc 配置** | 8 个配置项的当前生效值与默认值、快捷写入、原始 YAML 查看、**带时间戳备份保存**、调用系统编辑器 | 直接读写 `settings.yaml` |
 | **实例列表** | WSL 发行版：状态、WSL 版本、是否默认、安装位置与 VHDX 虚拟大小；打开终端 / 启动（由本面板吊住保持运行）/ 终止 / 设为默认；详情里移动、压缩、改版本、默认用户、导出、`/etc/wsl.conf`、删除 | `wsl --list --verbose` + 注册表 `Lxss` |
 | **添加实例** | **五条来源**（页面上按按钮选）：本地 rootfs 文件（tar / tar.gz / tar.xz）/ 导入 VHDX 虚拟磁盘 / 从 `.wsl` 文件安装 / **微软商店 (Microsoft Store)** / **在线发行版（国内镜像源）**。装前检查（名字、重名、目录）、实时的**执行步骤预览**、装中**日志与进度**、可取消（重定位阶段除外） | `wsl --import` / `wsl --install -d`（商店）/ `curl.exe` + wslui 清单（镜像源） |
@@ -46,8 +46,10 @@
 > 「添加实例」只从**实例列表页上的按钮**进（侧边栏不列它）—— 那一页的输入框
 > 必须在点击时创建（`InputState::new` 需要 `&mut Window`），见 `app.rs` 的 `InstallForm`。
 
-安全设计：**停止 / 强杀 / 删除容器 / 删除镜像 / 清理 / 删除网络 / 删除卷** 全部走二次确认弹窗，
-并显示不可撤销的提示。
+安全设计：**停止 / 强杀 / 删除容器 / 删除镜像 / 清理容器 / 删除网络 / 删除卷 /
+清理未使用卷 / 终止会话** 全部走二次确认弹窗，并显示不可撤销的提示。
+（「终止会话」的确认框会写明：这个会话里**正在运行**的容器会一起停下，
+但镜像/容器/卷在会话的 `storage.vhdx` 里、不会被删。）
 
 ### 自动刷新
 
@@ -200,7 +202,13 @@ base, component, and assets, so a Rust application lists a single dependency.」
 - **卷的真实 JSON 字段名尚未实机校准**：采集时本机 0 个卷，`wslc` 输出 0 字节。
   未知字段会被兜进 `VolumeListItem::extra`，因此不会丢数据。
 - **`exec` / `attach` 不开内嵌终端**：交互式程序不能内嵌进 GPUI 的消息循环，
-  会开一个独立的 Windows 控制台窗口。
+  会开一个独立的 Windows 控制台窗口。容器详情里的「执行命令」是**非交互**的
+  —— `wslc exec` 不带 `-it`，没有 TTY，`vi` / `top` / `less` 用不了；
+  要终端就用同一排的「打开终端」。它跑的是 `/bin/sh -c <你写的整行>`，
+  所以管道、重定向、`&&` 都能用（用 `/bin/sh` 而不是 bash：alpine 这类镜像里没有 bash）。
+- **容器日志是「快照」，不做「跟随」**：`wslc logs --follow` 永不返回，
+  内嵌就等于一条永远不结束的后台任务、还得自己实现"停止跟随"。
+  所以日志浮层里给了一个「在终端里跟随」，开独立窗口（能滚、能 Ctrl+C）。
 - **本机直连 Docker Hub 会超时**：`run` 表单默认 `--pull missing`，
   并提供"使用本地已有镜像"的输入方式；离线环境请用 `--pull never`。
 - **GPUI 文件里写测试模块要小心**：`app.rs` / `views.rs` 里有 `use gpui_kit::*;`，
