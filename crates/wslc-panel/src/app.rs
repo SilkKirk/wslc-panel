@@ -1512,7 +1512,12 @@ impl Shell {
 
     /// 打开容器详情弹窗。
     ///
-    /// 照 1Panel：列表里不放操作按钮，点名字开这里。
+    /// 点列表里的名字进来。详情里放的是**列表行没有**的动作
+    /// （强杀 / 执行命令 / 打开终端 / attach 主进程）+ 完整信息
+    /// （端口含绑定地址、挂载、CPU / 内存 / 网络 I/O / PID）。
+    ///
+    /// ⚠️ 别把列表行已有的动作（启动 / 重启 / 停止 / 日志 / 删除）再搬进来 ——
+    /// 同一件事两个入口，用户还得判断点哪个。见 `container_detail_overlay`。
     pub fn open_detail(&mut self, name: String, cx: &mut Context<Self>) {
         self.detail = Some(name);
         cx.notify();
