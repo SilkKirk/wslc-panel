@@ -66,7 +66,8 @@ pub fn sanitize_name(raw: &str) -> String {
         if c.is_ascii_alphanumeric() || c == '.' {
             out.push(c);
             last_was_hyphen = false;
-        } else if (c == '-' || c == '_' || c.is_whitespace()) && !last_was_hyphen && !out.is_empty() {
+        } else if (c == '-' || c == '_' || c.is_whitespace()) && !last_was_hyphen && !out.is_empty()
+        {
             out.push('-');
             last_was_hyphen = true;
         }
@@ -293,9 +294,12 @@ impl OnlineDistro {
 ///
 /// - **失败输出必须被安静地吃成空列表**（配 `strip_config_warnings` 一起用），
 ///   而不是抛一个解析错误 —— 上层会用另一个来源兜底（见 `cmd::distro::list_online`）；
-/// - ⚠️ 下面测试里那条"成功形状"的样本**不是本机抓的**（本机抓不到），
-///   它来自微软文档与 `wsl --help` 的说明，属于**未在本机验证的假设**。
-///   真机上第一次成功拉到列表时，应当把输出存成 fixture 替换掉它。
+/// - ⚠️ 下面测试里那条"成功形状"的样本**原本不是本机抓的**（一开始本机抓不到，
+///   只有上面那份失败输出）。**后来补上了**：2026-10-10 开着 dev-sidecar
+///   系统代理时抓到了真实成功输出，存成了
+///   `tests/fixtures/wsl_list_online.txt`，`online_list_parses_the_two_column_table`
+///   用的就是它。所以那一条现在是**实测过的**，不再是假设 ——
+///   详情见那个测试自己的注释。
 pub fn parse_online_list(text: &str) -> Vec<OnlineDistro> {
     let mut out = Vec::new();
     let mut header_seen = false;
@@ -845,7 +849,11 @@ pub fn preflight(
     let mut errors = validate(spec, ctx);
     let name = spec.name.trim();
 
-    if !name.is_empty() && taken.iter().any(|existing| existing == name) {
+    if !name.is_empty()
+        && taken
+            .iter()
+            .any(|existing| crate::model::distro::same_name(existing, name))
+    {
         errors.push(format!(
             "已经有一个叫「{name}」的发行版了 —— 换个名字，或者先把旧的删掉（本程序不会替你删）"
         ));
@@ -859,7 +867,10 @@ pub fn preflight(
     }
 
     let mut warnings = Vec::new();
-    if let InstallSource::Online { id, web_download, .. } = &spec.source {
+    if let InstallSource::Online {
+        id, web_download, ..
+    } = &spec.source
+    {
         let id = id.trim();
         if !id.is_empty() && id != name {
             warnings.push(format!(
@@ -944,7 +955,10 @@ fn validate(spec: &InstallSpec, ctx: &PlanContext) -> Vec<String> {
                      或者手填一个下载地址"
                         .to_owned(),
                 );
-            } else if !url.starts_with("http://") && !url.starts_with("https://") {
+            } else if !crate::mirrors::is_http_url(url) {
+                // 判据复用 `mirrors::is_http_url`：这个字符串会作为**裸 argv**
+                // 交给 `curl.exe`，只判"以 http 开头"是不够/不一致的
+                // （`-K<file>` 这类以 `-` 开头的东西必须一起挡掉）。
                 out.push(format!("下载地址要以 http:// 或 https:// 开头：{url}"));
             }
             if dir.is_none() {
@@ -991,7 +1005,14 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
             steps.push(PlannedStep::new(
                 format!("把 {path} 展开成发行版 {name}"),
                 PlanProgram::Wsl,
-                own(&["--import", name.as_str(), dir.as_str(), path, "--version", "2"]),
+                own(&[
+                    "--import",
+                    name.as_str(),
+                    dir.as_str(),
+                    path,
+                    "--version",
+                    "2",
+                ]),
             ));
             notes.push(
                 "`--import` 只是把文件系统铺开，**不会**做首次启动初始化（不建默认用户）。\
@@ -1079,13 +1100,10 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
             if !launch {
                 args.push("--no-launch".to_owned());
             }
-            let install_step = PlannedStep::new(
-                format!("从在线源安装 {id}"),
-                PlanProgram::Wsl,
-                args,
-            )
-            // 商店 ⇄ GitHub 自动换一次：两条通道在不同网络环境下会各挂一条。
-            .with_source_fallback();
+            let install_step =
+                PlannedStep::new(format!("从在线源安装 {id}"), PlanProgram::Wsl, args)
+                    // 商店 ⇄ GitHub 自动换一次：两条通道在不同网络环境下会各挂一条。
+                    .with_source_fallback();
             // 裸名字（`Ubuntu`）→ 带版本号的兄弟（`Ubuntu-26.04`）再试一次。
             // 实测（2026-10-11，本机）：`wsl -l -o` 排在第一位的裸 `Ubuntu` 是清单里
             // 那条**旧的商店包**，`wsl --install -d Ubuntu` 2 秒就
@@ -1163,7 +1181,8 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
             let bundle = InstallSource::mirror_is_bundle(format, url);
             let extension = if bundle {
                 ".wsl"
-            } else if format.eq_ignore_ascii_case("tar.gz") || url.to_lowercase().ends_with(".tar.gz")
+            } else if format.eq_ignore_ascii_case("tar.gz")
+                || url.to_lowercase().ends_with(".tar.gz")
             {
                 ".tar.gz"
             } else {
@@ -1178,7 +1197,10 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
             );
 
             steps.push(PlannedStep::new(
-                format!("从 {mirror} 下载{}（{release}）", if bundle { " .wsl 包" } else { " rootfs" }),
+                format!(
+                    "从 {mirror} 下载{}（{release}）",
+                    if bundle { " .wsl 包" } else { " rootfs" }
+                ),
                 PlanProgram::Curl,
                 crate::mirrors::download_args(url, temp_file.as_str()),
             ));
@@ -1204,11 +1226,29 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
                     args,
                 ));
                 if !dir.is_empty() {
+                    // ⚠️ 中转 tar 的路径**必须**是个真路径。
+                    //
+                    // 这里原来传的是 `String::new()`：`--manage --move` 一失败
+                    // （PLAN-v0.5 的 v0.5.2 补记写明"紧接着 `--install` 之后跑
+                    // `--move` 会失败（返回 -1）"，所以这条回退路径是**设计上
+                    // 会出现**的），就退到「导出 → 注销 → 导入」，
+                    // 而那时跑的是 `wsl --export <name> ""` ——
+                    // 只会回一句看不懂的参数错误，整条退路等于废掉
+                    // （数据不会丢：export 在 unregister 之前就失败了）。
+                    //
+                    // 前缀与上面下载的临时文件（`wslc-panel-rootfs-…`）错开，
+                    // 免得重定位把还没用完的下载产物覆盖掉。
+                    let temp_tar = format!(
+                        "{}\\wslc-panel-relocate-{}-{}.tar",
+                        ctx.temp_dir.trim_end_matches(['\\', '/']),
+                        sanitize_name(&name),
+                        ctx.stamp
+                    );
                     steps.push(
                         PlannedStep::new(
                             format!("必要时把 {name} 挪到 {dir}"),
                             PlanProgram::EnsureRelocated,
-                            vec![name.clone(), name.clone(), dir.clone(), String::new()],
+                            vec![name.clone(), name.clone(), dir.clone(), temp_tar],
                         )
                         .uncancellable(),
                     );
@@ -1356,10 +1396,22 @@ mod tests {
     #[test]
     fn suggest_name_from_file_strips_suffix_and_platform() {
         // 参考实现的例子：`rootfs` 与平台尾巴都不该进名字
-        assert_eq!(suggest_name_from_file(r"D:\img\ubuntu-rootfs-amd64.tar.gz"), "ubuntu");
-        assert_eq!(suggest_name_from_file("alpine-minirootfs-3.21.0-x86_64.tar.gz"), "alpine-mini-3.21.0");
-        assert_eq!(suggest_name_from_file(r"E:\a\Ubuntu-24.04.tar"), "Ubuntu-24.04");
-        assert_eq!(suggest_name_from_file("noble-server-cloudimg-amd64-root.tar.xz"), "noble-server-cloudimg");
+        assert_eq!(
+            suggest_name_from_file(r"D:\img\ubuntu-rootfs-amd64.tar.gz"),
+            "ubuntu"
+        );
+        assert_eq!(
+            suggest_name_from_file("alpine-minirootfs-3.21.0-x86_64.tar.gz"),
+            "alpine-mini-3.21.0"
+        );
+        assert_eq!(
+            suggest_name_from_file(r"E:\a\Ubuntu-24.04.tar"),
+            "Ubuntu-24.04"
+        );
+        assert_eq!(
+            suggest_name_from_file("noble-server-cloudimg-amd64-root.tar.xz"),
+            "noble-server-cloudimg"
+        );
         assert_eq!(suggest_name_from_file("Debian.tar.xz"), "Debian");
         assert_eq!(suggest_name_from_file("ext4.vhdx"), "ext4");
     }
@@ -1383,14 +1435,14 @@ mod tests {
         assert!(name_syntax_errors("Ubuntu-24.04").is_empty());
         assert!(name_syntax_errors("a_b.c-d").is_empty());
 
-        assert!(name_syntax_errors("").iter().any(|e| e.contains("不能为空")));
+        assert!(name_syntax_errors("")
+            .iter()
+            .any(|e| e.contains("不能为空")));
         assert!(name_syntax_errors("a b").iter().any(|e| e.contains(' ')));
         assert!(name_syntax_errors("中文").iter().any(|e| e.contains('中')));
-        assert!(
-            name_syntax_errors(&"a".repeat(MAX_NAME_LEN + 1))
-                .iter()
-                .any(|e| e.contains("不能超过"))
-        );
+        assert!(name_syntax_errors(&"a".repeat(MAX_NAME_LEN + 1))
+            .iter()
+            .any(|e| e.contains("不能超过")));
         // 恰好等于上限是合法的
         assert!(name_syntax_errors(&"a".repeat(MAX_NAME_LEN)).is_empty());
     }
@@ -1427,7 +1479,10 @@ mod tests {
             derive_install_dir(Some(r"D:\wsl\"), "Ubuntu"),
             Some(r"D:\wsl\Ubuntu".to_owned())
         );
-        assert_eq!(derive_install_dir(Some("D:/wsl/"), "Ubuntu"), Some("D:/wsl/Ubuntu".to_owned()));
+        assert_eq!(
+            derive_install_dir(Some("D:/wsl/"), "Ubuntu"),
+            Some("D:/wsl/Ubuntu".to_owned())
+        );
         // 缺一半就给 None（调用方据此要求用户自己填）
         assert_eq!(derive_install_dir(None, "Ubuntu"), None);
         assert_eq!(derive_install_dir(Some("   "), "Ubuntu"), None);
@@ -1461,7 +1516,10 @@ mod tests {
         assert!(items.len() >= 15, "只解析出 {} 项：{items:?}", items.len());
 
         // 提示语与表头之间的空行、以及中文提示行都不能进来
-        assert!(!items.iter().any(|item| item.id.contains("以下是")), "{items:?}");
+        assert!(
+            !items.iter().any(|item| item.id.contains("以下是")),
+            "{items:?}"
+        );
         // 两列的名字要拆对：id 是第一列，友好名可能是**带空格**的多个词
         let ubuntu = items
             .iter()
@@ -1469,7 +1527,10 @@ mod tests {
             .expect("应该有 Ubuntu-24.04");
         assert_eq!(ubuntu.label, "Ubuntu 24.04 LTS");
         // 不带版本号的那个是默认项，它两列同名
-        let default = items.iter().find(|item| item.id == "Ubuntu").expect("应该有 Ubuntu");
+        let default = items
+            .iter()
+            .find(|item| item.id == "Ubuntu")
+            .expect("应该有 Ubuntu");
         assert_eq!(default.label, "Ubuntu");
     }
 
@@ -1497,7 +1558,11 @@ mod tests {
             .expect("清单里应该有 Ubuntu-24.04");
         assert_eq!(ubuntu.label, "Ubuntu 24.04 LTS");
         // 默认项排最前（不带版本号的那个）
-        assert_eq!(items[0].id, "Ubuntu", "默认发行版应该排第一：{:?}", items[0]);
+        assert_eq!(
+            items[0].id, "Ubuntu",
+            "默认发行版应该排第一：{:?}",
+            items[0]
+        );
         // 每项都要有 id 和非空 label
         for item in &items {
             assert!(!item.id.is_empty());
@@ -1542,7 +1607,10 @@ mod tests {
     }
 
     fn labels(plan: &InstallPlan) -> Vec<String> {
-        plan.steps.iter().map(|s| format!("{:?}", s.program)).collect()
+        plan.steps
+            .iter()
+            .map(|s| format!("{:?}", s.program))
+            .collect()
     }
 
     #[test]
@@ -1685,7 +1753,11 @@ mod tests {
             ]
         );
         // 说明里要讲清这一段在干什么
-        assert!(plan.notes.iter().any(|n| n.contains("--unregister")), "{:?}", plan.notes);
+        assert!(
+            plan.notes.iter().any(|n| n.contains("--unregister")),
+            "{:?}",
+            plan.notes
+        );
 
         // 要求装完启动时不加 --no-launch
         spec.source = InstallSource::Online {
@@ -1713,7 +1785,10 @@ mod tests {
             },
         );
         let plan = super::plan(&spec, &ctx()).unwrap();
-        assert_eq!(plan.steps[0].retry_other_id.as_deref(), Some("Ubuntu-26.04"));
+        assert_eq!(
+            plan.steps[0].retry_other_id.as_deref(),
+            Some("Ubuntu-26.04")
+        );
         // 换源那一手也要在（两条通道在不同网络下各会挂一条）
         assert!(plan.steps[0].retry_other_source);
 
@@ -1847,7 +1922,11 @@ mod tests {
             vec!["Curl", "Wsl", "EnsureRelocated", "RemoveFile"]
         );
         // 临时文件按格式取后缀
-        assert!(plan.steps[0].args[8].ends_with(".wsl"), "{:?}", plan.steps[0].args);
+        assert!(
+            plan.steps[0].args[8].ends_with(".wsl"),
+            "{:?}",
+            plan.steps[0].args
+        );
         assert_eq!(
             plan.steps[1].args,
             vec![
@@ -1863,6 +1942,17 @@ mod tests {
         // 位置要核实（`--location` 不一定被采纳），但那一步不能取消
         assert_eq!(plan.steps[2].args[0], "Ubuntu-24.04");
         assert!(!plan.steps[2].cancellable);
+        // ⚠️ 中转 tar 的路径必须是**真路径**（第 4 个参数）。
+        //
+        // 原来是 `String::new()`：`--manage --move` 失败后会退到
+        // 「导出 → 注销 → 导入」，而那条路的第一步就是
+        // `wsl --export <name> ""` —— 整条退路等于废掉。
+        // 而这条回退是**设计上会出现**的（PLAN-v0.5 的 v0.5.2 补记：
+        // 紧接着 `--install` 之后跑 `--move` 会返回 -1）。
+        assert_eq!(
+            plan.steps[2].args[3],
+            r"C:\Temp\wslc-panel\wslc-panel-relocate-Ubuntu-24.04-1234-5678.tar"
+        );
         // 删临时文件必须排在重定位之后（重定位可能还要读它？——不会，
         // `--move` 用的是发行版自己的 VHD，这里只是把顺序钉住）
         assert_eq!(plan.steps[3].program, PlanProgram::RemoveFile);
@@ -1883,7 +1973,11 @@ mod tests {
         let last = plan.steps.last().unwrap();
         assert_eq!(last.program, PlanProgram::Wsl);
         assert_eq!(last.args, vec!["--set-default", "Ubuntu"]);
-        assert!(plan.preview_lines().last().unwrap().contains("--set-default"));
+        assert!(plan
+            .preview_lines()
+            .last()
+            .unwrap()
+            .contains("--set-default"));
 
         // `.wslconfig` 要求稀疏 → 在设默认之前插一步
         let sparse_ctx = PlanContext {
@@ -1921,7 +2015,12 @@ mod tests {
             default_dir: None,
             ..ctx()
         };
-        let spec = InstallSpec::new("  ", InstallSource::Tar { path: " ".to_owned() });
+        let spec = InstallSpec::new(
+            "  ",
+            InstallSource::Tar {
+                path: " ".to_owned(),
+            },
+        );
         let err = super::plan(&spec, &bare).unwrap_err();
         assert!(err.contains("发行版名不能为空"), "{err}");
         assert!(err.contains("tar 文件路径不能为空"), "{err}");
@@ -1972,7 +2071,9 @@ mod tests {
                 format: "tar.xz".to_owned(),
             },
         );
-        assert!(super::plan(&no_url, &ctx()).unwrap_err().contains("还没有选好下载地址"));
+        assert!(super::plan(&no_url, &ctx())
+            .unwrap_err()
+            .contains("还没有选好下载地址"));
         let bad_url = InstallSpec::new(
             "X",
             InstallSource::Mirror {
@@ -2010,6 +2111,69 @@ mod tests {
     }
 
     #[test]
+    fn preflight_treats_names_case_insensitively() {
+        // ⚠️ 这条是"成功的安装被判成失败"那个 bug 的回归保护。
+        //
+        // 已经有 `Ubuntu` 时用户装 `ubuntu`：preflight 若按 `==` 判，
+        // 这里会放行；而装完之后 `WaitRegistered` 拿 `==` 在 `wsl -l -q`
+        // 的输出里找不到 `ubuntu`（那里写的是 `Ubuntu`），
+        // 于是轮询 30 秒后报"装完了却一直没出现在列表里"。
+        // WSL 自己对发行版名的比较就是不区分大小写的。
+        let spec = InstallSpec::new(
+            "ubuntu",
+            InstallSource::Tar {
+                path: r"D:\a.tar".to_owned(),
+            },
+        );
+        let taken = vec!["Ubuntu".to_owned()];
+
+        let duplicate = preflight(&spec, &ctx(), &taken, false);
+        assert!(
+            !duplicate.ok(),
+            "大小写不同但其实是同一个发行版，必须挡住：{duplicate:?}"
+        );
+        assert!(duplicate.error_text().unwrap().contains("已经有一个"));
+
+        // 反方向也要成立（清单给 `Ubuntu`、列表里是 `ubuntu`）
+        let spec = InstallSpec::new(
+            "Ubuntu",
+            InstallSource::Tar {
+                path: r"D:\a.tar".to_owned(),
+            },
+        );
+        let duplicate = preflight(&spec, &ctx(), &["ubuntu".to_owned()], false);
+        assert!(
+            duplicate.error_text().unwrap().contains("已经有一个"),
+            "{duplicate:?}"
+        );
+
+        // 前后空白不算差异 —— 用户在名字框里多打一个空格不该被当成重名
+        // ⚠️ 必须断言**具体那条错误**：只断言 `!ok()` 的话，
+        // "名字非法"这类别的校验也能让它通过，测试就白写了。
+        let spec = InstallSpec::new(
+            "  Ubuntu  ",
+            InstallSource::Tar {
+                path: r"D:\a.tar".to_owned(),
+            },
+        );
+        let duplicate = preflight(&spec, &ctx(), &["Ubuntu".to_owned()], false);
+        assert!(
+            duplicate.error_text().unwrap().contains("已经有一个"),
+            "{duplicate:?}"
+        );
+
+        // 真的是不同的名字就照旧放行
+        let spec = InstallSpec::new(
+            "Ubuntux",
+            InstallSource::Tar {
+                path: r"D:\a.tar".to_owned(),
+            },
+        );
+        let clean = preflight(&spec, &ctx(), &["Ubuntu".to_owned()], false);
+        assert!(clean.ok(), "{clean:?}");
+    }
+
+    #[test]
     fn preflight_warns_about_the_extra_copy_when_renaming() {
         let spec = InstallSpec::new(
             "MyUbuntu",
@@ -2031,11 +2195,12 @@ mod tests {
         let step = PlannedStep::new(
             "x",
             PlanProgram::Wsl,
-            vec!["--import".to_owned(), "My Distro".to_owned(), r"D:\a b\x".to_owned()],
+            vec![
+                "--import".to_owned(),
+                "My Distro".to_owned(),
+                r"D:\a b\x".to_owned(),
+            ],
         );
-        assert_eq!(
-            step.line(),
-            r#"wsl --import "My Distro" "D:\a b\x""#
-        );
+        assert_eq!(step.line(), r#"wsl --import "My Distro" "D:\a b\x""#);
     }
 }

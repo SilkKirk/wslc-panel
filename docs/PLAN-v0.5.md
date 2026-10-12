@@ -82,10 +82,19 @@ crates/wslc-core/src/
 | 导入 VHDX 虚拟磁盘 | 建目录 → `wsl --import <name> <dir> <file> --vhd --version 2` |
 | 从 `.wsl` / 文件安装 | `wsl --install --from-file <file> --name <name> [--location <dir>]` |
 | 微软商店 (Microsoft Store) | `--install -d <id> [--web-download] --version 2 [--no-launch]`（**不带 `--location`**，见 §4.3）→ 等注册 →（必要时、**不可取消**）`--manage --move <dir>`，要改名时 `--export` → `--unregister` → `--import` → 删中转 tar |
-| 在线发行版（国内镜像源） | `curl -s -S -L --retry 2 -o <tmp> <url>` → 建目录 → `tar.*` 走 `--import`、`.wsl` 包走 `--install --from-file` → 删临时文件 |
+| 在线发行版（国内镜像源） | `curl -s -S -L --retry 2 --connect-timeout 10 -o <tmp> <url>` → 建目录 → `tar.*` 走 `--import`、`.wsl` 包走 `--install --from-file` → 删临时文件 |
+
+> ⚠️ 上面第 5 行这条 `curl` 的开关以代码为准（`mirrors::download_args`）：
+> 正文原先只写了 `-s -S -L --retry 2`，漏了 `--connect-timeout 10`。
 
 收尾（任何来源）：`.wslconfig` 里开了 `[experimental] sparseVhd` → 补一条
-`--manage <name> --set-sparse true`；用户勾了"设为默认" → 最后一条 `--set-default`。
+`--manage <name> --set-sparse true --allow-unsafe`；用户勾了"设为默认" →
+最后一条 `--set-default`。
+
+> ⚠️ `--allow-unsafe` 是**必须**的：WSL 3.0.1.0 起默认拒绝开稀疏盘
+> （理由是"潜在的数据损坏"），报错里自己给出的命令就带这个开关。正文原先
+> 漏了它 —— 理由写在下面 v0.5.2 的补记里（关的方向不需要它，所以 `false`
+> 那条不带）。
 
 > **v0.5.1 补记（来源名字 + 动态清单）**：这两条联网来源原来叫「在线安装」和
 > 「镜像站下载」，名字上**看不出跟微软商店有关系** —— 用户要的就是"商店那条路"，

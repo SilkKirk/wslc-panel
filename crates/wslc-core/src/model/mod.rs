@@ -35,8 +35,8 @@ pub use container::{
 pub use distro::{parse_distro_list, Distro, DistroState, WslStatus};
 pub use image::ImageListItem;
 pub use install::{
-    plan, preflight, InstallPlan, InstallSource, InstallSpec, PlanContext, PlannedStep, PlanProgram,
-    Preflight, WSL_VERSION,
+    plan, preflight, InstallPlan, InstallSource, InstallSpec, PlanContext, PlanProgram,
+    PlannedStep, Preflight, WSL_VERSION,
 };
 pub use network::NetworkListItem;
 pub use session::{parse_session_table, Session};

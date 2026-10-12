@@ -39,9 +39,11 @@ pub struct NetworkListItem {
 
 impl NetworkListItem {
     /// 12 位短 ID。
+    ///
+    /// ⚠️ `get(..n)` 而不是 `&self.id[..n]`：`len()` 是**字节**数，
+    /// 第 12 个字节落在多字节字符中间时切片会 panic。
     pub fn short_id(&self) -> &str {
-        let n = self.id.len().min(12);
-        &self.id[..n]
+        self.id.get(..self.id.len().min(12)).unwrap_or(&self.id)
     }
 
     /// `IPv4` 字符串转布尔。

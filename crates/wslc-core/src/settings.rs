@@ -305,11 +305,30 @@ impl SettingsDoc {
                     }
                     None => {
                         // 键不存在时插入：先找小节块尾，再找顶层文件尾。
+                        //
+                        // ⚠️ **节本身不存在时必须连节头一起补**。
+                        //
+                        // 只往文件尾插一行带缩进的 `  cpuCount: 4`，得到的是
+                        // 一个没有父节点的缩进键 —— YAML 解析直接报错，
+                        // `wslc` 从此读不了 settings.yaml，而用户只是改了一个
+                        // 配置项。触发条件是"用户手工删掉了 `session:` 段"
+                        // （或文件被别的工具裁剪过）之后再从面板改任何
+                        // session 键。现有测试原先正好把这个错误行为固化住了
+                        // （只断言 `contains("foo: bar")`）。
                         let indent = self.child_indent(section);
+                        let missing_section = match section {
+                            Some(name) if self.section_range(Some(name)).is_none() => Some(name),
+                            _ => None,
+                        };
                         let line = format!("{indent}{key}: {v}");
                         let at = self.insert_position(section);
                         let mut new_raw = self.raw.clone();
                         insert_line(&mut new_raw, at, &line);
+                        if let Some(name) = missing_section {
+                            // 节头要落在缩进键**之前**：两次都用同一个下标，
+                            // 后插进去的那行会把先插的那行往后推。
+                            insert_line(&mut new_raw, at, &format!("{name}:"));
+                        }
                         self.raw = new_raw;
                         return self.raw != before;
                     }
@@ -357,8 +376,38 @@ impl SettingsDoc {
             }
         }
 
-        fs::write(&self.path, &self.raw)
-            .map_err(|e| Error::Settings(format!("写入 {} 失败：{e}", self.path.display())))?;
+        // **原子写**：先写同目录下的临时文件，再 rename 覆盖目标。
+        //
+        // 直接 `fs::write(&self.path, ...)` 有两个真实代价：
+        //
+        // 1. 写到一半失败（磁盘满、进程被杀、断电）会在原地留下**半截文件** ——
+        //    而这个文件是 `wslc` 的配置，半截 YAML 会让它读不了；
+        //    备份虽然还在，但用户看到的是"保存之后 wslc 坏了"。
+        // 2. 用户同时用编辑器改这个文件时，两边各写各的、谁后写谁赢，
+        //    中途那个不完整的状态还可能被对方读走。
+        //
+        // 临时文件必须与目标**同目录**：跨盘的 `fs::rename` 在 Windows 上
+        // 不搬数据、直接失败。`fs::rename` 在 Windows 上对应带
+        // `MOVEFILE_REPLACE_EXISTING` 的 MoveFileEx，所以目标已存在也能覆盖。
+        match temp_write_path(&self.path) {
+            Some(tmp) => {
+                fs::write(&tmp, &self.raw)
+                    .map_err(|e| Error::Settings(format!("写入 {} 失败：{e}", tmp.display())))?;
+                fs::rename(&tmp, &self.path).map_err(|e| {
+                    // 失败时尽力清掉临时文件，别在用户目录里留垃圾
+                    // （清不掉也不该盖住真正的错误，所以忽略它的结果）。
+                    let _ = fs::remove_file(&tmp);
+                    Error::Settings(format!("替换 {} 失败：{e}", self.path.display()))
+                })?;
+            }
+            // 推不出临时文件路径（极罕见：`path` 没有文件名部分）。
+            // 退回直接写 —— 不原子，但总比"保存不了"好。
+            None => {
+                fs::write(&self.path, &self.raw).map_err(|e| {
+                    Error::Settings(format!("写入 {} 失败：{e}", self.path.display()))
+                })?;
+            }
+        }
         self.mark_saved();
         Ok(backup)
     }
@@ -501,6 +550,22 @@ fn inline_comment(line: &str) -> &str {
         Some(pos) => &line[pos..],
         None => "",
     }
+}
+
+/// 与目标**同目录**的临时文件路径；推不出来时返回 `None`。
+///
+/// 为什么要同目录：`fs::rename` 跨盘时在 Windows 上不搬数据、直接失败
+/// （它对应 MoveFileEx，没有 COPY_ALLOWED）。而"先写临时文件再 rename"
+/// 是这里唯一的原子写手段。
+///
+/// 名字里带进程号：两个实例同时保存时，不至于互相覆盖临时文件、
+/// 也不至于因为对方的临时文件被 rename 走而报"找不到文件"。
+fn temp_write_path(path: &Path) -> Option<PathBuf> {
+    let parent = path.parent()?;
+    let name = path.file_name()?;
+    let mut tmp_name = name.to_os_string();
+    tmp_name.push(format!(".tmp-{}", std::process::id()));
+    Some(parent.join(tmp_name))
 }
 
 /// 在指定行插入一行文本（保留原有换行风格）。
@@ -740,11 +805,88 @@ mod tests {
 
     #[test]
     fn setting_a_nonexistent_section_key_still_terminates() {
-        let mut d = doc();
         // 小节不存在时走 "追加到文件尾" 分支，不应死循环或 panic。
+        let mut d = doc();
         let changed = d.set(Some("noSuchSection"), "foo", Some("bar"));
         assert!(changed);
-        assert!(d.raw().contains("foo: bar"));
+        // ⚠️ 这里**不能**只断言 `contains("foo: bar")` —— 那正是原来把
+        // "插出一个没有父节点的缩进键"这个错误固化住的原因。
+        assert!(
+            d.raw().contains("noSuchSection:\n  foo: bar"),
+            "节头必须一起补上，否则 YAML 解析不了：{}",
+            d.raw()
+        );
+    }
+
+    #[test]
+    fn setting_a_key_in_a_missing_section_adds_the_section_header() {
+        // 只有顶层键、没有 `session:` 段的文件（用户手工删过，或文件被别的
+        // 工具裁剪过）—— 这时必须连节头一起补，否则写出来的是没有父节点的
+        // 缩进键，YAML 直接报错，`wslc` 就再也读不了 settings.yaml 了。
+        let mut d = SettingsDoc::from_text("settings.yaml", "credentialStore: wincred\n");
+        assert!(d.set(Some("session"), "foo", Some("bar")));
+        assert_eq!(d.raw(), "credentialStore: wincred\nsession:\n  foo: bar\n");
+        // 补完之后自己也应该能读回来
+        assert_eq!(d.get(Some("session"), "foo").as_deref(), Some("bar"));
+    }
+
+    #[test]
+    fn setting_a_key_in_an_existing_section_does_not_add_a_header() {
+        // 节头已经在了就只插子项 —— 别多出一行重复的 `session:`
+        // （YAML 里重复键是错误，而且看着就像我们写坏了）。
+        let mut d = SettingsDoc::from_text("settings.yaml", "session:\n  cpuCount: 4\n");
+        assert!(d.set(Some("session"), "memorySize", Some("2GB")));
+        assert_eq!(d.raw(), "session:\n  cpuCount: 4\n  memorySize: 2GB\n");
+        assert_eq!(d.raw().matches("session:").count(), 1, "{}", d.raw());
+    }
+
+    #[test]
+    fn setting_a_top_level_key_never_invents_a_section() {
+        // 顶层键本来就没有节，不该凭空补出一个节头。
+        let mut d = SettingsDoc::from_text("settings.yaml", "session:\n  cpuCount: 4\n");
+        assert!(d.set(None, "credentialStore", Some("file")));
+        assert_eq!(d.raw(), "session:\n  cpuCount: 4\ncredentialStore: file\n");
+    }
+
+    #[test]
+    fn saving_backs_up_and_leaves_no_temp_file_behind() {
+        // 真的落一次盘：这条覆盖的是备份、原子写、以及"别在用户目录里
+        // 留临时文件"这三件在纯字符串测试里看不到的事。
+        let dir =
+            std::env::temp_dir().join(format!("wslc-panel-settings-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("应能建临时目录");
+        let path = dir.join("settings.yaml");
+
+        // 第一次保存：原文件还不存在 → 没有备份，但文件要写出来
+        let mut doc = SettingsDoc::from_text(path.clone(), "session:\n  cpuCount: 4\n");
+        assert!(doc.save_with_backup().expect("第一次保存应成功").is_none());
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("文件应存在"),
+            "session:\n  cpuCount: 4\n"
+        );
+
+        // 第二次保存：有备份，且内容是**保存前**那份
+        let mut doc = SettingsDoc::from_text(path.clone(), "session:\n  cpuCount: 8\n");
+        let backup = doc.save_with_backup().expect("第二次保存应成功");
+        let backup = backup.expect("原文件已存在，应该有备份");
+        let backed_up = std::fs::read_to_string(&backup).expect("备份应可读");
+        assert!(backed_up.contains("cpuCount: 4"), "{backed_up}");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("文件应存在"),
+            "session:\n  cpuCount: 8\n"
+        );
+
+        // 临时文件必须被 rename 走，不能留在同目录里
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .expect("应能列目录")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "残留了临时文件：{leftovers:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

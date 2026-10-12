@@ -42,9 +42,9 @@ use wslc_core::settings::SettingKey;
 use wslc_core::{Wsl, Wslc};
 
 use crate::state::{
-    self, AppState, ConfirmAction, DistroAction, ExportProgress, ImmediateAction,
-    InstallOutcome, InstallProgress, InstallSourceKind, MirrorChoice, MirrorProbeResult, Page,
-    PendingAction, PromptKind, Toast, ToastKind,
+    self, AppState, ConfirmAction, DistroAction, ExportProgress, ImmediateAction, InstallOutcome,
+    InstallProgress, InstallSourceKind, MirrorChoice, MirrorProbeResult, Page, PendingAction,
+    PromptKind, Toast, ToastKind,
 };
 use crate::theme;
 // `split_list` / `refresh_label` 是纯函数，住在不依赖 GPUI 的 `wslc-panel-core` 里
@@ -467,6 +467,19 @@ pub struct Shell {
 /// 列表（`wsl --list --verbose`）仍然跟随自动刷新 —— 状态变化要看得到。
 const DISTRO_STATUS_SECS: u64 = 30;
 
+/// 选到路径之后，除了填进输入框还要不要额外做一件事。
+///
+/// 单独一个类型而不是 `bool`：两种意图完全不同，`true` / `false`
+/// 在调用处读不出来是哪个。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterPick {
+    /// 只填输入框，别的什么都不做。
+    Nothing,
+    /// 把「安装目录」标成**用户亲手选的** —— 那之后名字联动就不能再改它
+    /// （见 [`Shell::resync_install_dir`] 的 `last_derived_dir`）。
+    InstallDirIsNowUserChosen,
+}
+
 impl Shell {
     /// 创建外壳：立刻触发一次采集、加载配置、启动自动刷新。
     pub fn new(cx: &mut Context<Self>) -> Self {
@@ -512,9 +525,7 @@ impl Shell {
             name: cx.new(|cx| {
                 InputState::new(window, cx).placeholder(default_source.name_placeholder())
             }),
-            install_dir: cx.new(|cx| {
-                InputState::new(window, cx).placeholder(r"D:\wsl\MyDistro")
-            }),
+            install_dir: cx.new(|cx| InputState::new(window, cx).placeholder(r"D:\wsl\MyDistro")),
             source_path: cx.new(|cx| {
                 InputState::new(window, cx).placeholder(default_source.path_placeholder())
             }),
@@ -633,6 +644,22 @@ impl Shell {
                 cx.notify();
                 return;
             }
+        }
+
+        // 移动和调整大小都要动这个发行版的虚拟磁盘，和正在进行的
+        // 安装 / 导出抢同一个文件。弹窗可能是几分钟前打开的，
+        // 那期间安装可能已经开始 —— 所以判在**提交这一刻**。
+        let touches_disk = matches!(kind, PromptKind::MoveDistro | PromptKind::ResizeDistro);
+        let busy = if touches_disk {
+            self.state.busy_with(&distro)
+        } else {
+            None
+        };
+        if let Some(what) = busy {
+            self.state
+                .notify(Toast::error(format!("{distro} 正在{what}，等它结束再操作")));
+            cx.notify();
+            return;
         }
 
         // 导出是**长任务**（要进度条、要能取消），走的是完全不同的一条路 ——
@@ -923,7 +950,17 @@ impl Shell {
         // 拉取和导出在界面上占的是同一个位置（都是居中的长任务浮层），
         // 不让它们同时跑，否则浮层会打架。
         if self.state.pulling.is_some() {
-            self.state.notify(Toast::error("正在拉取镜像，等它结束再导出"));
+            self.state
+                .notify(Toast::error("正在拉取镜像，等它结束再导出"));
+            cx.notify();
+            return;
+        }
+        // 别导出正在被安装的那个发行版：安装的重定位阶段（导出 → 注销 → 导入）
+        // 本来就在导出它，两条流式任务会抢同一个 VHD，而且它随时可能被
+        // `--unregister` 掉 —— 用户拿到的会是一个半截的 tar。
+        if let Some(what) = self.state.busy_with(&name) {
+            self.state
+                .notify(Toast::error(format!("{name} 正在{what}，等它结束再导出")));
             cx.notify();
             return;
         }
@@ -969,8 +1006,7 @@ impl Shell {
                     if let Some(progress) = shell.state.exporting.as_mut() {
                         // 只在这两个数字真的变了才重绘 ——
                         // 每 500 ms 无脑重绘一遍是浪费。
-                        let changed =
-                            progress.written != written || progress.elapsed_secs != secs;
+                        let changed = progress.written != written || progress.elapsed_secs != secs;
                         progress.written = written;
                         progress.elapsed_secs = secs;
                         progress.last_line = line;
@@ -1017,9 +1053,9 @@ impl Shell {
                         .ok()
                         .map(|m| state::format_bytes(m.len()))
                         .unwrap_or_else(|| "大小未知".to_owned());
-                    shell
-                        .state
-                        .notify(Toast::success(format!("{name} 已导出到 {target}（{size}）")));
+                    shell.state.notify(Toast::success(format!(
+                        "{name} 已导出到 {target}（{size}）"
+                    )));
                 } else {
                     let detail = if detail.trim().is_empty() {
                         format!("退出码 {code}")
@@ -1133,8 +1169,7 @@ impl Shell {
             return;
         }
 
-        self.state
-            .notify(Toast::info(format!("正在启动 {name}…")));
+        self.state.notify(Toast::info(format!("正在启动 {name}…")));
         cx.notify();
 
         let wsl = self.state.wsl.clone();
@@ -1204,12 +1239,7 @@ impl Shell {
 
     /// 设为默认发行版（不破坏数据，所以不弹确认）。
     pub fn set_default_distro(&mut self, name: String, cx: &mut Context<Self>) {
-        self.spawn_distro_action(
-            "设为默认",
-            name,
-            wslc_core::cmd::distro::set_default,
-            cx,
-        );
+        self.spawn_distro_action("设为默认", name, wslc_core::cmd::distro::set_default, cx);
     }
 
     /// 在资源管理器里定位发行版的安装目录。
@@ -1233,16 +1263,17 @@ impl Shell {
         };
 
         if !base.is_dir() {
-            self.state.notify(Toast::error(format!(
-                "目录不存在：{}",
-                base.display()
-            )));
+            self.state
+                .notify(Toast::error(format!("目录不存在：{}", base.display())));
             cx.notify();
             return;
         }
 
         // `explorer.exe` 即使成功也常返回非 0，所以只看能否启动。
-        match std::process::Command::new("explorer.exe").arg(&base).spawn() {
+        match std::process::Command::new("explorer.exe")
+            .arg(&base)
+            .spawn()
+        {
             Ok(_) => {
                 tracing::info!("已在资源管理器中打开 {}", base.display());
                 self.state
@@ -1267,6 +1298,17 @@ impl Shell {
         action: fn(&Wslc, &[String]) -> wslc_core::Result<Vec<String>>,
         cx: &mut Context<Self>,
     ) {
+        // 点下去先给个回应 —— 和发行版那条（[`Shell::spawn_distro_action`]）
+        // 保持一致。
+        //
+        // 没有这一条的话，从点击到结果出来这段时间界面上什么都没变。
+        // `wslc start/restart` 通常是秒级，但容器多、镜像要拉、或者 WSL
+        // 刚被唤醒时会明显更久 —— 那期间用户只会觉得按钮坏了然后去点第二次
+        // （`AGENTS.md` §7.1 第二条）。
+        self.state
+            .notify(Toast::info(format!("正在{verb} {name}…")));
+        cx.notify();
+
         let wslc = self.state.wslc.clone();
         let target = name.clone();
         cx.spawn(async move |this, cx| {
@@ -1717,6 +1759,37 @@ impl Shell {
         cx.notify();
     }
 
+    /// 这个危险操作会不会和正在跑的长任务打架？会的话给出拒绝的理由。
+    ///
+    /// 放在 [`Shell::confirm_pending`] 里而不是渲染层：渲染层决定"按钮画不画"
+    /// 会随刷新闪来闪去（安装开始/结束都在变），而**点下去的那一刻**才是
+    /// 真正要判的地方 —— 弹窗可能是几分钟前打开的，那期间安装可能已经开始了。
+    fn blocking_reason(&self, action: &ConfirmAction) -> Option<String> {
+        match action {
+            // 「关停全部」压的是 `wsl --shutdown`，作用在所有发行版上，
+            // 会把安装 / 导出正在跑的 `wsl.exe` 一起掐掉。
+            // 名义上"关停发行版"不该影响正在安装的那个（它还没注册完），
+            // 但它掐的是整个 WSL 服务 —— 实测里重定位那一步被打断
+            // 等于把刚装好的删掉（见 `cmd::install` 的模块说明）。
+            ConfirmAction::Distro(DistroAction::ShutdownAll) => self
+                .state
+                .long_task()
+                .map(|what| format!("{what} —— 这时「关停全部」会把它一起掐掉，等它结束再动")),
+            // 动某一个发行版：只在这个动作碰的正是那个正在被安装/导出的
+            // 发行版时才拦（别的一律放行 —— 安装要几十分钟，把整页操作
+            // 全锁住比这个 bug 更烦人）。`distro_name()` 对 `ShutdownAll`
+            // 返回 `None`，上面那条已经处理过它了。
+            ConfirmAction::Distro(other) => other.distro_name().and_then(|name| {
+                self.state.busy_with(name).map(|what| {
+                    format!("{name} 正在{what} —— 这时对它做别的写操作会把那一步弄坏，等它结束再动")
+                })
+            }),
+            // 容器域和发行版安装互不相干：一个走 `wslc.exe`、一个走 `wsl.exe`，
+            // 各自的发行版/会话也不重叠。拦下来只会平白挡住正常的容器操作。
+            ConfirmAction::Container(_) => None,
+        }
+    }
+
     /// 确认并执行。
     ///
     /// 两个域共用这一个入口：[`ConfirmAction::execute`] 内部按域分派到
@@ -1729,6 +1802,14 @@ impl Shell {
         let Some(action) = self.state.confirm.take() else {
             return;
         };
+
+        // 确认框**无论如何都要关掉**（上面已经 take 走了）——
+        // 拒绝执行时留一个"点了没反应又关不掉"的弹窗是最糟的结果。
+        if let Some(reason) = self.blocking_reason(&action) {
+            self.state.notify(Toast::error(reason));
+            cx.notify();
+            return;
+        }
 
         // 发行版被删掉之后它的详情弹窗就没有对象了 —— 现在先判断好，
         // 待会儿 `action` 要移进异步块。
@@ -1834,6 +1915,7 @@ impl Shell {
         label: &'static str,
         extensions: &'static [&'static str],
         title: &'static str,
+        after: AfterPick,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1866,6 +1948,19 @@ impl Shell {
                 match picked {
                     Ok(Some(path)) => {
                         input.update(cx, |state, cx| state.set_value(path, window, cx));
+                        if after == AfterPick::InstallDirIsNowUserChosen {
+                            // ⚠️ 这行**只能在真的选到东西时**执行。
+                            //
+                            // 原先它写在 `browse_install_dir` 里、`spawn_picker`
+                            // 调用之后，于是"点了浏览又点了取消"也会把它清掉：
+                            // 用户什么都没选，却永久失去了"安装目录跟着发行版名
+                            // 联动"，之后只能自己手敲路径。
+                            // （选择器还可能因为 `picking` 已经在跑而直接返回，
+                            // 那种情况下更不该动。）
+                            if let Some(form) = shell.install_form.as_mut() {
+                                form.last_derived_dir = None;
+                            }
+                        }
                     }
                     // 用户点了取消 —— 这不是错误，什么都不做
                     Ok(None) => {}
@@ -1896,6 +1991,9 @@ impl Shell {
             target.label,
             target.extensions,
             target.title,
+            // 移动位置 / 导出只填输入框，选完不需要额外做什么
+            //（安装目录那一份才要清 `last_derived_dir`）。
+            AfterPick::Nothing,
             window,
             cx,
         );
@@ -2084,17 +2182,16 @@ impl Shell {
         let Some(dialog) = self.wslconf_dialog.as_ref() else {
             return;
         };
-        let updates: Vec<(&'static str, &'static str, String)> =
-            wslc_core::model::wslconf::FIELDS
-                .iter()
-                .filter(|f| f.kind == wslc_core::model::wslconf::FieldKind::Text && !f.read_only)
-                .filter_map(|f| {
-                    dialog
-                        .inputs
-                        .get(&(f.section, f.key))
-                        .map(|input| (f.section, f.key, input.read(cx).value().trim().to_owned()))
-                })
-                .collect();
+        let updates: Vec<(&'static str, &'static str, String)> = wslc_core::model::wslconf::FIELDS
+            .iter()
+            .filter(|f| f.kind == wslc_core::model::wslconf::FieldKind::Text && !f.read_only)
+            .filter_map(|f| {
+                dialog
+                    .inputs
+                    .get(&(f.section, f.key))
+                    .map(|input| (f.section, f.key, input.read(cx).value().trim().to_owned()))
+            })
+            .collect();
 
         let Some(state) = self.state.wslconf.as_mut() else {
             return;
@@ -2248,9 +2345,9 @@ impl Shell {
             .install_form
             .as_ref()
             .map(|form| {
-                form.online_id.clone().unwrap_or_else(|| {
-                    form.name.read(cx).value().trim().to_owned()
-                })
+                form.online_id
+                    .clone()
+                    .unwrap_or_else(|| form.name.read(cx).value().trim().to_owned())
             })
             .unwrap_or_default();
 
@@ -2348,16 +2445,31 @@ impl Shell {
 
     /// 选一个目录填进「安装目录」。
     ///
-    /// 选完要把 [`InstallForm::last_derived_dir`] 清掉：那之后这个名字联动
+    /// 选完之后要把 [`InstallForm::last_derived_dir`] 清掉：那之后这个名字联动
     /// 就不能再动它了 —— 用户亲手选的目录被我们改掉是最恼人的一类 bug。
+    ///
+    /// ⚠️ 但**只能真的选到东西时**才清，所以这件事交给 `spawn_picker`
+    /// 在选中的分支里做（见 [`AfterPick::InstallDirIsNowUserChosen`]）。
+    /// 写在这一行之后的话，"点了取消"也会清 —— 用户什么都没选，
+    /// 却永久失去了名字联动。
     pub fn browse_install_dir(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(input) = self.install_form.as_ref().map(|form| form.install_dir.clone()) else {
+        let Some(input) = self
+            .install_form
+            .as_ref()
+            .map(|form| form.install_dir.clone())
+        else {
             return;
         };
-        self.spawn_picker(&input, true, "目录", &[], "选择安装目录", window, cx);
-        if let Some(form) = self.install_form.as_mut() {
-            form.last_derived_dir = None;
-        }
+        self.spawn_picker(
+            &input,
+            true,
+            "目录",
+            &[],
+            "选择安装目录",
+            AfterPick::InstallDirIsNowUserChosen,
+            window,
+            cx,
+        );
     }
 
     // -- 添加实例：在线清单与镜像站 ----------------------------------------
@@ -2412,12 +2524,7 @@ impl Shell {
     /// 我们的默认值是 id（`Ubuntu-24.04`，本身就是合法名字），于是走
     /// `--install -d Ubuntu-24.04 --location <目录>` 这条快路；
     /// 用户想改名随时能改，界面上也会提示那会多一次全量拷贝。
-    pub fn pick_online_distro(
-        &mut self,
-        id: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn pick_online_distro(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(form) = self.install_form.as_mut() {
             // 只在"名字还是我们填的"时候动它：空着、或者还是上一次选中的那个 id。
             // 用户自己敲过名字就不该被覆盖（和 `last_derived_dir` 是同一条原则）。
@@ -2462,9 +2569,9 @@ impl Shell {
                             catalog.origin.label().to_owned(),
                             catalog.updated,
                         );
-                        shell.state.notify(Toast::success(format!(
-                            "拿到 {count} 个可装的发行版"
-                        )));
+                        shell
+                            .state
+                            .notify(Toast::success(format!("拿到 {count} 个可装的发行版")));
                     }
                     Err(e) => {
                         // 清单拉不到时**留着旧清单**：旧的还能用，总比空的强
@@ -2515,6 +2622,16 @@ impl Shell {
                 .spawn(async move {
                     let mut out: Vec<(mirrors::Candidate, Option<mirrors::Probe>)> = Vec::new();
                     for candidate in candidates {
+                        // 纵深防御：`candidate.url` 来自远端清单，而它会作为
+                        // **裸 argv** 交给 curl（见 `mirrors::is_http_url`）。
+                        // `parse_catalog` 已经滤过一遍，界面这条探测路径是
+                        // 独立拼的，再挡一次。以 `-` 开头的会被 curl 当成选项。
+                        if !mirrors::is_http_url(&candidate.url) {
+                            // 保留在列表里但标记成探测不到 —— 直接丢会让
+                            // "为什么少了几个镜像"变成一个看不见的问题。
+                            out.push((candidate, None));
+                            continue;
+                        }
                         let args = mirrors::probe_args(&candidate.url);
                         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
                         let probe = wslc_core::cli::run_helper_with_hint(
@@ -2608,15 +2725,11 @@ impl Shell {
         };
 
         let ctx = self.state.plan_context();
-        let dir = spec
-            .effective_install_dir(&ctx)
-            .unwrap_or_default();
+        let dir = spec.effective_install_dir(&ctx).unwrap_or_default();
         let check = self.state.preflight(&spec, dir_non_empty(&dir));
         if !check.ok() {
             self.state.notify(Toast::error(
-                check
-                    .error_text()
-                    .unwrap_or_else(|| "参数有误".to_owned()),
+                check.error_text().unwrap_or_else(|| "参数有误".to_owned()),
             ));
             cx.notify();
             return;
@@ -2636,11 +2749,7 @@ impl Shell {
 
         // 要跑哪些步骤写进日志：出问题时能直接复制到终端复现
         // （界面上的预览和执行读的是**同一份计划**）。
-        tracing::info!(
-            "安装 {}：{}",
-            plan.name,
-            plan.preview_lines().join("  →  ")
-        );
+        tracing::info!("安装 {}：{}", plan.name, plan.preview_lines().join("  →  "));
 
         let events: Arc<Mutex<Vec<InstallEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let done: Arc<Mutex<Option<InstallSummary>>> = Arc::new(Mutex::new(None));
@@ -2716,9 +2825,7 @@ impl Shell {
                 tracing::info!("已请求取消安装");
                 self.state.notify(Toast::info("正在取消安装…"));
             }
-            None => self
-                .state
-                .notify(Toast::error("当前没有正在进行的安装")),
+            None => self.state.notify(Toast::error("当前没有正在进行的安装")),
         }
         cx.notify();
     }
@@ -2732,9 +2839,10 @@ impl Shell {
     /// 顺手看一眼结果槽不额外花什么，还能保证"最后一批事件"一定先被吃掉。
     fn absorb_install_events(&mut self, cx: &mut Context<Self>) -> Option<InstallSummary> {
         let (events, started, finished) = {
-            let Some(run) = self.install_run.as_ref() else {
-                return None;
-            };
+            // 用 `?` 而不是 `let ... else { return None }`：两者等价，
+            // 而这一个函数返回的就是 `Option`，`?` 更短也更难写错
+            // （clippy 的 `question_mark` 报的就是这条）。
+            let run = self.install_run.as_ref()?;
             let drained: Vec<InstallEvent> = std::mem::take(&mut *lock(&run.events));
             (drained, run.started, lock(&run.done).clone())
         };
@@ -2906,8 +3014,10 @@ impl Shell {
             Err(e) => {
                 tracing::warn!("保存偏好失败：{e}");
                 // 内存里的值仍然生效，只是重启后会丢。
-                self.state
-                    .notify(Toast::error(format!("已改为{}，但保存失败：{e}", theme.label())));
+                self.state.notify(Toast::error(format!(
+                    "已改为{}，但保存失败：{e}",
+                    theme.label()
+                )));
             }
         }
         cx.notify();
@@ -3076,6 +3186,17 @@ impl Render for Shell {
             div().into_any_element()
         };
 
+        // 提示条：主内容列里的一个**布局项**，不是浮层。
+        //
+        // 原先它是挂在根元素上的 `.absolute().bottom(20).left(0).right(0)`，
+        // 横跨整个窗口宽度。v0.5.10 把它从右下角挪到底部居中，理由是右下角
+        // 正好压着「开始安装」；但居中之后它变成压住**底部中间**的东西了 ——
+        // 本机实测过，底部那一带的按钮会被它盖住。
+        //
+        // 浮层方案无论放哪儿都必然压住**某个**控件（这正是 v0.5.10 那次
+        // 修复的成因），所以这里改成布局项：提示条出现时主内容区让出一条
+        // 高度，谁都不会被盖住，也不需要再挑位置。
+        // 代价是它出现 / 消失时内容会上下动一下 —— 比"有按钮点不到"好。
         let toast: AnyElement = match &state.toast {
             None => div().into_any_element(),
             Some(t) => {
@@ -3085,41 +3206,37 @@ impl Render for Shell {
                     ToastKind::Success => theme::success(),
                     ToastKind::Error => theme::danger(),
                 };
-                div()
-                    .absolute()
-                    .bottom(px(20.))
-                    // 放在**底部居中**，不是右下角。
-                    //
-                    // 右下角正好是「添加实例」这类页面的主操作按钮（「开始安装」）的位置：
-                    // 实测（用户截图）提示卡片会正好压在按钮上 —— 提示被按钮衬得看不清、
-                    // 按钮也被提示挡住。挪到中间之后，两侧的角落（右上「刷新」、
-                    // 右下主操作）都空着，谁都不会压到谁。
-                    .left(px(0.))
-                    .right(px(0.))
+                h_flex()
+                    .w_full()
+                    // `flex_none`：别让它被上面那个 `flex_1` 的滚动区挤扁。
+                    .flex_none()
+                    .justify_center()
+                    .px_5()
+                    .pb_4()
                     .child(
-                        h_flex().w_full().justify_center().child(
-                            h_flex()
-                                .max_w(px(560.))
-                                .gap_3()
-                                .px_4()
-                                .py_3()
-                                .rounded_md()
-                                .bg(theme::bg_card())
-                                .border_1()
-                                .border_color(color)
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(color)
-                                        .overflow_hidden()
-                                        .child(t.text.clone()),
-                                )
-                                .child(Button::new("toast-dismiss").label("关闭").small().on_click(
-                                    move |_, _, cx| {
-                                        entity.update(cx, |shell, cx| shell.dismiss_toast(cx));
-                                    },
-                                )),
-                        ),
+                        h_flex()
+                            .max_w(px(560.))
+                            .gap_3()
+                            .px_4()
+                            .py_3()
+                            .rounded_md()
+                            .bg(theme::bg_card())
+                            .border_1()
+                            .border_color(color)
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(color)
+                                    .overflow_hidden()
+                                    // 见 `util::strip_md`：提示条里也有写
+                                    // `**不完整**` 这类标记的文案。
+                                    .child(crate::util::strip_md(&t.text)),
+                            )
+                            .child(Button::new("toast-dismiss").label("关闭").small().on_click(
+                                move |_, _, cx| {
+                                    entity.update(cx, |shell, cx| shell.dismiss_toast(cx));
+                                },
+                            )),
                     )
                     .into_any_element()
             }
@@ -3163,7 +3280,7 @@ impl Render for Shell {
         let export_overlay: AnyElement = views::export_overlay(state, &entity);
 
         // 发行版配置（/etc/wsl.conf）弹窗。要 `cx` 才能读输入框的值。
-        let wslconf_dialog: AnyElement = views::wslconf_overlay(self, &entity, cx);
+        let wslconf_dialog: AnyElement = views::wslconf_overlay(self, &entity);
 
         // 页面渲染要 `&Shell`（不只是 `&AppState`）——「添加实例」页有输入框，
         // 而输入框的 `InputState` 住在 `Shell` 里。
@@ -3261,10 +3378,13 @@ impl Render for Shell {
                                     .overflow_y_scroll()
                                     .child(error_banner)
                                     .child(page_body),
-                            ),
+                            )
+                            // 提示条放在主内容列**最后**：它是一条贴底的布局项，
+                            // 出现时把上面那个 `flex_1` 的滚动区挤矮一点，
+                            // 而不是盖在它上面（见 `toast` 的说明）。
+                            .child(toast),
                     ),
             )
-            .child(toast)
             .child(confirm)
             .child(pull_dialog)
             .child(create_dialog)
@@ -3311,18 +3431,21 @@ fn nav_item(page: Page, current: Page, entity: &Entity<Shell>) -> AnyElement {
 ///
 /// 用 `&'static str` 而不是格式化出来的 `String`：
 /// GPUI 的交互元素要求 ID 稳定，静态字符串最不容易出错。
+///
+/// ⚠️ 这个 match 只覆盖 `Page::ALL` 里那 8 页 —— `AddInstance` 不是导航项
+/// （它从实例列表页的按钮进），所以这里也不需要它的 id。
 fn nav_id(page: Page) -> &'static str {
     match page {
         Page::Dashboard => "nav-dashboard",
         Page::Instances => "nav-instances",
+        // 侧边栏不列它，但 `Page` 是穷尽的，这一支必须有；
+        // 真走到这儿也只是给一个不会被用到的 id。
         Page::AddInstance => "nav-add-instance",
         Page::Containers => "nav-containers",
         Page::Images => "nav-images",
         Page::Networks => "nav-networks",
         Page::Volumes => "nav-volumes",
         Page::AppSettings => "nav-app-settings",
-        Page::Config => "nav-config",
-        Page::WslConfig => "nav-wsl-config",
         Page::About => "nav-about",
     }
 }
@@ -3352,43 +3475,39 @@ fn confirm_overlay(action: &ConfirmAction, entity: &Entity<Shell>) -> AnyElement
             })
     };
 
-    div()
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(theme::scrim())
-        .child(
-            v_flex()
-                .w(px(460.))
-                .gap_4()
-                .p_5()
-                .rounded_lg()
-                .bg(theme::bg_card())
-                .border_1()
-                .border_color(theme::danger().opacity(0.5))
-                .child(
-                    div()
-                        .text_lg()
-                        .font_bold()
-                        .text_color(theme::danger())
-                        .child(action.title()),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme::text_muted())
-                        .child(action.body()),
-                )
-                .child(
-                    h_flex()
-                        .w_full()
-                        .justify_end()
-                        .gap_2()
-                        .child(cancel)
-                        .child(confirm),
-                ),
-        )
-        .into_any_element()
+    views::modal_scrim(
+        v_flex()
+            .w(px(460.))
+            .gap_4()
+            .p_5()
+            .rounded_lg()
+            .bg(theme::bg_card())
+            .border_1()
+            .border_color(theme::danger().opacity(0.5))
+            .child(
+                div()
+                    .text_lg()
+                    .font_bold()
+                    .text_color(theme::danger())
+                    .child(action.title()),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme::text_muted())
+                    // 文案里写的是 Markdown（`**已停止**`），而这里是纯文本
+                    // 渲染 —— 不清掉的话用户看到的是字面星号，
+                    // 而这恰好是"不可撤销"那类确认框。见 `util::strip_md`。
+                    .child(crate::util::strip_md(&action.body())),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_end()
+                    .gap_2()
+                    .child(cancel)
+                    .child(confirm),
+            ),
+    )
+    .into_any_element()
 }

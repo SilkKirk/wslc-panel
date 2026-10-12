@@ -162,7 +162,8 @@ fn build_script(title: &str, filter: Option<&str>, folders: bool) -> String {
         script.push_str("$d = New-Object System.Windows.Forms.FolderBrowserDialog\n");
         script.push_str(&format!("$d.Description = '{}'\n", quote(title)));
         script.push_str("$d.ShowNewFolderButton = $true\n");
-        script.push_str("if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {\n");
+        script
+            .push_str("if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {\n");
         script.push_str("  [Console]::Out.Write($d.SelectedPath)\n");
         script.push_str("}\n");
     } else {
@@ -171,7 +172,8 @@ fn build_script(title: &str, filter: Option<&str>, folders: bool) -> String {
         script.push_str(&format!("$d.Filter = '{}'\n", quote(filter.unwrap_or(""))));
         // 手输一个不存在的路径时挡下来，免得后面 wsl 报一句不好懂的错
         script.push_str("$d.CheckFileExists = $true\n");
-        script.push_str("if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {\n");
+        script
+            .push_str("if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {\n");
         script.push_str("  [Console]::Out.Write($d.FileName)\n");
         script.push_str("}\n");
     }
@@ -268,10 +270,7 @@ mod tests {
             Some(r"D:\img\a.tar".to_owned())
         );
         // 前导空白也去掉（PowerShell 有时会先吐一个换行）
-        assert_eq!(
-            parse_output(b"\r\nD:\\wsl\r\n"),
-            Some(r"D:\wsl".to_owned())
-        );
+        assert_eq!(parse_output(b"\r\nD:\\wsl\r\n"), Some(r"D:\wsl".to_owned()));
     }
 
     #[test]

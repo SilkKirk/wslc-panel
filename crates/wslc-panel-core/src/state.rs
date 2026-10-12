@@ -20,7 +20,9 @@ use std::time::Duration;
 
 use wslc_core::cmd::install::InstallEvent;
 use wslc_core::mirrors::{self, Offer};
-use wslc_core::model::install::{online_matches, InstallSpec, OnlineDistro, PlanContext, Preflight};
+use wslc_core::model::install::{
+    InstallSpec, OnlineDistro, PlanContext, Preflight, online_matches,
+};
 // 「在线清单来自哪儿」是**数据**（`wsl -l -o` 还是兜底 JSON），
 // 定义在 `wslc-core` 里；这里转出去，界面按它显示那句说明。
 pub use wslc_core::model::install::OnlineListSource;
@@ -58,17 +60,15 @@ pub enum Page {
     Volumes,
     /// 应用自己的设置（刷新间隔、主题……）。
     ///
-    /// 和 [`Page::Config`] 的区别：这里存的是**本程序的偏好**
-    /// （`%LOCALAPPDATA%\wslc-panel\prefs.json`），
-    /// 而 `Config` 管的是 `wslc` 自己的 `settings.yaml`。
-    AppSettings,
-    /// wlsc 配置。
-    Config,
-    /// WSL 自己的全局配置（`%USERPROFILE%\.wslconfig`）。
+    /// 这里存的是**本程序的偏好**（`%LOCALAPPDATA%\wslc-panel\prefs.json`）。
+    /// `wslc` 自己的 `settings.yaml` 和 WSL 自己的 `.wslconfig` 是这一页里的
+    /// 两个 **tab**（见 [`SettingsTab`]），不是并列的页面。
     ///
-    /// 和 [`Page::Config`] 的区别：那个是 **wslc** 的 `settings.yaml`，
-    /// 这个是 **WSL 本身**的配置；两者互不相干，连文件位置都不同。
-    WslConfig,
+    /// ⚠️ 它们曾经是 `Page::Config` / `Page::WslConfig` 两个变体。v0.4 把它们
+    /// 收进这一页的 tab 之后就没**人**能导航到它们了（`ALL` 里没有、界面上
+    /// 也不构造），却一直留在枚举里：`nav_id` 与页面分发里各留了两个永远走不到
+    /// 的分支。已删。
+    AppSettings,
     /// 关于：应用介绍、版本、构建、地址。
     ///
     /// 和「应用设置」分开：那一页是**可改**的偏好，这一页只是**看**。
@@ -80,15 +80,15 @@ impl Page {
     ///
     /// ⚠️ 同组的页面必须**连续** —— 侧边栏靠"组名变了就插一条标题"
     /// 来分组（见 `app.rs` 的 `render`）。
-    /// ⚠️ 有三页**故意不在这里**：
+    /// ⚠️ 有一页**故意不在这里**：
     ///
-    /// - `Config` / `WslConfig` —— 已经变成「应用设置」页里的两个 tab
-    ///   （见 [`SettingsTab`]），留在 `ALL` 里会让侧边栏多出两个重复入口；
     /// - `AddInstance` —— 只能从**实例列表页上那个「添加实例」按钮**进。
     ///   侧边栏同时列「实例列表」和「添加实例」是冗余的：后者本来就是
     ///   前者的一个动作，不是并列的一站。
     ///
     /// 所以 `ALL` 是"侧边栏列哪些页"，**不等于**"有哪些页"。
+    /// （`wlsc 配置` / `WSL 配置` 曾经也在"不在这里"之列，但它们现在是
+    /// [`SettingsTab`] 的两个 tab、不再是页面了。）
     pub const ALL: [Page; 8] = [
         Page::Dashboard,
         Page::Instances,
@@ -111,8 +111,6 @@ impl Page {
             Page::Networks => "网络",
             Page::Volumes => "卷",
             Page::AppSettings => "应用设置",
-            Page::Config => "wlsc 配置",
-            Page::WslConfig => "WSL 配置",
             Page::About => "关于",
         }
     }
@@ -124,7 +122,7 @@ impl Page {
             Page::Instances | Page::AddInstance => "WSL 实例",
             Page::Containers => "容器",
             Page::Images | Page::Networks | Page::Volumes => "资源",
-            Page::AppSettings | Page::Config | Page::WslConfig | Page::About => "设置",
+            Page::AppSettings | Page::About => "设置",
         }
     }
 
@@ -197,7 +195,9 @@ impl InstallSourceKind {
         match self {
             Self::Tar => "最可靠：本地 tar 文件，不需要联网。只是把文件系统铺开。",
             Self::Vhdx => "本地 ext4 虚拟磁盘（`.vhdx`）会被**拷贝**一份到安装目录，原始文件不动。",
-            Self::File => "交给 WSL 自己的安装器（`.wsl` 或 rootfs 都行），会做首次启动初始化（建默认用户）。",
+            Self::File => {
+                "交给 WSL 自己的安装器（`.wsl` 或 rootfs 都行），会做首次启动初始化（建默认用户）。"
+            }
             Self::Online => {
                 "走 WSL 官方的在线安装（`wsl --install -d`）：默认从微软商店装，\
                  商店拉不动时可以切到 GitHub（`--web-download`）。\
@@ -250,6 +250,19 @@ impl InstallSourceKind {
             Self::Vhdx => Some(("VHDX 文件", VHDX)),
             Self::File => Some(("安装文件", WSL_FILES)),
             Self::Mirror | Self::Online => None,
+        }
+    }
+
+    /// 发行版名输入框的**标签**。
+    ///
+    /// 联网那两条路里它同时是"清单拉不到时手输的 id"，所以标签要长一些 ——
+    /// 原先这个函数住在 `views.rs`，而它旁边的 `label()` / `hint()` /
+    /// `path_label()` / `name_placeholder()` 全都在这里，漏了它一个。
+    pub fn name_field_label(self) -> &'static str {
+        if self.is_online() {
+            "发行版名（留空 = 用下面选中的那个 id；清单拉不到时也可以直接填，如 Ubuntu-24.04）"
+        } else {
+            "发行版名"
         }
     }
 
@@ -687,6 +700,19 @@ pub enum DistroAction {
 }
 
 impl DistroAction {
+    /// 这个动作作用在哪个发行版上。
+    ///
+    /// `ShutdownAll` 返回 `None`：它压的是 `wsl --shutdown`，作用在**所有**
+    /// 发行版上，比"动某一个"更粗暴 —— 调用方要单独处理它
+    /// （见 [`AppState::long_task`]），别把它当成"碰不到特定的那个"而放行。
+    pub fn distro_name(&self) -> Option<&str> {
+        match self {
+            Self::ShutdownAll => None,
+            Self::Terminate(name) | Self::Compact(name) => Some(name),
+            Self::Unregister { name, .. } | Self::SetSparse { name, .. } => Some(name),
+        }
+    }
+
     /// 确认弹窗标题。
     pub fn title(&self) -> &'static str {
         match self {
@@ -711,11 +737,9 @@ impl DistroAction {
                 "将立即终止发行版 {name}。里面**没有保存**的东西会丢失，\
                  正在跑的服务会中断。"
             ),
-            DistroAction::ShutdownAll => {
-                "将关停**所有**发行版和 WSL2 轻量工具虚拟机。\
+            DistroAction::ShutdownAll => "将关停**所有**发行版和 WSL2 轻量工具虚拟机。\
                  所有发行版里没保存的东西都会丢失。"
-                    .to_owned()
-            }
+                .to_owned(),
             DistroAction::Unregister { name, vhdx_bytes } => {
                 let size = match vhdx_bytes {
                     Some(bytes) => format!("（虚拟磁盘约 {}）", format_bytes(*bytes)),
@@ -1270,7 +1294,11 @@ impl MirrorChoice {
 ///
 /// 清单是**动态拉的**（`wslc_core::cmd::catalog`，两个 HTTP 请求走 `curl.exe`），
 /// 所以这里存的是"拉回来的清单 + 探测结果"，而不是写死的表。
-#[derive(Debug, Clone, PartialEq)]
+///
+/// `Default` 直接派生：手写的那份每个字段都是"该类型的默认值"
+/// （`Vec::new()` / `String::new()` / `None` / `false`），逐字段写一遍
+/// 只是给了日后**加字段时漏写一个**的机会（clippy 的 `derivable_impls`）。
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct MirrorState {
     /// 正在拉清单。
     pub loading: bool,
@@ -1297,23 +1325,6 @@ pub struct MirrorState {
     pub error: Option<String>,
 }
 
-impl Default for MirrorState {
-    fn default() -> Self {
-        Self {
-            loading: false,
-            load_error: None,
-            offers: Vec::new(),
-            origin: String::new(),
-            updated: None,
-            distro_id: String::new(),
-            probing: false,
-            results: Vec::new(),
-            chosen: None,
-            error: None,
-        }
-    }
-}
-
 impl MirrorState {
     /// 新建。
     pub fn new() -> Self {
@@ -1323,7 +1334,11 @@ impl MirrorState {
     /// 当前选中的那一条（没显式选过就是第一条）。
     pub fn selected_offer(&self) -> Option<&Offer> {
         if !self.distro_id.trim().is_empty() {
-            if let Some(found) = self.offers.iter().find(|offer| offer.id() == self.distro_id) {
+            if let Some(found) = self
+                .offers
+                .iter()
+                .find(|offer| offer.id() == self.distro_id)
+            {
                 return Some(found);
             }
         }
@@ -1611,9 +1626,8 @@ impl InstallProgress {
                 true
             }
             InstallEvent::Progress { have, total, secs } => {
-                let changed = self.have != *have
-                    || self.total_bytes != *total
-                    || self.step_secs != *secs;
+                let changed =
+                    self.have != *have || self.total_bytes != *total || self.step_secs != *secs;
                 self.have = *have;
                 self.total_bytes = *total;
                 self.step_secs = *secs;
@@ -1636,6 +1650,40 @@ impl InstallProgress {
     }
 }
 
+/// `/etc/wsl.conf` 表单里某个字段的**稳定元素 id**。
+///
+/// 用 `match` 而不是 `format!`：`Input::id` / `Checkbox::new` 要的是
+/// `&'static str`，而且 GPUI 的交互元素本来就要求 id 稳定。
+///
+/// ⚠️ 这个 match 对应的是**表驱动**的 [`wslc_core::model::wslconf::FIELDS`]，
+/// 所以往那张表里加字段时**很容易忘了在这里加一行**。后果不是编译错误：
+/// 新字段会静默拿到 `"wslconf-unknown"`；两个字段都忘了加就**撞同一个 id**，
+/// 而 GPUI 里 id 撞了会让勾选 / 焦点状态互相串。
+/// 测试 `every_wslconf_field_has_its_own_id` 就是盯这件事的。
+///
+/// （它原先住在 `views.rs`。搬过来的理由见 `AGENTS.md` §2：
+/// 这是纯函数，而放在那边就永远没有测试 —— CI 不跑 `wslc-panel` 的单测。）
+pub fn wslconf_field_id(section: &str, key: &str) -> &'static str {
+    match (section, key) {
+        ("automount", "enabled") => "wslconf-automount-enabled",
+        ("automount", "mountFsTab") => "wslconf-automount-mountfstab",
+        ("automount", "root") => "wslconf-automount-root",
+        ("automount", "options") => "wslconf-automount-options",
+        ("network", "generateHosts") => "wslconf-network-generatehosts",
+        ("network", "generateResolvConf") => "wslconf-network-generateresolvconf",
+        ("network", "hostname") => "wslconf-network-hostname",
+        ("interop", "enabled") => "wslconf-interop-enabled",
+        ("interop", "appendWindowsPath") => "wslconf-interop-appendwindowspath",
+        ("user", "default") => "wslconf-user-default",
+        ("boot", "systemd") => "wslconf-boot-systemd",
+        ("boot", "command") => "wslconf-boot-command",
+        ("boot", "protectBinfmt") => "wslconf-boot-protectbinfmt",
+        ("gpu", "enabled") => "wslconf-gpu-enabled",
+        ("time", "useWindowsTimezone") => "wslconf-time-usewindowstimezone",
+        _ => "wslconf-unknown",
+    }
+}
+
 /// 「发行版配置（`/etc/wsl.conf`）」弹窗的状态。
 ///
 /// **纯数据** —— 输入框（`Entity<InputState>`）在 `Shell::wslconf_dialog` 里，
@@ -1650,7 +1698,11 @@ pub struct WslConfState {
     ///
     /// 界面用它做版本门控（`[boot]` / `[gpu]` / `[time]` 要不要显示）。
     pub wsl_version: String,
-    /// 正在读或者正在写。
+    /// 正在**保存**（写 `/etc/wsl.conf`）。
+    ///
+    /// ⚠️ 只有保存时会置位 —— 打开弹窗时读文件那一趟**没有**置位
+    /// （原先这里的注释写着"正在读或者正在写"，与实现不符）。
+    /// 界面据此把两个保存按钮换成一行「正在保存…」，见 `views::wslconf_overlay`。
     pub busy: bool,
     /// 保存前的校验错误；非空时挡下保存。
     pub errors: Vec<String>,
@@ -1835,6 +1887,55 @@ impl AppState {
             .collect()
     }
 
+    /// 有长任务正在**动这个发行版**吗？有就返回它在干什么（`"安装"` / `"导出"`）。
+    ///
+    /// # 为什么需要它
+    ///
+    /// 安装和「终止 / 删除 / 压缩 / 导出 / 移动」之间原先**没有任何互斥**。
+    /// 安装的重定位阶段是「导出 → 注销 → 导入」，而 `cmd::install` 自己的
+    /// 注释写着"中途停下等于把刚装好的删了" —— 这时对**同一个**发行版点一下
+    /// 终止或导出就能把它打断，代价是不可逆的。
+    ///
+    /// 名字比较用 [`wslc_core::model::distro::same_name`]：安装时源名与用户
+    /// 想要的名字可能只差大小写，用 `==` 会漏掉。
+    pub fn busy_with(&self, distro: &str) -> Option<&'static str> {
+        // 这里用 `is_some_and` 而不是嵌套的 `if let`：后者会被 clippy 的
+        // `collapsible_if` 建议改成 let-chain，而 let-chain 要 Rust 1.88，
+        // 本 crate 声明的 MSRV 是 1.85（见 `Cargo.toml` 的 `rust-version`）。
+        let installing = self.installing.as_ref().is_some_and(|install| {
+            install.is_running() && wslc_core::model::distro::same_name(&install.name, distro)
+        });
+        if installing {
+            return Some("安装");
+        }
+        let exporting = self
+            .exporting
+            .as_ref()
+            .is_some_and(|export| wslc_core::model::distro::same_name(&export.name, distro));
+        if exporting {
+            return Some("导出");
+        }
+        None
+    }
+
+    /// 有**任何**长任务在跑吗？返回一句话说明在干什么。
+    ///
+    /// 「关停全部」（`wsl --shutdown`）要用它：那个动作压的是整个 WSL 服务，
+    /// 会把安装 / 导出正在跑的 `wsl.exe` 一起掐掉 —— 它不是"动某一个发行版"，
+    /// 所以 [`AppState::busy_with`] 拦不住它。
+    pub fn long_task(&self) -> Option<String> {
+        if let Some(install) = self.installing.as_ref().filter(|i| i.is_running()) {
+            return Some(format!("正在安装 {}", install.name));
+        }
+        if let Some(export) = self.exporting.as_ref() {
+            return Some(format!("正在导出 {}", export.name));
+        }
+        if let Some(pull) = self.pulling.as_ref() {
+            return Some(format!("正在拉取 {}", pull.image));
+        }
+        None
+    }
+
     /// 拼一个"添加实例"用的计划上下文。
     ///
     /// `wslconfig_sparse` 取的是**最近一次采集**读到的 `.wslconfig`（见
@@ -1926,6 +2027,35 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_wslconf_field_has_its_own_id() {
+        // 这条测试是 `wslconf_field_id` 那个 match 的守卫：往
+        // `wslconf::FIELDS` 里加字段却忘了在那里加一行时，它会先炸 ——
+        // 否则新字段会静默拿到 `"wslconf-unknown"`；两个字段都忘了加就
+        // **撞同一个 id**，而 GPUI 里 id 撞了会让勾选 / 焦点状态互相串。
+        //
+        // 这也是当初把它从 `views.rs` 搬过来的主要收益：CI 不跑
+        // `wslc-panel` 的单测，那种测试放在那边等于不存在。
+        let mut seen: Vec<&'static str> = Vec::new();
+        for field in wslc_core::model::wslconf::FIELDS {
+            let id = wslconf_field_id(field.section, field.key);
+            assert_ne!(
+                id, "wslconf-unknown",
+                "字段 `{}.{}` 没有自己的元素 id —— 去 `wslconf_field_id` 里补一行",
+                field.section, field.key
+            );
+            assert!(
+                !seen.contains(&id),
+                "元素 id 撞了：`{id}`（`{}.{}`）",
+                field.section,
+                field.key
+            );
+            seen.push(id);
+        }
+        // 反方向：表里没有的东西不该拿到"看起来合法"的 id
+        assert_eq!(wslconf_field_id("nope", "nope"), "wslconf-unknown");
+    }
 
     #[test]
     fn every_page_has_a_label_and_group() {
@@ -2116,10 +2246,13 @@ mod tests {
         }
         assert_eq!(progress.log.len(), InstallProgress::MAX_LOG_LINES);
         // 留下的是**最后**那些行（用户要看的是最新的）
-        assert!(progress.log.last().unwrap().contains(&format!(
-            "第 {} 行",
-            InstallProgress::MAX_LOG_LINES + 49
-        )));
+        assert!(
+            progress
+                .log
+                .last()
+                .unwrap()
+                .contains(&format!("第 {} 行", InstallProgress::MAX_LOG_LINES + 49))
+        );
     }
 
     #[test]
@@ -2197,8 +2330,14 @@ mod tests {
             Some("openSUSE tumbleweed")
         );
         // ② 只对上名字（在线 id 不带版本）
-        assert_eq!(state.match_online_id("Ubuntu").as_deref(), Some("Ubuntu 24.04"));
-        assert_eq!(state.match_online_id("Debian").as_deref(), Some("Debian 13"));
+        assert_eq!(
+            state.match_online_id("Ubuntu").as_deref(),
+            Some("Ubuntu 24.04")
+        );
+        assert_eq!(
+            state.match_online_id("Debian").as_deref(),
+            Some("Debian 13")
+        );
         // ③ 名字前缀（两边叫法有出入）
         assert_eq!(
             state.match_online_id("kali-linux").as_deref(),
@@ -2364,7 +2503,11 @@ mod tests {
             bytes: None,
             ..ok.clone()
         };
-        assert!(unknown.summary().contains("大小未知"), "{}", unknown.summary());
+        assert!(
+            unknown.summary().contains("大小未知"),
+            "{}",
+            unknown.summary()
+        );
     }
 
     #[test]
@@ -2430,10 +2573,7 @@ mod tests {
         for g in &deduped {
             assert!(seen.insert(*g), "分组 {g} 在导航里被拆成了多段");
         }
-        assert_eq!(
-            deduped,
-            vec!["概览", "WSL 实例", "容器", "资源", "设置"]
-        );
+        assert_eq!(deduped, vec!["概览", "WSL 实例", "容器", "资源", "设置"]);
     }
 
     #[test]

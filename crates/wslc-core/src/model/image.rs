@@ -60,9 +60,12 @@ impl ImageListItem {
     }
 
     /// 12 位短 ID。
+    ///
+    /// ⚠️ `get(..n)` 而不是 `&self.id[..n]`：`len()` 是**字节**数，
+    /// 第 12 个字节落在多字节字符中间时切片会 panic。
+    /// 这类"解析出来的自由字符串"一律不能假设是 ASCII。
     pub fn short_id(&self) -> &str {
-        let n = self.id.len().min(12);
-        &self.id[..n]
+        self.id.get(..self.id.len().min(12)).unwrap_or(&self.id)
     }
 
     /// 是否为悬空镜像（没有仓库名也没有标签）。

@@ -128,8 +128,7 @@ const WSLC_ENV: &str = "WSLC_PATH";
 /// 可执行文件名。
 const WSLC_EXE: &str = "wslc.exe";
 /// 找不到 `wslc.exe` 时给用户的下一步。
-const WSLC_NOT_FOUND_HINT: &str =
-    "请安装 WSL 3.0 以上版本，或设置环境变量 WSLC_PATH 指向它";
+const WSLC_NOT_FOUND_HINT: &str = "请安装 WSL 3.0 以上版本，或设置环境变量 WSLC_PATH 指向它";
 
 impl Default for Wslc {
     fn default() -> Self {
@@ -243,7 +242,14 @@ impl Wslc {
     /// 执行并指定超时。
     pub fn run_with_timeout(&self, args: &[&str], timeout: Duration) -> Result<CommandOutput> {
         let owned = self.command_args(args);
-        execute(&self.program, WSLC_LABEL, WSLC_NOT_FOUND_HINT, &owned, timeout, None)
+        execute(
+            &self.program,
+            WSLC_LABEL,
+            WSLC_NOT_FOUND_HINT,
+            &owned,
+            timeout,
+            None,
+        )
     }
 
     /// `wslc` 是否可用（跑一次 `version`）。
@@ -313,7 +319,13 @@ impl Wslc {
         on_line: impl Fn(&str) + Send + Sync + 'static,
     ) -> Result<StreamHandle> {
         let owned = self.command_args(args);
-        spawn_streaming_impl(&self.program, WSLC_LABEL, WSLC_NOT_FOUND_HINT, &owned, on_line)
+        spawn_streaming_impl(
+            &self.program,
+            WSLC_LABEL,
+            WSLC_NOT_FOUND_HINT,
+            &owned,
+            on_line,
+        )
     }
 
     /// 未加 `--session` 的原始参数（供需要精确控制的调用方使用）。
@@ -333,8 +345,7 @@ const WSL_ENV: &str = "WSL_PATH";
 /// 可执行文件名。
 const WSL_EXE: &str = "wsl.exe";
 /// 找不到 `wsl.exe` 时给用户的下一步。
-const WSL_NOT_FOUND_HINT: &str =
-    "请安装 WSL 3.0 以上版本，或设置环境变量 WSL_PATH 指向它";
+const WSL_NOT_FOUND_HINT: &str = "请安装 WSL 3.0 以上版本，或设置环境变量 WSL_PATH 指向它";
 /// 找不到辅助工具（`reg.exe`）时给用户的下一步。
 ///
 /// 它随 Windows 一起提供，所以只可能是 `PATH` 出了问题。
@@ -427,7 +438,14 @@ impl Wsl {
     /// 发行版命令**没有**前缀参数，所以这里不走 `command_args` 那一层。
     pub fn run_with_timeout(&self, args: &[&str], timeout: Duration) -> Result<CommandOutput> {
         let owned = to_owned_args(args);
-        execute(&self.program, WSL_LABEL, WSL_NOT_FOUND_HINT, &owned, timeout, None)
+        execute(
+            &self.program,
+            WSL_LABEL,
+            WSL_NOT_FOUND_HINT,
+            &owned,
+            timeout,
+            None,
+        )
     }
 
     /// `wsl.exe` 是否可用。
@@ -494,7 +512,13 @@ impl Wsl {
         on_line: impl Fn(&str) + Send + Sync + 'static,
     ) -> Result<StreamHandle> {
         let owned = to_owned_args(args);
-        spawn_streaming_impl(&self.program, WSL_LABEL, WSL_NOT_FOUND_HINT, &owned, on_line)
+        spawn_streaming_impl(
+            &self.program,
+            WSL_LABEL,
+            WSL_NOT_FOUND_HINT,
+            &owned,
+            on_line,
+        )
     }
 }
 

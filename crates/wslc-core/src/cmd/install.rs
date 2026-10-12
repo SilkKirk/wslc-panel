@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use crate::cli::{self, StreamHandle, Wsl};
 use crate::error::{Error, Result};
-use crate::model::install::{InstallPlan, PlannedStep, PlanProgram};
+use crate::model::install::{InstallPlan, PlanProgram, PlannedStep};
 
 /// 轮询子进程是否结束的间隔。
 ///
@@ -245,9 +245,7 @@ pub fn run_plan(wsl: &Wsl, plan: &InstallPlan, opts: RunOptions) -> InstallSumma
                 let detail = e.to_string();
                 emit(
                     &opts,
-                    InstallEvent::Line(format!(
-                        "这一步没做成，但它不影响已经装好的东西：{detail}"
-                    )),
+                    InstallEvent::Line(format!("这一步没做成，但它不影响已经装好的东西：{detail}")),
                 );
                 emit(
                     &opts,
@@ -341,6 +339,21 @@ fn run_wsl_step(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions) -> Result<Opti
     if first.is_ok() {
         return Ok(None);
     }
+
+    // 用户**主动取消**时到此为止。
+    //
+    // "换源 / 换 id"都属于"再试一次"，而取消的意思正是"别试了"。
+    // 不挡的话会依次发生：emit("换一个下载源再试一次") → 再 spawn 一次
+    // （立刻又被 `finish_stream` 的取消检查杀掉）→ 换 id 再 spawn 一次 →
+    // emit("这几条都没走通，可以改用国内镜像源")。结果是用户按下取消，
+    // 看到的却是三条"网络不通"的建议 —— 而日志是安装失败后**唯一**的
+    // 排查依据，等于主动往里灌错误结论。附带代价是多起两个进程。
+    //
+    // 匹配用 `&first`：按引用匹配不会移动它，下面还要 `first.map(...)` 还回去。
+    if matches!(&first, Err(Error::Cancelled { .. })) {
+        return first.map(|()| None);
+    }
+
     if !step.retry_other_source && step.retry_other_id.is_none() {
         return first.map(|()| None);
     }
@@ -393,12 +406,7 @@ fn run_wsl_step(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions) -> Result<Opti
 }
 
 /// 跑一条 `wsl.exe` 命令（一步，不重试）。
-fn run_wsl_once(
-    wsl: &Wsl,
-    args: &[String],
-    cancellable: bool,
-    opts: &RunOptions,
-) -> Result<()> {
+fn run_wsl_once(wsl: &Wsl, args: &[String], cancellable: bool, opts: &RunOptions) -> Result<()> {
     let (sink, last) = line_sink(opts);
     let handle = {
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -446,15 +454,11 @@ fn args_with_id_replaced(args: &[String], id: &str) -> Option<Vec<String>> {
 }
 
 /// 起一个 `curl.exe` 步骤（下载），并轮询产物大小当进度。
-fn run_curl_step(step: &PlannedStep, opts: &RunOptions) -> Result<()> {    let out = output_path(&step.args)?;
+fn run_curl_step(step: &PlannedStep, opts: &RunOptions) -> Result<()> {
+    let out = output_path(&step.args)?;
     let (sink, last) = line_sink(opts);
-    let handle = cli::spawn_streaming_program(
-        CURL,
-        CURL_LABEL,
-        cli::CURL_NOT_FOUND_HINT,
-        &step.args,
-        sink,
-    )?;
+    let handle =
+        cli::spawn_streaming_program(CURL, CURL_LABEL, cli::CURL_NOT_FOUND_HINT, &step.args, sink)?;
     let progress = ProgressSource {
         path: out.clone(),
         total: opts.expected_bytes,
@@ -480,7 +484,10 @@ fn run_curl_step(step: &PlannedStep, opts: &RunOptions) -> Result<()> {    let o
             ),
             Err(e) => emit(
                 opts,
-                InstallEvent::Line(format!("临时文件 {} 删不掉（{e}），要自己清理", out.display())),
+                InstallEvent::Line(format!(
+                    "临时文件 {} 删不掉（{e}），要自己清理",
+                    out.display()
+                )),
             ),
         }
     }
@@ -526,7 +533,10 @@ fn finish_stream(
             }
             Ok(None) => {}
             Err(e) => {
-                let _ = handle.cancel_token().cancel();
+                // `cancel()` 返回 `()`，所以不要写成 `let _ = ...`：
+                // 那会让 clippy 报 `let_unit_value`，也让人误以为这里在丢弃
+                // 一个 `Result`（真正需要看结果的是下面那句 `finish()`）。
+                handle.cancel_token().cancel();
                 let _ = handle.finish();
                 return Err(e);
             }
@@ -548,7 +558,10 @@ fn finish_stream(
 /// "装完还没稳定"。
 fn line_sink(
     opts: &RunOptions,
-) -> (impl Fn(&str) + Send + Sync + 'static, Arc<Mutex<Vec<String>>>) {
+) -> (
+    impl Fn(&str) + Send + Sync + 'static,
+    Arc<Mutex<Vec<String>>>,
+) {
     /// 留多少行。
     const KEEP: usize = 6;
 
@@ -599,9 +612,9 @@ fn output_path(args: &[String]) -> Result<PathBuf> {
     let at = args.iter().position(|a| a == "-o").ok_or_else(|| {
         Error::Install("内部错误：下载步骤里没有 `-o`，拿不到产物路径".to_owned())
     })?;
-    let path = args.get(at + 1).ok_or_else(|| {
-        Error::Install("内部错误：下载步骤的 `-o` 后面没有路径".to_owned())
-    })?;
+    let path = args
+        .get(at + 1)
+        .ok_or_else(|| Error::Install("内部错误：下载步骤的 `-o` 后面没有路径".to_owned()))?;
     Ok(PathBuf::from(path))
 }
 
@@ -631,8 +644,7 @@ impl ProgressSource {
 
 fn create_dir(step: &PlannedStep) -> Result<()> {
     let dir = arg(step, 0)?;
-    std::fs::create_dir_all(dir)
-        .map_err(|e| Error::Install(format!("建不出安装目录 {dir}：{e}")))
+    std::fs::create_dir_all(dir).map_err(|e| Error::Install(format!("建不出安装目录 {dir}：{e}")))
 }
 
 /// 删文件。**文件本来就不在也算成功** —— 这是收尾步骤，不该因此判定失败。
@@ -657,7 +669,10 @@ fn wait_registered(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions) -> Result<(
             });
         }
 
-        if installed_names(wsl).iter().any(|item| item == name) {
+        if installed_names(wsl)
+            .iter()
+            .any(|item| crate::model::distro::same_name(item, name))
+        {
             emit(opts, InstallEvent::Line(format!("{name} 已经出现在列表里")));
             return Ok(());
         }
@@ -737,10 +752,20 @@ fn ensure_relocated(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions) -> Result<
     let base_of = |name: &str| {
         entries
             .iter()
-            .find(|entry| entry.name == name)
+            // 大小写不敏感：注册表里存的是 `Ubuntu`，而用户/清单给的可能是
+            // `ubuntu` —— 这里用 `==` 会读不到位置，于是"已经装好了"被判成
+            // "读不到注册表，这里就不动了"。见 `model::distro::same_name`。
+            .find(|entry| crate::model::distro::same_name(&entry.name, name))
             .and_then(|entry| entry.base_path.clone())
     };
 
+    // ⚠️ 这里刻意是**字符串**比较，不是 `same_name`。
+    //
+    // 它问的是"要不要改名"，而只差大小写对用户来说就是一次改名请求
+    // （他明确要 `MyUbuntu` 这个名字）。WSL 那边名字匹配虽然不区分大小写，
+    // 但把它当成"同一个名字、只是挪个位置"会静默忽略用户改的写法。
+    // 重名/查找那几处必须忽略大小写（`same_name`），这里必须不忽略 ——
+    // 两个判据不一样，别顺手统一。
     if from == to {
         let Some(current) = base_of(&to) else {
             emit(
@@ -815,7 +840,10 @@ fn ensure_relocated(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions) -> Result<
     std::fs::create_dir_all(&dir)
         .map_err(|e| Error::Install(format!("建不出安装目录 {dir}：{e}")))?;
 
-    emit(opts, InstallEvent::Line(format!("把中转 tar 导入成 {to}（装到 {dir}）")));
+    emit(
+        opts,
+        InstallEvent::Line(format!("把中转 tar 导入成 {to}（装到 {dir}）")),
+    );
     let version = crate::model::install::WSL_VERSION.to_string();
     let import = run_wsl_args(
         wsl,
@@ -870,12 +898,7 @@ fn ensure_relocated(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions) -> Result<
 /// 隔一会儿在同一个发行版、同一条命令上手工再跑一次 → `操作成功完成`。
 /// 也就是装完那一刻 WSL 还没收尾。重试几次就能过去，而这里失败会退到
 /// 导出/注销/导入那条更慢的路（见调用点），所以重试次数不用太激进。
-fn move_with_retries(
-    wsl: &Wsl,
-    name: &str,
-    dir: &str,
-    opts: &RunOptions,
-) -> Result<()> {
+fn move_with_retries(wsl: &Wsl, name: &str, dir: &str, opts: &RunOptions) -> Result<()> {
     /// 试着搬几次。
     const TRIES: usize = 5;
     /// 两次之间等多久（也顺便给 WSL 一点收尾时间）。
@@ -886,10 +909,7 @@ fn move_with_retries(
         match run_wsl_args(wsl, &["--manage", name, "--move", dir], false, None, opts) {
             Ok(()) => {
                 if attempt > 1 {
-                    emit(
-                        opts,
-                        InstallEvent::Line(format!("第 {attempt} 次搬成功了")),
-                    );
+                    emit(opts, InstallEvent::Line(format!("第 {attempt} 次搬成功了")));
                 }
                 return Ok(());
             }
@@ -920,15 +940,7 @@ fn run_wsl_args(
     let owned: Vec<String> = args.iter().map(|s| (*s).to_owned()).collect();
     let (sink, last) = line_sink(opts);
     let handle = wsl.spawn_streaming(args, sink)?;
-    finish_stream(
-        handle,
-        "wsl",
-        &owned,
-        last,
-        cancellable,
-        progress,
-        opts,
-    )
+    finish_stream(handle, "wsl", &owned, last, cancellable, progress, opts)
 }
 
 /// 两个目录是不是同一个（忽略结尾分隔符与大小写）。
@@ -942,7 +954,7 @@ fn same_dir(left: &Path, right: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::install::{PlanContext, InstallSource, InstallSpec};
+    use crate::model::install::{InstallSource, InstallSpec, PlanContext};
 
     #[test]
     fn cancel_flag_is_shared_and_sticky() {
@@ -961,14 +973,20 @@ mod tests {
             items.iter().map(|item| (*item).to_owned()).collect()
         };
         let args = owned(&["-s", "-o", r"D:\tmp\a.tar.xz", "https://x"]);
-        assert_eq!(output_path(&args).unwrap(), PathBuf::from(r"D:\tmp\a.tar.xz"));
+        assert_eq!(
+            output_path(&args).unwrap(),
+            PathBuf::from(r"D:\tmp\a.tar.xz")
+        );
 
         // 没有 -o / -o 后面没东西 → 明确的内部错误，而不是 panic
         assert!(matches!(
             output_path(&owned(&["-s", "https://x"])),
             Err(Error::Install(_))
         ));
-        assert!(matches!(output_path(&owned(&["-o"])), Err(Error::Install(_))));
+        assert!(matches!(
+            output_path(&owned(&["-o"])),
+            Err(Error::Install(_))
+        ));
     }
 
     #[test]
@@ -1000,7 +1018,14 @@ mod tests {
         };
 
         // 商店 → GitHub：插在 `-d <id>` 后面
-        let store = owned(&["--install", "-d", "Ubuntu-24.04", "--version", "2", "--no-launch"]);
+        let store = owned(&[
+            "--install",
+            "-d",
+            "Ubuntu-24.04",
+            "--version",
+            "2",
+            "--no-launch",
+        ]);
         assert_eq!(
             args_with_source_toggled(&store).unwrap(),
             owned(&[
@@ -1029,7 +1054,10 @@ mod tests {
         );
 
         // 不是在装发行版（没有 `-d`）→ 不重试（返回 None），不许乱改命令
-        assert_eq!(args_with_source_toggled(&owned(&["--list", "--online"])), None);
+        assert_eq!(
+            args_with_source_toggled(&owned(&["--list", "--online"])),
+            None
+        );
         assert_eq!(args_with_source_toggled(&[]), None);
     }
 
@@ -1053,9 +1081,15 @@ mod tests {
         // 已经是它 → 不白跑一趟
         assert_eq!(args_with_id_replaced(&store, "Ubuntu"), None);
         // 不是安装命令 → 不乱改
-        assert_eq!(args_with_id_replaced(&owned(&["--list", "--online"]), "X"), None);
+        assert_eq!(
+            args_with_id_replaced(&owned(&["--list", "--online"]), "X"),
+            None
+        );
         // `-d` 后面没有东西也不能 panic
-        assert_eq!(args_with_id_replaced(&owned(&["--install", "-d"]), "X"), None);
+        assert_eq!(
+            args_with_id_replaced(&owned(&["--install", "-d"]), "X"),
+            None
+        );
     }
 
     #[test]
@@ -1186,7 +1220,8 @@ mod tests {
         // 这条测试**不起任何进程**：`CreateDir` 与 `RemoveFile` 是纯文件系统操作，
         // 所以能真跑一遍 executor 的主循环（包括事件顺序），
         // 而"起 wsl.exe"那几条只能在真机上验 —— 见 §12 的手测清单。
-        let dir = std::env::temp_dir().join(format!("wslc-panel-install-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("wslc-panel-install-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let file = dir.join("temp.txt");
 
@@ -1304,10 +1339,9 @@ mod tests {
             .filter(|e| matches!(e, InstallEvent::Step { .. }))
             .count();
         assert_eq!(steps, 1, "失败之后不该继续跑下一步：{events:?}");
-        assert!(events.iter().any(|e| matches!(
-            e,
-            InstallEvent::StepDone { ok: false, .. }
-        )));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, InstallEvent::StepDone { ok: false, .. })));
     }
 
     #[test]

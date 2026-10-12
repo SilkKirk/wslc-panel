@@ -102,6 +102,10 @@ crates.io 上目前有三条 GPUI 线：
 - 顶部实时资源条；**自动刷新间隔默认 3 秒**，在「设置」页的「界面」卡片里改
   （持久化到 `%LOCALAPPDATA%\wslc-panel\prefs.json`，**不**写进 wslc 的 settings.yaml）
 - 行内操作：停止 / 重启 / 强制终止 / 日志 / exec / attach
+  > ⚠️ 现状：**只有停止 / 重启 / 强制终止做了**。日志、exec、attach 的数据层
+  > （`cmd::container::logs` / `exec` / `open_interactive_shell` /
+  > `attach_in_new_console`）已经写好，但界面里没有任何调用点 ——
+  > 见 §6 里程碑后面那条注记。
 - 合并规则：`stats.ID`（64 位）与 `list.ID`（12 位）按**前缀**匹配
 
 ### 4.3 全部 container
@@ -136,7 +140,7 @@ crates.io 上目前有三条 GPUI 线：
 | `system session list` 不支持 `--format` | 解析中文表头表格 | ✅ 已实测确认 |
 | Docker Hub 直连超时 | `run` 表单默认 `--pull missing`，并提供"使用本地镜像"下拉 | ✅ 已实测确认 |
 | `exec` / `attach` 交互式命令挂住 UI | 强制超时 + 独立线程 + 可取消；交互类开独立终端窗口，不内嵌 | 设计约束 |
-| GPUI 中文字体渲染未验证 | **M0 首要验证项**（本机无工具链，尚未验证） | ⚠️ 待验证 |
+| GPUI 中文字体渲染 | 已发布 v0.5.x 多个版本、实机正常（**这条早已不再是待验证项**） | ✅ 已实测确认 |
 | 危险操作（remove / prune / kill） | 二次确认弹窗 + 显示影响对象数 + 操作日志 | 设计约束 |
 
 ---
@@ -145,23 +149,40 @@ crates.io 上目前有三条 GPUI 线：
 
 | 阶段 | 内容 | 预估 | 状态 |
 |---|---|---|---|
-| **M0** | 环境 + 选型验证：gpui 空窗口 + 中文渲染 | 0.5–1 天 | ⏳ 待用户装工具链 |
-| **M1** | `wslc-core` 数据层 + fixtures 单测 | 1.5–2 天 | ✅ 代码已写 |
-| **M2** | 应用骨架（窗口 / 导航 / 路由 / 主题 / 状态） | 1 天 | ✅ 代码已写 |
-| **M3** | 总览页 | 1 天 | ✅ 代码已写 |
-| **M4** | 当前运行容器（实时 stats） | 1.5 天 | ✅ 代码已写 |
-| **M5** | 全部容器（筛选 / 批量 / 创建表单） | 2 天 | ✅ 代码已写 |
-| **M6** | wlsc 配置页 | 1.5 天 | ✅ 代码已写 |
-| **M7** | 镜像 / 网络 / 卷 / 会话 / 事件流 | 2 天 | 🟡 部分 |
-| **M8** | 打磨（深浅色 / 快捷键 / 打包） | 1 天 | ⏳ 未开始 |
+| **M0** | 环境 + 选型验证：gpui 空窗口 + 中文渲染 | 0.5–1 天 | ✅ 已完成（实机正常） |
+| **M1** | `wslc-core` 数据层 + fixtures 单测 | 1.5–2 天 | ✅ 已完成 |
+| **M2** | 应用骨架（窗口 / 导航 / 路由 / 主题 / 状态） | 1 天 | ✅ 已完成 |
+| **M3** | 总览页 | 1 天 | ✅ 已完成 |
+| **M4** | 当前运行容器（实时 stats） | 1.5 天 | ✅ 已完成 |
+| **M5** | 全部容器（筛选 / 批量 / 创建表单） | 2 天 | ✅ 已完成 |
+| **M6** | wlsc 配置页 | 1.5 天 | ✅ 已完成 |
+| **M7** | 镜像 / 网络 / 卷 / 会话 / 事件流 | 2 天 | 🟡 部分：镜像（含拉取）✅、网络 ✅、卷 ✅、会话列表 ✅、**事件流未做** |
+| **M8** | 打磨（深浅色 / 快捷键 / 打包） | 1 天 | 🟡 部分：深浅色 + 跟随系统 ✅（v0.5.7）、打包 ✅（`release.yml`）、**快捷键未做**（全仓库没有 `KeyBinding` / `on_key_down`） |
+
+> ⚠️ 这张表 v0.5.10 时还写着 M0「待用户装工具链」、M8「未开始」——
+> 但那时已经发了 5 个 release。**它一度是错的**，别把它当成现状的唯一依据；
+> 真正的现状看 `README.md` 的功能表和 `docs/PLAN-v0.5.md` 的补记。
+
+> 📌 **M7 里的"事件流"（`wslc events`）和容器「日志 / exec / attach」都还没做**：
+> `wslc-core` 里 `cmd::container::logs` / `exec` / `open_interactive_shell` /
+> `attach_in_new_console`、`cmd::volume::create` / `prune` 都已经写好，
+> 但**没有任何界面调用点**。要么补齐，要么把上面这几项从承诺里划掉 ——
+> 别让文档继续承诺一个不存在的东西。
 
 ---
 
 ## 7. 编译验证步骤
 
 > **本机没有 Rust 工具链，所以编译验证已经交给 GitHub Actions**：
-> `ci.yml` 在每次 push 时跑 `cargo test -p wslc-core` 与
-> `cargo check --workspace --all-targets`，目前**全绿**。
+> `ci.yml` 跑 `cargo test --workspace --exclude wslc-panel --locked --profile ci`
+> 与 `cargo check --workspace --all-targets --locked`，目前**全绿**。
+>
+> 注意两点（都容易读错）：
+> - `push` **只监听 `main`**，功能分支走 `pull_request`（理由是别把同一套 job
+>   跑两遍）；纯文档 PR 因为 `paths-ignore` 会被整个跳过、**一条 check run 都不产生**。
+> - `core` 任务用 `--exclude wslc-panel`，所以**写在 `wslc-panel` 里的单测不会被执行**。
+>   纯逻辑测试要放 `wslc-panel-core`。
+>
 > 详见 [`SPIKE.md`](./SPIKE.md) §4 与 §5。
 >
 > 下面的步骤用于**本机**开发（装好工具链之后）。
@@ -193,16 +214,27 @@ cargo run -p wslc-panel
 （CI 只能编译，没有显示设备可跑）。若失败，回退顺序见 SPIKE.md §6。
 因为 UI 层只依赖 `wslc-core` 的数据模型，**回退不会影响数据层代码**。
 
+> 📌 **v0.5.10 之后这条已经不再成立**：窗口与中文渲染早就在实机上跑通了
+> （已经发了 5 个 release、还修过好几处只有截图才看得出来的视觉问题）。
+> 保留这段是因为它在"还没跑起来"那个阶段是**唯一**的未知数。
+
 ---
 
 ## 8. 验收标准
 
-- `cargo test -p wslc-core` 全绿，测试基于 `crates/wslc-core/tests/fixtures/` 里的**真实 wslc 输出**
+- `cargo test --workspace --exclude wslc-panel` 全绿，测试基于
+  `crates/wslc-core/tests/fixtures/` 里的**真实 wslc 输出**
   （空列表、字段缺失、UTF-16LE、超大输出、零值时间）
 - `cargo clippy --all-targets -- -D warnings` 零告警
 - `cargo fmt --check` 通过
 - 冒烟清单：真实启停 / 删除容器，界面数值与命令行 `wslc list/stats/info` 逐项对齐
 - 边界：`wslc.exe` 不存在、WSL 未启动、会话未创建、无权限、非 0 退出码 —— 均给出可读错误而非 panic
+
+> ⚠️ **下面两条一直是"人为执行"的**，CI 不校验它们：
+> `ci.yml` 的 `lint` 任务用 `continue-on-error: true` + `exit 0`，
+> 所以**它绿不代表 clippy / rustfmt 干净**（v0.5.10 时实测是 5 条告警 +
+> 138 处 rustfmt 差异，而那个 job 照样是绿的）。要拿真实结果得去读它的日志。
+> 本机没有 rustfmt，格式只能靠 `.github/workflows/fmt.yml` 手动跑一次。
 
 ---
 
