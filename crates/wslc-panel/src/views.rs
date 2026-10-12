@@ -35,8 +35,8 @@ use crate::columns::{ALL_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS
 use crate::presets::presets_for;
 use crate::state::{
     AppState, DistroAction, ImmediateAction, InstallOutcome, InstallProgress, InstallSourceKind,
-    OnlineListSource, Page, PendingAction, PromptKind, PullProgress, SettingsTab, WslConfState,
-    format_bytes,
+    LogsState, OnlineListSource, Page, PendingAction, PromptKind, PullProgress, SettingsTab,
+    WslConfState, format_bytes,
 };
 use crate::theme;
 
@@ -350,6 +350,31 @@ fn immediate_button(
         })
 }
 
+/// 打开一个**面板内浮层**的按钮（日志 / exec）。
+///
+/// 和 [`immediate_button`] / [`danger_button`] 并列的第三种入口：
+/// 那两个分别是"直接起进程"和"弹二次确认"，这一类只是把某个浮层打开
+/// （浮层自己再去后台取数据）。
+///
+/// 需要 `&mut Window`：`exec` 浮层要建 `InputState`，而 `InputState::new`
+/// 要 `&mut Window` —— 所以 window 必须**从点击回调里取**，不能提前存
+/// （提前存的话 `Shell::new` 拿不到 window，见 `AGENTS.md` §7.5 的懒创建）。
+fn overlay_button(
+    id: &str,
+    label: &'static str,
+    open: impl Fn(&mut Shell, &mut Window, &mut Context<Shell>) + 'static,
+    entity: &Entity<Shell>,
+) -> AnyElement {
+    let entity = entity.clone();
+    Button::new(SharedString::from(id.to_owned()))
+        .label(label)
+        .small()
+        .on_click(move |_, window, cx| {
+            entity.update(cx, |shell, cx| open(shell, window, cx));
+        })
+        .into_any_element()
+}
+
 // ---------------------------------------------------------------------------
 // 页面分发
 // ---------------------------------------------------------------------------
@@ -415,6 +440,7 @@ pub fn dashboard(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                     .w_full()
                     .gap_3()
                     .py_1()
+                    .items_center()
                     .child(badge(
                         format!("#{}", s.id),
                         theme::primary(),
@@ -422,6 +448,23 @@ pub fn dashboard(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                     ))
                     .child(cell_text(s.display()))
                     .child(cell_muted(format!("创建者 PID {}", s.creator_pid)))
+                    // 把按钮推到右边：这一行本身很短，按钮紧跟在 PID 后面
+                    // 看起来会像"PID 的附属物"。
+                    .child(div().flex_1())
+                    .child(
+                        // 终止会话会把它里面**正在运行**的容器一起停掉，
+                        // 所以走二次确认（确认框里写清了这一点）。
+                        danger_button(
+                            &format!("session-terminate-{}", s.id),
+                            "终止",
+                            PendingAction::TerminateSession {
+                                id: s.id,
+                                name: s.display(),
+                            },
+                            entity,
+                        )
+                        .into_any_element(),
+                    )
                     .into_any_element()
             })
             .collect()
@@ -751,6 +794,18 @@ fn container_row_actions(name: &str, running: bool, entity: &Entity<Shell>) -> A
         );
     }
 
+    // 「日志」不分运行状态：`wslc logs` 读的是容器留下的日志，
+    // 停掉的容器照样有东西可看（排查"它为什么退了"正是看这个）。
+    actions.push(overlay_button(
+        &format!("logs-{name}"),
+        "日志",
+        {
+            let target = name.to_owned();
+            move |shell, _, cx| shell.open_logs(target.clone(), cx)
+        },
+        entity,
+    ));
+
     actions.push(
         danger_button(
             &format!("remove-{name}"),
@@ -1031,15 +1086,47 @@ pub fn volumes(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
         })
         .collect();
 
-    v_flex()
+    // 页头：左边计数，右边两个动作。
+    //
+    // 「创建卷」复用那个共用的单输入框弹窗（`PromptKind::CreateVolume`）——
+    // 注意它**不属于任何发行版**，所以主体传空串（弹窗据此不画那一行）。
+    let header = h_flex()
         .w_full()
-        .gap_3()
+        .justify_between()
+        .items_center()
         .child(
             div()
                 .text_sm()
                 .text_color(theme::text_muted())
                 .child(format!("共 {} 个卷", state.snapshot.volumes.len())),
         )
+        .child(
+            h_flex()
+                .gap_2()
+                .child(prompt_button(
+                    "volume-create",
+                    "创建卷",
+                    PromptKind::CreateVolume,
+                    "",
+                    entity,
+                ))
+                .child(
+                    // 「清理」在界面上的名字要带上"未使用"三个字：
+                    // 只写"清理"会让人担心它把正在用的卷也删了。
+                    danger_button(
+                        "volume-prune",
+                        "清理未使用卷",
+                        PendingAction::PruneVolumes,
+                        entity,
+                    )
+                    .into_any_element(),
+                ),
+        );
+
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(header)
         .child(
             v_flex()
                 .w_full()
@@ -3642,6 +3729,53 @@ pub fn container_detail_overlay(
             .into_any_element(),
         );
     }
+
+    // -- 日志与"进容器" --------------------------------------------------
+    //
+    // 「日志」对停止的容器也成立（读的是它留下的日志）。
+    // 另外三个都要求容器**在跑**：`wslc exec` 对已停止的容器会直接报错，
+    // 与其让用户点了看报错，不如不给按钮。
+    actions.push(overlay_button(
+        "detail-logs",
+        "日志",
+        {
+            let target = name.to_owned();
+            move |shell, _, cx| shell.open_logs(target.clone(), cx)
+        },
+        entity,
+    ));
+    if running {
+        actions.push(overlay_button(
+            "detail-exec",
+            "执行命令",
+            {
+                let target = name.to_owned();
+                move |shell, window, cx| shell.open_exec(target.clone(), window, cx)
+            },
+            entity,
+        ));
+        // 这两个都是"开一个新终端窗口"——同步调用，不等它关闭
+        // （用户可能在里面待几个小时，见 `AGENTS.md` §7.1）。
+        actions.push(
+            immediate_button(
+                "detail-shell",
+                "打开终端",
+                ImmediateAction::OpenContainerShell(name.to_owned()),
+                entity,
+            )
+            .into_any_element(),
+        );
+        actions.push(
+            immediate_button(
+                "detail-attach",
+                "attach 主进程",
+                ImmediateAction::AttachContainer(name.to_owned()),
+                entity,
+            )
+            .into_any_element(),
+        );
+    }
+
     actions.push(
         danger_button(
             "detail-remove",
@@ -4010,7 +4144,8 @@ pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEle
         typed
     };
     // 等效命令**逐种拼**，不抽一个"flag"出来：导出的 `--export` 不是
-    // `--manage` 的子命令，硬塞进同一个模板反而要写特例。
+    // `--manage` 的子命令、创建卷走的甚至是另一个可执行文件（`wslc`），
+    // 硬塞进同一个模板反而要写一堆特例。
     let preview = match kind {
         PromptKind::MoveDistro => format!("wsl --manage {} --move {shown}", prompt.distro),
         PromptKind::ResizeDistro => format!("wsl --manage {} --resize {shown}", prompt.distro),
@@ -4018,7 +4153,18 @@ pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEle
             format!("wsl --manage {} --set-default-user {shown}", prompt.distro)
         }
         PromptKind::ExportDistro => format!("wsl --export {} {shown}", prompt.distro),
+        PromptKind::CreateVolume => format!("wslc volume create {shown}"),
     };
+
+    // 「创建卷」不属于任何发行版（卷是全局的），所以那一行只在有主体时画。
+    // 画一行空的"发行版："比不画更让人困惑。
+    let subject: Option<AnyElement> = (!prompt.distro.is_empty()).then(|| {
+        div()
+            .text_xs()
+            .text_color(theme::text_dim())
+            .child(format!("发行版：{}", prompt.distro))
+            .into_any_element()
+    });
 
     let cancel = {
         let entity = entity.clone();
@@ -4074,12 +4220,7 @@ pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEle
                             .text_color(theme::text())
                             .child(kind.title()),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::text_dim())
-                            .child(format!("发行版：{}", prompt.distro)),
-                    ),
+                    .children(subject),
             )
             .child(
                 h_flex()
@@ -4129,6 +4270,372 @@ pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEle
                     .child(cancel)
                     .child(confirm),
             ),
+    )
+    .into_any_element()
+}
+
+/// 等宽文本块（日志 / 命令输出共用）。
+///
+/// 两处的形状完全一样：可滚动、等宽、深色底，差异只有内容和 id。
+///
+/// `id` 必须由调用方给，而且**两个浮层不能重名** —— 它们可能同时开着
+/// （日志和 exec 都从容器详情里进）。滚动容器**必须先有 `.id(...)`**：
+/// `overflow_y_scroll` 来自 `StatefulInteractiveElement`，只对带 id 的
+/// 元素可用，漏了是**编译错误**（`AGENTS.md` §7.5）。
+///
+/// 三种状态分得很清楚，因为它们对用户的意思完全不同：
+/// `None` = 还没拉过（正在加载）、`Some("")` = 拉到了但是空的、
+/// `Some(内容)` = 有内容。
+fn log_text(text: Option<&str>, id: &'static str) -> AnyElement {
+    match text {
+        Some(t) if !t.trim().is_empty() => v_flex()
+            .id(id)
+            .w_full()
+            .max_h(px(420.))
+            .overflow_y_scroll()
+            .rounded_md()
+            .bg(theme::bg())
+            .p_3()
+            .child(
+                div()
+                    .font_family("Consolas")
+                    .text_xs()
+                    .text_color(theme::text())
+                    // 日志里的空行和缩进是有意义的，所以**不** strip、
+                    // 也**不**逐行拆开重排 —— 整段交给一个 `div`。
+                    .child(t.to_owned()),
+            )
+            .into_any_element(),
+        Some(_) => empty_state("（没有输出）").into_any_element(),
+        None => div()
+            .text_sm()
+            .text_color(theme::text_dim())
+            .child("正在加载…")
+            .into_any_element(),
+    }
+}
+
+/// 「容器日志」浮层。
+///
+/// # 为什么这里没有「跟随」
+///
+/// `wslc logs --follow` **永不返回**。把它内嵌进来就等于一条永远不结束的
+/// 后台任务，还得自己实现"停止跟随"（去杀子进程），而输出照样只能攒在
+/// 一个文本块里。开一个真正的终端窗口既简单又更好用 —— 用户可以滚、
+/// 可以 Ctrl+C 停。所以这里只做**快照**，跟随交给「在终端里跟随」，
+/// 那个按钮用的是同一份行数 / 时间戳选项。
+pub fn logs_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+    let Some(logs) = state.logs.as_ref() else {
+        return div().into_any_element();
+    };
+
+    // -- 行数档位 --
+    //
+    // 选中态用 `primary` 配色表示（项目里不用 `.disabled()`）——
+    // 和「添加实例」页选来源那一排是同一套写法。
+    let tail_buttons: Vec<AnyElement> = LogsState::TAILS
+        .iter()
+        .enumerate()
+        .map(|(ix, tail)| {
+            let tail = *tail;
+            let entity = entity.clone();
+            let mut button = Button::new(SharedString::from(format!("logs-tail-{ix}")))
+                .label(LogsState::tail_label(tail))
+                .small()
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |shell, cx| shell.set_logs_tail(tail, cx));
+                });
+            if logs.tail == tail {
+                button = button.primary();
+            }
+            button.into_any_element()
+        })
+        .collect();
+
+    let timestamps = {
+        let entity = entity.clone();
+        let mut button = Button::new("logs-timestamps")
+            .label("显示时间戳")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.toggle_logs_timestamps(cx));
+            });
+        if logs.timestamps {
+            button = button.primary();
+        }
+        button.into_any_element()
+    };
+
+    // 「刷新」在加载期间改文案而不是置灰：置灰需要一个我们没导入的 trait，
+    // 而且"点了没反应"比"正在加载"更让人困惑。
+    let refresh = {
+        let entity = entity.clone();
+        Button::new("logs-refresh")
+            .label(if logs.loading { "加载中…" } else { "刷新" })
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.reload_logs(cx));
+            })
+            .into_any_element()
+    };
+
+    let follow = {
+        let entity = entity.clone();
+        let name = logs.container.clone();
+        Button::new("logs-follow")
+            .label("在终端里跟随")
+            .small()
+            .on_click(move |_, _, cx| {
+                let name = name.clone();
+                entity.update(cx, |shell, cx| {
+                    shell.run_immediate(ImmediateAction::FollowContainerLogs(name), cx);
+                });
+            })
+            .into_any_element()
+    };
+
+    let close = {
+        let entity = entity.clone();
+        Button::new("logs-close")
+            .label("关闭")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.close_logs(cx));
+            })
+            .into_any_element()
+    };
+
+    // -- 正文 --
+    //
+    // 失败时**保留**上一次的内容（`log_text` 拿到的还是旧的那份）：
+    // 用户宁可看着旧日志，也不想面对一片空白。错误单独占一行。
+    let body: AnyElement = match logs.error.as_ref() {
+        Some(err) => v_flex()
+            .w_full()
+            .gap_2()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme::danger())
+                    .child(format!("读取失败：{err}")),
+            )
+            .child(log_text(logs.text.as_deref(), "logs-body"))
+            .into_any_element(),
+        None => log_text(logs.text.as_deref(), "logs-body"),
+    };
+
+    modal_scrim(
+        v_flex()
+            .id("logs-card")
+            .w(px(820.))
+            .max_h(px(760.))
+            .gap_4()
+            .p_5()
+            .rounded_lg()
+            .bg(theme::bg_card())
+            .border_1()
+            .border_color(theme::border())
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_bold()
+                            .text_color(theme::text())
+                            .child(format!("日志 —— {}", logs.container)),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_dim())
+                            .child(
+                                "这是一份快照，不会自动更新（点「刷新」重新拉）。\
+                                 要实时跟着看就点「在终端里跟随」，它会开一个独立窗口。",
+                            ),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .flex_wrap()
+                    .items_center()
+                    .children(tail_buttons)
+                    .child(timestamps)
+                    .child(refresh)
+                    .child(follow),
+            )
+            .child(body)
+            .child(h_flex().w_full().justify_end().child(close)),
+    )
+    .into_any_element()
+}
+
+/// 「容器 exec」浮层：跑一条命令，把输出显示出来。
+///
+/// # 这不是终端
+///
+/// `wslc exec` **不带 `-it`**，所以没有 TTY：`vi` / `top` / `less` 这类
+/// 需要终端的程序在这里用不了（要么直接报错、要么立刻退出）。
+/// 那是「打开终端」那个按钮的事 —— 两边的说明里都写清楚了，
+/// 免得用户以为这里能顶替终端。
+///
+/// 命令走 `/bin/sh -c`，所以管道、重定向、`&&` 都能用（见
+/// [`wslc_panel_core::state::exec_argv`] 的说明）。
+pub fn exec_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyElement {
+    let Some(exec) = shell.state.exec.as_ref() else {
+        return div().into_any_element();
+    };
+    // 输入框是懒创建的：两个都在才算浮层是"开着的"。
+    let Some(input) = shell.exec_input.as_ref() else {
+        return div().into_any_element();
+    };
+
+    // 执行期间把「运行」**换掉**而不是置灰（项目里不用 `.disabled()`）——
+    // 置灰的按钮会让人反复去点，一行"执行中…"说清了正在发生什么。
+    let run_area: AnyElement = if exec.running {
+        div()
+            .text_sm()
+            .text_color(theme::text_muted())
+            .child("执行中…")
+            .into_any_element()
+    } else {
+        let entity = entity.clone();
+        Button::new("exec-run")
+            .label("运行")
+            .small()
+            .primary()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.run_exec(cx));
+            })
+            .into_any_element()
+    };
+
+    let open_shell = {
+        let entity = entity.clone();
+        let name = exec.container.clone();
+        Button::new("exec-open-shell")
+            .label("打开终端")
+            .small()
+            .on_click(move |_, _, cx| {
+                let name = name.clone();
+                entity.update(cx, |shell, cx| {
+                    shell.run_immediate(ImmediateAction::OpenContainerShell(name), cx);
+                });
+            })
+            .into_any_element()
+    };
+
+    let attach = {
+        let entity = entity.clone();
+        let name = exec.container.clone();
+        Button::new("exec-attach")
+            .label("attach 主进程")
+            .small()
+            .on_click(move |_, _, cx| {
+                let name = name.clone();
+                entity.update(cx, |shell, cx| {
+                    shell.run_immediate(ImmediateAction::AttachContainer(name), cx);
+                });
+            })
+            .into_any_element()
+    };
+
+    let close = {
+        let entity = entity.clone();
+        Button::new("exec-close")
+            .label("关闭")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.close_exec(cx));
+            })
+            .into_any_element()
+    };
+
+    // -- 输出 --
+    let output: AnyElement = match exec.error.as_ref() {
+        Some(err) => v_flex()
+            .w_full()
+            .gap_2()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme::danger())
+                    .child(format!("执行失败：{err}")),
+            )
+            .child(log_text(exec.output.as_deref(), "exec-output"))
+            .into_any_element(),
+        None => log_text(exec.output.as_deref(), "exec-output"),
+    };
+
+    // 回显这次输出是哪条命令的 —— 连着跑两条之后，没有这一行就分不清
+    // 下面那块输出属于哪一次。
+    let echo: Option<AnyElement> = (!exec.last_command.is_empty()).then(|| {
+        h_flex()
+            .w_full()
+            .gap_2()
+            .items_center()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child("上一次执行"),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .font_family("Consolas")
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .overflow_hidden()
+                    .truncate()
+                    .child(exec.last_command.clone()),
+            )
+            .into_any_element()
+    });
+
+    modal_scrim(
+        v_flex()
+            .id("exec-card")
+            .w(px(760.))
+            .max_h(px(720.))
+            .gap_4()
+            .p_5()
+            .rounded_lg()
+            .bg(theme::bg_card())
+            .border_1()
+            .border_color(theme::border())
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_bold()
+                            .text_color(theme::text())
+                            .child(format!("执行命令 —— {}", exec.container)),
+                    )
+                    .child(div().text_xs().text_color(theme::text_dim()).child(
+                        "命令交给容器里的 /bin/sh 执行，所以管道、重定向、&& 都能用。\
+                         没有 TTY —— vi、top、less 这类要用终端的程序请点「打开终端」。",
+                    )),
+            )
+            .child(form_field("exec-command", "命令", input, cx, true))
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .flex_wrap()
+                    .items_center()
+                    .child(run_area)
+                    .child(open_shell)
+                    .child(attach),
+            )
+            .children(echo)
+            .child(output)
+            .child(h_flex().w_full().justify_end().child(close)),
     )
     .into_any_element()
 }
