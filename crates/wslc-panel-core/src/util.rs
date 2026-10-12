@@ -3,6 +3,42 @@
 //! 放在这个 crate 而不是 `app.rs`：它们是纯逻辑，单测不该为了跑它们
 //! 去链接 GPUI（见本 crate 的顶层说明）。
 
+use wslc_core::model::ContainerSummary;
+
+/// 秒数说成人话（安装动辄几十分钟，"已用 1830 秒"没人愿意换算）。
+pub fn human_secs(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs} 秒")
+    } else if secs < 3600 {
+        format!("{} 分 {:02} 秒", secs / 60, secs % 60)
+    } else {
+        format!("{} 时 {:02} 分", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
+/// 容器端口的一行摘要。
+///
+/// 有宿主端口就写 `宿主:容器`；只声明了容器端口时退回 `容器/协议`。
+///
+/// 刻意**不显示绑定地址**（`127.0.0.1`）—— 实测默认就是它，
+/// 每行都重复一遍只是把列占满。想看完整信息点开详情。
+///
+/// 没有映射时返回 `—`：空串看起来像"界面坏了"。
+pub fn ports_summary(item: &ContainerSummary) -> String {
+    let ports = item.item.port_mappings();
+    if ports.is_empty() {
+        return "—".to_owned();
+    }
+    ports
+        .iter()
+        .map(|p| match p.host_port {
+            Some(host) => format!("{host}:{}", p.container_port),
+            None => format!("{}/{}", p.container_port, p.protocol),
+        })
+        .collect::<Vec<_>>()
+        .join("、")
+}
+
 /// 按逗号（中英文）或换行切分，去掉空白项。
 ///
 /// 刻意**不按空格切**：环境变量的值里完全可能有空格
@@ -57,7 +93,54 @@ mod tests {
     // 这正是纯逻辑测试应该住在这里的原因：CI 的测试任务会把
     // `wslc-panel` **排除**掉（`cargo test --workspace --exclude wslc-panel`），
     // 写在那个 crate 里的断言根本不会被执行。
-    use super::{refresh_label, split_list, strip_md};
+    use super::{human_secs, ports_summary, refresh_label, split_list, strip_md};
+    use wslc_core::model::{ContainerListItem, ContainerSummary};
+
+    /// 只有 `Ports` 一个字段有意义的样本。
+    fn summary_with_ports(ports: &str) -> ContainerSummary {
+        ContainerSummary {
+            item: ContainerListItem {
+                ports: ports.to_owned(),
+                ..Default::default()
+            },
+            stats: None,
+        }
+    }
+
+    #[test]
+    fn human_secs_says_minutes_and_hours() {
+        // 不到一分钟就照原样说秒
+        assert_eq!(human_secs(0), "0 秒");
+        assert_eq!(human_secs(59), "59 秒");
+        // 分秒都要补零，免得出现 "3 分 5 秒" 这种对不齐的
+        assert_eq!(human_secs(60), "1 分 00 秒");
+        assert_eq!(human_secs(125), "2 分 05 秒");
+        // 一小时以上只说到分（秒在这个尺度上没有意义）
+        assert_eq!(human_secs(3600), "1 时 00 分");
+        assert_eq!(human_secs(3900), "1 时 05 分");
+        // 安装动辄几十分钟 —— 这是它存在的理由
+        assert_eq!(human_secs(1830), "30 分 30 秒");
+    }
+
+    #[test]
+    fn ports_summary_uses_the_real_fixture() {
+        // 没有端口映射 → 破折号（空串看起来像"界面坏了"）
+        assert_eq!(ports_summary(&summary_with_ports("")), "—");
+
+        // 真机样本：`container_list.jsonl` 里那个 `127.0.0.1:18080->80/tcp`。
+        // 刻意不自己编 Ports 字符串 —— 那样测的是"我以为的解析规则"。
+        let items: Vec<ContainerListItem> =
+            wslc_core::jsonl::parse_lines(include_str!(
+                "../../wslc-core/tests/fixtures/container_list.jsonl"
+            ))
+            .expect("夹具应该解析得动");
+        let real = ContainerSummary {
+            item: items.into_iter().next().expect("夹具里有一条"),
+            stats: None,
+        };
+        // 绑定地址（127.0.0.1）刻意不显示
+        assert_eq!(ports_summary(&real), "18080:80");
+    }
 
     #[test]
     fn split_list_handles_commas_and_newlines() {

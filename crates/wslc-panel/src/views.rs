@@ -640,25 +640,6 @@ fn disk_usage_card(state: &AppState) -> AnyElement {
 // ② 全部 container
 // ---------------------------------------------------------------------------
 
-/// 端口映射的精简显示：`主机端口:容器端口`。
-///
-/// 刻意**不显示绑定地址**（`127.0.0.1`）—— 实测默认就是它，
-/// 每行都重复一遍只是把列占满。想看完整信息点开详情。
-fn ports_summary(item: &ContainerSummary) -> String {
-    let ports = item.item.port_mappings();
-    if ports.is_empty() {
-        return "—".to_owned();
-    }
-    ports
-        .iter()
-        .map(|p| match p.host_port {
-            Some(host) => format!("{host}:{}", p.container_port),
-            None => format!("{}/{}", p.container_port, p.protocol),
-        })
-        .collect::<Vec<_>>()
-        .join("、")
-}
-
 /// 资源使用率：CPU 与内存**上下两行**（照 1Panel 的排版）。
 ///
 /// 已停止的容器没有 stats，显示 `—`。
@@ -768,7 +749,7 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
                     cell_muted(summary.item.image.clone()),
                     cell_badge(summary.item.state_kind()),
                     cell_resources(summary),
-                    cell_text(ports_summary(summary)),
+                    cell_text(crate::util::ports_summary(summary)),
                     container_row_actions(
                         summary.item.display_name(),
                         summary.item.is_running(),
@@ -1459,7 +1440,7 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
     // -- 输入框 --
     let mut fields: Vec<AnyElement> = vec![form_field(
         "install-name",
-        name_field_label(source),
+        source.name_field_label(),
         &form.name,
         cx,
         true,
@@ -1785,15 +1766,6 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
     }
 
     page.into_any_element()
-}
-
-/// 名字输入框的标签（微软商店那条路里它同时是"清单拉不到时手输的 id"）。
-fn name_field_label(source: InstallSourceKind) -> &'static str {
-    if source.is_online() {
-        "发行版名（留空 = 用下面选中的那个 id；清单拉不到时也可以直接填，如 Ubuntu-24.04）"
-    } else {
-        "发行版名"
-    }
 }
 
 /// 「微软商店」那一块：刷新 + 搜索 + 发行版列表 + 来源说明。
@@ -2213,7 +2185,10 @@ fn elapsed_label(state: &AppState) -> AnyElement {
         .installing
         .as_ref()
         .map(|progress| {
-            let mut parts = vec![format!("已用 {}", human_secs(progress.elapsed_secs))];
+            let mut parts = vec![format!(
+            "已用 {}",
+            crate::util::human_secs(progress.elapsed_secs)
+        )];
             if let Some(percent) = progress.percent() {
                 parts.push(format!("{percent:.1}%"));
             }
@@ -2229,17 +2204,6 @@ fn elapsed_label(state: &AppState) -> AnyElement {
         .text_color(theme::text_muted())
         .child(text)
         .into_any_element()
-}
-
-/// 秒数说成人话（安装动辄几十分钟，"已用 1830 秒"没人愿意换算）。
-fn human_secs(secs: u64) -> String {
-    if secs < 60 {
-        format!("{secs} 秒")
-    } else if secs < 3600 {
-        format!("{} 分 {:02} 秒", secs / 60, secs % 60)
-    } else {
-        format!("{} 时 {:02} 分", secs / 3600, (secs % 3600) / 60)
-    }
 }
 
 /// 安装日志卡片：步骤 + 进度 + 输出 + 结局。
@@ -4269,31 +4233,6 @@ pub fn export_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
 // ⑧ 发行版配置（/etc/wsl.conf）
 // ---------------------------------------------------------------------------
 
-/// 字段的稳定元素 id。
-///
-/// 用 `match` 而不是 `format!`：`Input::id` 要的是 `&'static str`
-/// （见 [`form_field`]），而且 GPUI 的交互元素本来就要求 id 稳定。
-fn wslconf_id(section: &str, key: &str) -> &'static str {
-    match (section, key) {
-        ("automount", "enabled") => "wslconf-automount-enabled",
-        ("automount", "mountFsTab") => "wslconf-automount-mountfstab",
-        ("automount", "root") => "wslconf-automount-root",
-        ("automount", "options") => "wslconf-automount-options",
-        ("network", "generateHosts") => "wslconf-network-generatehosts",
-        ("network", "generateResolvConf") => "wslconf-network-generateresolvconf",
-        ("network", "hostname") => "wslconf-network-hostname",
-        ("interop", "enabled") => "wslconf-interop-enabled",
-        ("interop", "appendWindowsPath") => "wslconf-interop-appendwindowspath",
-        ("user", "default") => "wslconf-user-default",
-        ("boot", "systemd") => "wslconf-boot-systemd",
-        ("boot", "command") => "wslconf-boot-command",
-        ("boot", "protectBinfmt") => "wslconf-boot-protectbinfmt",
-        ("gpu", "enabled") => "wslconf-gpu-enabled",
-        ("time", "useWindowsTimezone") => "wslconf-time-usewindowstimezone",
-        _ => "wslconf-unknown",
-    }
-}
-
 /// 「这一项显示的是 WSL 的默认值」的小标记。
 ///
 /// 参考项目没有这个 —— 它的 UI 把每个字段都 `unwrap_or(默认值)` 再写回，
@@ -4359,7 +4298,7 @@ fn wslconf_row(
     match field.kind {
         wslconf::FieldKind::Bool => {
             let entity = entity.clone();
-            Checkbox::new(wslconf_id(field.section, field.key))
+            Checkbox::new(crate::state::wslconf_field_id(field.section, field.key))
                 .label(field.label)
                 .checked(state.doc.effective_bool(field.section, field.key))
                 // `Checkbox` 是**受控**组件：`on_change` 给的是"请求的新值"，
@@ -4389,7 +4328,7 @@ fn wslconf_row(
             if let Some(input) = dialog.inputs.get(&(field.section, field.key)) {
                 row = row.child(
                     Input::new(input)
-                        .id(wslconf_id(field.section, field.key))
+                        .id(crate::state::wslconf_field_id(field.section, field.key))
                         .w_full(),
                 );
             }

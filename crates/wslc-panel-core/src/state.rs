@@ -253,6 +253,19 @@ impl InstallSourceKind {
         }
     }
 
+    /// 发行版名输入框的**标签**。
+    ///
+    /// 联网那两条路里它同时是"清单拉不到时手输的 id"，所以标签要长一些 ——
+    /// 原先这个函数住在 `views.rs`，而它旁边的 `label()` / `hint()` /
+    /// `path_label()` / `name_placeholder()` 全都在这里，漏了它一个。
+    pub fn name_field_label(self) -> &'static str {
+        if self.is_online() {
+            "发行版名（留空 = 用下面选中的那个 id；清单拉不到时也可以直接填，如 Ubuntu-24.04）"
+        } else {
+            "发行版名"
+        }
+    }
+
     /// 发行版名输入框的占位提示。
     pub fn name_placeholder(self) -> &'static str {
         match self {
@@ -1636,6 +1649,40 @@ impl InstallProgress {
     }
 }
 
+/// `/etc/wsl.conf` 表单里某个字段的**稳定元素 id**。
+///
+/// 用 `match` 而不是 `format!`：`Input::id` / `Checkbox::new` 要的是
+/// `&'static str`，而且 GPUI 的交互元素本来就要求 id 稳定。
+///
+/// ⚠️ 这个 match 对应的是**表驱动**的 [`wslc_core::model::wslconf::FIELDS`]，
+/// 所以往那张表里加字段时**很容易忘了在这里加一行**。后果不是编译错误：
+/// 新字段会静默拿到 `"wslconf-unknown"`；两个字段都忘了加就**撞同一个 id**，
+/// 而 GPUI 里 id 撞了会让勾选 / 焦点状态互相串。
+/// 测试 `every_wslconf_field_has_its_own_id` 就是盯这件事的。
+///
+/// （它原先住在 `views.rs`。搬过来的理由见 `AGENTS.md` §2：
+/// 这是纯函数，而放在那边就永远没有测试 —— CI 不跑 `wslc-panel` 的单测。）
+pub fn wslconf_field_id(section: &str, key: &str) -> &'static str {
+    match (section, key) {
+        ("automount", "enabled") => "wslconf-automount-enabled",
+        ("automount", "mountFsTab") => "wslconf-automount-mountfstab",
+        ("automount", "root") => "wslconf-automount-root",
+        ("automount", "options") => "wslconf-automount-options",
+        ("network", "generateHosts") => "wslconf-network-generatehosts",
+        ("network", "generateResolvConf") => "wslconf-network-generateresolvconf",
+        ("network", "hostname") => "wslconf-network-hostname",
+        ("interop", "enabled") => "wslconf-interop-enabled",
+        ("interop", "appendWindowsPath") => "wslconf-interop-appendwindowspath",
+        ("user", "default") => "wslconf-user-default",
+        ("boot", "systemd") => "wslconf-boot-systemd",
+        ("boot", "command") => "wslconf-boot-command",
+        ("boot", "protectBinfmt") => "wslconf-boot-protectbinfmt",
+        ("gpu", "enabled") => "wslconf-gpu-enabled",
+        ("time", "useWindowsTimezone") => "wslconf-time-usewindowstimezone",
+        _ => "wslconf-unknown",
+    }
+}
+
 /// 「发行版配置（`/etc/wsl.conf`）」弹窗的状态。
 ///
 /// **纯数据** —— 输入框（`Entity<InputState>`）在 `Shell::wslconf_dialog` 里，
@@ -1979,6 +2026,35 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_wslconf_field_has_its_own_id() {
+        // 这条测试是 `wslconf_field_id` 那个 match 的守卫：往
+        // `wslconf::FIELDS` 里加字段却忘了在那里加一行时，它会先炸 ——
+        // 否则新字段会静默拿到 `"wslconf-unknown"`；两个字段都忘了加就
+        // **撞同一个 id**，而 GPUI 里 id 撞了会让勾选 / 焦点状态互相串。
+        //
+        // 这也是当初把它从 `views.rs` 搬过来的主要收益：CI 不跑
+        // `wslc-panel` 的单测，那种测试放在那边等于不存在。
+        let mut seen: Vec<&'static str> = Vec::new();
+        for field in wslc_core::model::wslconf::FIELDS {
+            let id = wslconf_field_id(field.section, field.key);
+            assert_ne!(
+                id, "wslconf-unknown",
+                "字段 `{}.{}` 没有自己的元素 id —— 去 `wslconf_field_id` 里补一行",
+                field.section, field.key
+            );
+            assert!(
+                !seen.contains(&id),
+                "元素 id 撞了：`{id}`（`{}.{}`）",
+                field.section,
+                field.key
+            );
+            seen.push(id);
+        }
+        // 反方向：表里没有的东西不该拿到"看起来合法"的 id
+        assert_eq!(wslconf_field_id("nope", "nope"), "wslconf-unknown");
+    }
 
     #[test]
     fn every_page_has_a_label_and_group() {
