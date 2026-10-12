@@ -47,10 +47,29 @@ pub fn read() -> Result<Option<String>> {
         return Ok(None);
     };
     match std::fs::read_to_string(&path) {
-        Ok(text) => Ok(Some(text)),
+        // 顺手剥掉开头的 BOM：`trim()` 不会去它（见 [`trim_line`] 的说明），
+        // 留着会让第一行的节头先被判废一次。这里剥一次，
+        // 后面所有拿到这份文本的地方都不用再操心。
+        Ok(text) => Ok(Some(text.trim_start_matches('\u{feff}').to_owned())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(crate::error::Error::Io(e)),
     }
+}
+
+/// 按行取值：剥掉行首的 BOM 再 trim。
+///
+/// ⚠️ **`trim()` 不会去掉 U+FEFF** —— 它不在 Unicode 的 `White_Space`
+/// 属性里（这点和直觉相反，UTF-8 的 BOM 看上去就是"空白"）。
+///
+/// 后果是具体的：用户用"UTF-8 带 BOM"保存过 `.wslconfig` 时，第一行是
+/// `\u{feff}[experimental]`，`starts_with('[')` 判 false，于是**整个第一段
+/// 被静默忽略** —— `[experimental] sparseVhd = true` 读不到（新建发行版
+/// 就不会开稀疏盘）、那一节里放错文件的键也报不出来。
+///
+/// 仓库里另外两处（`model/session.rs`、`cmd/distro.rs`）都专门剥了 BOM，
+/// 这里是漏掉的一处。两个解析器都走它，避免以后只补一个。
+fn trim_line(raw: &str) -> &str {
+    raw.trim_start_matches('\u{feff}').trim()
 }
 
 /// 一条"键放错文件"的发现。
@@ -96,7 +115,7 @@ pub fn check(text: &str) -> Vec<MisplacedKey> {
     let mut section = String::new();
 
     for (index, raw) in text.lines().enumerate() {
-        let line = raw.trim();
+        let line = trim_line(raw);
         let line_no = index + 1;
 
         if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
@@ -166,11 +185,15 @@ pub fn sparse_vhd(text: &str) -> bool {
     let mut in_experimental = false;
 
     for raw in text.lines() {
-        let line = raw.trim();
+        let line = trim_line(raw);
         if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
             continue;
         }
-        if line.starts_with('[') {
+        // 节头。判据与 `check` 保持一致（**两边括号都要有**）：
+        // 只判 `starts_with('[')` 的话，一行写坏的 `[experimental`
+        // 也会被当成节，而这行本来是无效配置 —— 两个解析器对
+        // "什么算节头"给出不同答案，是日后最难查的一类不一致。
+        if line.starts_with('[') && line.ends_with(']') {
             let section = line
                 .trim_start_matches('[')
                 .trim_end_matches(']')
@@ -346,5 +369,26 @@ autoMemoryReclaim=gradual
         // 注释掉的等于没写
         assert!(!sparse_vhd("[experimental]\n# sparseVhd=true\n"));
         assert!(!sparse_vhd("; sparseVhd=true\n"));
+        // 节头写坏了（缺右括号）不算节 —— 和 `check` 的判据一致
+        assert!(!sparse_vhd("[experimental\nsparseVhd=true\n"));
+    }
+
+    #[test]
+    fn a_leading_bom_does_not_swallow_the_first_section() {
+        // ⚠️ `trim()` **不去** U+FEFF。用户用"UTF-8 带 BOM"存过 `.wslconfig`
+        // 的话，第一行是 `\u{feff}[experimental]`，`starts_with('[')` 判 false
+        // —— 于是整个第一段被静默忽略：`sparseVhd = true` 读不到
+        // （新建发行版就不会开稀疏盘），那一段里放错文件的键也报不出来。
+        assert!(
+            sparse_vhd("\u{feff}[experimental]\nsparseVhd=true\n"),
+            "BOM 不该把第一段节头吃掉"
+        );
+        assert!(
+            check("\u{feff}[interop]\nappendWindowsPath = true\n").len() == 1,
+            "BOM 不该让错位键漏报"
+        );
+
+        // BOM 出现在别处（非行首）时不当成空白剥掉 —— 它在中途是普通字符
+        assert!(!sparse_vhd("[experimental]\nsparseVhd=tr\u{feff}ue\n"));
     }
 }

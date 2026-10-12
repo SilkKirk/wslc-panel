@@ -76,6 +76,13 @@ pub const DISTRO_COLUMNS: &[(&str, f32)] = &[
 /// 把"权重"换算成**比例**（加起来正好 1），交给 `flex_grow` 分配实际宽度。
 ///
 /// 全是 0 / 负数（不该发生，但别 panic）时退回等分。
+// ⚠️ 别照 clippy 的 `neg_cmp_op_on_partial_ord` 把下面那行改成
+// `total <= 0.0`：`!(total > 0.0)` 和它**不等价**。`total` 是 `f32`，
+// 一旦是 NaN，`NaN > 0.0` 和 `NaN <= 0.0` **都是 false** ——
+// 用 `<=` 会漏掉 NaN，继续走到下面按 NaN 算出一堆 NaN 宽度，
+// 结果是一行完全错位的表格。这里要的是"只要不是正数（含 NaN）就等分"。
+// 这个写法是有意的，所以就地允许这条 lint，而不是改语义。
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn column_fractions(columns: &[(&str, f32)]) -> Vec<f32> {
     let total: f32 = columns.iter().map(|(_, weight)| *weight).sum();
     if columns.is_empty() {
@@ -160,5 +167,24 @@ mod tests {
         let equal = super::column_fractions(&[("a", 0.0), ("b", 0.0)]);
         assert_eq!(equal.len(), 2);
         assert!((equal[0] - 0.5).abs() < 1e-6, "{equal:?}");
+    }
+
+    #[test]
+    fn nan_weights_fall_back_to_equal_columns() {
+        // ⚠️ 这条是"别照 clippy 把 `!(total > 0.0)` 改成 `total <= 0.0`"的证据。
+        //
+        // 对 NaN 来说 `NaN > 0.0` 和 `NaN <= 0.0` **都是 false**，
+        // 所以 `<=` 会一路走到下面按 NaN 算宽度 —— 表格整行错位。
+        // `!(total > 0.0)` 才是"只要不是正数就等分"，NaN 落在这里。
+        let with_nan = super::column_fractions(&[("a", f32::NAN), ("b", 1.0)]);
+        assert_eq!(with_nan.len(), 2);
+        assert!(
+            with_nan.iter().all(|f| f.is_finite() && (*f - 0.5).abs() < 1e-6),
+            "NaN 权重必须退回等分，而不是算出 NaN：{with_nan:?}"
+        );
+
+        // 权重里混一个负的（也不该发生）同样按"不是正数"处理
+        let negative = super::column_fractions(&[("a", -1.0), ("b", -1.0)]);
+        assert!(negative.iter().all(|f| (*f - 0.5).abs() < 1e-6), "{negative:?}");
     }
 }

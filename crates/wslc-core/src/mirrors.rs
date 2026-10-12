@@ -90,9 +90,12 @@ impl OfferSource {
     pub fn extension(&self) -> &'static str {
         if self.is_bundle() {
             ".wsl"
-        } else if self.format.eq_ignore_ascii_case("tar.gz") {
-            ".tar.gz"
-        } else if self.url.to_lowercase().ends_with(".tar.gz") {
+        } else if self.format.eq_ignore_ascii_case("tar.gz")
+            || self.url.to_lowercase().ends_with(".tar.gz")
+        {
+            // 两个判据合并成一个条件：clippy 的 `if_same_then_else` 指出
+            // 分成两个 else-if 时两个分支体一模一样。合并后行为不变
+            // （`||` 短路，格式已经是 tar.gz 时不必再为 URL 分配一个小写串）。
             ".tar.gz"
         } else {
             ".tar.xz"
@@ -223,18 +226,62 @@ fn envelope_data(json: &str) -> Result<serde_json::Value, String> {
         .ok_or_else(|| "接口返回里没有 data".to_owned())
 }
 
+/// 这个字符串能不能交给 `curl.exe` 当 URL。
+///
+/// # 为什么这不是"格式校验"，而是**安全边界**
+///
+/// 这些 URL 来自**远端**：`helper/install` 下发的清单地址、清单里各镜像站的
+/// 下载地址。而它们最终是作为**裸 argv** 传给 `curl.exe` 的 ——
+/// [`curl_json_args`] / [`probe_args`] / [`download_args`] 都把它放在最后一个
+/// 位置参数上。
+///
+/// curl **不会**把第一个位置参数当作"选项结束"：一个以 `-` 开头的"URL"
+/// 会被它当成选项解析。其中 `-K<file>`（读配置文件）最危险 ——
+/// 配置文件里可以同时指定 `url=` 和 `output=`，于是一个远端返回的字符串
+/// 就能变成**以当前用户身份任意下载写盘**。
+///
+/// 所以只放行 `http://` / `https://`。顺带也挡掉了 `file://`（可读本地文件）、
+/// `-o`、`--config` 这类一切以别的形态出现的东西 —— 它们的共同点是
+/// **不以 http 开头**。
+///
+/// 判据只有这一处：`model::install` 的 `validate()`、`cmd::catalog` 的
+/// `curl_json`、界面上的镜像探测都用它，避免各写一份而漏掉一路。
+///
+/// scheme 按 RFC 是大小写无关的，所以比较前统一转小写。
+/// ⚠️ 不能用 `&url[..7]` 切片来比 —— 那个下标可能落在多字节字符中间而 panic。
+pub fn is_http_url(url: &str) -> bool {
+    let url = url.trim();
+    if url.len() < 8 {
+        return false;
+    }
+    let lower = url.to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
 /// 从 `helper/install` 的响应里取出**清单地址**。
+///
+/// ⚠️ 这里的返回值会被**直接**传给 `curl.exe` 的 argv（见
+/// [`is_http_url`] 的说明），所以必须在这里就把非 http(s) 的挡掉 ——
+/// 这是整条链路上**唯一**能拦它的地方，它下游没有任何校验。
 pub fn parse_discovery(json: &str) -> Result<String, String> {
     let data = envelope_data(json)?;
     let url = data
         .get("online_distros")
         .and_then(|it| it.get("url"))
         .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
-    if url.trim().is_empty() {
+        .unwrap_or("")
+        .trim();
+    if url.is_empty() {
         return Err("接口没有给出清单地址（online_distros.url 是空的）".to_owned());
     }
-    Ok(url.trim().to_owned())
+    if !is_http_url(url) {
+        // 把值原样带进错误里：这多半是接口被改坏或被换掉了，
+        // 让人一眼看见"它给的是什么"比一句"地址不合法"有用。
+        return Err(format!(
+            "接口给的清单地址不是 http(s) 地址，已拒绝使用：{url}"
+        ));
+    }
+    Ok(url.to_owned())
 }
 
 /// 解析清单：按架构取 `distros`（amd64）或 `mirrors`（arm64）。
@@ -279,6 +326,15 @@ pub fn parse_catalog(json: &str, arm64: bool) -> Result<Vec<Offer>, String> {
                     .trim()
                     .to_owned();
                 if url.is_empty() {
+                    continue;
+                }
+                // 非 http(s) 的来源直接丢掉：这个 url 既会进 `probe_args`
+                // （界面上的「探测最快镜像」）也会进 `download_args`，
+                // 两处都是裸 argv（见 `is_http_url` 的说明）。
+                //
+                // 丢**单条**而不是让整份清单报错：远端清单里混进一条坏记录时，
+                // 不该让用户连别的发行版都装不了。
+                if !is_http_url(&url) {
                     continue;
                 }
                 sources.push(OfferSource {
@@ -333,6 +389,9 @@ pub fn parse_update_time(json: &str) -> Option<String> {
 /// `curl.exe` 拉 JSON 的参数（正文走 stdout）。
 ///
 /// `-m 25`：清单 52 KB，正常几百毫秒；给足余量但不让它挂死。
+///
+/// ⚠️ `url` 是**裸 argv**（最后一个位置参数）—— 调用方必须先过
+/// [`is_http_url`]，否则一个以 `-` 开头的字符串会被 curl 当成选项。
 pub fn curl_json_args(url: &str) -> Vec<String> {
     vec![
         "-s".to_owned(),
@@ -346,6 +405,10 @@ pub fn curl_json_args(url: &str) -> Vec<String> {
 }
 
 /// `curl.exe` 的**探测**参数（HEAD，不打正文）。
+///
+/// ⚠️ 同 [`curl_json_args`]：`url` 是裸 argv，调用方必须先过 [`is_http_url`]。
+/// 镜像候选来自远端清单（`parse_catalog` 已经滤过一遍），但界面那条路
+/// 是独立拼的，所以 `app::Shell::probe_mirrors` 自己也要挡一次。
 ///
 /// `-w` 里的 `%{header_json}` 是拿 `Content-Length` 的唯一办法：
 /// HEAD 请求的 `%{size_download}` 恒为 0，而下载进度的分母要的是
@@ -450,6 +513,11 @@ pub fn pick_fastest(probes: &[(Candidate, Option<Probe>)]) -> Option<(Candidate,
 }
 
 /// `curl.exe` 的**下载**参数。
+///
+/// ⚠️ 同 [`curl_json_args`]：`url` 是裸 argv，必须先过 [`is_http_url`]。
+/// 这一条的唯一调用者是 `model::install` 的安装计划，它在上游有
+/// `InstallSpec::validate()` 把关（那条校验现在也改成调 [`is_http_url`]，
+/// 保证判据只有一处）。
 pub fn download_args(url: &str, out: &str) -> Vec<String> {
     vec![
         "-s".to_owned(),
@@ -560,6 +628,62 @@ mod tests {
     }
 
     #[test]
+    fn is_http_url_only_accepts_http_schemes() {
+        assert!(is_http_url("https://a/b"));
+        assert!(is_http_url("http://a/b"));
+        assert!(is_http_url("  https://a/b  "), "前后空白先 trim");
+        assert!(is_http_url("HTTPS://A/B"), "scheme 大小写无关（RFC）");
+
+        for bad in [
+            "",
+            "   ",
+            // 这几个才是重点：它们会被 curl 当成**选项**，而不是 URL
+            "-K\\\\attacker\\share\\c",
+            "-o/tmp/x",
+            "--config",
+            "-s",
+            // 别的协议也不放行（file:// 能读本地文件）
+            "file:///C:/Windows/win.ini",
+            "ftp://x/y",
+            "https:/x",
+            "//x",
+            "httpx://x",
+            "http",
+        ] {
+            assert!(!is_http_url(bad), "不该放行：{bad:?}");
+        }
+
+        // 多字节开头既不能被放行，也不能 panic ——
+        // 这条专门钉住"别用 `&url[..7]` 切片去比"，那个下标会踩到字符中间。
+        assert!(!is_http_url("中文://x"));
+    }
+
+    #[test]
+    fn a_remote_url_that_looks_like_a_curl_option_is_refused() {
+        // 这是**安全边界**而不是格式校验：`parse_discovery` 的返回值会被
+        // **直接**当成 `curl.exe` 的裸 argv。一个以 `-` 开头的"URL"
+        // 会被 curl 解析成选项，`-K<file>` 读的配置文件里可以再指定
+        // `output=` —— 合起来就是以当前用户身份任意下载写盘。
+        let evil =
+            r#"{"err":0,"msg":"ok","data":{"online_distros":{"url":"-K\\\\attacker\\share\\c"}}}"#;
+        let err = parse_discovery(evil).unwrap_err();
+        assert!(err.contains("-K"), "错误里要带上原值，方便排查：{err}");
+
+        // 别的协议也一律不放行
+        for bad in [
+            r#"{"err":0,"msg":"ok","data":{"online_distros":{"url":"file:///C:/Windows/win.ini"}}}"#,
+            r#"{"err":0,"msg":"ok","data":{"online_distros":{"url":"ftp://x/y"}}}"#,
+        ] {
+            assert!(parse_discovery(bad).is_err(), "{bad}");
+        }
+
+        // 正常的 https 照旧放行
+        let good =
+            r#"{"err":0,"msg":"ok","data":{"online_distros":{"url":"https://api2.wslui.com/x.json"}}}"#;
+        assert_eq!(parse_discovery(good).unwrap(), "https://api2.wslui.com/x.json");
+    }
+
+    #[test]
     fn real_catalog_parses_both_architectures() {
         // 本机真实抓的清单（2026-10-10，52497 字节，update_time 2026-10-09）
         let json = include_str!("../tests/fixtures/wslui_online_distros.json");
@@ -610,12 +734,25 @@ mod tests {
             {"name":"","version":"1","sources":[{"url":"https://a/x","mirror":"m","format":"tar.xz"}]},
             {"name":"NoSource","version":"1","sources":[]},
             {"name":"EmptyUrl","version":"1","sources":[{"url":"  ","mirror":"m","format":"tar.xz"}]},
-            {"name":"Good","version":"1","sources":[{"url":"https://a/g","mirror":"m","format":"tar.gz"}]}
+            {"name":"Good","version":"1","sources":[{"url":"https://a/g","mirror":"m","format":"tar.gz"}]},
+            {"name":"EvilOnly","version":"1","sources":[{"url":"-K\\\\a\\b","mirror":"m","format":"tar.xz"}]},
+            {"name":"Mixed","version":"2","sources":[
+                {"url":"-K\\\\a\\b","mirror":"bad","format":"tar.xz"},
+                {"url":"https://a/ok","mirror":"good","format":"tar.xz"}
+            ]}
         ]}}"#;
         let offers = parse_catalog(json, false).unwrap();
-        assert_eq!(offers.len(), 1, "{offers:?}");
+        assert_eq!(offers.len(), 2, "{offers:?}");
         assert_eq!(offers[0].id(), "Good 1");
         assert_eq!(offers[0].candidates()[0].format, "tar.gz");
+
+        // 全是非法地址的条目整条丢掉（不是留一个点了装不了的条目）
+        assert!(offers.iter().all(|o| o.name != "EvilOnly"), "{offers:?}");
+
+        // 好坏混在一起时只留好的那个 —— 一条坏记录不该牵连同一条目的其它镜像
+        let mixed = offers.iter().find(|o| o.name == "Mixed").expect("Mixed 应该还在");
+        assert_eq!(mixed.sources.len(), 1, "{mixed:?}");
+        assert_eq!(mixed.sources[0].url, "https://a/ok");
 
         // 整份清单空掉时要报错（那不是"没有可装的"，多半是字段改名了）
         let empty = r#"{"err":0,"msg":"ok","data":{"distros":[]}}"#;

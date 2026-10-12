@@ -1270,7 +1270,11 @@ impl MirrorChoice {
 ///
 /// 清单是**动态拉的**（`wslc_core::cmd::catalog`，两个 HTTP 请求走 `curl.exe`），
 /// 所以这里存的是"拉回来的清单 + 探测结果"，而不是写死的表。
-#[derive(Debug, Clone, PartialEq)]
+///
+/// `Default` 直接派生：手写的那份每个字段都是"该类型的默认值"
+/// （`Vec::new()` / `String::new()` / `None` / `false`），逐字段写一遍
+/// 只是给了日后**加字段时漏写一个**的机会（clippy 的 `derivable_impls`）。
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct MirrorState {
     /// 正在拉清单。
     pub loading: bool,
@@ -1295,23 +1299,6 @@ pub struct MirrorState {
     pub chosen: Option<MirrorChoice>,
     /// 探测失败原因（比如"所有镜像上都拿不到"）。
     pub error: Option<String>,
-}
-
-impl Default for MirrorState {
-    fn default() -> Self {
-        Self {
-            loading: false,
-            load_error: None,
-            offers: Vec::new(),
-            origin: String::new(),
-            updated: None,
-            distro_id: String::new(),
-            probing: false,
-            results: Vec::new(),
-            chosen: None,
-            error: None,
-        }
-    }
 }
 
 impl MirrorState {

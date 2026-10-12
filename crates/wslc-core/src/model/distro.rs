@@ -156,6 +156,26 @@ impl Distro {
     }
 }
 
+/// 两个发行版名是不是**同一个**发行版。
+///
+/// # 为什么必须有这个函数
+///
+/// `wsl.exe` 自己对发行版名的比较是**大小写不敏感**的（`wsl -d ubuntu`
+/// 能找到名为 `Ubuntu` 的发行版）。而仓库里原先各处写法不一：
+/// `cmd::distro::enrich` 用了 `eq_ignore_ascii_case`（注释还写着
+/// "没必要因为大小写差异丢数据"），而安装那条路上的三处重名检查/查找
+/// 都是 `==`。
+///
+/// 后果是一个**成功的安装会被判成失败**：已经有一个 `Ubuntu` 时用户装
+/// `ubuntu`，preflight 用 `==` 认为不重名而放行；装完之后
+/// `WaitRegistered` 拿 `==` 在 `wsl -l -q` 的输出里找不到 `ubuntu`
+/// （那里写的是 `Ubuntu`），于是轮询 30 秒后报"装完了却一直没出现在列表里"。
+///
+/// 所以判据只留这一处 —— 改的时候四个调用点一起改，别再各写一份。
+pub fn same_name(a: &str, b: &str) -> bool {
+    a.trim().eq_ignore_ascii_case(b.trim())
+}
+
 /// 解析 `wsl -l -v` 的输出。
 ///
 /// 返回 `(发行版列表, 警告)`。
@@ -427,6 +447,26 @@ mod tests {
                 "{token} 应该能被 parse 认出来"
             );
         }
+    }
+
+    #[test]
+    fn same_name_ignores_case_and_surrounding_whitespace() {
+        // WSL 自己对发行版名的比较就是不区分大小写的：
+        // `wsl -d ubuntu` 能找到名为 `Ubuntu` 的发行版。
+        assert!(same_name("Ubuntu", "ubuntu"));
+        assert!(same_name("ubuntu", "Ubuntu"));
+        assert!(same_name("Ubuntu-24.04", "UBUNTU-24.04"));
+        // 名字框里多打的空格不该被当成另一个发行版
+        assert!(same_name("  Ubuntu  ", "Ubuntu"));
+        assert!(same_name("Ubuntu", "\tUbuntu\n"));
+
+        // 真的是不同的名字必须区分开 —— 也别把 get 写成"永远为真"
+        assert!(!same_name("Ubuntu", "Ubuntux"));
+        assert!(!same_name("Ubuntu-24.04", "Ubuntu-22.04"));
+        assert!(!same_name("", "Ubuntu"));
+        // 只折叠 ASCII 大小写：中文名字按原样比
+        assert!(same_name("乌班图", "乌班图"));
+        assert!(!same_name("乌班图", "乌班兔"));
     }
 
     #[test]

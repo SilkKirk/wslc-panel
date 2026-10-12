@@ -138,9 +138,17 @@ impl ContainerListItem {
     }
 
     /// 12 位短 ID。
+    ///
+    /// ⚠️ 用 `get(..n)` 而不是 `&self.id[..n]`：`len()` 是**字节**数，
+    /// 第 12 个字节正好落在多字节字符中间时，切片会直接 panic。
+    /// 今天 `wslc` 给的是十六进制 ID，所以碰不到 —— 但 `id` 是
+    /// `#[serde(default)]` 的自由字符串，被包装脚本改写、或某台机器上
+    /// 混进一行畸形 JSON 就会碰到，而这一层的设计目标写着"解析失败
+    /// 绝不能 panic"（`jsonl` 好不容易把坏行挡住了，一个 panic
+    /// 会把整个界面拖掉）。`get` 落到字符边界之外时退回整串，
+    /// 比"少显示几位"更诚实。
     pub fn short_id(&self) -> &str {
-        let n = self.id.len().min(12);
-        &self.id[..n]
+        self.id.get(..self.id.len().min(12)).unwrap_or(&self.id)
     }
 
     /// 展示名：优先容器名，其次短 ID。
@@ -594,8 +602,12 @@ impl ContainerInspect {
     }
 
     /// 12 位短 ID。
+    ///
+    /// ⚠️ 同 [`ContainerListItem::short_id`]：`get(..n)` 而不是切片，
+    /// 避免第 12 个字节踩在多字节字符中间时 panic。
     pub fn short_id(&self) -> Option<&str> {
-        self.id().map(|s| &s[..s.len().min(12)])
+        self.id()
+            .map(|s| s.get(..s.len().min(12)).unwrap_or(s))
     }
 
     /// 容器名，**已去掉 `inspect` 特有的前导 `/`**。
@@ -1081,6 +1093,32 @@ mod tests {
     #[test]
     fn inspect_from_empty_array_is_none() {
         assert!(ContainerInspect::from_array(vec![]).is_none());
+    }
+
+    /// 短 ID 截断**不能**假设 ID 是 ASCII。
+    ///
+    /// `len()` 是字节数：11 个 ASCII + 一个 3 字节汉字正好让第 12 个字节
+    /// 落在字符中间。旧的 `&self.id[..12]` 在这里直接 panic ——
+    /// 而 `id` 是解析出来的自由字符串，这一层的设计目标是不 panic。
+    #[test]
+    fn short_id_does_not_panic_on_a_multibyte_id() {
+        let mut item: ContainerListItem =
+            serde_json::from_value(serde_json::json!({ "ID": "abcdefghijk中" })).unwrap();
+        // 12 不是字符边界 → 退回整串，而不是 panic、也不是切出半截乱码
+        assert_eq!(item.short_id(), "abcdefghijk中");
+        assert_eq!(item.display_name(), "abcdefghijk中");
+
+        // 纯 ASCII 的照旧截到 12 位
+        item.id = "ff0667ee90fb1234".to_owned();
+        assert_eq!(item.short_id(), "ff0667ee90fb");
+
+        // 不足 12 字节的原样返回
+        item.id = "abc".to_owned();
+        assert_eq!(item.short_id(), "abc");
+
+        // inspect 那条路（返回 Option）同样不能 panic
+        let insp = ContainerInspect::new(serde_json::json!({ "Id": "abcdefghijk中" }));
+        assert_eq!(insp.short_id(), Some("abcdefghijk中"));
     }
 
     #[test]

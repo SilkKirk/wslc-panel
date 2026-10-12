@@ -845,7 +845,11 @@ pub fn preflight(
     let mut errors = validate(spec, ctx);
     let name = spec.name.trim();
 
-    if !name.is_empty() && taken.iter().any(|existing| existing == name) {
+    if !name.is_empty()
+        && taken
+            .iter()
+            .any(|existing| crate::model::distro::same_name(existing, name))
+    {
         errors.push(format!(
             "已经有一个叫「{name}」的发行版了 —— 换个名字，或者先把旧的删掉（本程序不会替你删）"
         ));
@@ -944,7 +948,10 @@ fn validate(spec: &InstallSpec, ctx: &PlanContext) -> Vec<String> {
                      或者手填一个下载地址"
                         .to_owned(),
                 );
-            } else if !url.starts_with("http://") && !url.starts_with("https://") {
+            } else if !crate::mirrors::is_http_url(url) {
+                // 判据复用 `mirrors::is_http_url`：这个字符串会作为**裸 argv**
+                // 交给 `curl.exe`，只判"以 http 开头"是不够/不一致的
+                // （`-K<file>` 这类以 `-` 开头的东西必须一起挡掉）。
                 out.push(format!("下载地址要以 http:// 或 https:// 开头：{url}"));
             }
             if dir.is_none() {
@@ -1204,11 +1211,29 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
                     args,
                 ));
                 if !dir.is_empty() {
+                    // ⚠️ 中转 tar 的路径**必须**是个真路径。
+                    //
+                    // 这里原来传的是 `String::new()`：`--manage --move` 一失败
+                    // （PLAN-v0.5 的 v0.5.2 补记写明"紧接着 `--install` 之后跑
+                    // `--move` 会失败（返回 -1）"，所以这条回退路径是**设计上
+                    // 会出现**的），就退到「导出 → 注销 → 导入」，
+                    // 而那时跑的是 `wsl --export <name> ""` ——
+                    // 只会回一句看不懂的参数错误，整条退路等于废掉
+                    // （数据不会丢：export 在 unregister 之前就失败了）。
+                    //
+                    // 前缀与上面下载的临时文件（`wslc-panel-rootfs-…`）错开，
+                    // 免得重定位把还没用完的下载产物覆盖掉。
+                    let temp_tar = format!(
+                        "{}\\wslc-panel-relocate-{}-{}.tar",
+                        ctx.temp_dir.trim_end_matches(['\\', '/']),
+                        sanitize_name(&name),
+                        ctx.stamp
+                    );
                     steps.push(
                         PlannedStep::new(
                             format!("必要时把 {name} 挪到 {dir}"),
                             PlanProgram::EnsureRelocated,
-                            vec![name.clone(), name.clone(), dir.clone(), String::new()],
+                            vec![name.clone(), name.clone(), dir.clone(), temp_tar],
                         )
                         .uncancellable(),
                     );
@@ -1863,6 +1888,17 @@ mod tests {
         // 位置要核实（`--location` 不一定被采纳），但那一步不能取消
         assert_eq!(plan.steps[2].args[0], "Ubuntu-24.04");
         assert!(!plan.steps[2].cancellable);
+        // ⚠️ 中转 tar 的路径必须是**真路径**（第 4 个参数）。
+        //
+        // 原来是 `String::new()`：`--manage --move` 失败后会退到
+        // 「导出 → 注销 → 导入」，而那条路的第一步就是
+        // `wsl --export <name> ""` —— 整条退路等于废掉。
+        // 而这条回退是**设计上会出现**的（PLAN-v0.5 的 v0.5.2 补记：
+        // 紧接着 `--install` 之后跑 `--move` 会返回 -1）。
+        assert_eq!(
+            plan.steps[2].args[3],
+            r"C:\Temp\wslc-panel\wslc-panel-relocate-Ubuntu-24.04-1234-5678.tar"
+        );
         // 删临时文件必须排在重定位之后（重定位可能还要读它？——不会，
         // `--move` 用的是发行版自己的 VHD，这里只是把顺序钉住）
         assert_eq!(plan.steps[3].program, PlanProgram::RemoveFile);
@@ -2007,6 +2043,63 @@ mod tests {
         let occupied = preflight(&spec, &ctx(), &[], true);
         assert!(!occupied.ok());
         assert!(occupied.error_text().unwrap().contains("空目录"));
+    }
+
+    #[test]
+    fn preflight_treats_names_case_insensitively() {
+        // ⚠️ 这条是"成功的安装被判成失败"那个 bug 的回归保护。
+        //
+        // 已经有 `Ubuntu` 时用户装 `ubuntu`：preflight 若按 `==` 判，
+        // 这里会放行；而装完之后 `WaitRegistered` 拿 `==` 在 `wsl -l -q`
+        // 的输出里找不到 `ubuntu`（那里写的是 `Ubuntu`），
+        // 于是轮询 30 秒后报"装完了却一直没出现在列表里"。
+        // WSL 自己对发行版名的比较就是不区分大小写的。
+        let spec = InstallSpec::new(
+            "ubuntu",
+            InstallSource::Tar {
+                path: r"D:\a.tar".to_owned(),
+            },
+        );
+        let taken = vec!["Ubuntu".to_owned()];
+
+        let duplicate = preflight(&spec, &ctx(), &taken, false);
+        assert!(
+            !duplicate.ok(),
+            "大小写不同但其实是同一个发行版，必须挡住：{duplicate:?}"
+        );
+        assert!(duplicate.error_text().unwrap().contains("已经有一个"));
+
+        // 反方向也要成立（清单给 `Ubuntu`、列表里是 `ubuntu`）
+        let spec = InstallSpec::new(
+            "Ubuntu",
+            InstallSource::Tar {
+                path: r"D:\a.tar".to_owned(),
+            },
+        );
+        let duplicate = preflight(&spec, &ctx(), &["ubuntu".to_owned()], false);
+        assert!(duplicate.error_text().unwrap().contains("已经有一个"), "{duplicate:?}");
+
+        // 前后空白不算差异 —— 用户在名字框里多打一个空格不该被当成重名
+        // ⚠️ 必须断言**具体那条错误**：只断言 `!ok()` 的话，
+        // "名字非法"这类别的校验也能让它通过，测试就白写了。
+        let spec = InstallSpec::new(
+            "  Ubuntu  ",
+            InstallSource::Tar {
+                path: r"D:\a.tar".to_owned(),
+            },
+        );
+        let duplicate = preflight(&spec, &ctx(), &["Ubuntu".to_owned()], false);
+        assert!(duplicate.error_text().unwrap().contains("已经有一个"), "{duplicate:?}");
+
+        // 真的是不同的名字就照旧放行
+        let spec = InstallSpec::new(
+            "Ubuntux",
+            InstallSource::Tar {
+                path: r"D:\a.tar".to_owned(),
+            },
+        );
+        let clean = preflight(&spec, &ctx(), &["Ubuntu".to_owned()], false);
+        assert!(clean.ok(), "{clean:?}");
     }
 
     #[test]

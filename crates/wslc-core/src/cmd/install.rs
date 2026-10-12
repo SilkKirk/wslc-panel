@@ -341,6 +341,21 @@ fn run_wsl_step(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions) -> Result<Opti
     if first.is_ok() {
         return Ok(None);
     }
+
+    // 用户**主动取消**时到此为止。
+    //
+    // "换源 / 换 id"都属于"再试一次"，而取消的意思正是"别试了"。
+    // 不挡的话会依次发生：emit("换一个下载源再试一次") → 再 spawn 一次
+    // （立刻又被 `finish_stream` 的取消检查杀掉）→ 换 id 再 spawn 一次 →
+    // emit("这几条都没走通，可以改用国内镜像源")。结果是用户按下取消，
+    // 看到的却是三条"网络不通"的建议 —— 而日志是安装失败后**唯一**的
+    // 排查依据，等于主动往里灌错误结论。附带代价是多起两个进程。
+    //
+    // 匹配用 `&first`：按引用匹配不会移动它，下面还要 `first.map(...)` 还回去。
+    if matches!(&first, Err(Error::Cancelled { .. })) {
+        return first.map(|()| None);
+    }
+
     if !step.retry_other_source && step.retry_other_id.is_none() {
         return first.map(|()| None);
     }
@@ -526,7 +541,10 @@ fn finish_stream(
             }
             Ok(None) => {}
             Err(e) => {
-                let _ = handle.cancel_token().cancel();
+                // `cancel()` 返回 `()`，所以不要写成 `let _ = ...`：
+                // 那会让 clippy 报 `let_unit_value`，也让人误以为这里在丢弃
+                // 一个 `Result`（真正需要看结果的是下面那句 `finish()`）。
+                handle.cancel_token().cancel();
                 let _ = handle.finish();
                 return Err(e);
             }
@@ -657,7 +675,10 @@ fn wait_registered(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions) -> Result<(
             });
         }
 
-        if installed_names(wsl).iter().any(|item| item == name) {
+        if installed_names(wsl)
+            .iter()
+            .any(|item| crate::model::distro::same_name(item, name))
+        {
             emit(opts, InstallEvent::Line(format!("{name} 已经出现在列表里")));
             return Ok(());
         }
@@ -737,10 +758,20 @@ fn ensure_relocated(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions) -> Result<
     let base_of = |name: &str| {
         entries
             .iter()
-            .find(|entry| entry.name == name)
+            // 大小写不敏感：注册表里存的是 `Ubuntu`，而用户/清单给的可能是
+            // `ubuntu` —— 这里用 `==` 会读不到位置，于是"已经装好了"被判成
+            // "读不到注册表，这里就不动了"。见 `model::distro::same_name`。
+            .find(|entry| crate::model::distro::same_name(&entry.name, name))
             .and_then(|entry| entry.base_path.clone())
     };
 
+    // ⚠️ 这里刻意是**字符串**比较，不是 `same_name`。
+    //
+    // 它问的是"要不要改名"，而只差大小写对用户来说就是一次改名请求
+    // （他明确要 `MyUbuntu` 这个名字）。WSL 那边名字匹配虽然不区分大小写，
+    // 但把它当成"同一个名字、只是挪个位置"会静默忽略用户改的写法。
+    // 重名/查找那几处必须忽略大小写（`same_name`），这里必须不忽略 ——
+    // 两个判据不一样，别顺手统一。
     if from == to {
         let Some(current) = base_of(&to) else {
             emit(

@@ -2515,6 +2515,16 @@ impl Shell {
                 .spawn(async move {
                     let mut out: Vec<(mirrors::Candidate, Option<mirrors::Probe>)> = Vec::new();
                     for candidate in candidates {
+                        // 纵深防御：`candidate.url` 来自远端清单，而它会作为
+                        // **裸 argv** 交给 curl（见 `mirrors::is_http_url`）。
+                        // `parse_catalog` 已经滤过一遍，界面这条探测路径是
+                        // 独立拼的，再挡一次。以 `-` 开头的会被 curl 当成选项。
+                        if !mirrors::is_http_url(&candidate.url) {
+                            // 保留在列表里但标记成探测不到 —— 直接丢会让
+                            // "为什么少了几个镜像"变成一个看不见的问题。
+                            out.push((candidate, None));
+                            continue;
+                        }
                         let args = mirrors::probe_args(&candidate.url);
                         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
                         let probe = wslc_core::cli::run_helper_with_hint(
@@ -2732,9 +2742,10 @@ impl Shell {
     /// 顺手看一眼结果槽不额外花什么，还能保证"最后一批事件"一定先被吃掉。
     fn absorb_install_events(&mut self, cx: &mut Context<Self>) -> Option<InstallSummary> {
         let (events, started, finished) = {
-            let Some(run) = self.install_run.as_ref() else {
-                return None;
-            };
+            // 用 `?` 而不是 `let ... else { return None }`：两者等价，
+            // 而这一个函数返回的就是 `Option`，`?` 更短也更难写错
+            // （clippy 的 `question_mark` 报的就是这条）。
+            let run = self.install_run.as_ref()?;
             let drained: Vec<InstallEvent> = std::mem::take(&mut *lock(&run.events));
             (drained, run.started, lock(&run.done).clone())
         };

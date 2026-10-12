@@ -285,16 +285,26 @@ const ONLINE_TIMEOUT: Duration = Duration::from_secs(30);
 /// 为什么列表是空的 —— 比一句"拉取失败"有用得多。
 pub fn list_online(wsl: &Wsl) -> Result<(Vec<OnlineDistro>, String)> {
     let out = wsl.run_with_timeout(&["--list", "--online"], ONLINE_TIMEOUT)?;
-    let text = strip_config_warnings(&out.combined());
-    let distros = parse_online_list(&text);
+
+    // ⚠️ 解析用的是 **stdout**，不是 `combined()`。
+    //
+    // `CommandOutput::combined()` 是"stderr 优先"的（stderr 非空时**只**给
+    // stderr），那个语义是给**报错**用的。拿它当解析输入的话，只要
+    // `wsl -l -o` 往 stderr 写任何一行（`.wslconfig` 的"键未知"告警就是
+    // 现成的形态），stdout 上那 20 多行清单就被**整份丢掉** ——
+    // 界面会以为 wsl 拉不到清单，转而去用兜底 JSON。
+    // 今天实测 `-l -o` 不报那个告警，所以还没暴露出来。
+    let distros = parse_online_list(&strip_config_warnings(&out.stdout));
 
     if out.success() && !distros.is_empty() {
         return Ok((distros, String::new()));
     }
-    let reason = if text.trim().is_empty() {
+    // 失败原因才用合并输出：那正是 stderr 里那句话该出场的地方。
+    let reason_text = strip_config_warnings(&out.combined());
+    let reason = if reason_text.trim().is_empty() {
         "wsl 没有给出任何输出".to_owned()
     } else {
-        text
+        reason_text
     };
     Ok((distros, reason))
 }
@@ -425,7 +435,22 @@ pub fn normalize_size(text: &str) -> std::result::Result<String, String> {
     let (number, unit) = text.split_at(split_at);
     let unit = unit.trim().to_ascii_uppercase();
 
-    if number.is_empty() || number.parse::<f64>().is_err() {
+    // ⚠️ 只判 `number.parse::<f64>().is_err()` 是不够的。
+    //
+    // Rust 的 f64 文法允许 `Digit+ '.' Digit*`，所以 `"1."` **能解析成功** ——
+    // 于是 `normalize_size("1.GB")` 会原样返回 `"1.GB"`，一路传给
+    // `wsl --manage <name> --resize 1.GB`，由 WSL 去报一个我们本来能提前
+    // 挡下的错（界面上表现为"点了没反应"）。`".5GB"` 同理。
+    //
+    // 所以显式要求：至少一位数字、最多一个小数点、不能以小数点开头或结尾。
+    let digits = number.chars().filter(char::is_ascii_digit).count();
+    let dots = number.chars().filter(|c| *c == '.').count();
+    if digits == 0
+        || dots > 1
+        || number.starts_with('.')
+        || number.ends_with('.')
+        || number.parse::<f64>().is_err()
+    {
         return Err(format!("「{text}」里没有有效的数字"));
     }
 
@@ -870,13 +895,15 @@ fn parse_dword(text: &str) -> Option<u32> {
 /// 把注册表信息与磁盘占用合并进发行版列表。
 ///
 /// 名字匹配**大小写不敏感** —— 理论上两边一致，但没必要因为大小写差异丢数据。
+/// 判据统一走 [`crate::model::distro::same_name`]（安装那条路上有三处
+/// 原先用 `==`，会让装完的发行版找不到）。
 pub fn enrich(distros: &mut [Distro]) {
     let entries = read_registry();
 
     for distro in distros.iter_mut() {
         let Some(entry) = entries
             .iter()
-            .find(|e| e.name.eq_ignore_ascii_case(&distro.name))
+            .find(|e| crate::model::distro::same_name(&e.name, &distro.name))
         else {
             continue;
         };
@@ -1131,6 +1158,19 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{ccc}\r
             let err = normalize_size(bad).unwrap_err();
             assert!(err.contains("单位只认"), "{bad} → {err}");
         }
+    }
+
+    #[test]
+    fn size_rejects_a_dangling_decimal_point() {
+        // ⚠️ `"1."` 在 Rust 的 f64 文法里是**合法**的（`Digit+ '.' Digit*`），
+        // 所以单靠 `parse::<f64>()` 判定的话 `1.GB` 会被原样放进命令里，
+        // 让 WSL 去报一个我们能提前挡下的错。
+        for bad in ["1.GB", ".5GB", "50..GB", "1.2.3GB"] {
+            assert!(normalize_size(bad).is_err(), "{bad:?} 应该被拒掉");
+        }
+        // 正常的小数照旧放行
+        assert_eq!(normalize_size("1.5TB").unwrap(), "1.5TB");
+        assert_eq!(normalize_size("0.5GB").unwrap(), "0.5GB");
     }
 
     #[test]

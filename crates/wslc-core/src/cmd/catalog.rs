@@ -109,6 +109,12 @@ pub fn fetch() -> Result<Catalog, String> {
 
 /// 起一次 `curl.exe` 拿 JSON 正文。
 fn curl_json(url: &str) -> Result<String, String> {
+    // 纵深防御：这个字符串会作为**裸 argv** 交给 `curl.exe`（见
+    // `mirrors::is_http_url` 的说明）。`parse_discovery` 已经挡过一次，
+    // 但内置常量也走这条路（常量改了没人拦），在这里再判一次成本为零。
+    if !mirrors::is_http_url(url) {
+        return Err(format!("不是 http(s) 地址，已拒绝调用 curl：{url}"));
+    }
     let args = mirrors::curl_json_args(url);
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     match cli::run_helper_with_hint(
