@@ -2,7 +2,7 @@
 //!
 //! # 清单是**数据**，代码是自己写的
 //!
-//! 「在线发行版（国内镜像源）」这条来源的清单来自 `https://api1.wslui.com`：
+//! 「在线发行版（镜像源）」这条来源的清单来自 `https://api1.wslui.com`：
 //! 先问它"清单在哪儿"，再去那个地址取"哪些发行版、每个版本有哪些镜像上有文件"，
 //! 然后测速挑最快的下载。这和参考实现（`wsl-dashboard-ref`）用的是**同一套接口**
 //! —— 用户明确要求对齐它，而且这份清单是活的（2026-10-10 实测：24 个发行版、
@@ -152,6 +152,15 @@ impl Offer {
                 format: source.format.clone(),
             })
             .collect()
+    }
+
+    /// 下拉框里那一行 —— 参考实现的写法：`Ubuntu 24.04 (12 镜像源)`。
+    ///
+    /// 只给**来源数量**，不列镜像站名：装的时候会自动测速挑最快的那个，
+    /// 用户不需要先看一遍"清华 / 南大 / 北外……"再自己决定
+    /// （这条是用户明确要求的："不需要那些什么清华源之类的"）。
+    pub fn menu_label(&self) -> String {
+        format!("{} ({} 镜像源)", self.label(), self.sources.len())
     }
 
     /// 一句话说明这条有哪些装法（界面显示用）：
@@ -833,6 +842,38 @@ mod tests {
             format: String::new(),
         };
         assert_eq!(gz.extension(), ".tar.gz");
+    }
+
+    #[test]
+    fn the_menu_label_shows_the_source_count_only() {
+        // 参考实现的写法（`Ubuntu 24.04 (12 镜像源)`）：只给**数量**，
+        // 不列镜像站名 —— 用户明确要求"不需要那些什么清华源之类的"
+        // （装的时候会自动测速挑最快的，不需要他先看一遍再决定）。
+        let offer = Offer {
+            name: "Ubuntu".to_owned(),
+            version: "24.04".to_owned(),
+            sources: vec![
+                OfferSource {
+                    mirror: "lxc-tuna".to_owned(),
+                    url: "https://a/x.tar.xz".to_owned(),
+                    format: "tar.xz".to_owned(),
+                },
+                OfferSource {
+                    mirror: "tsinghua".to_owned(),
+                    url: "https://b/y.wsl".to_owned(),
+                    format: "wsl".to_owned(),
+                },
+            ],
+        };
+        assert_eq!(offer.menu_label(), "Ubuntu 24.04 (2 镜像源)");
+        assert!(!offer.menu_label().contains("tuna"), "不该出现镜像站名");
+        // 一个来源都没有的条目在解析时就被丢掉了，但显示层也不该崩
+        let empty = Offer {
+            name: "X".to_owned(),
+            version: "1".to_owned(),
+            sources: Vec::new(),
+        };
+        assert_eq!(empty.menu_label(), "X 1 (0 镜像源)");
     }
 
     #[test]

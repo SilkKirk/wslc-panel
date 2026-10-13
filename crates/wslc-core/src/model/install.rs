@@ -205,6 +205,74 @@ fn name_syntax_errors(name: &str) -> Vec<String> {
     out
 }
 
+/// 本地文件的**种类** —— 「添加实例」的本地来源只有**一个入口**，靠后缀分岔。
+///
+/// 三种文件在 WSL 那边是**三条不同的路**（`--import` / `--import --vhd` /
+/// `--install --from-file`），所以界面虽然合一，数据层仍然要分开
+/// （[`InstallSource`] 的三个变体）。
+///
+/// 参考实现（`wsl-dashboard-ref`）把 rootfs 与 VHDX 分成两个来源、而且没有
+/// `.wsl` 那条；我们是**合一**的：用户手上拿到一个文件，本来就不该先去想
+/// "它属于哪一类"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalFileKind {
+    /// `tar` / `tar.gz` / `tar.xz` … → `wsl --import`（只铺开文件系统）。
+    Tar,
+    /// `.vhdx` / `.vhd` → `wsl --import --vhd`（会**拷贝**一份到安装目录）。
+    Vhdx,
+    /// `.wsl` → `wsl --install --from-file`（会做首次启动初始化）。
+    Bundle,
+}
+
+impl LocalFileKind {
+    /// 界面上那句"识别为 …"（用户得能看出我们**猜**成了什么）。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Tar => "tar 归档 → 用 `wsl --import` 铺开",
+            Self::Vhdx => "VHDX 虚拟磁盘 → 用 `wsl --import --vhd` 拷贝导入",
+            Self::Bundle => ".wsl 安装包 → 交给 WSL 安装器（会做首次启动初始化）",
+        }
+    }
+}
+
+/// 从文件名后缀判断它是哪一类（认不出来时返回 `None`）。
+///
+/// 只认后缀、不看文件内容：读文件头要碰磁盘（可能是网络盘），而这一步在
+/// **渲染时**也会被调用（用户一边打字一边要看到"识别为 …"）——
+/// 和"安装目录非空"那条一样，碰磁盘的检查只能在提交那一刻做
+/// （见 `views::add_instance` 的说明）。
+///
+/// 大小写不敏感；`.tar.gz` / `.tar.xz` 这类复合后缀按**长到短**匹配，
+/// 免得 `.gz` 先把 `.tar.gz` 吃掉。
+pub fn classify_local_file(path: &str) -> Option<LocalFileKind> {
+    // 只取文件名那一截（`\` 和 `/` 都认）
+    let file_name = path.trim().rsplit(['\\', '/']).next().unwrap_or("");
+    if file_name.is_empty() {
+        return None;
+    }
+
+    // `.wsl` 与 `.vhdx` 先判（它们不会和 tar 的复合后缀冲突）
+    for (suffix, kind) in [
+        (".wsl", LocalFileKind::Bundle),
+        (".vhdx", LocalFileKind::Vhdx),
+        (".vhd", LocalFileKind::Vhdx),
+    ] {
+        if strip_suffix_ascii_ci(file_name, suffix).is_some() {
+            return Some(kind);
+        }
+    }
+
+    for suffix in [
+        ".tar.gz", ".tar.xz", ".tar.zst", ".tar.bz2", ".tar.lz4", ".tgz", ".txz", ".tar",
+    ] {
+        if strip_suffix_ascii_ci(file_name, suffix).is_some() {
+            return Some(LocalFileKind::Tar);
+        }
+    }
+
+    None
+}
+
 // ---------------------------------------------------------------------------
 // 安装目录
 // ---------------------------------------------------------------------------
@@ -1037,8 +1105,8 @@ fn validate(spec: &InstallSpec, ctx: &PlanContext) -> Vec<String> {
             let url = url.trim();
             if url.is_empty() {
                 out.push(
-                    "还没有选好下载地址 —— 先刷新清单并点「探测最快镜像」，\
-                     或者手填一个下载地址"
+                    "还没有选好下载地址 —— 清单一到就会**自动测速**挑最快的镜像，\
+                     稍等几秒；也可以直接在下面手填一个下载地址"
                         .to_owned(),
                 );
             } else if !crate::mirrors::is_http_url(url) {
@@ -1569,6 +1637,60 @@ mod tests {
         assert_eq!(suggest_name_from_file("中文镜像.tar"), "");
         // 多字节字符在后缀前面时，剥后缀不能切在字符中间（会 panic）
         assert_eq!(suggest_name_from_file("中-rootfs.tar.gz"), "");
+    }
+
+    #[test]
+    fn classify_local_file_branches_by_suffix_only() {
+        // 三种文件在 WSL 那边是**三条不同的路**，所以这一分必须准
+        assert_eq!(
+            classify_local_file(r"D:\img\ext4.vhdx"),
+            Some(LocalFileKind::Vhdx)
+        );
+        assert_eq!(
+            classify_local_file(r"D:\img\ext4.vhd"),
+            Some(LocalFileKind::Vhdx)
+        );
+        assert_eq!(
+            classify_local_file(r"D:\img\Ubuntu-24.04.wsl"),
+            Some(LocalFileKind::Bundle)
+        );
+        for tar in [
+            r"D:\img\ubuntu-rootfs.tar",
+            r"D:\img\ubuntu-rootfs.tar.gz",
+            r"D:\img\ubuntu-rootfs.tar.xz",
+            r"D:\img\ubuntu-rootfs.tar.zst",
+            r"D:\img\ubuntu-rootfs.tgz",
+            r"D:\img\ubuntu-rootfs.txz",
+            "/mnt/d/img/rootfs.tar.bz2",
+        ] {
+            assert_eq!(classify_local_file(tar), Some(LocalFileKind::Tar), "{tar}");
+        }
+
+        // 大小写不敏感（Windows 上的文件名本来就不区分大小写）
+        assert_eq!(
+            classify_local_file(r"D:\img\EXT4.VHDX"),
+            Some(LocalFileKind::Vhdx)
+        );
+        assert_eq!(
+            classify_local_file(r"D:\img\UBUNTU.TAR.GZ"),
+            Some(LocalFileKind::Tar)
+        );
+        // 复合后缀按**长到短**匹配（`.gz` 不能先把 `.tar.gz` 吃掉）
+        assert_eq!(classify_local_file("x.tar.gz"), Some(LocalFileKind::Tar));
+
+        // 认不出来就**说认不出来**（调用方按 tar 处理并如实说明），别硬猜
+        assert_eq!(classify_local_file(r"D:\img\rootfs"), None);
+        assert_eq!(classify_local_file(r"D:\img\rootfs.zip"), None);
+        assert_eq!(classify_local_file(""), None);
+        assert_eq!(classify_local_file("   "), None);
+        // 只给了目录、没有文件名
+        assert_eq!(classify_local_file(r"D:\img\"), None);
+        // 多字节字符在前也不能 panic
+        assert_eq!(
+            classify_local_file("中文镜像.tar"),
+            Some(LocalFileKind::Tar)
+        );
+        assert_eq!(classify_local_file("中文镜像"), None);
     }
 
     #[test]

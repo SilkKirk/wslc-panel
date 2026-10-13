@@ -406,7 +406,7 @@ fn run_wsl_step(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions) -> Result<Opti
         opts,
         InstallEvent::Line(
             "这几条都没走通 —— 这条来源依赖 wsl.exe 自己的网络。\
-             可以改用「在线发行版（国内镜像源）」：那是面板自己用 curl 从国内镜像站下载，\
+             可以改用「在线发行版（镜像源）」：那是面板自己用 curl 从国内镜像站下载，\
              不经过 wsl 的网络。"
                 .to_owned(),
         ),

@@ -24,6 +24,11 @@ use gpui_kit::component::button::*;
 // `StyledExt` 提供 `font_bold` / `font_semibold` 等字重方法（由宏生成），
 // 不导入 trait 就会报 "no method named font_bold"。
 use gpui_kit::component::input::InputState;
+// 「微软商店」与「在线发行版」两张清单都走组件库的 `Select`（下拉框）——
+// 参考实现也是一个下拉框（`CustomComboBox`），而不是我们原先那种
+// "几十个按钮铺满一屏"的写法。
+use gpui_kit::component::searchable_list::SearchableListItem;
+use gpui_kit::component::select::{SelectEvent, SelectState};
 // 同 views.rs：不导入 `Disableable`，全项目不再用 `.disabled()`。
 use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
@@ -66,13 +71,21 @@ pub(crate) struct InstallForm {
     pub(crate) name: Entity<InputState>,
     /// 安装目录（在线安装可以留空）。
     pub(crate) install_dir: Entity<InputState>,
-    /// 来源文件路径（tar / vhdx / `.wsl`）。网络来源用不到。
+    /// 本地文件路径（tar / VHDX / `.wsl`）。联网的两条来源用不到。
     pub(crate) source_path: Entity<InputState>,
-    /// 镜像站那块"自定义 rootfs URL"（留空 = 用探测出来的那个）。
+    /// 镜像站那块"自定义 rootfs URL"（留空 = 用自动测速挑出来的那个）。
     pub(crate) mirror_url: Entity<InputState>,
-    /// 在线清单的搜索框。
-    pub(crate) online_filter: Entity<InputState>,
+    /// 「微软商店」那张清单的**下拉框**。
+    ///
+    /// 和输入框一样是懒创建的（`SelectState::new` 也要 `&mut Window`），
+    /// 所以它跟着表单一起建、一起留着。
+    pub(crate) store_select: Entity<SelectState<Vec<DropdownItem>>>,
+    /// 「在线发行版（镜像源）」那张清单的下拉框。
+    pub(crate) mirror_select: Entity<SelectState<Vec<DropdownItem>>>,
     /// 在线清单里选中的发行版 id（`wsl --install -d` 要的就是它）。
+    ///
+    /// 和下拉框里的选中项是**同一件事**，但这里存一份：`to_spec` 要能用它，
+    /// 而"用户手输名字"那条路（清单拉不到时）没有下拉框可读。
     pub(crate) online_id: Option<String>,
     /// 选中的来源。
     pub(crate) source: InstallSourceKind,
@@ -96,6 +109,44 @@ pub(crate) struct InstallForm {
     /// 这么绕是因为本仓库没有"输入框内容变化"的订阅先例（本机编译不了，
     /// 猜 API 要白烧一轮 CI）—— 用"比较上次推导值"能达到同样效果。
     pub(crate) last_derived_dir: Option<String>,
+}
+
+/// 下拉框里的一项：**显示文本 ≠ 取值**。
+///
+/// 组件库的 `Select` 拿 [`SearchableListItem`] 当数据源，而它已经为
+/// `String` / `SharedString` 实现了 —— 那种情况下"看到的就是取到的值"。
+/// 我们要的是显示 `Ubuntu 24.04 LTS` 而取到 `Ubuntu-24.04`
+/// （`wsl --install -d` 只认后者），所以自己定一个小类型。
+///
+/// 镜像源那张清单同理：显示 `Ubuntu 24.04 (12 镜像源)`，取到的是清单里的
+/// `"<name> <version>"`（`Offer::id()`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DropdownItem {
+    /// 列表里显示的那一行。
+    pub(crate) label: SharedString,
+    /// 选中时真正取到的值。
+    pub(crate) value: String,
+}
+
+impl DropdownItem {
+    pub(crate) fn new(label: impl Into<SharedString>, value: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            value: value.into(),
+        }
+    }
+}
+
+impl SearchableListItem for DropdownItem {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        self.label.clone()
+    }
+
+    fn value(&self) -> &String {
+        &self.value
+    }
 }
 
 impl InstallForm {
@@ -129,15 +180,17 @@ impl InstallForm {
         let typed_name = text(&self.name);
 
         let source = match self.source {
-            InstallSourceKind::Tar => InstallSource::Tar {
-                path: text(&self.source_path),
-            },
-            InstallSourceKind::Vhdx => InstallSource::Vhdx {
-                path: text(&self.source_path),
-            },
-            InstallSourceKind::File => InstallSource::File {
-                path: text(&self.source_path),
-            },
+            // 本地那一条按**后缀**分岔（界面只有一个入口，数据层仍是三条不同的路）。
+            // 认不出来时按 tar 处理 —— 界面会如实写"没认出来，按 tar 处理"，
+            // 而不是让用户对着一个空的下拉框猜。
+            InstallSourceKind::Local => {
+                let path = text(&self.source_path);
+                match install_model::classify_local_file(&path) {
+                    Some(install_model::LocalFileKind::Vhdx) => InstallSource::Vhdx { path },
+                    Some(install_model::LocalFileKind::Bundle) => InstallSource::File { path },
+                    Some(install_model::LocalFileKind::Tar) | None => InstallSource::Tar { path },
+                }
+            }
             InstallSourceKind::Mirror => {
                 let custom = text(&self.mirror_url);
                 // 选中的那条发行版给出 `release`（只用于显示 / 临时文件名）
@@ -467,6 +520,12 @@ pub struct Shell {
     /// `pub(crate)`：`views.rs` 要读它来渲染页面（`Shell` 的其余字段
     /// 只有 `app.rs` 自己用，所以是私有的）。
     pub(crate) install_form: Option<InstallForm>,
+    /// 两个下拉框（商店清单 / 镜像源清单）的**订阅**。
+    ///
+    /// ⚠️ 必须存着：`Context::subscribe_in` 返回的 `Subscription`
+    /// **一 drop 就退订**（组件库自己也是 `vec![cx.subscribe_in(..)]` 存起来的）。
+    /// 丢了它不会报错，只是"选了下拉框什么都不会发生" —— 那种 bug 很难查。
+    select_subs: Vec<Subscription>,
     /// 单输入框提示弹窗（移动位置 / 调整大小 / 设置默认用户）；关闭时为 `None`。
     ///
     /// 同样是 `pub(crate)`：浮层在 `views.rs` 里渲染。
@@ -537,6 +596,7 @@ impl Shell {
             detail: None,
             distro_detail: None,
             install_form: None,
+            select_subs: Vec::new(),
             prompt: None,
             install_run: None,
             install_cancel: None,
@@ -563,6 +623,46 @@ impl Shell {
         let default_source = InstallSourceKind::default();
         let default_dir = self.state.prefs.install_dir.clone().unwrap_or_default();
 
+        // 两张清单都是**下拉框**（组件库的 `Select`）。它们和输入框一样要
+        // `&mut Window`，所以在这里一起建；条数不多（商店 ~24、镜像源 24），
+        // 一开始给空列表，拉回来再 `set_items` 填。
+        //
+        // 商店那张带搜索（`searchable`）：微软的清单里 24 个发行版的名字
+        // 有好几对很像（Ubuntu 26.04 / 24.04 / 22.04 / 20.04），
+        // 原先是列表外面单独一个搜索框，现在收进下拉框里（参考实现没有搜索，
+        // 但它的清单是 `wsl -l -o` 的顺序、我们的更长）。
+        let store_select = cx.new(|cx| {
+            SelectState::new(Vec::<DropdownItem>::new(), None, window, cx).searchable(true)
+        });
+        let mirror_select =
+            cx.new(|cx| SelectState::new(Vec::<DropdownItem>::new(), None, window, cx));
+
+        // 选中即生效：商店那条把 id 记下来并填进名字框；
+        // 镜像源那条**立刻开始自动测速**（参考实现就是"选中即测速择优"，
+        // 没有"探测"按钮）。
+        //
+        // ⚠️ `subscribe_in` 返回的 `Subscription` **一丢就退订** ——
+        // 必须存进 `Shell`（组件库自己也是这么做的：`vec![cx.subscribe_in(...)]`）。
+        let store_sub = cx.subscribe_in(
+            &store_select,
+            window,
+            |shell, _emitter, event: &SelectEvent<Vec<DropdownItem>>, window, cx| {
+                if let SelectEvent::Confirm(Some(id)) = event {
+                    shell.pick_online_distro(id.clone(), window, cx);
+                }
+            },
+        );
+        let mirror_sub = cx.subscribe_in(
+            &mirror_select,
+            window,
+            |shell, _emitter, event: &SelectEvent<Vec<DropdownItem>>, _window, cx| {
+                if let SelectEvent::Confirm(Some(id)) = event {
+                    shell.select_mirror_distro(id.clone(), cx);
+                }
+            },
+        );
+        self.select_subs = vec![store_sub, mirror_sub];
+
         self.install_form = Some(InstallForm {
             name: cx.new(|cx| {
                 InputState::new(window, cx).placeholder(default_source.name_placeholder())
@@ -572,9 +672,10 @@ impl Shell {
                 InputState::new(window, cx).placeholder(default_source.path_placeholder())
             }),
             mirror_url: cx.new(|cx| {
-                InputState::new(window, cx).placeholder("留空 = 用上面探测出来的那个地址")
+                InputState::new(window, cx).placeholder("留空 = 用自动测速挑出来的那个地址")
             }),
-            online_filter: cx.new(|cx| InputState::new(window, cx).placeholder("搜索发行版")),
+            store_select,
+            mirror_select,
             online_id: None,
             source: default_source,
             launch: false,
@@ -2219,9 +2320,9 @@ impl Shell {
 
     /// 切换页面（导航点击走这里）。
     ///
-    /// `window` 是给「添加实例」页准备的：那一页有输入框，而
-    /// `InputState::new` 需要 `&mut Window` —— 所以必须**在点击时**
-    /// 把表单建好。在渲染时建会每帧重建一次输入框，字都打不进去。
+    /// `window` 是给「添加实例」页准备的：那一页有输入框和两个下拉框，而
+    /// `InputState::new` / `SelectState::new` 都要 `&mut Window` —— 所以必须
+    /// **在点击时**把表单建好。在渲染时建会每帧重建一次控件，字都打不进去。
     pub fn set_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         if page.needs_window_to_enter() {
             self.ensure_install_form(window, cx);
@@ -2231,10 +2332,14 @@ impl Shell {
             // 两个请求都很小（商店清单十几 KB、镜像清单 50 KB），
             // 而且各自的函数里会挡住重复请求。**不在这里同步拉**：那会卡住界面。
             if self.state.online.items.is_empty() && !self.state.online.loading {
-                self.refresh_online_list(cx);
+                self.refresh_online_list(window, cx);
             }
             if self.state.mirrors.offers.is_empty() && !self.state.mirrors.loading {
-                self.refresh_mirror_catalog(cx);
+                self.refresh_mirror_catalog(window, cx);
+            } else if self.state.mirrors.chosen.is_none() && !self.state.mirrors.probing {
+                // 清单已经在手（上次进来拉过）、但还没测速过 —— 补一次。
+                // 否则"换个发行版页"回来会发现 URL 还是空的（校验会挡住提交）。
+                self.probe_mirrors(cx);
             }
         }
         self.goto_page(page, cx);
@@ -2685,6 +2790,15 @@ impl Shell {
         if !source.supports_launch() {
             form.launch = false;
         }
+        // 切到镜像源就顺手开始测速（清单已经在手、还没测过的话）——
+        // 用户不用先点「刷新清单」，也不用等下一次进页面。
+        if source.is_mirror()
+            && self.state.mirrors.chosen.is_none()
+            && !self.state.mirrors.probing
+            && !self.state.mirrors.offers.is_empty()
+        {
+            self.probe_mirrors(cx);
+        }
         cx.notify();
     }
 
@@ -2699,7 +2813,7 @@ impl Shell {
     /// 完全不经过 wsl 的网络。同一个发行版往往在镜像清单里也有
     /// （Ubuntu / Debian / Alpine / Arch / Fedora / Rocky / Kali / …），
     /// 所以直接帮他切过去、并选中对应的那一版，比让他自己去翻清单强。
-    pub fn switch_to_mirror_source(&mut self, cx: &mut Context<Self>) {
+    pub fn switch_to_mirror_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // 在线清单里选过的那个 id（没选过就用输入框里的名字）
         let online_id = self
             .install_form
@@ -2716,10 +2830,14 @@ impl Shell {
             self.state.mirrors.select_distro(offer);
         }
         self.set_install_source(InstallSourceKind::Mirror, cx);
+        // 下拉框也要跟着选中（否则它显示的还是上一条），然后**自动测速** ——
+        // 和用户自己在下拉框里选一遍是同一条路。
+        self.fill_mirror_select(window, cx);
+        self.probe_mirrors(cx);
 
         match matched {
             Some(offer) => self.state.notify(Toast::success(format!(
-                "已切到镜像源，并选中了「{offer}」—— 点「探测最快镜像」再装"
+                "已切到镜像源，并选中了「{offer}」—— 正在自动测速挑最快的镜像"
             ))),
             None => self.state.notify(Toast::info(
                 "已切到镜像源 —— 在清单里挑一个版本，或填自定义下载地址",
@@ -2831,12 +2949,16 @@ impl Shell {
 
     // -- 添加实例：在线清单与镜像站 ----------------------------------------
 
-    /// 拉在线可安装发行版的清单。
+    /// 拉在线可安装发行版的清单（微软商店那条路）。
     ///
     /// 先问 `wsl --list --online`，拉不到就自己拉微软那份
     /// `DistributionInfo.json`（本机 `raw.githubusercontent.com` 不通，
     /// 所以兜底那条路是**常态**，见 `cmd::distro::online_distros`）。
-    pub fn refresh_online_list(&mut self, cx: &mut Context<Self>) {
+    ///
+    /// 拉回来要**填进下拉框**，而 `SelectState::set_items` 要 `&mut Window`
+    /// —— 所以这里走 `spawn_in` + `update_in`（和文件选择器同一条路，
+    /// 见 `AGENTS.md` §7.2）。
+    pub fn refresh_online_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.state.online.loading {
             return;
         }
@@ -2845,13 +2967,13 @@ impl Shell {
         cx.notify();
 
         let wsl = self.state.wsl.clone();
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let listing = cx
                 .background_executor()
                 .spawn(async move { wslc_core::cmd::distro::online_distros(&wsl) })
                 .await;
 
-            let _ = this.update(cx, |shell, cx| {
+            let _ = this.update_in(cx, |shell, window, cx| {
                 shell.state.online.loading = false;
                 shell.state.online.source = listing.source;
                 if listing.items.is_empty() {
@@ -2865,10 +2987,49 @@ impl Shell {
                     shell.state.online.error.clear();
                     shell.state.online.items = listing.items;
                 }
+                shell.fill_store_select(window, cx);
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// 把在线清单填进「微软商店」的下拉框。
+    ///
+    /// 显示**友好名 + id**：`Ubuntu 24.04 LTS (Ubuntu-24.04)`。两个都要写 ——
+    /// 用户以为自己装的是 "Ubuntu 24.04 LTS"，而装完列表里出现的是
+    /// `Ubuntu-24.04`（那才是 `wsl --install -d` 认的名字），
+    /// 提前写在选项里比事后解释强。
+    fn fill_store_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = self.install_form.as_ref() else {
+            return;
+        };
+        let select = form.store_select.clone();
+        // `set_items` 会把选中项清掉，而用户没做错什么 —— 换清单之后
+        // 要把原来选的那个**重新选上**（它还在新清单里的话）。
+        let keep = form.online_id.clone();
+
+        let items: Vec<DropdownItem> = self
+            .state
+            .online
+            .items
+            .iter()
+            .map(|item| {
+                let label = if item.label == item.id {
+                    item.id.clone()
+                } else {
+                    format!("{} ({})", item.label, item.id)
+                };
+                DropdownItem::new(label, item.id.clone())
+            })
+            .collect();
+
+        select.update(cx, |state, cx| {
+            state.set_items(items, window, cx);
+            if let Some(id) = keep {
+                state.set_selected_value(&id, window, cx);
+            }
+        });
     }
 
     /// 选中在线清单里的一项。
@@ -2903,7 +3064,11 @@ impl Shell {
     ///
     /// 两个 HTTP 请求（先问清单地址、再取清单）走 `curl.exe`，**必须在后台**：
     /// 最长 25 秒 × 2，放界面上就是"点进去卡半分钟"（`AGENTS.md` §7.1）。
-    pub fn refresh_mirror_catalog(&mut self, cx: &mut Context<Self>) {
+    ///
+    /// 清单到手之后**自动开始测速**（见 [`Shell::probe_mirrors`]）：
+    /// 参考实现是"选中即测速择优"，没有"探测"按钮 —— 而我们要保证
+    /// 用户点「创建安装」时 URL 已经定了（预览里的命令必须就是真正要跑的）。
+    pub fn refresh_mirror_catalog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.state.mirrors.loading {
             return;
         }
@@ -2911,13 +3076,13 @@ impl Shell {
         self.state.mirrors.load_error = None;
         cx.notify();
 
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let fetched = cx
                 .background_executor()
                 .spawn(async { wslc_core::cmd::catalog::fetch() })
                 .await;
 
-            let _ = this.update(cx, |shell, cx| {
+            let _ = this.update_in(cx, |shell, window, cx| {
                 shell.state.mirrors.loading = false;
                 match fetched {
                     Ok(catalog) => {
@@ -2927,9 +3092,11 @@ impl Shell {
                             catalog.origin.label().to_owned(),
                             catalog.updated,
                         );
+                        shell.fill_mirror_select(window, cx);
                         shell
                             .state
                             .notify(Toast::success(format!("拿到 {count} 个可装的发行版")));
+                        shell.probe_mirrors(cx);
                     }
                     Err(e) => {
                         // 清单拉不到时**留着旧清单**：旧的还能用，总比空的强
@@ -2943,25 +3110,68 @@ impl Shell {
         .detach();
     }
 
-    /// 切换镜像源那块选中的发行版。
+    /// 把镜像清单填进「在线发行版」的下拉框。
+    ///
+    /// 显示的是参考实现的写法：`Ubuntu 24.04 (12 镜像源)` —— **只给数量**，
+    /// 不列镜像站名（装的时候会自动测速挑最快的，用户不需要先看一遍）。
+    fn fill_mirror_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = self.install_form.as_ref() else {
+            return;
+        };
+        let select = form.mirror_select.clone();
+        let keep = self.state.mirrors.selected_offer().map(|offer| offer.id());
+
+        let items: Vec<DropdownItem> = self
+            .state
+            .mirrors
+            .offers
+            .iter()
+            .map(|offer| DropdownItem::new(offer.menu_label(), offer.id()))
+            .collect();
+
+        select.update(cx, |state, cx| {
+            state.set_items(items, window, cx);
+            if let Some(id) = keep {
+                state.set_selected_value(&id, window, cx);
+            }
+        });
+    }
+
+    /// 切换镜像源那块选中的发行版 —— 换完**立刻**重新测速。
+    ///
+    /// 参考实现就是"选中即测速择优"（它在下拉框旁边写着「自动测速择优」），
+    /// 用户不用再点一次"探测"。测速是并发的（见 [`Shell::probe_mirrors`]），
+    /// 最多也就几秒。
     pub fn select_mirror_distro(&mut self, id: String, cx: &mut Context<Self>) {
         self.state.mirrors.select_distro(id);
+        self.probe_mirrors(cx);
         cx.notify();
     }
 
-    /// 探测镜像源：逐条 HEAD 一遍，挑最快的那个。
+    /// 自动测速：**并发** HEAD 一遍候选，挑最快的那个。
     ///
-    /// **串行**探测：清单里一条发行版最多十几个候选、每条 8 秒上限 ——
-    /// 探测期间界面照常能用（跑在后台执行器上），而并发要引入线程管理，
-    /// 收益只是"省几秒"。
+    /// # 为什么并发
+    ///
+    /// 一条发行版最多十几个候选、每个 8 秒上限 —— 串行最坏是一分半，
+    /// 而这是"选中发行版就自动开始"的动作（用户没得选，只能干等）。
+    /// 参考实现也是并发（`futures_util::future::join_all`）。
+    ///
+    /// 这里用 `std::thread::scope`：探测本身是**阻塞**的 curl 调用，
+    /// 线程是最自然的载体，而 scope 保证返回前全部 join 掉
+    /// （不用管线程生命周期，也不需要线程池）。
+    ///
+    /// # 结果只用来挑一个
+    ///
+    /// 镜像站列表**不再显示**（用户要求"不需要那些什么清华源之类的"）：
+    /// 界面只留一行状态，名字进安装日志 —— 出问题时那才是排查的地方。
+    /// 成功也**不发提示条**：这个是自动触发的，换一次发行版弹一次太吵。
     pub fn probe_mirrors(&mut self, cx: &mut Context<Self>) {
         if self.state.mirrors.probing {
             return;
         }
+        // 没有清单（还没拉 / 拉失败）时**安静地什么都不做**：
+        // 这个函数现在是自动触发的，弹一句"先拉清单"只会莫名其妙。
         let Some(offer) = self.state.mirrors.selected_offer() else {
-            self.state
-                .notify(Toast::error("先拉一下发行版清单（点「刷新清单」）"));
-            cx.notify();
             return;
         };
 
@@ -2978,32 +3188,40 @@ impl Shell {
             let probed = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut out: Vec<(mirrors::Candidate, Option<mirrors::Probe>)> = Vec::new();
-                    for candidate in candidates {
-                        // 纵深防御：`candidate.url` 来自远端清单，而它会作为
-                        // **裸 argv** 交给 curl（见 `mirrors::is_http_url`）。
-                        // `parse_catalog` 已经滤过一遍，界面这条探测路径是
-                        // 独立拼的，再挡一次。以 `-` 开头的会被 curl 当成选项。
-                        if !mirrors::is_http_url(&candidate.url) {
-                            // 保留在列表里但标记成探测不到 —— 直接丢会让
-                            // "为什么少了几个镜像"变成一个看不见的问题。
-                            out.push((candidate, None));
-                            continue;
-                        }
-                        let args = mirrors::probe_args(&candidate.url);
-                        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-                        let probe = wslc_core::cli::run_helper_with_hint(
-                            "curl.exe",
-                            "curl.exe",
-                            wslc_core::cli::CURL_NOT_FOUND_HINT,
-                            &refs,
-                            Duration::from_secs(20),
-                        )
-                        .ok()
-                        .and_then(|out| mirrors::parse_probe(&out.stdout));
-                        out.push((candidate, probe));
-                    }
-                    out
+                    let probes: Vec<Option<mirrors::Probe>> = std::thread::scope(|scope| {
+                        let handles: Vec<_> = candidates
+                            .iter()
+                            .map(|candidate| {
+                                scope.spawn(move || {
+                                    // 纵深防御：`candidate.url` 来自远端清单，而它会作为
+                                    // **裸 argv** 交给 curl（见 `mirrors::is_http_url`）。
+                                    // `parse_catalog` 已经滤过一遍，界面这条探测路径是
+                                    // 独立拼的，再挡一次。
+                                    if !mirrors::is_http_url(&candidate.url) {
+                                        return None;
+                                    }
+                                    let args = mirrors::probe_args(&candidate.url);
+                                    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+                                    wslc_core::cli::run_helper_with_hint(
+                                        "curl.exe",
+                                        "curl.exe",
+                                        wslc_core::cli::CURL_NOT_FOUND_HINT,
+                                        &refs,
+                                        Duration::from_secs(20),
+                                    )
+                                    .ok()
+                                    .and_then(|out| mirrors::parse_probe(&out.stdout))
+                                })
+                            })
+                            .collect();
+
+                        handles
+                            .into_iter()
+                            .filter_map(|handle| handle.join().ok())
+                            .collect()
+                    });
+
+                    candidates.into_iter().zip(probes).collect::<Vec<_>>()
                 })
                 .await;
 
@@ -3025,25 +3243,19 @@ impl Shell {
 
                 match mirrors::pick_fastest(&probed) {
                     Some((candidate, probe)) => {
-                        let site = candidate.site.clone();
-                        let bundle = candidate.is_bundle();
                         shell.state.mirrors.chosen = Some(MirrorChoice {
-                            site: site.clone(),
+                            site: candidate.site.clone(),
                             url: candidate.url,
                             release: release.clone(),
                             format: candidate.format,
                             bytes: probe.bytes,
                         });
-                        shell.state.notify(Toast::success(format!(
-                            "选中最快的镜像：{site}{}",
-                            if bundle { "（.wsl 包）" } else { "" }
-                        )));
                     }
                     None => {
                         shell.state.mirrors.chosen = None;
                         shell.state.mirrors.error = Some(
                             "这个发行版在所有镜像上都拿不到（镜像站的文件会随版本改名）——\
-                             换一个版本，或者用「自定义 URL」"
+                             换一个版本，或者用「自定义下载地址」"
                                 .to_owned(),
                         );
                     }

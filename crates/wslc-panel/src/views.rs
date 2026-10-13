@@ -9,6 +9,9 @@
 use gpui_kit::component::button::*;
 // `StyledExt` 提供 `font_bold` / `font_semibold` 等字重方法（由宏生成）。
 use gpui_kit::component::input::{Input, InputState};
+// 「微软商店」与「在线发行版」两张清单都是**下拉框**（参考实现也是
+// `CustomComboBox`，不是我们原先那种按钮列表）。
+use gpui_kit::component::select::Select;
 // 注意：这里**不导入** `Disableable` —— 全项目不再使用 `.disabled()`：
 // gpui-component 的禁用态文字几乎看不清，改用"守卫 + 文案"表达不可用状态。
 use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
@@ -17,7 +20,7 @@ use gpui_kit::*;
 use wslc_core::cmd::container::{PullPolicy, RunSpec};
 // 安装的**计划**是纯逻辑（在 `wslc-core` 里）：页面直接把它的步骤列表画出来，
 // 和执行时读的是同一份数据 —— 预览不会和执行走偏。
-use wslc_core::mirrors::{self, Offer};
+use wslc_core::mirrors;
 use wslc_core::model::install as install_model;
 use wslc_core::model::{ContainerState, ContainerSummary, Distro, DistroState};
 // `/etc/wsl.conf` 的字段表与保序文档模型（纯逻辑，在 `wslc-core` 里）。
@@ -1608,6 +1611,37 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
                 .child(browse_file)
                 .into_any_element(),
         );
+
+        // 「识别为 …」：本地来源**只有一个入口**，装法由后缀决定 ——
+        // 用户必须能看出我们猜成了什么（猜错了他会看到一条 wsl 的报错，
+        // 而那条报错不会告诉他"是你文件后缀不对"）。
+        //
+        // 纯函数、不碰磁盘：渲染时现算（读文件头要碰磁盘，那条检查只能放在
+        // 提交那一刻，见 `add_instance` 的说明）。
+        let path = form.source_path.read(cx).value().trim().to_owned();
+        let (hint, color) = match install_model::classify_local_file(&path) {
+            Some(kind) => (format!("识别为：{}", kind.label()), theme::text_dim()),
+            None if path.is_empty() => (
+                "按**后缀**自动判断装法：tar / tar.gz / tar.xz → `--import`；\
+                 .vhdx → `--import --vhd`；.wsl → WSL 安装器。"
+                    .to_owned(),
+                theme::text_dim(),
+            ),
+            // 认不出来不硬猜，但也不能什么都不说 —— 按 tar 处理并讲清楚
+            None => (
+                "没认出这个后缀，会按 **tar 归档**处理（`wsl --import`）。\
+                 如果它其实是 `.vhdx` 或 `.wsl`，改一下文件名后缀即可。"
+                    .to_owned(),
+                theme::warning(),
+            ),
+        };
+        fields.push(
+            div()
+                .text_xs()
+                .text_color(color)
+                .child(crate::util::strip_md(&hint))
+                .into_any_element(),
+        );
     }
 
     // 安装目录：+ 浏览 + 存为默认
@@ -1663,7 +1697,7 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
 
     // -- 来源专属区块 --
     let source_block: AnyElement = if source.is_online() {
-        online_block(state, form, entity, cx)
+        online_block(state, form, entity)
     } else if source.is_mirror() {
         mirror_block(state, form, entity, cx)
     } else {
@@ -1726,7 +1760,7 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
                      连不上会自动切回微软商店再试一次。"
                 } else {
                     "微软商店是 WSL 官方那条路（本机实测能连上）；\
-                     商店也拉不动时，改用「在线发行版（国内镜像源）」——那条完全不依赖 WSL 的网络。"
+                     商店也拉不动时，改用「在线发行版（镜像源）」——那条完全不依赖 WSL 的网络。"
                 })
                 .into_any_element(),
         );
@@ -1907,13 +1941,15 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
     page.into_any_element()
 }
 
-/// 「微软商店」那一块：刷新 + 搜索 + 发行版列表 + 来源说明。
-fn online_block(
-    state: &AppState,
-    form: &InstallForm,
-    entity: &Entity<Shell>,
-    cx: &App,
-) -> AnyElement {
+/// 「微软商店」那一块：刷新 + **下拉框** + 来源说明。
+///
+/// 参考实现也是一个下拉框（`CustomComboBox`）—— 原先我们那种"几十个按钮
+/// 铺满一屏 + 外面再挂一个搜索框"既占地方、又要用户自己找。
+/// 搜索收进下拉框里（`SelectState::searchable`）。
+///
+/// 不需要 `cx`：下拉框的选中由 `Shell` 那边订阅，这里只负责画
+/// （不像镜像源那块还要读自定义 URL 输入框）。
+fn online_block(state: &AppState, form: &InstallForm, entity: &Entity<Shell>) -> AnyElement {
     let refresh = {
         let entity = entity.clone();
         Button::new("online-refresh")
@@ -1923,50 +1959,17 @@ fn online_block(
                 "刷新商店清单"
             })
             .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.refresh_online_list(cx));
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |shell, cx| shell.refresh_online_list(window, cx));
             })
     };
 
-    let query = form.online_filter.read(cx).value().to_owned();
-    let matches = state.online.filtered(&query);
-
-    // 只画前 200 条：清单通常几十条，但万一是几百条，
-    // 一个超长的按钮列表会把页面撑得没法用。
-    let rows: Vec<AnyElement> = matches
-        .iter()
-        .take(200)
-        .map(|item| {
-            let id = item.id.clone();
-            // 右边那行小字单独留一份：上面那个闭包已经把 `id` 移走了
-            let id_text = item.id.clone();
-            let selected = state.online.selected.as_deref() == Some(item.id.as_str());
-            let entity = entity.clone();
-
-            let mut button = Button::new(SharedString::from(format!("online-{}", item.id)))
-                // 主文案用**友好名**（"Ubuntu 24.04 LTS"），id 作次要信息放右边 ——
-                // 和参考实现的观感一致；但真正传给 `wsl --install -d` 的还是 id。
-                .label(item.label.clone())
-                .small()
-                .on_click(move |_, window, cx| {
-                    let id = id.clone();
-                    entity.update(cx, |shell, cx| {
-                        shell.pick_online_distro(id, window, cx);
-                    });
-                });
-            if selected {
-                button = button.primary();
-            }
-
-            h_flex()
-                .w_full()
-                .gap_2()
-                .items_center()
-                .child(button)
-                .child(div().text_xs().text_color(theme::text_dim()).child(id_text))
-                .into_any_element()
-        })
-        .collect();
+    // 下拉框：显示 `Ubuntu 24.04 LTS (Ubuntu-24.04)`，取到的是 id。
+    // 选中由 `Shell` 那边订阅（`SelectEvent::Confirm`），这里只负责画。
+    let picker = Select::new(&form.store_select)
+        .placeholder("选一个发行版（可以打字搜索）")
+        .w_full()
+        .menu_max_h(px(320.));
 
     // 状态：正在拉 / 失败原因（原文）/ 来源说明
     let status: AnyElement =
@@ -1996,9 +1999,8 @@ fn online_block(
                     .text_xs()
                     .text_color(theme::text_dim())
                     .child(format!(
-                        "共 {} 个，{} 个匹配。{}",
+                        "共 {} 个可装。{}",
                         state.online.items.len(),
-                        matches.len(),
                         state.online.source.label()
                     ))
                     .into_any_element(),
@@ -2019,7 +2021,7 @@ fn online_block(
                         .child(
                             "注意：这份清单是面板自己从 CDN 拉的，说明 wsl 自己拉不到它要的那份 \
                          manifest —— 现在用「微软商店」装多半会连不上。\
-                         先试「在线发行版（国内镜像源）」（那条不经过 wsl 的网络）；\
+                         先试「在线发行版（镜像源）」（那条不经过 wsl 的网络）；\
                          如果你刚把代理修好，点一下上面的「刷新商店清单」再看这行还在不在。",
                         )
                         .into_any_element(),
@@ -2066,38 +2068,35 @@ fn online_block(
         .w_full()
         .gap_2()
         .child(
-            div()
-                .text_xs()
-                .text_color(theme::text_muted())
-                .child("选择发行版（微软商店 / Microsoft Store）"),
-        )
-        .child(h_flex().w_full().gap_2().items_end().child(refresh).child(
-            div().flex_1().min_w_0().child(form_field(
-                "install-online-filter",
-                "搜索（id 与友好名都匹配）",
-                &form.online_filter,
-                cx,
-                true,
-            )),
-        ))
-        .child(status)
-        .child(
-            // ⚠️ 滚动容器必须先有 `.id(...)`：`overflow_y_scroll` 来自
-            // `StatefulInteractiveElement`，只对带 id 的元素可用（漏了是编译错误）。
-            v_flex()
-                .id("install-online-list")
+            h_flex()
                 .w_full()
-                .max_h(px(240.))
-                .overflow_y_scroll()
-                .gap_1()
-                .children(rows),
+                .gap_2()
+                .items_center()
+                .child(refresh)
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child("选择发行版（微软商店 / Microsoft Store）"),
+                ),
         )
+        .child(picker)
+        .child(status)
         .into_any_element()
 }
 
-/// 「在线发行版（国内镜像源）」那一块：清单（动态拉）+ 探测 + 自定义 URL。
+/// 「在线发行版（镜像源）」那一块：清单（动态拉）+ **下拉框** + 自动测速状态 + 自定义 URL。
 ///
-/// 清单来自 `wslc_core::cmd::catalog`（wslui 的公开接口，见 `mirrors.rs` 的说明）。
+/// 清单来自 `wslc_core::cmd::catalog`（wslui 的公开接口，见 `mirrors.rs` 的说明），
+/// 顺序照参考实现排（Ubuntu / Debian 在最前，见 `sort_offers_like_reference`）。
+///
+/// # 为什么没有"镜像站列表"了
+///
+/// 参考实现是**自动测速择优**：用户只选发行版，面板自己并发测一遍、挑最快的那个。
+/// 原先我们让用户先点「探测最快镜像」、再对着十几行"清华 TUNA 0.16 秒 / 南大 …"
+/// 自己挑 —— 那是把**面板该做的事**推给了用户（用户原话："不需要那些什么清华源
+/// 之类的"）。现在测速在**选中发行版时自动开始**，界面上只留一行状态；
+/// 镜像站名字进安装日志（出问题时那才是排查的地方）。
 fn mirror_block(
     state: &AppState,
     form: &InstallForm,
@@ -2113,44 +2112,16 @@ fn mirror_block(
                 "刷新清单"
             })
             .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.refresh_mirror_catalog(cx));
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |shell, cx| shell.refresh_mirror_catalog(window, cx));
             })
     };
 
-    let selected_id = state.mirrors.selected_offer().map(Offer::id);
-    let offer_rows: Vec<AnyElement> = state
-        .mirrors
-        .offers
-        .iter()
-        .map(|offer| {
-            let id = offer.id();
-            let selected = selected_id.as_deref() == Some(id.as_str());
-            let entity = entity.clone();
-            let mut button = Button::new(SharedString::from(format!("mirror-{id}")))
-                .label(offer.label())
-                .small()
-                .on_click(move |_, _, cx| {
-                    let id = id.clone();
-                    entity.update(cx, |shell, cx| shell.select_mirror_distro(id, cx));
-                });
-            if selected {
-                button = button.primary();
-            }
-            h_flex()
-                .w_full()
-                .gap_2()
-                .items_center()
-                .child(button)
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_dim())
-                        .child(offer.format_summary()),
-                )
-                .into_any_element()
-        })
-        .collect();
+    // 下拉框：显示 `Ubuntu 24.04 (12 镜像源)`，取到的是清单里的 id。
+    let picker = Select::new(&form.mirror_select)
+        .placeholder("选一个发行版（自动测速择优）")
+        .w_full()
+        .menu_max_h(px(320.));
 
     // 状态行：正在拉 / 拉失败（原话）/ 清单概览
     let status: AnyElement = if state.mirrors.loading {
@@ -2189,98 +2160,41 @@ fn mirror_block(
             .into_any_element()
     };
 
-    let list: AnyElement = if offer_rows.is_empty() {
-        div().into_any_element()
-    } else {
-        // ⚠️ 滚动容器必须先有 `.id(...)`（`overflow_y_scroll` 只对带 id 的元素可用，
-        // 漏了是编译错误 —— 见 `AGENTS.md` §7.5）。
-        v_flex()
-            .id("install-mirror-list")
-            .w_full()
-            .max_h(px(220.))
-            .overflow_y_scroll()
-            .gap_1()
-            .children(offer_rows)
-            .into_any_element()
-    };
-
-    let probe = {
-        let entity = entity.clone();
-        Button::new("mirror-probe")
-            .label(if state.mirrors.probing {
-                "正在探测…"
-            } else {
-                "探测最快镜像"
-            })
-            .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.probe_mirrors(cx));
-            })
-    };
-
-    let rows: Vec<AnyElement> = state
-        .mirrors
-        .results
-        .iter()
-        .map(|result| {
-            let chosen = state
-                .mirrors
-                .chosen
-                .as_ref()
-                .is_some_and(|choice| choice.url == result.url);
-            h_flex()
-                .w_full()
-                .gap_2()
-                .items_center()
-                .child(if chosen {
-                    badge("已选", theme::success(), theme::success_soft()).into_any_element()
-                } else {
-                    div().w(px(34.)).into_any_element()
-                })
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text())
-                        .child(result.site.clone()),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(if result.is_ok() {
-                            theme::text_muted()
-                        } else {
-                            theme::danger()
-                        })
-                        .child(result.summary()),
-                )
-                .into_any_element()
-        })
-        .collect();
-
-    let chosen_line: AnyElement = match (&state.mirrors.chosen, &state.mirrors.error) {
-        (Some(choice), _) => div()
+    // 测速状态：正在测 / 已选好 / 全都拿不到。
+    //
+    // ⚠️ **不写镜像站名字**（用户要求"不需要那些什么清华源之类的"）：
+    // 只给"选好了 + 多大"，名字在安装日志里（`从 <site> 下载 …` 那一步）。
+    let probe_line: AnyElement = if state.mirrors.probing {
+        div()
             .text_xs()
-            .text_color(theme::success())
-            .child(format!(
-                "将用 {} 上的 {}{}",
-                choice.site,
-                choice.release,
-                choice
-                    .bytes
-                    .map(|bytes| format!("（{}）", mirrors::human_bytes(bytes)))
-                    .unwrap_or_default()
-            ))
-            .into_any_element(),
-        (None, Some(error)) => div()
+            .text_color(theme::text_muted())
+            .child("正在自动测速，挑最快的镜像…")
+            .into_any_element()
+    } else if let Some(error) = state.mirrors.error.as_ref() {
+        div()
             .text_xs()
             .text_color(theme::warning())
             .child(error.clone())
-            .into_any_element(),
-        (None, None) => div()
+            .into_any_element()
+    } else if let Some(choice) = state.mirrors.chosen.as_ref() {
+        div()
+            .text_xs()
+            .text_color(theme::success())
+            .child(format!(
+                "已自动测速选好镜像（{} 个来源里最快的那个{}）",
+                state.mirrors.results.len(),
+                choice
+                    .bytes
+                    .map(|bytes| format!("，{}", mirrors::human_bytes(bytes)))
+                    .unwrap_or_default()
+            ))
+            .into_any_element()
+    } else {
+        div()
             .text_xs()
             .text_color(theme::text_dim())
-            .child("还没探测 —— 点上面的按钮挑最快的那个镜像。也可以在下面直接填 URL。")
-            .into_any_element(),
+            .child("选中发行版后会自动测速挑最快的镜像。也可以在下面直接填 URL。")
+            .into_any_element()
     };
 
     v_flex()
@@ -2296,17 +2210,15 @@ fn mirror_block(
                     div()
                         .text_xs()
                         .text_color(theme::text_muted())
-                        .child("选择发行版（在线发行版 · 国内镜像源）"),
+                        .child("选择发行版（在线发行版 · 镜像源）"),
                 ),
         )
         .child(status)
-        .child(list)
-        .child(h_flex().w_full().gap_2().items_center().child(probe))
-        .child(v_flex().w_full().gap_1().children(rows))
-        .child(chosen_line)
+        .child(picker)
+        .child(probe_line)
         .child(form_field(
             "install-mirror-url",
-            "自定义下载地址（留空 = 用上面探测出来的；.wsl 包和 tar 都支持）",
+            "自定义下载地址（留空 = 用自动测速挑出来的；.wsl 包和 tar 都支持）",
             &form.mirror_url,
             cx,
             true,
@@ -2423,32 +2335,33 @@ fn install_log_card(
     // 而镜像源是**我们自己去国内镜像站下载**、不经过 wsl 的网络 —— 同一个发行版
     // 往往在那边也有（Ubuntu/Debian/Alpine/Arch/Fedora/…）。让用户自己去
     // 清单里翻一遍、再手动对齐版本，是没必要付出的代价。
-    let fallback: AnyElement =
-        if source.is_online() && matches!(progress.outcome, Some(InstallOutcome::Failed { .. })) {
-            let entity = entity.clone();
-            h_flex()
-                .w_full()
-                .items_center()
-                .gap_3()
-                .child(
-                    Button::new("install-switch-to-mirror")
-                        .label("改用「在线发行版（国内镜像源）」再试")
-                        .small()
-                        .primary()
-                        .on_click(move |_, _, cx| {
-                            entity.update(cx, |shell, cx| shell.switch_to_mirror_source(cx));
-                        }),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_dim())
-                        .child("那条是面板自己从国内镜像站下载，不依赖 wsl 的网络。"),
-                )
-                .into_any_element()
-        } else {
-            div().into_any_element()
-        };
+    let fallback: AnyElement = if source.is_online()
+        && matches!(progress.outcome, Some(InstallOutcome::Failed { .. }))
+    {
+        let entity = entity.clone();
+        h_flex()
+            .w_full()
+            .items_center()
+            .gap_3()
+            .child(
+                Button::new("install-switch-to-mirror")
+                    .label("改用「在线发行版（镜像源）」再试")
+                    .small()
+                    .primary()
+                    .on_click(move |_, window, cx| {
+                        entity.update(cx, |shell, cx| shell.switch_to_mirror_source(window, cx));
+                    }),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child("那条是面板自己从国内镜像站下载，不依赖 wsl 的网络。"),
+            )
+            .into_any_element()
+    } else {
+        div().into_any_element()
+    };
 
     // ⚠️ 滚动容器必须带 `.id(...)`（见 online_block 的注释）。
     //
