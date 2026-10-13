@@ -21,10 +21,10 @@ use wslc_core::cmd::container::{PullPolicy, RunSpec};
 // 安装的**计划**是纯逻辑（在 `wslc-core` 里）：页面直接把它的步骤列表画出来，
 // 和执行时读的是同一份数据 —— 预览不会和执行走偏。
 use wslc_core::mirrors;
-// 镜像仓库（Registry V2）的纯逻辑：常用镜像清单、tag 截断上限、体积累加。
-use wslc_core::registry;
 use wslc_core::model::install as install_model;
 use wslc_core::model::{ContainerState, ContainerSummary, Distro, DistroState};
+// 镜像仓库（Registry V2）的纯逻辑：常用镜像清单、tag 截断上限、体积累加。
+use wslc_core::registry;
 // `/etc/wsl.conf` 的字段表与保序文档模型（纯逻辑，在 `wslc-core` 里）。
 use wslc_core::model::wslconf;
 use wslc_core::settings::{SETTING_KEYS, SettingKey, SettingKind};
@@ -1031,9 +1031,13 @@ pub fn registry_page(shell: &Shell, _cx: &App, entity: &Entity<Shell>) -> AnyEle
     let presets: Vec<AnyElement> = registry::COMMON_IMAGES
         .iter()
         .map(|name| {
-            // `COMMON_IMAGES` 是 `&[&str]`，`iter()` 给的是 `&&str`。
-            // 显式解引用成 `&'static str`：它 `Copy`，`move` 闭包直接拷进去即可。
-            let name: &'static str = *name;
+            // `COMMON_IMAGES` 是 `&[&str]`，`iter()` 给的是 `&&str` ——
+            // 解一层引用拿到 `&'static str`（它 `Copy`，`move` 闭包直接拷进去）。
+            //
+            // ⚠️ 写成 `let name = *name;` 而**不是** `let name: &'static str = *name;`：
+            // 后者 clippy 会报 `explicit_auto_deref`（"deref which would be done by
+            // auto-deref"），CI 的 lint 任务实测报了它。
+            let name = *name;
             let entity = entity.clone();
             Button::new(SharedString::from(format!("registry-preset-{name}")))
                 .label(name)
@@ -1065,7 +1069,11 @@ pub fn registry_page(shell: &Shell, _cx: &App, entity: &Entity<Shell>) -> AnyEle
             // 刻意**不**用 `.disabled()`：全项目都不导入 `Disableable`
             // （禁用态的文字几乎看不清，见 `images` 那里同一条注释）。
             Button::new("registry-query")
-                .label(if page.loading { "查询中…" } else { "查询" })
+                .label(if page.loading {
+                    "查询中…"
+                } else {
+                    "查询"
+                })
                 .primary()
                 .small()
                 .on_click(move |_, window, cx| {
@@ -1179,11 +1187,7 @@ pub fn registry_page(shell: &Shell, _cx: &App, entity: &Entity<Shell>) -> AnyEle
                     .w_full()
                     .gap_2()
                     .items_center()
-                    .child(
-                        Input::new(&form.filter)
-                            .id("registry-filter")
-                            .w(px(260.)),
-                    )
+                    .child(Input::new(&form.filter).id("registry-filter").w(px(260.)))
                     .child(
                         div()
                             .text_xs()
@@ -1331,10 +1335,15 @@ pub fn registry_page(shell: &Shell, _cx: &App, entity: &Entity<Shell>) -> AnyEle
             v_flex()
                 .w_full()
                 .gap_3()
-                .child(div().text_sm().text_color(theme::text_muted()).child(format!(
-                    "在线浏览 {} 上的仓库，选一个 tag 拉下来。",
-                    page.host
-                )))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme::text_muted())
+                        .child(format!(
+                            "在线浏览 {} 上的仓库，选一个 tag 拉下来。",
+                            page.host
+                        )),
+                )
                 .child(div().text_xs().text_color(theme::text_dim()).child(
                     "实测这台机器上 Docker Hub 直连不通（registry-1.docker.io 超时），\
                      所以内置的是这个加速站：它有完整的 Registry V2 接口，\

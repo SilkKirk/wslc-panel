@@ -43,11 +43,11 @@ use wslc_core::cmd::container::{PullPolicy, RunSpec};
 use wslc_core::cmd::distro::InstallSpec;
 use wslc_core::cmd::install::{self, InstallCancel, InstallEvent, InstallSummary, RunOptions};
 use wslc_core::mirrors;
-// 镜像仓库（Registry V2）的纯逻辑：引用规范化、URL 拼装、tag 排序、错误翻译。
-use wslc_core::registry;
 use wslc_core::model::install::{
     self as install_model, InstallSource, derive_install_dir, suggest_name_from_file,
 };
+// 镜像仓库（Registry V2）的纯逻辑：引用规范化、URL 拼装、tag 排序、错误翻译。
+use wslc_core::registry;
 use wslc_core::settings::SettingKey;
 // `Wsl` 是发行版（实例）的调用器，和容器的 `Wslc` 并列。
 use wslc_core::{Wsl, Wslc};
@@ -983,8 +983,7 @@ impl Shell {
         let repository = cx.new(|cx| {
             InputState::new(window, cx).placeholder("nginx / library/nginx / grafana/grafana")
         });
-        let filter =
-            cx.new(|cx| InputState::new(window, cx).placeholder("过滤 tag，例如 alpine"));
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("过滤 tag，例如 alpine"));
 
         // ⚠️ 这个订阅是**必须**的，不是优化：渲染整页的是 `Shell`，而输入框改的是
         // `InputState` 自己的值 —— 不订阅父级就不会重绘，过滤结果要等到下一次
@@ -1017,7 +1016,8 @@ impl Shell {
         };
         let raw = form.repository.read(cx).value().trim().to_owned();
         if raw.is_empty() {
-            self.state.notify(Toast::error("先填一个仓库名，例如 nginx"));
+            self.state
+                .notify(Toast::error("先填一个仓库名，例如 nginx"));
             cx.notify();
             return;
         }
@@ -1049,9 +1049,9 @@ impl Shell {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move {
-                    wslc_core::cmd::registry::fetch_tags(&host, &fetch_repository)
-                })
+                .spawn(
+                    async move { wslc_core::cmd::registry::fetch_tags(&host, &fetch_repository) },
+                )
                 .await;
             let _ = this.update(cx, |shell, cx| {
                 match result {
@@ -1117,6 +1117,14 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // ⚠️ 先挡掉"正在查"，**再**动输入框：反过来的话输入框已经变成新仓库名，
+        // 而结果列表还是上一个仓库的 —— 那正是 §3.2 要避免的串台，
+        // 只不过这次是我们自己造成的。
+        if self.state.registry.loading {
+            self.state.notify(Toast::info("上一个查询还没回来"));
+            cx.notify();
+            return;
+        }
         let Some(form) = self.registry_form.as_ref() else {
             return;
         };
@@ -1805,9 +1813,9 @@ impl Shell {
 
         // 预填（`set_value` 要 `&mut Window`，所以只能在有 window 的地方做）
         if let Some(image) = image {
-            dialog
-                .image
-                .update(cx, |state, cx| state.set_value(image.to_owned(), window, cx));
+            dialog.image.update(cx, |state, cx| {
+                state.set_value(image.to_owned(), window, cx)
+            });
         }
 
         // 焦点给第一个必填字段
