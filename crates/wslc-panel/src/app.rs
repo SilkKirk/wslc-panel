@@ -521,6 +521,14 @@ pub struct Shell {
     ///
     /// `views::wslconf_overlay` 要读它来画 `Input`，所以是 `pub(crate)`。
     pub(crate) wslconf_dialog: Option<WslConfDialog>,
+    /// 「新终端的起始目录」那个自定义路径输入框。
+    ///
+    /// 点过设置页的「自定义路径…」之后才是 `Some`，建完就**一直留着**
+    /// （和 `install_form` 同一个理由：`InputState::new` 要 `&mut Window`，
+    /// 而渲染时每帧重建输入框会让用户**一个字都打不进去**）。
+    ///
+    /// `pub(crate)`：`views.rs` 要读它来画 `Input`。
+    pub(crate) terminal_dir_input: Option<Entity<InputState>>,
     /// 「创建容器」弹窗；关闭时为 `None`。
     create_dialog: Option<CreateDialog>,
     /// 「容器 exec」浮层的命令输入框；浮层关闭时为 `None`。
@@ -624,6 +632,7 @@ impl Shell {
             picking: false,
             keep_alive: Vec::new(),
             wslconf_dialog: None,
+            terminal_dir_input: None,
             create_dialog: None,
             exec_input: None,
             detail: None,
@@ -1663,9 +1672,15 @@ impl Shell {
     ///
     /// 这是**同步**的：`spawn_in_new_console` 只负责把窗口拉起来就返回，
     /// 不会等终端关闭（也不该等 —— 用户可能在里面待几个小时）。
+    ///
+    /// 起始目录来自偏好（[`TerminalStartDir`](crate::prefs::TerminalStartDir)）：
+    /// **不是**面板自己的 cwd —— 那取决于用户从哪个文件夹启动的面板，
+    /// 见 `wslc_core::cmd::distro::open_terminal`。
     pub fn open_distro_terminal(&mut self, name: String, cx: &mut Context<Self>) {
         let wsl = self.state.wsl.clone();
-        let toast = match wslc_core::cmd::distro::open_terminal(&wsl, &name) {
+        // 先 clone 出来：`open_terminal` 借的是 `start`，而下面还要动 `self.state`。
+        let start = self.state.prefs.terminal_dir.clone();
+        let toast = match wslc_core::cmd::distro::open_terminal(&wsl, &name, start.cd_arg()) {
             Ok(()) => Toast::success(format!("已打开 {name} 的终端")),
             Err(e) => Toast::error(format!("打开终端失败：{e}")),
         };
@@ -2108,8 +2123,21 @@ impl Shell {
     /// 需要 bash 的话进去再敲（提示条里也这么说）。
     pub fn open_container_shell(&mut self, name: String, cx: &mut Context<Self>) {
         let wslc = self.state.wslc.clone();
-        let toast = match wslc_core::cmd::container::open_interactive_shell(&wslc, &name, "/bin/sh")
-        {
+        // 容器里的起点：只有"自定义路径"且是绝对路径时才有值 ——
+        // 容器没有"Linux home"，`~` 交给镜像自己的 WORKDIR
+        // （见 `TerminalStartDir::container_workdir`）。
+        let workdir = self
+            .state
+            .prefs
+            .terminal_dir
+            .container_workdir()
+            .map(str::to_owned);
+        let toast = match wslc_core::cmd::container::open_interactive_shell(
+            &wslc,
+            &name,
+            "/bin/sh",
+            workdir.as_deref(),
+        ) {
             Ok(()) => Toast::success(format!(
                 "已打开 {name} 的终端（/bin/sh —— 镜像里有 bash 的话进去敲 bash 就行）"
             )),
@@ -3155,12 +3183,12 @@ impl Shell {
             return;
         }
 
-        // ⚠️ `Prefs` 是**整体**写回磁盘的：这里必须带上刷新间隔与主题，
-        // 只填 install_dir 会把它们重置掉。
+        // ⚠️ `Prefs` 是**整体**写回磁盘的：这里必须带上其余字段，
+        // 只填 install_dir 会把它们重置掉。用 `..` 而不是手抄字段 ——
+        // 手抄的那份在加第 4 个字段时一定会漏（终端起始目录就是第 4 个）。
         let prefs = crate::prefs::Prefs {
-            refresh_secs: self.state.prefs.refresh_secs,
-            theme: self.state.prefs.theme,
             install_dir: Some(dir.clone()),
+            ..self.state.prefs.clone()
         };
         self.state.prefs = prefs;
         match self.state.prefs.save() {
@@ -3755,13 +3783,13 @@ impl Shell {
     /// 自动刷新循环每轮都会重新读 `state.prefs`，所以改完下一轮就生效，
     /// 不需要重启，也不需要通知循环。
     pub fn set_refresh_secs(&mut self, secs: u64, cx: &mut Context<Self>) {
-        // ⚠️ 必须**带上当前的 theme**：`Prefs` 是要整体写回磁盘的，
-        // 这里要是只填 `refresh_secs`，改一次刷新间隔就会把主题重置掉。
+        // ⚠️ `Prefs` 是要整体写回磁盘的：用 `..` 带上其余字段
+        // （以前是手抄 refresh_secs/theme/install_dir —— 加第 4 个字段
+        // 「终端起始目录」时那三行就会漏掉它，用户设过的终端起点被一次
+        // 刷新间隔改动悄悄抹掉）。
         let prefs = crate::prefs::Prefs {
             refresh_secs: secs,
-            theme: self.state.prefs.theme,
-            // ⚠️ 同样要带上默认安装目录 —— 少写一个字段就是把用户设过的东西抹掉。
-            install_dir: self.state.prefs.install_dir.clone(),
+            ..self.state.prefs.clone()
         }
         .normalized();
         if self.state.prefs == prefs {
@@ -3784,6 +3812,93 @@ impl Shell {
             }
         }
         cx.notify();
+    }
+
+    // -- 新终端的起始目录 ----------------------------------------------------
+
+    /// 设置「新终端的起始目录」，并立即写入偏好文件。
+    ///
+    /// 只影响**之后打开**的终端：已经在跑的那些窗口的 cwd 是它们自己的事，
+    /// 这里改不了（界面上也是这么写的）。
+    pub fn set_terminal_dir(
+        &mut self,
+        dir: crate::prefs::TerminalStartDir,
+        cx: &mut Context<Self>,
+    ) {
+        let prefs = crate::prefs::Prefs {
+            terminal_dir: dir,
+            ..self.state.prefs.clone()
+        };
+        if self.state.prefs == prefs {
+            return;
+        }
+        let described = prefs.terminal_dir.describe();
+        self.state.prefs = prefs;
+
+        match self.state.prefs.save() {
+            Ok(()) => {
+                tracing::info!("新终端的起始目录已改为 {described}");
+                self.state
+                    .notify(Toast::success(format!("新终端将从「{described}」开始")));
+            }
+            Err(e) => {
+                tracing::warn!("保存偏好失败：{e}");
+                // 内存里的值仍然生效，只是重启后会丢。
+                self.state.notify(Toast::error(format!(
+                    "已改为「{described}」，但保存失败：{e}"
+                )));
+            }
+        }
+        cx.notify();
+    }
+
+    /// 打开「自定义起始目录」的输入框（幂等）。
+    ///
+    /// **必须**在有 `&mut Window` 的地方调用 —— `InputState::new` 要它
+    /// （`AGENTS.md` §7.5：渲染时现建输入框会让用户一个字都打不进去）。
+    ///
+    /// 建完之后**一直留着**，再把焦点给过去：用户点完按钮就能直接敲。
+    pub fn edit_terminal_dir(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.terminal_dir_input.is_none() {
+            // 预填当前的自定义路径（不是自定义档位时留空，走占位符提示格式）。
+            let current = match &self.state.prefs.terminal_dir {
+                crate::prefs::TerminalStartDir::Custom(dir) => dir.clone(),
+                _ => String::new(),
+            };
+            let input = cx.new(|cx| {
+                InputState::new(window, cx).placeholder("/home/wt/project 或 ~")
+            });
+            // `set_value` 也要 `&mut Window`，所以只能在这儿做。
+            input.update(cx, |state, cx| state.set_value(current, window, cx));
+            self.terminal_dir_input = Some(input);
+        }
+
+        // `InputState::focus` 是 `pub(crate)`，外部只能走 `focus_handle`。
+        if let Some(input) = self.terminal_dir_input.clone() {
+            let handle = input.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
+        }
+        cx.notify();
+    }
+
+    /// 把输入框里的路径应用成「自定义起始目录」。
+    ///
+    /// 校验是纯函数（[`crate::prefs::parse_custom_dir`]），所以"报错的红字"
+    /// 和"真的存下去的值"用的是同一套规则。校验不过就**只提示、不改偏好** ——
+    /// 把非法值存进去，用户下次点「打开终端」会得到一个落点随机的窗口
+    /// （`wsl.exe` 对不存在的 `--cd` 不报错，只落在 `/`）。
+    pub fn apply_terminal_dir(&mut self, cx: &mut Context<Self>) {
+        let Some(input) = self.terminal_dir_input.clone() else {
+            return;
+        };
+        let typed = input.read(cx).value().trim().to_owned();
+        match crate::prefs::parse_custom_dir(&typed) {
+            Ok(dir) => self.set_terminal_dir(crate::prefs::TerminalStartDir::Custom(dir), cx),
+            Err(e) => {
+                self.state.notify(Toast::error(e));
+                cx.notify();
+            }
+        }
     }
 
     /// 切主题：**持久化 + 两套配色一起换**。

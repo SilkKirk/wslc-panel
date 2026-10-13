@@ -364,6 +364,9 @@ cx.spawn_in(window, async move |this, cx| {
 | `--manage --compact` 在 18 GB 的盘上 **10.2 秒** | 所以不需要进度条，提示 + 完成刷新就够 |
 | 注册表 `HKCU\...\Lxss\{GUID}` 是安装位置的唯一来源 | `wsl` 命令不报告装在哪个盘。用 `reg.exe query /s`：**7~27 ms**，且输出**恒为 UTF-8**（哪怕系统 ACP=936） |
 | 读 `/etc/wsl.conf` 会**启动发行版** | 有副作用，界面上要说清 |
+| **`wsl -d X` 会继承调用者的 cwd**（实测于 WSL 3.0.3.0） | 面板自己不设 cwd，所以"打开终端"落在哪儿 = **用户从哪个文件夹启动的面板**。实测：从 `C:\Users\76434\Downloads` 启动 → 终端落在 `/mnt/c/Users/76434/Downloads`；从 `E:\cnb\wslc-panel` 启动 → `/mnt/e/cnb/wslc-panel`。翻译不了的路径（UNC、未挂载的盘、从 WSL 里起 exe）回落 `~`。**要固定起点就得显式写 `--cd`** |
+| **`--cd` 才是指定终端起点的开关**（实测于 WSL 3.0.3.0） | `wsl -d X --cd ~` → `/home/wt`；`--cd ~/tmp` 会把 `~` 展开；**`--cd` 指向不存在的目录不报错**，只在 stderr 留一行 `chdir(...) failed 2` 然后落在 `/`（所以写错的路径不会"点了没反应"，但也别指望它提示）；`--cd D:\wsl` 也会被翻译成 `/mnt/d/wsl`（我们还是只让用户填 Linux 路径 —— 两个坐标系之间猜最容易出错）。面板里由偏好 `terminal_dir` 决定，见 `wslc_panel_core::prefs::TerminalStartDir` |
+| `wslc exec -i -t` **有 `-w/--workdir`** | 容器里的起点可以指定（`wslc exec --help`），但容器里**没有**"Linux home"这个概念 —— `~` 是谁由镜像决定，面板不往下传，见 `TerminalStartDir::container_workdir` |
 
 ### 7.4 gpui-kit（0.7.1）没有文件选择器
 
