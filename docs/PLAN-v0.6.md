@@ -255,6 +255,11 @@ nginx  redis  mysql  postgres  mongo  alpine  ubuntu  node  python  hello-world
 
 ### 3.5 界面（新页 `Page::Registry`）
 
+> ⚠️ **下面记的是 v0.6 当时的做法。** v0.6.2 按 §3.6/§3.7 合并回一页，
+> 其中两条被推翻了：registry **改成了可编辑字段**（不再是"只显示它是谁"），
+> tag **改成可搜索下拉框**（不再有 200 行上限与本地过滤）。
+> 这两处现在的样子见 §3.7。
+
 三段：
 
 1. **registry**：这一版只有一个，所以**不放选择器**，只在页面上显示它是谁
@@ -320,6 +325,34 @@ nginx  redis  mysql  postgres  mongo  alpine  ubuntu  node  python  hello-world
 > （默认 `docker.1panel.live`），然后才删掉弹窗 ——
 > 那样不会丢能力。反过来先删弹窗就是回退。已写进 PR 描述等确认。
 
+### 3.7 v0.6.2 修订：按 §3.6 那条路合并回一页（用户拍板）
+
+用户确认走 §3.6 里写的那个方向。落地的样子：
+
+| 项 | v0.6 | v0.6.2 |
+|---|---|---|
+| 页面 | 「镜像」+「镜像仓库」两页（`Page::ALL` 9 页） | **一页「镜像」**（8 页）：拉取区 + 本地镜像表 |
+| 拉取入口 | 「按引用拉取…」弹窗 + 「镜像仓库」页的「拉取」 | **只有一个**「拉取」（`AGENTS.md` §5 重新成立） |
+| registry | 常量 `DEFAULT_REGISTRY`，页面上只显示 | **可编辑输入框**（默认仍是内置那个） |
+| tag 选择 | 本地过滤 + 只渲染前 200 行（`MAX_VISIBLE_TAGS`） | **可搜索下拉框**，整个列表喂进去 |
+| 别的 registry | 靠弹窗"粘完整引用" | 改 registry 框 + 在仓库名后写 `:tag` |
+
+关键依据（都是查过/实测过的，不是推的）：
+
+- **下拉框的列表是虚拟化的**：`gpui-kit` 的 `crates/component/src/list/list.rs`
+  用 `v_virtual_list`（`select.rs` 的弹层就是 `List::new(...)`）——
+  所以 9170 个 tag 不会变成"每帧建 9170 个元素"，这正是能删掉 200 行上限的原因。
+  代价：`registry::MAX_VISIBLE_TAGS` / `filter_tags` / `RegistryState::visible_tags`
+  一整套"本地过滤 + 截断"没了（留着就是死代码 + 会误导人的注释）。
+- **registry 变成输入框 ⇒ 多了一条安全边界**：`host` 会拼进 URL 再作为**裸 argv**
+  交给 `curl.exe`，所以新增 `registry::is_valid_host` + `normalize_host`
+  （实测形状：`localhost` / `192.168.1.10:5000` 要认，`host:port` / `a..b` /
+  `docker.1panel.live/v2` 要拒），并在 `fetch_tags` / `fetch_size` 里各判一次。
+- **`input_tag` 是这次合并的关键补丁**：别的 registry 的 `tags/list` 可能要认证
+  （实测 daocloud 401），那时下拉框里一个 tag 都没有 —— 而用户已经在仓库名里
+  写了 `:1.27`。所以那个 tag 要存进状态（`RegistryState::input_tag`），
+  作为 `effective_tag()` 的兜底，否则"按完整引用拉取"这个能力还是丢了。
+
 ---
 
 ## 4. 分阶段
@@ -329,7 +362,7 @@ nginx  redis  mysql  postgres  mongo  alpine  ubuntu  node  python  hello-world
 | **P1** | `registry.rs` 纯函数 + `cmd/registry.rs` + fixture 单测 | ✅ **已完成**：`core` job 绿 |
 | **P2** | 新页 `Page::Registry`：仓库 → tag 列表 → 拉取 | ✅ **已完成**：`ui` job 报过 1 个 E0382（已修） |
 | **P3** | 拉完「用这个镜像创建容器」预填；两个入口的意图分开（§3.6） | ✅ **已完成** |
-| **P4**（可选） | 私有仓库：`wslc registry login` 凭据 + registry 可编辑 | 另外立项 |
+| **P4**（可选） | 私有仓库：`wslc registry login` 凭据 + registry 可编辑 | **一半已完成**：registry 可编辑在 **v0.6.2** 做了（§3.7）；凭据 / 认证链路仍未做，另外立项 |
 
 ### 4.1 实施记录（2026-10-13）
 
