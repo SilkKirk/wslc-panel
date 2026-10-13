@@ -40,23 +40,8 @@
 
 use crate::mirrors::BROWSER_UA;
 
-/// 内置 registry —— 这一版只有它（理由见模块说明）。
+/// 内置 registry —— 默认值（`RegistryState::new` 拿它填输入框）。
 pub const DEFAULT_REGISTRY: &str = "docker.1panel.live";
-
-/// 界面上最多渲染多少行 tag。
-///
-/// 实测 tag 数量：`node` **9170**、`jenkins/jenkins` 7324、`python` 4010、
-/// `mongo` 3670、`debian` 3036、`nginx` 1339。全渲染等于每帧建几千个元素，
-/// 所以过滤之后还要再截断一次，并由界面说明"共匹配多少个、继续输入可缩小范围"。
-pub const MAX_VISIBLE_TAGS: usize = 200;
-
-/// 编译期钉住这个上限的合理范围：太小了什么都看不到，
-/// 太大了又变成"每帧建几万个元素"。
-///
-/// 写成 `const _` 而不是测试里的 `assert!`：这条是**常量之间**的关系，
-/// 编译期就能判，而且 clippy 的 `assertions_on_constants` 会报测试里那种写法
-/// （CI 的 lint 任务实测报了 2 条，这是其中一条）。
-const _: () = assert!(MAX_VISIBLE_TAGS >= 50 && MAX_VISIBLE_TAGS <= 1000);
 
 /// 仓库名输入框下面的快捷入口。
 ///
@@ -337,6 +322,70 @@ pub fn is_valid_reference(reference: &str) -> bool {
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-'))
 }
 
+/// registry 主机名（可带端口）合法吗。
+///
+/// 和 [`is_valid_repository`] 一样，这一条是**安全边界**而不是好看：`host` 会拼进
+/// URL（[`tags_url`] / [`manifest_url`]）再作为裸 argv 交给 `curl.exe`
+/// （见 [`curl_args`] 的说明）。区别是它**现在是用户可编辑的** ——
+/// v0.6.2 合并「镜像 / 镜像仓库」两页时把 registry 提成了输入框，
+/// 因为不这么做就会丢掉"从别的 registry 拉"这个能力（`docs/PLAN-v0.6.md` §3.6）。
+/// 常量用不着校验，输入框必须校验。
+///
+/// 规则按 Docker 的 registry 主机名：`[A-Za-z0-9.-]`，可选 `:端口`，
+/// 每个 label 首尾必须是字母数字。刻意**不收** `/` `?` `#` `%` 空格和一切非 ASCII：
+/// 那些要么是路径/查询（我们要的是纯主机名），要么会让 URL 变形。
+pub fn is_valid_host(host: &str) -> bool {
+    let host = host.trim();
+    if host.is_empty() || host.len() > 253 {
+        return false;
+    }
+    // 端口可选，先拆掉再判主机名。`rsplit_once` 而不是 `split_once`：
+    // IPv6 字面量（`[::1]`）本来就不在支持范围内，用最后一个冒号更不容易误判。
+    let (name, port) = match host.rsplit_once(':') {
+        Some((name, port)) => (name, Some(port)),
+        None => (host, None),
+    };
+    if let Some(port) = port {
+        // 端口必须是**数字且 ≤ 65535**：`host:port` 这种占位符要在这里挡住，
+        // 否则它会变成一个"永远超时"的地址，用户完全不知道为什么。
+        // 用 `contains` 而不是 `>= 1 && <= 65535`：后者 clippy 会报
+        // `manual_range_contains`（lint 任务不阻塞，但没必要留一条）。
+        match port.parse::<u32>() {
+            Ok(number) if (1..=65535).contains(&number) => {}
+            _ => return false,
+        }
+    }
+    if name.is_empty() {
+        return false;
+    }
+    name.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label.chars().next().is_some_and(|ch| ch.is_ascii_alphanumeric())
+            && label.chars().last().is_some_and(|ch| ch.is_ascii_alphanumeric())
+            && label
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    })
+}
+
+/// 把用户填的 registry 地址收拾成纯主机名：去空白、去 `http(s)://`、去结尾 `/`、
+/// 统一小写。
+///
+/// **为什么需要**：那个输入框旁边就写着"可以是别的 registry"，
+/// 而用户从浏览器地址栏复制过来十有八九带着协议头或结尾斜杠
+/// （[`split_input`] 认 `https://…/v2/…/tags/list` 那种形状也是同一个理由）。
+/// 这里只做**形状**上的收拾，不查存在性、也不判合法性 —— 合法性由
+/// [`is_valid_host`] 负责，两件事分开才不会互相掩护。
+pub fn normalize_host(input: &str) -> String {
+    let host = input.trim();
+    let host = host
+        .strip_prefix("https://")
+        .or_else(|| host.strip_prefix("http://"))
+        .unwrap_or(host);
+    host.trim_end_matches('/').trim().to_ascii_lowercase()
+}
+
 // ---------------------------------------------------------------- 响应解析
 
 /// JSON 正文 → `Value`。空正文单独报一句（它不是"JSON 坏了"）。
@@ -548,33 +597,6 @@ fn version_key(tag: &str) -> Option<Vec<u64>> {
         return None;
     }
     Some(parts)
-}
-
-/// 按过滤词挑出要渲染的 tag，连**匹配总数**一起返回。
-///
-/// 过滤是**本地**做的：一次把全量拿回来（实测 `node` 的 9170 个 tag 一共
-/// 152 KB / 2.4 秒），因为
-/// 1. 接口的分页（`Link: </v2/…?last=…&n=5>`）会引入"翻页游标 + 增量状态"
-///    一整套新状态，而它省下的只有二十几 KB；
-/// 2. 本地过滤是**即时**的，翻页过滤每敲一个字都要等一次网络。
-///
-/// 返回的第二个值大于 `limit` 时，界面要说明"共匹配 N 个，只显示前 limit 个" ——
-/// 否则用户会以为就这么多。
-pub fn filter_tags<'a>(tags: &'a [String], needle: &str, limit: usize) -> (Vec<&'a str>, usize) {
-    let needle = needle.trim().to_lowercase();
-    let mut matched = Vec::new();
-    let mut total = 0usize;
-    for tag in tags {
-        let hit = needle.is_empty() || tag.to_lowercase().contains(&needle);
-        if !hit {
-            continue;
-        }
-        total += 1;
-        if matched.len() < limit {
-            matched.push(tag.as_str());
-        }
-    }
-    (matched, total)
 }
 
 // ---------------------------------------------------------------- manifest
@@ -1078,34 +1100,68 @@ mod tests {
         assert_eq!(sorted[3], "1");
     }
 
-    /// 辅助：算某个过滤词匹配多少个。**与 `filter_tags` 独立写一遍**，
-    /// 免得测试拿实现去验实现。
-    fn count_matching(tags: &[String], needle: &str) -> usize {
-        tags.iter()
-            .filter(|tag| tag.to_lowercase().contains(needle))
-            .count()
+    // ---- registry 主机名 -------------------------------------------------
+    //
+    // v0.6.2 起它**来自输入框**（合并两页时把 registry 提成了字段，见
+    // `docs/PLAN-v0.6.md` §3.6）—— 所以这两个函数的判据必须写死在这里。
+
+    #[test]
+    fn accepts_the_hosts_people_actually_type() {
+        for good in [
+            "docker.1panel.live",
+            "docker.m.daocloud.io",
+            // 私有 registry：内网域名、localhost、带端口的都要认
+            "registry.internal",
+            "localhost",
+            "localhost:5000",
+            "192.168.1.10:5000",
+            "192.168.1.10",
+            // 大小写不敏感（DNS 本来就不敏感）
+            "Docker.1Panel.Live",
+        ] {
+            assert!(is_valid_host(good), "{good:?} 该被接受");
+        }
     }
 
     #[test]
-    fn filtering_is_local_and_reports_the_real_match_count() {
-        let tags = parse_tags(TAGS_NGINX).unwrap();
-        // 空过滤词 = 全都要（但只给前 limit 个）
-        let (shown, total) = filter_tags(&tags, "", 10);
-        assert_eq!(shown.len(), 10);
-        assert_eq!(total, tags.len());
-        // 真实的过滤
-        let (shown, total) = filter_tags(&tags, "alpine", 5);
-        assert_eq!(shown.len(), 5);
-        assert_eq!(total, count_matching(&tags, "alpine"));
-        assert!(total > 5);
-        assert!(shown.iter().all(|tag| tag.contains("alpine")));
-        // 过滤词大小写无关、前后空白要 trim
-        let (_, upper) = filter_tags(&tags, "  ALPINE  ", 3);
-        assert_eq!(upper, total);
-        // 匹配不到时两个返回值都要说清
-        let (shown, total) = filter_tags(&tags, "no-such-tag-xyz", 10);
-        assert!(shown.is_empty());
-        assert_eq!(total, 0);
+    fn rejects_hosts_that_would_deform_the_url_or_argv() {
+        for bad in [
+            "",
+            "   ",
+            // 路径 / 查询 / 片段：我们要的是**纯主机名**
+            "docker.1panel.live/v2",
+            "docker.1panel.live?x=1",
+            "docker.1panel.live#frag",
+            // 空 label / 首尾非字母数字
+            "a..b",
+            ".leading",
+            "trailing.",
+            "-leading",
+            // 端口：占位符、越界、非数字
+            "host:port",
+            "host:99999",
+            "host:0",
+            "host:",
+            // 空白与非 ASCII
+            "bad host",
+            "主机.中国",
+            // curl 的选项形状（纵深防御：别让它有机会被当成开关）
+            "-K/tmp/x",
+        ] {
+            assert!(!is_valid_host(bad), "{bad:?} 该被拒绝");
+        }
+    }
+
+    #[test]
+    fn normalize_host_strips_what_a_copy_paste_brings() {
+        // 从浏览器地址栏/别处复制过来的常见形状
+        assert_eq!(normalize_host("  docker.1panel.live  "), "docker.1panel.live");
+        assert_eq!(normalize_host("https://docker.1panel.live"), "docker.1panel.live");
+        assert_eq!(normalize_host("http://docker.1panel.live/"), "docker.1panel.live");
+        assert_eq!(normalize_host("Docker.1Panel.Live"), "docker.1panel.live");
+        // 收拾完仍然不合法的东西，交给 `is_valid_host` 去拒 —— 这里不越权
+        assert_eq!(normalize_host("https://"), "");
+        assert!(!is_valid_host(&normalize_host("https://")));
     }
 
     // ------------------------------------------------------------ manifest

@@ -52,17 +52,15 @@ pub enum Page {
     /// 曾经有个单独的「当前运行」页，去掉了 —— 同一个列表用状态筛一下就够了，
     /// 没必要让用户在两页之间来回切（参考 1Panel：一个容器列表 + 状态筛选）。
     Containers,
-    /// 镜像。
+    /// 镜像：**远端浏览 + 拉取 + 本地已有**，三件事一页。
+    ///
+    /// ⚠️ v0.6.2 之前这是**两页**（「镜像」= 本地已有，「镜像仓库」= 远端浏览），
+    /// 外加「镜像」页上一个「按引用拉取…」弹窗 —— 三个入口背后是同一段拉取实现。
+    /// 合并的理由和 `docs/PLAN-v0.6.md` §3.6 记的那次取舍有关：当时留两个入口是
+    /// 为了不丢掉"从别的 registry 拉"这个能力，而**正确的合并方向就是把 registry
+    /// 提成可编辑字段**（现在做了：`RegistryState::host` 来自输入框）。
+    /// 于是三个入口收成一个，`AGENTS.md` §5「同一个动作只给一个入口」重新成立。
     Images,
-    /// 镜像仓库（在线浏览某个 registry 上的仓库 tag，然后拉取）。
-    ///
-    /// 和「镜像」页分成两页：那一页是**本地已有**的镜像（删除 / 详情 /
-    /// 拿去创建容器），这一页是**远端**仓库的浏览。两页都要"拉取"是不行的
-    /// （`AGENTS.md` §5：同一个动作只给一个入口），所以「镜像」页上那个
-    /// 拉取按钮改成了跳到这一页。
-    ///
-    /// 有输入框（仓库名 / tag 过滤），所以 [`Page::needs_window_to_enter`] 为真。
-    Registry,
     /// 网络。
     Networks,
     /// 卷。
@@ -98,14 +96,11 @@ impl Page {
     /// 所以 `ALL` 是"侧边栏列哪些页"，**不等于**"有哪些页"。
     /// （`wlsc 配置` / `WSL 配置` 曾经也在"不在这里"之列，但它们现在是
     /// [`SettingsTab`] 的两个 tab、不再是页面了。）
-    pub const ALL: [Page; 9] = [
+    pub const ALL: [Page; 8] = [
         Page::Dashboard,
         Page::Instances,
         Page::Containers,
         Page::Images,
-        // 「镜像仓库」紧跟「镜像」：「资源」这一组里它俩是一对
-        // （本地有什么 / 远端有什么），排在一起找起来最省事。
-        Page::Registry,
         Page::Networks,
         Page::Volumes,
         Page::AppSettings,
@@ -120,7 +115,6 @@ impl Page {
             Page::AddInstance => "添加实例",
             Page::Containers => "容器",
             Page::Images => "镜像",
-            Page::Registry => "镜像仓库",
             Page::Networks => "网络",
             Page::Volumes => "卷",
             Page::AppSettings => "应用设置",
@@ -134,7 +128,7 @@ impl Page {
             Page::Dashboard => "概览",
             Page::Instances | Page::AddInstance => "WSL 实例",
             Page::Containers => "容器",
-            Page::Images | Page::Registry | Page::Networks | Page::Volumes => "资源",
+            Page::Images | Page::Networks | Page::Volumes => "资源",
             Page::AppSettings | Page::About => "设置",
         }
     }
@@ -145,9 +139,11 @@ impl Page {
     /// 所以它必须在**点击导航时**（有 window）把表单建好，
     /// 不能在渲染时建（那会每帧重建一次输入框，打字都打不进去）。
     ///
-    /// 「镜像仓库」（v0.6）同理：它有「仓库名」与「tag 过滤」两个输入框。
+    /// 「镜像」也一样：它现在有 registry / 仓库名两个输入框**和**一个 tag 下拉框
+    /// （`SelectState::new` 同样要 `&mut Window`）。v0.6.2 合并之前这里只有
+    /// 「镜像仓库」有输入框；合并之后本地镜像那半页也跟着要 window 了。
     pub fn needs_window_to_enter(self) -> bool {
-        matches!(self, Page::AddInstance | Page::Registry)
+        matches!(self, Page::AddInstance | Page::Images)
     }
 }
 
@@ -2143,21 +2139,26 @@ impl SettingsTab {
     }
 }
 
-/// 「镜像仓库」页的状态（v0.6）。
+/// 「镜像」页**远端那一半**的状态（v0.6 建，v0.6.2 并进「镜像」页）。
 ///
-/// 全是纯数据 —— 「仓库名」和「tag 过滤」那两个输入框是 `Entity<InputState>`，
-/// 留在 `wslc-panel` 的 `Shell` 里（和「添加实例」页同一个分工）。
+/// 全是纯数据 —— registry / 仓库名两个输入框和 tag 下拉框是
+/// `Entity<InputState>` / `Entity<SelectState<_>>`，留在 `wslc-panel` 的 `Shell` 里
+/// （和「添加实例」页同一个分工）。
 ///
 /// # 为什么要分开记 `repository` 与 `loaded`
 ///
-/// 用户从 `nginx` 换到 `redis` 时，网络那 1~2 秒里**结果列表还是 nginx 的**。
+/// 用户从 `nginx` 换到 `redis` 时，网络那 1~2 秒里**结果还是 nginx 的**。
 /// 如果界面只认一个仓库名，那段时间就会把 nginx 的 tag 挂在 redis 的标题下 ——
 /// 而这恰恰是用户最容易误判成"redis 有这些 tag"的时刻（串台）。
 /// 所以：`repository` 是"正在查谁"，`loaded` 是"列表里的东西是谁的"，
 /// 两者不等时界面显示"正在查 X"，不显示旧结果（[`RegistryState::begin_query`] 会清）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistryState {
-    /// registry 地址 —— 这一版固定是 [`registry::DEFAULT_REGISTRY`]。
+    /// registry 地址（**用户可编辑**，见 [`registry::is_valid_host`]）。
+    ///
+    /// v0.6.2 之前这是个常量：合并两页时它必须变成字段，否则"从别的 registry 拉"
+    /// 这个能力就没了（当初正是为了它才留着两个拉取入口，见
+    /// `docs/PLAN-v0.6.md` §3.6）。
     pub host: String,
     /// 用户输进框里的原文（用来显示"由 … 解析为 …"）。
     pub input: String,
@@ -2165,16 +2166,24 @@ pub struct RegistryState {
     pub repository: String,
     /// 上一次查成功、且列表里正显示的那个仓库名。
     pub loaded: Option<String>,
-    /// tag 列表（已排序：`latest` 优先、版本倒序）。
+    /// tag 列表（已排序：`latest` 优先、版本倒序）——
+    /// 整个列表都会喂给 tag 下拉框：它的列表是**虚拟化**的，
+    /// 所以实测里 `node` 那种 9170 个 tag 也不会每帧建 9170 个元素
+    /// （v0.6.2 之前是"本地过滤 + 只渲染前 200 行"）。
     pub tags: Vec<String>,
     /// 正在查 tag。
     pub loading: bool,
     /// 查 tag 失败的原因（能给用户看的一句话）。
     pub error: Option<String>,
-    /// tag 过滤词。由输入框的 `InputEvent::Change` 推进来（见 `app.rs`）。
-    pub filter: String,
-    /// 选中的 tag。
+    /// 选中的 tag（下拉框点出来的）。
     pub selected: Option<String>,
+    /// **用户输入里自带的** tag（`nginx:1.27` 的 `1.27`）。
+    ///
+    /// 为什么要有它：tags 列表拉不到时（别的 registry 的 `tags/list` 可能要认证，
+    /// 实测 daocloud 就 401）下拉框里一个 tag 都没有，但用户其实已经把 tag
+    /// 写在输入里了 —— 那就该能拉。它是 [`RegistryState::effective_tag`] 的兜底，
+    /// 也是"按完整引用拉取"这条能力在合并之后唯一的落点。
+    pub input_tag: Option<String>,
     /// 选中 tag 的下载体积（字节，**压缩后**）。
     pub size: Option<u64>,
     /// 选中 tag 的层数。
@@ -2192,7 +2201,7 @@ impl Default for RegistryState {
 }
 
 impl RegistryState {
-    /// 初始状态：registry 固定，其余全是空的。
+    /// 初始状态：registry 是内置那个（用户可改），其余全是空的。
     pub fn new() -> Self {
         Self {
             host: registry::DEFAULT_REGISTRY.to_owned(),
@@ -2202,8 +2211,8 @@ impl RegistryState {
             tags: Vec::new(),
             loading: false,
             error: None,
-            filter: String::new(),
             selected: None,
+            input_tag: None,
             size: None,
             layers: None,
             sizing: false,
@@ -2214,10 +2223,21 @@ impl RegistryState {
     /// 开始查一个仓库：**先把上一次的结果清干净**。
     ///
     /// ⚠️ 这一步不能省，理由见类型文档（换仓库时串台）。
-    pub fn begin_query(&mut self, input: &str, repository: &str) {
+    ///
+    /// `input_tag` 是输入里自带的 tag（没有就 `None`）——
+    /// 查询回来之后由调用方拿它选中（见 [`RegistryState::effective_tag`]）。
+    pub fn begin_query(
+        &mut self,
+        host: &str,
+        input: &str,
+        repository: &str,
+        input_tag: Option<String>,
+    ) {
+        self.host = host.to_owned();
         self.input = input.to_owned();
         self.repository = repository.to_owned();
         self.clear_results();
+        self.input_tag = input_tag;
         self.loading = true;
     }
 
@@ -2226,8 +2246,8 @@ impl RegistryState {
         self.tags.clear();
         self.loaded = None;
         self.error = None;
-        self.filter.clear();
         self.selected = None;
+        self.input_tag = None;
         self.size = None;
         self.layers = None;
         self.size_error = None;
@@ -2288,30 +2308,23 @@ impl RegistryState {
         self.size_error = Some(message);
     }
 
-    /// 过滤词变了。返回**是否真的变了** —— 调用方据此决定要不要重绘
-    /// （和 [`PullProgress::push_lines`] 同一个理由：别每个按键都触发一次重绘）。
-    pub fn set_filter(&mut self, filter: &str) -> bool {
-        let trimmed = filter.trim();
-        if self.filter == trimmed {
-            return false;
-        }
-        self.filter = trimmed.to_owned();
-        true
-    }
-
-    /// 要渲染哪几行 tag（受 [`registry::MAX_VISIBLE_TAGS`] 限制）+ 匹配总数。
-    pub fn visible_tags(&self) -> (Vec<&str>, usize) {
-        registry::filter_tags(&self.tags, &self.filter, registry::MAX_VISIBLE_TAGS)
-    }
-
-    /// 选中 tag 的完整镜像引用（`docker.1panel.live/library/alpine:latest`）。
+    /// 要拉的那个 tag：**下拉框选的优先，其次用输入里自带的那个**。
     ///
-    /// 没有选中（或还没查过仓库）就是 `None` —— 「拉取」按钮据此决定渲不渲染。
+    /// 兜底的用途见 [`RegistryState::input_tag`]：别的 registry 的 tag 列表
+    /// 可能拉不到（要认证），那时用户写在输入里的 `:tag` 是唯一的凭据。
+    pub fn effective_tag(&self) -> Option<&str> {
+        self.selected.as_deref().or(self.input_tag.as_deref())
+    }
+
+    /// 将要拉取的完整镜像引用（`docker.1panel.live/library/alpine:latest`）。
+    ///
+    /// 没有 tag（既没选、输入里也没写）或还没查过仓库就是 `None` ——
+    /// 「拉取」按钮据此决定渲不渲染。
     ///
     /// ⚠️ 必须带 registry 前缀：不带的话 `wslc pull` 会去 Docker Hub 找，
     /// 而那台机器上 `registry-1.docker.io` 不可达（实测 000）。
     pub fn selected_reference(&self) -> Option<String> {
-        let tag = self.selected.as_deref()?;
+        let tag = self.effective_tag()?;
         let repository = self.loaded.as_deref().unwrap_or(self.repository.as_str());
         if repository.is_empty() || self.host.is_empty() {
             return None;
@@ -2435,7 +2448,8 @@ pub struct AppState {
     pub online: OnlineDistroState,
     /// 「在线发行版（镜像源）」那一块的状态（动态清单 + 探测结果 + 选中的那个）。
     pub mirrors: MirrorState,
-    /// 「镜像仓库」页的状态（v0.6：浏览远端 registry 的 tag → 拉取）。
+    /// 「镜像」页里**远端那一半**的状态（v0.6 建，v0.6.2 并进「镜像」页：
+    /// 浏览远端 registry 的 tag → 拉取）。
     ///
     /// 和 [`AppState::mirrors`] 不是一回事：那个是 WSL **发行版**的 rootfs 文件，
     /// 这个是容器**镜像**仓库（Registry V2）。
@@ -2673,6 +2687,8 @@ mod tests {
         // 所以是 10 - 2 + 1 = 9。**总数少了不代表功能少了** —— 那两个只是换了入口。
         // v0.4 接着把「添加实例」也从侧边栏拿掉了（改从实例列表页的按钮进），9 - 1 = 8。
         // v0.6 加了「镜像仓库」（在线浏览 registry 的 tag 再拉取），8 + 1 = 9。
+        // v0.6.2 把它**并回「镜像」页**（远端浏览 + 拉取 + 本地已有，三件事一页），
+        // 9 - 1 = 8 —— 同样是"总数少了不代表功能少了"。
         //
         // 这个断言存在的意义就是**逼人改它**：加页面时忘了同步导航分组，
         // 侧边栏会出现重复的组标题。历史上 commit 552a91c 就是被它抓到的；
@@ -2680,7 +2696,7 @@ mod tests {
         //
         // ⚠️ 注意 `cargo check --all-targets` 只编译不执行，
         // 所以它真的被跑到要靠 `cargo test -p wslc-panel-core`（见 SPIKE 7.8）。
-        assert_eq!(Page::ALL.len(), 9);
+        assert_eq!(Page::ALL.len(), 8);
     }
 
     #[test]
@@ -2692,16 +2708,18 @@ mod tests {
         // 所以不能只遍历 `ALL` 就算完 —— 那样这条断言对它就是**空的**，
         // 哪天真把它改坏了也抓不到。显式再查一遍。
         for page in Page::ALL {
-            let expected = matches!(page, Page::Registry);
+            // v0.6.2：需要 window 的从「镜像仓库」换成了「镜像」——
+            // 合并之后 registry / 仓库名输入框和 tag 下拉框都在这一页上。
+            let expected = matches!(page, Page::Images);
             assert_eq!(
                 page.needs_window_to_enter(),
                 expected,
                 "{page:?} 的 needs_window_to_enter 与预期不符 —— 有输入框的页面\
-                 得走懒创建路径（见 app.rs 的 ensure_install_form / ensure_registry_form）"
+                 得走懒创建路径（见 app.rs 的 ensure_install_form / ensure_image_form）"
             );
         }
         assert!(Page::AddInstance.needs_window_to_enter());
-        assert!(Page::Registry.needs_window_to_enter());
+        assert!(Page::Images.needs_window_to_enter());
     }
 
     #[test]
@@ -2709,7 +2727,7 @@ mod tests {
         let mut state = RegistryState::new();
         assert_eq!(state.host, registry::DEFAULT_REGISTRY);
 
-        state.begin_query("alpine", "library/alpine");
+        state.begin_query(registry::DEFAULT_REGISTRY, "alpine", "library/alpine", None);
         assert!(state.loading, "提交查询就该进入 loading");
         assert_eq!(
             state.normalization_note().as_deref(),
@@ -2726,7 +2744,12 @@ mod tests {
         assert_eq!(state.tags.len(), 2);
 
         // 原文就是规范名时不该多嘴
-        state.begin_query("library/alpine", "library/alpine");
+        state.begin_query(
+            registry::DEFAULT_REGISTRY,
+            "library/alpine",
+            "library/alpine",
+            None,
+        );
         assert_eq!(state.normalization_note(), None);
 
         // ⚠️ 换仓库：旧结果必须**立刻**消失。留着的话，网络那 1~2 秒里
@@ -2734,11 +2757,10 @@ mod tests {
         state.set_tags("library/nginx", vec!["1.31.6".to_owned()]);
         state.select_tag("1.31.6");
         assert_eq!(state.selected.as_deref(), Some("1.31.6"));
-        state.begin_query("redis", "library/redis");
+        state.begin_query(registry::DEFAULT_REGISTRY, "redis", "library/redis", None);
         assert!(state.tags.is_empty(), "换仓库时旧 tag 不能留着");
         assert!(state.loaded.is_none(), "换仓库时不能说列表是谁的");
         assert!(state.selected.is_none(), "换仓库时选中的 tag 也不算数了");
-        assert!(state.filter.is_empty(), "过滤词也该跟着清");
 
         // 失败时同样不能留着旧结果（报错旁边挂着一列 tag，会被读成"这次查到的"）
         state.set_tags("library/redis", vec!["7.4".to_owned()]);
@@ -2755,7 +2777,7 @@ mod tests {
         // 还没查过 → 没有可拉的
         assert_eq!(state.selected_reference(), None);
 
-        state.begin_query("alpine", "library/alpine");
+        state.begin_query(registry::DEFAULT_REGISTRY, "alpine", "library/alpine", None);
         state.set_tags("library/alpine", vec!["latest".to_owned()]);
         // 查到了但没选 tag → 还是不能拉
         assert_eq!(state.selected_reference(), None);
@@ -2789,24 +2811,46 @@ mod tests {
     }
 
     #[test]
-    fn registry_state_filters_locally_and_reports_truncation() {
+    fn registry_state_falls_back_to_the_tag_typed_in_the_input() {
+        // 别的 registry 的 tags/list 可能要认证（实测 daocloud 401）——
+        // 那时一个 tag 都列不出来，但用户已经在输入里写了 `:1.27`，
+        // 那就必须能拉。这是合并两页（去掉「按引用拉取」弹窗）之后
+        // "按完整引用拉取"唯一的落点。
         let mut state = RegistryState::new();
-        state.set_tags("library/x", (0..300).map(|i| format!("v{i}")).collect());
+        state.begin_query(
+            "docker.m.daocloud.io",
+            "nginx:1.27",
+            "library/nginx",
+            Some("1.27".to_owned()),
+        );
+        assert_eq!(state.host, "docker.m.daocloud.io", "registry 是可编辑的");
+        assert_eq!(state.effective_tag(), Some("1.27"));
+        assert_eq!(
+            state.selected_reference().as_deref(),
+            Some("docker.m.daocloud.io/library/nginx:1.27"),
+            "列表拉不到（甚至还没回来）也要能拼出引用"
+        );
 
-        // 没有过滤词：给前 MAX_VISIBLE_TAGS 个，但**总数要说真话**
-        let (shown, total) = state.visible_tags();
-        assert_eq!(shown.len(), registry::MAX_VISIBLE_TAGS);
-        assert_eq!(total, 300, "截断了也得让界面能说清一共多少");
+        // 查询失败也不影响它 —— 这正是它存在的理由
+        state.set_error("401 Unauthorized".to_owned());
+        assert!(state.tags.is_empty());
+        assert_eq!(
+            state.selected_reference().as_deref(),
+            Some("docker.m.daocloud.io/library/nginx:1.27")
+        );
 
-        // 过滤词变了要返回 true（调用方据此重绘）；重复设同一个值要返回 false
-        // （每次按键都重绘是没必要的，和 `PullProgress::push_lines` 同一个理由）
-        assert!(state.set_filter("  v1  "));
-        assert_eq!(state.filter, "v1", "前后空白要 trim");
-        assert!(!state.set_filter("v1"));
-        assert!(!state.set_filter("  v1  "), "trim 之后相同就不该再触发重绘");
-        let (shown, total) = state.visible_tags();
-        assert!(total > 0 && total < 300, "total = {total}");
-        assert!(shown.iter().all(|tag| tag.contains("v1")), "{shown:?}");
+        // 下拉框里选了一个就以选的为准（用户后来看清楚了要哪个）
+        state.select_tag("1.29");
+        assert_eq!(state.effective_tag(), Some("1.29"));
+        assert_eq!(
+            state.selected_reference().as_deref(),
+            Some("docker.m.daocloud.io/library/nginx:1.29")
+        );
+
+        // 换仓库要把它清掉，否则下一次查询会莫名其妙带上上一次的 tag
+        state.begin_query("docker.1panel.live", "redis", "library/redis", None);
+        assert_eq!(state.effective_tag(), None);
+        assert_eq!(state.selected_reference(), None);
     }
 
     #[test]

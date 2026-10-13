@@ -23,12 +23,26 @@ use crate::registry::{self, ImageSize, ManifestKind};
 ///
 /// ⚠️ 调用方要先过 [`registry::split_input`]：短名（`alpine`）必须补成
 /// `library/alpine`，实测 1panel.live 对短名回 404（见 [`registry::split_input`]）。
+///
+/// # 为什么一次把全量拿回来（不分页）
+///
+/// 1. 接口的分页（`Link: </v2/…?last=…&n=5>`）要引入"翻页游标 + 增量状态"
+///    一整套新状态，而它省下的只有二十几 KB（实测 `node` 的 **9170** 个 tag
+///    一共 152 KB / 2.4 秒）；
+/// 2. 界面那边是**本地**过滤：v0.6.2 换成可搜索下拉框之后，过滤由组件自己做
+///    （它的列表是虚拟化的，只有可见的几行会被建出来），比翻页快得多 ——
+///    翻页过滤每敲一个字都要等一次网络。
 pub fn fetch_tags(host: &str, repository: &str) -> Result<Vec<String>, String> {
-    // 纵深防御：仓库名会拼进 URL 再作为裸 argv 交给 curl。
+    // 纵深防御：registry 地址与仓库名都会拼进 URL，再作为裸 argv 交给 curl。
+    // v0.6.2 起 host 来自输入框，这条判据从"常量用不着校验"变成了必需品。
+    let host = registry::normalize_host(host);
+    if !registry::is_valid_host(&host) {
+        return Err(format!("registry 地址不合法：{host}"));
+    }
     if !registry::is_valid_repository(repository) {
         return Err(format!("仓库名不合法：{repository}"));
     }
-    let body = get(&registry::tags_url(host, repository))?;
+    let body = get(&registry::tags_url(&host, repository))?;
     let tags = registry::parse_tags(&body)?;
     Ok(registry::sort_tags(&tags))
 }
@@ -41,19 +55,24 @@ pub fn fetch_tags(host: &str, repository: &str) -> Result<Vec<String>, String> {
 /// ⚠️ 返回的是**压缩后**的下载量，不是落盘占用 —— 界面上的措辞见
 /// [`registry::image_size`] 的说明。
 pub fn fetch_size(host: &str, repository: &str, reference: &str) -> Result<ImageSize, String> {
+    // 同 `fetch_tags`：host 现在来自输入框，必须在这里挡一次。
+    let host = registry::normalize_host(host);
+    if !registry::is_valid_host(&host) {
+        return Err(format!("registry 地址不合法：{host}"));
+    }
     if !registry::is_valid_repository(repository) {
         return Err(format!("仓库名不合法：{repository}"));
     }
     if !registry::is_valid_reference(reference) {
         return Err(format!("引用不合法：{reference}"));
     }
-    let body = get_manifest(&registry::manifest_url(host, repository, reference))?;
+    let body = get_manifest(&registry::manifest_url(&host, repository, reference))?;
     match registry::classify_manifest(&body, mirrors::arch())? {
         // 单架构镜像的 manifest 直接就能量
         ManifestKind::Single => registry::image_size(&body),
         // index：再要一次它指向的那一份
         ManifestKind::Index { digest } => {
-            let inner = get_manifest(&registry::manifest_url(host, repository, &digest))?;
+            let inner = get_manifest(&registry::manifest_url(&host, repository, &digest))?;
             registry::image_size(&inner)
         }
     }
@@ -129,6 +148,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn rejects_a_bad_registry_host_before_spawning_curl() {
+        // v0.6.2：host 来自输入框，所以"坏地址"必须在起进程**之前**被挡住。
+        // 用一个不存在的域名/path 都行 —— 根本起不了进程。
+        for bad in [
+            "",
+            "   ",
+            "bad host",
+            "docker.1panel.live/v2",
+            "-K/tmp/x",
+            "host:port",
+            "host:99999",
+        ] {
+            let err = fetch_tags(bad, "library/alpine").unwrap_err();
+            assert!(err.contains("registry 地址不合法"), "{bad:?} → {err}");
+            let err = fetch_size(bad, "library/alpine", "latest").unwrap_err();
+            assert!(err.contains("registry 地址不合法"), "{bad:?} → {err}");
+        }
+    }
+
+    #[test]
+    fn a_normalized_host_is_what_reaches_curl() {
+        // 用户在输入框里粘一整条 URL 是常态：收拾干净之后再拼 URL，
+        // 别拼出 `https://https://…`。
+        // （这里只看"能不能过校验并走到拼 URL 那一步"，不起进程 ——
+        // 用不合法的仓库名把它挡在 curl 之前。）
+        let err = fetch_tags("https://docker.1panel.live/", "../etc").unwrap_err();
+        assert!(err.contains("仓库名不合法"), "{err}");
+    }
     #[test]
     fn refuses_a_non_http_url_before_spawning_curl() {
         // `run` 是唯一真正起进程的地方，这个判据要在那儿也成立。

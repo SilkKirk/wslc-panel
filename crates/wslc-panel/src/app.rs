@@ -23,11 +23,10 @@ use std::time::{Duration, Instant};
 use gpui_kit::component::button::*;
 // `StyledExt` 提供 `font_bold` / `font_semibold` 等字重方法（由宏生成），
 // 不导入 trait 就会报 "no method named font_bold"。
-// `InputEvent` 是**订阅输入框内容变化**要用的（v0.6 的 tag 过滤框）——
-// 这不是猜的 API：组件库自己的 `SearchBox` 就是 `cx.subscribe(&input, ...)` +
-// `InputEvent::Change`（见 gpui-component 0.7.1 的 `src/input/search.rs`，
-// 最小例子在 gpui-kit 的 `tests/input/constraints.rs`）。
-use gpui_kit::component::input::{InputEvent, InputState};
+// 输入框。⚠️ v0.6.2 之前这里还导入 `InputEvent`（订阅 tag 过滤框的按键）——
+// 过滤框被可搜索下拉框取代之后就没有订阅输入框的场合了，导入也要跟着去掉，
+// 否则 `ui` job 会留一条 unused import 警告。
+use gpui_kit::component::input::InputState;
 // 「微软商店」与「在线发行版」两张清单都走组件库的 `Select`（下拉框）——
 // 参考实现也是一个下拉框（`CustomComboBox`），而不是我们原先那种
 // "几十个按钮铺满一屏"的写法。
@@ -55,7 +54,7 @@ use wslc_core::{Wsl, Wslc};
 use crate::state::{
     self, AppState, ConfirmAction, DistroAction, ExecState, ExportProgress, ImmediateAction,
     InstallOutcome, InstallProgress, InstallSourceKind, LogsState, MirrorChoice, MirrorProbeResult,
-    Page, PendingAction, PromptKind, Toast, ToastKind, exec_argv,
+    Page, PendingAction, PromptKind, RegistryState, Toast, ToastKind, exec_argv,
 };
 use crate::theme;
 // `split_list` / `refresh_label` 是纯函数，住在不依赖 GPUI 的 `wslc-panel-core` 里
@@ -117,22 +116,35 @@ pub(crate) struct InstallForm {
     pub(crate) last_derived_dir: Option<String>,
 }
 
-/// 「镜像仓库」页的两个输入框（v0.6）。
+/// 「镜像」页的表单（v0.6 建，v0.6.2 并进「镜像」页）。
 ///
-/// 和 [`InstallForm`] 同一个分工：GPUI 的 `Entity<InputState>` 留在 `Shell` 里，
-/// 纯数据（tag 列表 / 选中项 / 体积）在 `AppState::registry` 里。
-/// 进页面时**懒创建**（`InputState::new` 要 `&mut Window`），离开**不销毁**。
-pub(crate) struct RegistryForm {
+/// 和 [`InstallForm`] 同一个分工：GPUI 的 `Entity<InputState>` /
+/// `Entity<SelectState<_>>` 留在 `Shell` 里，纯数据（tag 列表 / 选中项 / 体积）
+/// 在 `AppState::registry` 里。进页面时**懒创建**（都要 `&mut Window`），
+/// 离开**不销毁**。
+pub(crate) struct ImageForm {
+    /// registry 地址。默认 [`wslc_core::registry::DEFAULT_REGISTRY`]。
+    ///
+    /// ⚠️ 它是**可编辑**的，这不是顺便给的：v0.6.2 合并「镜像 / 镜像仓库」两页、
+    /// 去掉「按引用拉取…」弹窗时，正是靠它才没丢掉"从别的 registry 拉"这个能力
+    /// （`docs/PLAN-v0.6.md` §3.6 记着当初就是因为这个能力才留了两个入口）。
+    /// 用户输入会先过 [`wslc_core::registry::normalize_host`]，
+    /// 再由 [`wslc_core::registry::is_valid_host`] 把关 —— 它会拼进 URL
+    /// 再作为裸 argv 交给 `curl.exe`。
+    pub(crate) host: Entity<InputState>,
     /// 仓库名。`alpine` / `library/nginx` / `grafana/grafana` / `nginx:1.27`，
     /// 甚至粘一整条浏览器 URL 进来都认（规范化在
     /// [`wslc_core::registry::split_input`] 里，有单测）。
     pub(crate) repository: Entity<InputState>,
-    /// tag 过滤词。
+    /// tag 下拉框（可搜索）。
     ///
-    /// ⚠️ 它的 `InputEvent::Change` **必须订阅**（见 [`Shell::ensure_registry_form`]）：
-    /// 渲染整个页面的是 `Shell`，不订阅的话父级不会重绘 —— 过滤结果要等到
-    /// 下一次自动刷新（默认 3 秒）才变，打字时看着就像"过滤框坏了"。
-    pub(crate) filter: Entity<InputState>,
+    /// ⚠️ 它的 `SelectEvent::Confirm` **必须订阅**（见 [`Shell::ensure_image_form`]）：
+    /// 不订阅的话选中了什么都不会发生 —— `Subscription` 一 drop 就退订。
+    ///
+    /// 列表整体喂进去（实测 `node` 有 9170 个 tag）：组件库的 `List` 是
+    /// **虚拟化**的（`crates/component/src/list/list.rs` 用 `v_virtual_list`），
+    /// 所以只有可见的几行会被建出来 —— 这正是它替代"本地过滤 + 只渲染 200 行"的原因。
+    pub(crate) tags_select: Entity<SelectState<Vec<DropdownItem>>>,
 }
 
 /// 下拉框里的一项：**显示文本 ≠ 取值**。
@@ -487,20 +499,11 @@ fn dir_non_empty(dir: &str) -> bool {
 pub struct Shell {
     /// 全部状态。
     pub state: AppState,
-    /// 「拉取镜像」弹窗的输入框；弹窗关闭时为 `None`。
-    ///
-    /// 放在 `Shell` 而**不是** `AppState`：`AppState` 刻意完全不碰 GPUI
-    /// （换渲染层时数据层能原样复用），而 `InputState` 是 GPUI 的类型。
-    ///
-    /// 另外 `InputState::new` 需要一个 `&mut Window`，而 `Shell::new` 拿不到
-    /// window —— 所以只能**懒创建**：用户点按钮时（事件回调里有 window）才建。
-    pull_input: Option<Entity<InputState>>,
     /// 正在进行的拉取任务的取消令牌。
     ///
-    /// 和 `pull_input` 一样放 `Shell`：这是**能力**（能 kill 子进程），
-    /// 不是"状态"。纯数据部分（拉了哪个镜像、输出了什么）在
-    /// `AppState::pulling` 里，因为 `views.rs` 只拿得到 `&AppState`。
-    // 拉取策略。
+    /// 放 `Shell`：这是**能力**（能 kill 子进程），不是"状态"。
+    /// 纯数据部分（拉了哪个镜像、输出了什么）在 `AppState::pulling` 里，
+    /// 因为 `views.rs` 只拿得到 `&AppState`。
     pull_cancel: Option<wslc_core::CancelToken>,
     /// 正在进行的**导出**任务的取消令牌。
     ///
@@ -546,8 +549,8 @@ pub struct Shell {
     distro_detail: Option<String>,
     /// 「添加实例」页的表单。
     ///
-    /// 和 `pull_input` / `create_dialog` 一样**懒创建**（`InputState::new`
-    /// 要 `&mut Window`），但**不随页面离开而销毁** —— 见 [`InstallForm`]。
+    /// 和 `create_dialog` 一样**懒创建**（`InputState::new` 要 `&mut Window`），
+    /// 但**不随页面离开而销毁** —— 见 [`InstallForm`]。
     ///
     /// `pub(crate)`：`views.rs` 要读它来渲染页面（`Shell` 的其余字段
     /// 只有 `app.rs` 自己用，所以是私有的）。
@@ -558,15 +561,16 @@ pub struct Shell {
     /// **一 drop 就退订**（组件库自己也是 `vec![cx.subscribe_in(..)]` 存起来的）。
     /// 丢了它不会报错，只是"选了下拉框什么都不会发生" —— 那种 bug 很难查。
     select_subs: Vec<Subscription>,
-    /// 「镜像仓库」页的两个输入框；进过那一页之后一直是 `Some`。
+    /// 「镜像」页的表单（registry / 仓库名两个输入框 + tag 下拉框）；
+    /// 进过那一页之后一直是 `Some`。
     ///
     /// `pub(crate)`：`views.rs` 要读它来渲染页面。
-    pub(crate) registry_form: Option<RegistryForm>,
-    /// 「镜像仓库」页那个 tag 过滤框的**订阅**。
+    pub(crate) image_form: Option<ImageForm>,
+    /// 「镜像」页 tag 下拉框的**订阅**。
     ///
     /// ⚠️ 和 `select_subs` 同一个坑：`Subscription` **一 drop 就退订**，
-    /// 表现是"在过滤框里打字，列表不动"—— 不会报错，所以很难查。
-    registry_subs: Vec<Subscription>,
+    /// 表现是"在下拉框里选了一个 tag，什么都不发生"—— 不会报错，所以很难查。
+    image_subs: Vec<Subscription>,
     /// 单输入框提示弹窗（移动位置 / 调整大小 / 设置默认用户）；关闭时为 `None`。
     ///
     /// 同样是 `pub(crate)`：浮层在 `views.rs` 里渲染。
@@ -626,7 +630,6 @@ impl Shell {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let mut shell = Self {
             state: AppState::new(Wslc::new(), Wsl::new()),
-            pull_input: None,
             pull_cancel: None,
             export_cancel: None,
             picking: false,
@@ -639,8 +642,8 @@ impl Shell {
             distro_detail: None,
             install_form: None,
             select_subs: Vec::new(),
-            registry_form: None,
-            registry_subs: Vec::new(),
+            image_form: None,
+            image_subs: Vec::new(),
             prompt: None,
             install_run: None,
             install_cancel: None,
@@ -979,61 +982,144 @@ impl Shell {
             .max(1)
     }
 
-    // -- 镜像仓库（v0.6） ----------------------------------------------------
+    // -- 镜像：远端浏览 / 拉取（v0.6 建，v0.6.2 并进「镜像」页） ---------------
 
-    /// 建「镜像仓库」页的两个输入框（幂等）。
+    /// 建「镜像」页的表单（幂等）：registry + 仓库名两个输入框 + tag 下拉框。
     ///
-    /// **必须**在有 `&mut Window` 的地方调用 —— `InputState::new` 要它。
-    pub fn ensure_registry_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.registry_form.is_some() {
+    /// **必须**在有 `&mut Window` 的地方调用 —— `InputState::new` 与
+    /// `SelectState::new` 都要它。
+    pub fn ensure_image_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.image_form.is_some() {
             return;
         }
 
+        let host = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(wslc_core::registry::DEFAULT_REGISTRY)
+        });
+        // 预填内置那个：绝大多数用户根本不改它（`set_value` 也要 `&mut Window`，
+        // 所以只能在这里做）。
+        host.update(cx, |state, cx| {
+            state.set_value(wslc_core::registry::DEFAULT_REGISTRY, window, cx)
+        });
         let repository = cx.new(|cx| {
             InputState::new(window, cx).placeholder("nginx / library/nginx / grafana/grafana")
         });
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("过滤 tag，例如 alpine"));
+        let tags_select = cx.new(|cx| {
+            SelectState::new(Vec::<DropdownItem>::new(), None, window, cx).searchable(true)
+        });
 
-        // ⚠️ 这个订阅是**必须**的，不是优化：渲染整页的是 `Shell`，而输入框改的是
-        // `InputState` 自己的值 —— 不订阅父级就不会重绘，过滤结果要等到下一次
-        // 自动刷新（默认 3 秒）才变，打字时看着就像"过滤框坏了"。
+        // ⚠️ 这个订阅是**必须**的，不是优化：渲染整页的是 `Shell`，而下拉框的选中项
+        // 改的是 `SelectState` 自己的状态 —— 不订阅父级就不会重绘，而且
+        // "选了 tag 之后量体积 / 出现拉取按钮"整条链都断了。
         //
         // 订阅本身要存进 `Shell`：`Subscription` **一 drop 就退订**
         // （和 `select_subs` 同一个坑，见那个字段的说明）。
-        let filter_sub = cx.subscribe(&filter, |shell, input, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) {
-                let value = input.read(cx).value().trim().to_owned();
-                // 没有真的变化就不重绘 —— 每次按键都重绘是白烧
-                // （和 `PullProgress::push_lines` 返回 bool 同一个理由）。
-                if shell.state.registry.set_filter(&value) {
-                    cx.notify();
+        let tags_sub = cx.subscribe(
+            &tags_select,
+            |shell, _emitter, event: &SelectEvent<Vec<DropdownItem>>, cx| {
+                if let SelectEvent::Confirm(Some(tag)) = event {
+                    shell.select_registry_tag(tag.clone(), cx);
                 }
-            }
-        });
-        self.registry_subs = vec![filter_sub];
+            },
+        );
+        self.image_subs = vec![tags_sub];
 
-        self.registry_form = Some(RegistryForm { repository, filter });
+        self.image_form = Some(ImageForm {
+            host,
+            repository,
+            tags_select,
+        });
     }
 
-    /// 「镜像仓库」页点「查询」：拉这个仓库的 tag 列表。
+    /// 把 tag 列表填进下拉框。
+    ///
+    /// ⚠️ `set_items` 会把下拉框自己的选中项清掉，而用户没做错什么 ——
+    /// 所以换完清单要把"要拉的那个 tag"（[`RegistryState::effective_tag`]）
+    /// **重新选上**（它还在新清单里的话）。
+    ///
+    /// ⚠️ 要 `&mut Window`，所以只能在 `update_in` 里调（见 [`Shell::query_registry`]）。
+    fn fill_tag_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = self.image_form.as_ref() else {
+            return;
+        };
+        let select = form.tags_select.clone();
+
+        let items: Vec<DropdownItem> = self
+            .state
+            .registry
+            .tags
+            .iter()
+            .map(|tag| DropdownItem::new(tag.clone(), tag.clone()))
+            .collect();
+        let keep = self
+            .state
+            .registry
+            .effective_tag()
+            .map(str::to_owned);
+
+        select.update(cx, |state, cx| {
+            state.set_items(items, window, cx);
+            if let Some(tag) = keep {
+                state.set_selected_value(&tag, window, cx);
+            }
+        });
+    }
+
+    /// 「镜像」页点「查询」：拉这个仓库的 tag 列表。
     ///
     /// ⚠️ 那个请求**必须在后台执行器上**（`AGENTS.md` §7.1）：实测 `node` 的
     /// tag 列表是 152 KB / 2.4 秒，放界面线程上就是"点了卡两秒"。
+    ///
+    /// ⚠️ 回来之后要**填下拉框**，而 `SelectState::set_items` 要 `&mut Window`
+    /// —— 所以走 `spawn_in` + `update_in`（和 [`Shell::refresh_online_list`]
+    /// 同一条路，见 `AGENTS.md` §7.2）。
     pub fn query_registry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(form) = self.registry_form.as_ref() else {
-            return;
+        // 先把两个控件句柄取出来（`Entity` 克隆很便宜）：后面要 `&mut self`
+        // 调别的方法，别让 `form` 的不可变借用一直挂着。
+        let (host_input, repo_input) = {
+            let Some(form) = self.image_form.as_ref() else {
+                return;
+            };
+            (form.host.clone(), form.repository.clone())
         };
-        let raw = form.repository.read(cx).value().trim().to_owned();
+
+        let typed_host = host_input.read(cx).value().trim().to_owned();
+        // 空着就当内置那个：用户清空 registry 框的意图多半是"用默认的"，
+        // 而不是"给我一个非法地址的错误"。
+        let host = {
+            let normalized = wslc_core::registry::normalize_host(&typed_host);
+            if normalized.is_empty() {
+                wslc_core::registry::DEFAULT_REGISTRY.to_owned()
+            } else {
+                normalized
+            }
+        };
+        // 收拾过就把结果写回框里（粘一整条 URL 是常态：`https://x/` 会变成 `x`）。
+        if host != typed_host {
+            let value = host.clone();
+            host_input.update(cx, |state, cx| state.set_value(value, window, cx));
+        }
+        // ⚠️ 校验必须在**发请求之前**：`host` 会拼进 URL，再作为裸 argv 交给
+        // `curl.exe`（判据只有 `registry::is_valid_host` 一处）。
+        if !wslc_core::registry::is_valid_host(&host) {
+            self.state
+                .notify(Toast::error(format!("registry 地址不合法：{host}")));
+            cx.notify();
+            return;
+        }
+
+        let raw = repo_input.read(cx).value().trim().to_owned();
         if raw.is_empty() {
             self.state
                 .notify(Toast::error("先填一个仓库名，例如 nginx"));
             cx.notify();
             return;
         }
-        // 规范化（短名补 `library/`、拆开粘贴进来的 URL）。**失败就不发请求** ——
-        // 判据只有 `registry::split_input` 那一处（那里也是安全边界）。
-        let repository = match registry::split_input(&raw) {
-            Ok((repository, _tag)) => repository,
+        // 规范化（短名补 `library/`、拆开粘贴进来的 URL、拆出 `:tag`）。
+        // **失败就不发请求** —— 判据只有 `registry::split_input` 那一处
+        // （那里也是安全边界）。
+        let (repository, input_tag) = match registry::split_input(&raw) {
+            Ok(parts) => parts,
             Err(e) => {
                 self.state.notify(Toast::error(e));
                 cx.notify();
@@ -1043,30 +1129,34 @@ impl Shell {
         if self.state.registry.loading {
             return;
         }
-        self.state.registry.begin_query(&raw, &repository);
-        // 换仓库时把过滤框也清空：`begin_query` 清的是 `state.filter`，
-        // 而输入框里还留着上一次的字 —— 不清就会自相矛盾（框里写着 alpine，
-        // 列表却是 redis 的全部 tag）。
-        if let Some(form) = self.registry_form.as_ref() {
-            form.filter
-                .update(cx, |state, cx| state.set_value(String::new(), window, cx));
-        }
+        self.state
+            .registry
+            .begin_query(&host, &raw, &repository, input_tag.clone());
         cx.notify();
 
-        let host = self.state.registry.host.clone();
+        let fetch_host = host.clone();
         let fetch_repository = repository.clone();
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(
-                    async move { wslc_core::cmd::registry::fetch_tags(&host, &fetch_repository) },
-                )
+                .spawn(async move {
+                    wslc_core::cmd::registry::fetch_tags(&fetch_host, &fetch_repository)
+                })
                 .await;
-            let _ = this.update(cx, |shell, cx| {
+            let _ = this.update_in(cx, |shell, window, cx| {
                 match result {
                     Ok(tags) => shell.state.registry.set_tags(&repository, tags),
                     Err(e) => shell.state.registry.set_error(e),
                 }
+                // 输入里自带 tag（用户粘的是完整引用，例如
+                // `docker.m.daocloud.io/library/nginx:1.27`）→ 直接选中它。
+                // **成功和失败两条路都要做**：别的 registry 的 tags/list 可能
+                // 要认证（实测 daocloud 401），那时列表是空的，
+                // 而这个 tag 就是唯一能拉的东西。
+                if let Some(tag) = input_tag.clone() {
+                    shell.select_registry_tag(tag, cx);
+                }
+                shell.fill_tag_select(window, cx);
                 cx.notify();
             });
         })
@@ -1134,7 +1224,7 @@ impl Shell {
             cx.notify();
             return;
         }
-        let Some(form) = self.registry_form.as_ref() else {
+        let Some(form) = self.image_form.as_ref() else {
             return;
         };
         form.repository
@@ -1142,11 +1232,12 @@ impl Shell {
         self.query_registry(window, cx);
     }
 
-    /// 「镜像仓库」页点「拉取」：把选中的 tag 拉下来。
+    /// 「镜像」页点「拉取」：把将要拉的那个引用拉下来。
     ///
-    /// 和「拉取镜像」弹窗走的是**同一个** [`Shell::start_pull`]；
-    /// 进度显示在这一页内联的卡片里（见 `views::registry_page`），不弹浮层 ——
-    /// 页面本身就是"正在拉"的上下文，再盖一层浮层没有额外信息。
+    /// v0.6.2 起这是**唯一**的拉取入口（原先还有「拉取镜像」弹窗）——
+    /// 所以这里不再有"读输入框 + 校验"那一层，
+    /// 引用由 [`RegistryState::selected_reference`] 从
+    /// registry / 仓库名 / tag 三件东西拼出来。
     pub fn pull_registry_selection(&mut self, cx: &mut Context<Self>) {
         if self.state.pulling.is_some() {
             self.state
@@ -1155,80 +1246,20 @@ impl Shell {
             return;
         }
         let Some(reference) = self.state.registry.selected_reference() else {
-            self.state.notify(Toast::error("先在上面选一个 tag"));
-            cx.notify();
-            return;
-        };
-        self.start_pull(reference, cx);
-    }
-
-    // -- 拉取镜像弹窗 --------------------------------------------------------
-
-    /// 打开「拉取镜像」弹窗，并把焦点交给输入框。
-    pub fn open_pull_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(progress) = &self.state.pulling {
-            let image = progress.image.clone();
             self.state
-                .notify(Toast::error(format!("{image} 正在拉取中，请等它结束")));
+                .notify(Toast::error("先选一个 tag，或者在仓库名后面写上 `:tag`"));
             cx.notify();
-            return;
-        }
-
-        let input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("docker.1ms.run/library/nginx:latest")
-        });
-
-        // 打开就把焦点给输入框，用户可以直接开始打字。
-        let handle = input.read(cx).focus_handle(cx);
-        window.focus(&handle, cx);
-
-        self.pull_input = Some(input);
-        cx.notify();
-    }
-
-    /// 关闭弹窗。
-    ///
-    /// 拉取进行中时**不允许关闭** —— 那会让人以为任务被取消了。
-    /// 想停请用「取消拉取」。
-    pub fn close_pull_dialog(&mut self, cx: &mut Context<Self>) {
-        if self.state.pulling.is_some() {
-            return;
-        }
-        self.pull_input = None;
-        cx.notify();
-    }
-
-    /// 读取输入框内容，交给 [`Shell::start_pull`] 真正去拉。
-    ///
-    /// 「拉取镜像」弹窗按 `state.pulling` 分成两种形态（表单 / 进度）：
-    /// 一提交就切到进度，拉完自动切回表单 —— 所以这里是"读引用 + 校验"，
-    /// 拉取的实现只有 [`Shell::start_pull`] 一份。
-    ///
-    /// 为什么不用阻塞的 `cmd::image::pull`：那个要等进程结束才返回，
-    /// 用户只能干看着转圈，也没法取消。
-    pub fn confirm_pull(&mut self, cx: &mut Context<Self>) {
-        let Some(input) = self.pull_input.clone() else {
             return;
         };
-        // 注意：`InputState::value` **不带参数**（`pub fn value(&self) -> SharedString`，
-        // gpui-base/src/input/base/state.rs:1257）。
-        // gpui-component 里另有一个 `value(&self, cx)`，那是别的类型，别混。
-        let reference = input.read(cx).value().trim().to_owned();
-
-        if reference.is_empty() {
-            self.state.notify(Toast::error("请先填写镜像引用"));
-            cx.notify();
-            return;
-        }
         self.start_pull(reference, cx);
     }
 
     /// 发起一次**流式** `wslc pull`（不碰输入框、不弹窗）。
     ///
-    /// v0.6 从 [`Shell::confirm_pull`] 里拆出来：拉取的入口现在有**两个** ——
-    /// 「拉取镜像」弹窗（用户手输引用）和「镜像仓库」页（选中 tag 直接拉）。
-    /// 后面那一整段（流式进度 + 取消 + 收尾提示 + 刷新）**完全一样**，
-    /// 所以它只有这一份实现 —— 两个入口背后是同一段代码，行为不会走偏。
+    /// v0.6.2 之后拉取只有**一个**入口（「镜像」页那个「拉取」按钮），
+    /// 所以这里收的是**拼好的引用**：[`RegistryState::selected_reference`]
+    /// 把 registry / 仓库名 / tag 三件东西拼成 `host/repo:tag`。
+    /// 流式进度 + 取消 + 收尾提示 + 刷新**只有这一份实现**。
     pub fn start_pull(&mut self, reference: String, cx: &mut Context<Self>) {
         if self.state.pulling.is_some() {
             return;
@@ -1798,7 +1829,7 @@ impl Shell {
 
     /// 打开「创建容器」弹窗，可**预填镜像引用**。
     ///
-    /// 「镜像仓库」页拉完镜像直接建容器走这条：镜像名是我们刚拉下来的**完整引用**
+    /// 「镜像」页拉完镜像直接建容器走这条：镜像名是我们刚拉下来的**完整引用**
     /// （`docker.1panel.live/library/alpine:latest`），让用户再手打一遍没有意义 ——
     /// 而且手打时最容易漏掉 registry 前缀，那样 `wslc run` 会去 Docker Hub 找，
     /// 而它在这台机器上不可达（实测 000）。
@@ -2602,15 +2633,16 @@ impl Shell {
 
     /// 切换页面（导航点击走这里）。
     ///
-    /// `window` 是给「添加实例」页准备的：那一页有输入框和两个下拉框，而
+    /// `window` 是给**带控件的页面**准备的：「添加实例」有输入框和两个下拉框，
+    /// 「镜像」有 registry / 仓库名输入框和 tag 下拉框，而
     /// `InputState::new` / `SelectState::new` 都要 `&mut Window` —— 所以必须
     /// **在点击时**把表单建好。在渲染时建会每帧重建一次控件，字都打不进去。
     pub fn set_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         if page.needs_window_to_enter() {
-            if page == Page::Registry {
-                // 「镜像仓库」只有两个输入框，没有要预拉的清单 ——
-                // 仓库名是用户填的，进来就发请求反而是无意义的流量。
-                self.ensure_registry_form(window, cx);
+            if page == Page::Images {
+                // 「镜像」只有两个输入框 + 一个下拉框，没有要预拉的清单 ——
+                // registry 与仓库名都是用户填的，进来就发请求反而是无意义的流量。
+                self.ensure_image_form(window, cx);
             } else {
                 self.ensure_install_form(window, cx);
 
@@ -4203,12 +4235,6 @@ impl Render for Shell {
             Some(action) => confirm_overlay(action, &entity),
         };
 
-        // 拉取镜像弹窗。`pull_input` 是 `Shell` 的字段，不在 `state` 里。
-        let pull_dialog: AnyElement = match &self.pull_input {
-            None => div().into_any_element(),
-            Some(input) => views::pull_dialog_overlay(input, state, &entity),
-        };
-
         // 创建容器弹窗。要读 8 个 InputState 的值来做等效命令预览，
         // 所以得把 `cx` 传下去。
         let create_dialog: AnyElement = match &self.create_dialog {
@@ -4348,7 +4374,6 @@ impl Render for Shell {
                     ),
             )
             .child(confirm)
-            .child(pull_dialog)
             .child(create_dialog)
             .child(detail_dialog)
             .child(distro_detail_dialog)
@@ -4408,7 +4433,6 @@ fn nav_id(page: Page) -> &'static str {
         Page::AddInstance => "nav-add-instance",
         Page::Containers => "nav-containers",
         Page::Images => "nav-images",
-        Page::Registry => "nav-registry",
         Page::Networks => "nav-networks",
         Page::Volumes => "nav-volumes",
         Page::AppSettings => "nav-app-settings",
