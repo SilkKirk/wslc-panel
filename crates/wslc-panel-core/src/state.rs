@@ -141,37 +141,35 @@ impl Page {
 /// 只记"用户选了哪一种"；带值的路径 / 名字在输入框里，
 /// 拼成 [`wslc_core::model::install::InstallSpec`] 与执行计划是 `app.rs` 的事。
 ///
-/// # 为什么是这五种
+/// # 为什么是这三种（原来是五种）
 ///
-/// 对齐参考实现（`wsl-dashboard-ref` 的「添加实例」页）之后，来源从三条变五条：
-/// 它按"文件是 tar 还是 vhdx"分开，还多一条"镜像站下载 rootfs"。
-/// 我们另外**保留**了它没有的 `File`（`--install --from-file`）——
-/// `.wsl` 是新格式，`--import` 吃不了，现成的能力不该退。
+/// 原先本地那三条是**分开的三个按钮**（tar / VHDX / `.wsl`），参考实现也这么分
+/// （它的 `add.sources.rootfs` 与 `add.sources.vhdx` 是两项，而且**没有** `.wsl`）。
+/// 但用户手上拿到的是**一个文件**，"它属于哪一类"不该由他来想 —— 所以合成
+/// 一个「本地文件」，由后缀自动分岔（[`wslc_core::model::install::classify_local_file`]）。
+///
+/// ⚠️ **数据层仍然分三种**（`InstallSource` 的 `Tar` / `Vhdx` / `File`）：
+/// 它们在 WSL 那边是三条不同的路（`--import` / `--import --vhd` /
+/// `--install --from-file`），合并的只是**界面入口**。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InstallSourceKind {
-    /// 从本地 tar 导入（`wsl --import`）。
+    /// 本地文件：tar 归档 / `.vhdx` / `.wsl`，按后缀自动分岔。
     #[default]
-    Tar,
-    /// 从本地 VHDX 导入（`wsl --import --vhd`）。
-    Vhdx,
-    /// 从本地文件安装（`wsl --install --from-file`，`.wsl` / rootfs 都行）。
-    File,
+    Local,
+    /// 在线安装（`wsl --install -d`，微软商店或 `--web-download`）。
+    Online,
     /// 从镜像站下载 rootfs 再导入（走 `curl.exe`）。
     Mirror,
-    /// 在线安装（`wsl --install -d`）。
-    Online,
 }
 
 impl InstallSourceKind {
     /// 全部可选值（决定下拉框里的顺序与索引）。
     ///
-    /// 顺序：**本地的三条在前，联网的两条在后**；联网那两条里
-    /// 「微软商店」排在「镜像源」前面 —— 商店是 WSL 官方那条路，
-    /// 装出来就是官方发行版，镜像源是商店/GitHub 都拉不动时的备选。
-    pub const ALL: [InstallSourceKind; 5] = [
-        InstallSourceKind::Tar,
-        InstallSourceKind::Vhdx,
-        InstallSourceKind::File,
+    /// 顺序：**本地在前，联网的两条在后**；联网那两条里「微软商店」排在
+    /// 「镜像源」前面 —— 商店是 WSL 官方那条路，装出来就是官方发行版，
+    /// 镜像源是商店/GitHub 都拉不动时的备选。
+    pub const ALL: [InstallSourceKind; 3] = [
+        InstallSourceKind::Local,
         InstallSourceKind::Online,
         InstallSourceKind::Mirror,
     ];
@@ -182,45 +180,41 @@ impl InstallSourceKind {
     /// （`AGENTS.md` §6），只对齐"有哪几类"，不抄它的字。
     pub fn label(self) -> &'static str {
         match self {
-            Self::Tar => "本地 rootfs 文件（tar / tar.gz / tar.xz）",
-            Self::Vhdx => "导入 VHDX 虚拟磁盘",
-            Self::File => "从 .wsl / 文件安装",
+            Self::Local => "本地文件（tar / tar.gz / tar.xz / .vhdx / .wsl）",
             Self::Online => "微软商店 (Microsoft Store)",
-            Self::Mirror => "在线发行版（国内镜像源）",
+            Self::Mirror => "在线发行版（镜像源）",
         }
     }
 
-    /// 一句话说明（显示在下拉框下面）。
+    /// 一句话说明（显示在来源按钮下面）。
     pub fn hint(self) -> &'static str {
         match self {
-            Self::Tar => "最可靠：本地 tar 文件，不需要联网。只是把文件系统铺开。",
-            Self::Vhdx => "本地 ext4 虚拟磁盘（`.vhdx`）会被**拷贝**一份到安装目录，原始文件不动。",
-            Self::File => {
-                "交给 WSL 自己的安装器（`.wsl` 或 rootfs 都行），会做首次启动初始化（建默认用户）。"
+            Self::Local => {
+                "手上是什么文件都行，按**后缀**自动分岔：tar 归档 → `wsl --import`（只是铺开\
+                 文件系统）；`.vhdx` → `--import --vhd`（会拷贝一份，原始文件不动）；\
+                 `.wsl` 包 → 交给 WSL 安装器（会做首次启动初始化、建默认用户）。\
+                 不联网，最可靠。"
             }
             Self::Online => {
                 "走 WSL 官方的在线安装（`wsl --install -d`）：默认从微软商店装，\
-                 商店拉不动时可以切到 GitHub（`--web-download`）。\
-                 下面那个发行版清单来自微软的 `DistributionInfo.json`。"
+                 商店拉不动时可以切到 GitHub（`--web-download`）。"
             }
             Self::Mirror => {
                 "从国内镜像站下载官方 rootfs 再导入 —— 商店和 GitHub 都拉不动时用这条，\
-                 只用 `curl.exe`，不碰微软的服务器。"
+                 只用 `curl.exe`，不碰微软的服务器。**自动测速择优**，不用自己挑镜像站。"
             }
         }
     }
 
     /// 需不需要让用户填一个**文件路径**。
     pub fn needs_path(self) -> bool {
-        matches!(self, Self::Tar | Self::Vhdx | Self::File)
+        matches!(self, Self::Local)
     }
 
     /// 路径输入框的标签。
     pub fn path_label(self) -> &'static str {
         match self {
-            Self::Tar => "tar 文件路径",
-            Self::Vhdx => "VHDX 文件路径",
-            Self::File => "安装文件路径",
+            Self::Local => "本地文件路径",
             Self::Mirror | Self::Online => "",
         }
     }
@@ -228,9 +222,7 @@ impl InstallSourceKind {
     /// 路径输入框的占位提示。
     pub fn path_placeholder(self) -> &'static str {
         match self {
-            Self::Tar => r"D:\img\ubuntu-rootfs.tar",
-            Self::Vhdx => r"D:\img\ext4.vhdx",
-            Self::File => r"D:\img\Ubuntu-24.04.wsl",
+            Self::Local => r"D:\img\ubuntu-rootfs.tar（也可以是 ext4.vhdx 或 Ubuntu-24.04.wsl）",
             Self::Mirror | Self::Online => "",
         }
     }
@@ -238,17 +230,17 @@ impl InstallSourceKind {
     /// 文件选择器的类别名与后缀表。
     ///
     /// 返回 `None` 表示这条来源不需要选文件。
+    ///
+    /// 本地来源只有一条，所以这里的后缀表是**并集**：用户不用先想"我这是哪一类"。
+    /// 复合后缀（`.tar.gz`）在 WinForms 的过滤器里写成两个通配就够
+    /// （`*.tar.gz` 也能匹配，写上更直观）。
     pub fn file_filter(self) -> Option<(&'static str, &'static [&'static str])> {
-        /// `.tar.gz` / `.tar.xz` 这类复合后缀在 WinForms 的过滤器里只能写成
-        /// 两个通配（`*.tar.gz` 其实也能匹配，写上更直观）。
-        const TAR: &[&str] = &["tar", "gz", "xz", "zst"];
-        const VHDX: &[&str] = &["vhdx"];
-        const WSL_FILES: &[&str] = &["wsl", "tar", "gz", "xz"];
+        const LOCAL_FILES: &[&str] = &[
+            "tar", "gz", "xz", "zst", "bz2", "lz4", "tgz", "txz", "vhdx", "vhd", "wsl",
+        ];
 
         match self {
-            Self::Tar => Some(("tar 文件", TAR)),
-            Self::Vhdx => Some(("VHDX 文件", VHDX)),
-            Self::File => Some(("安装文件", WSL_FILES)),
+            Self::Local => Some(("安装文件", LOCAL_FILES)),
             Self::Mirror | Self::Online => None,
         }
     }
@@ -288,7 +280,7 @@ impl InstallSourceKind {
         matches!(self, Self::Online)
     }
 
-    /// 要不要显示「镜像站」那一块（选发行版 + 探测 + 自定义 URL）。
+    /// 要不要显示「镜像站」那一块（选发行版 + 自动测速状态 + 自定义 URL）。
     pub fn is_mirror(self) -> bool {
         matches!(self, Self::Mirror)
     }
@@ -296,6 +288,11 @@ impl InstallSourceKind {
     /// 要不要显示「在线清单」那一块。
     pub fn is_online(self) -> bool {
         matches!(self, Self::Online)
+    }
+
+    /// 要不要显示「本地文件」那一块（路径 + 浏览 + "识别为 …"）。
+    pub fn is_local(self) -> bool {
+        matches!(self, Self::Local)
     }
 }
 
@@ -1568,7 +1565,7 @@ impl MirrorChoice {
     }
 }
 
-/// 「在线发行版（国内镜像源）」那一块的状态。
+/// 「在线发行版（镜像源）」那一块的状态。
 ///
 /// 清单是**动态拉的**（`wslc_core::cmd::catalog`，两个 HTTP 请求走 `curl.exe`），
 /// 所以这里存的是"拉回来的清单 + 探测结果"，而不是写死的表。
@@ -1623,8 +1620,11 @@ impl MirrorState {
         self.offers.first()
     }
 
-    /// 换一条清单：清掉上一次的探测结果，并在原来选的那条没了时回落到第一条。
-    pub fn set_offers(&mut self, offers: Vec<Offer>, origin: String, updated: Option<String>) {
+    /// 换一条清单：先按参考实现的顺序排，再清掉上一次的探测结果，
+    /// 并在原来选的那条没了时回落到第一条。
+    pub fn set_offers(&mut self, mut offers: Vec<Offer>, origin: String, updated: Option<String>) {
+        sort_offers_like_reference(&mut offers);
+
         // 原来选的那条还在新清单里吗（清单会更新，版本可能就没了）
         let keep = offers.iter().any(|offer| offer.id() == self.distro_id);
         self.offers = offers;
@@ -1731,6 +1731,59 @@ fn normalize_id(text: &str) -> String {
         .filter(char::is_ascii_alphanumeric)
         .map(|c| c.to_ascii_lowercase())
         .collect()
+}
+
+/// 发行版的**常用度**排序键（越小越靠前）。
+///
+/// ⚠️ 这张表的顺序是照参考实现（`wsl-dashboard-ref` 的 `get_distro_sort_rank`）
+/// 写的：用户明确要求"在线发行版的清单照 wsl-dashboard 来"，而它把
+/// Ubuntu / Debian 排在最前、没列到的排最后。
+///
+/// 代码是我们自己写的：它是 **GPL-3.0-only**、本仓库 Apache-2.0
+/// （`AGENTS.md` §6），能对齐的只有"哪几个发行版常用"这个**事实**。
+fn distro_rank(name: &str) -> usize {
+    let lower = name.to_lowercase();
+    for (needle, rank) in [
+        ("ubuntu", 1),
+        ("debian", 2),
+        ("kali", 3),
+        ("arch", 4),
+        ("fedora", 5),
+        ("opensuse", 6),
+        // 参考实现把 SLES 也单列一档（`sles` 是它的缩写）
+        ("suse linux enterprise", 7),
+        ("sles", 7),
+        ("almalinux", 8),
+        ("rocky", 9),
+        ("oracle", 10),
+        ("alpine", 11),
+        ("openeuler", 12),
+        ("mint", 13),
+    ] {
+        if lower.contains(needle) {
+            return rank;
+        }
+    }
+    999
+}
+
+/// 按参考实现的顺序排：先常用度，同族再按**版本倒序**（新的在前）。
+///
+/// ⚠️ 版本这里按**数值**比，而不是照参考实现那样按 "名字+版本" 字符串倒序：
+/// 同一族里混着 `16.0` / `15.6` / `tumbleweed` 这种，字符串倒序会把
+/// `tumbleweed` 排到 `16.0` 前面（`t` > `1`），而数值比把"没有数字的"排最后
+/// —— 滚动版放最后才符合直觉。同族里数值键相同的（都是滚动版）再按名字排，
+/// 保证顺序**确定**（否则每次刷新清单的行序都可能不一样）。
+fn sort_offers_like_reference(offers: &mut [Offer]) {
+    offers.sort_by(|left, right| {
+        let (left_rank, right_rank) = (distro_rank(&left.name), distro_rank(&right.name));
+        if left_rank != right_rank {
+            return left_rank.cmp(&right_rank);
+        }
+        version_key(&right.version)
+            .cmp(&version_key(&left.version))
+            .then_with(|| left.version.cmp(&right.version))
+    });
 }
 
 /// 计划里已经走完的一步。
@@ -2433,7 +2486,7 @@ mod tests {
         }
         assert!(InstallSourceKind::ALL.contains(&InstallSourceKind::default()));
         // 默认必须是最不依赖网络的那条
-        assert_eq!(InstallSourceKind::default(), InstallSourceKind::Tar);
+        assert_eq!(InstallSourceKind::default(), InstallSourceKind::Local);
     }
 
     #[test]
@@ -2442,26 +2495,31 @@ mod tests {
         assert!(InstallSourceKind::Online.supports_launch());
         assert!(!InstallSourceKind::Online.needs_path());
 
-        // 本地三种都要选文件，而且都要有标签/占位/过滤器
-        for kind in [
-            InstallSourceKind::Tar,
-            InstallSourceKind::Vhdx,
-            InstallSourceKind::File,
-        ] {
-            assert!(!kind.supports_launch(), "{kind:?}");
-            assert!(kind.needs_path(), "{kind:?}");
-            assert!(!kind.path_label().is_empty(), "{kind:?}");
-            assert!(!kind.path_placeholder().is_empty(), "{kind:?}");
-            let (label, extensions) = kind.file_filter().expect("本地来源要能弹选择器");
-            assert!(!label.is_empty(), "{kind:?}");
-            assert!(!extensions.is_empty(), "{kind:?}");
-            assert!(kind.requires_install_dir(), "{kind:?}");
+        // 本地那一条要选文件，而且要有标签/占位/过滤器
+        // （它把原来的 tar / VHDX / `.wsl` 三条合一了 —— 后缀由
+        // `classify_local_file` 分岔，见 `wslc_core::model::install`）
+        let kind = InstallSourceKind::Local;
+        assert!(!kind.supports_launch(), "{kind:?}");
+        assert!(kind.needs_path(), "{kind:?}");
+        assert!(kind.is_local(), "{kind:?}");
+        assert!(!kind.path_label().is_empty(), "{kind:?}");
+        assert!(!kind.path_placeholder().is_empty(), "{kind:?}");
+        assert!(kind.requires_install_dir(), "{kind:?}");
+        let (label, extensions) = kind.file_filter().expect("本地来源要能弹选择器");
+        assert!(!label.is_empty(), "{kind:?}");
+        // 后缀表必须是**并集**：tar 系列 + vhdx + .wsl，少一个用户就选不到
+        for expected in ["tar", "gz", "xz", "vhdx", "vhd", "wsl"] {
+            assert!(
+                extensions.contains(&expected),
+                "少了 {expected}：{extensions:?}"
+            );
         }
 
         // 两条"网络来源"不要文件路径，也不要文件选择器
         for kind in [InstallSourceKind::Mirror, InstallSourceKind::Online] {
             assert!(!kind.needs_path(), "{kind:?}");
             assert!(kind.file_filter().is_none(), "{kind:?}");
+            assert!(!kind.is_local(), "{kind:?}");
             assert!(kind.is_online() == (kind == InstallSourceKind::Online));
         }
         // 镜像站要安装目录（下载完要 --import），在线安装可以留空
@@ -2472,10 +2530,11 @@ mod tests {
         // 版本**不给用户选**：本项目只支持 WSL 2，安装命令里固定 `--version 2`
         // （`InstallSourceKind` 上再也没有 `supports_version` 这种东西了）。
 
-        // 五种来源的标签不能重复（按钮上会分不清）
+        // 三种来源的标签不能重复（按钮上会分不清）
         let labels: Vec<&str> = InstallSourceKind::ALL.iter().map(|k| k.label()).collect();
         let unique: std::collections::HashSet<&&str> = labels.iter().collect();
         assert_eq!(unique.len(), labels.len(), "{labels:?}");
+        assert_eq!(labels.len(), 3, "本地那三条已经合一：{labels:?}");
 
         // 「微软商店」必须**一眼看得出来**是商店 —— 用户最想找的就是它，
         // 之前它叫"在线安装"，从名字上完全看不出跟商店有关系。
@@ -2814,6 +2873,64 @@ mod tests {
             "可用的按耗时升序排前面，失败的排后面；\
              只按 `secs` 排的话「没探」（0.0）会跑到最前面，看着像最快的那个"
         );
+    }
+
+    #[test]
+    fn the_catalog_is_sorted_like_the_reference() {
+        // 用户要求"在线发行版的清单照 wsl-dashboard 来"：Ubuntu 最前、Debian 次之，
+        // 同族按版本**倒序**（新的在前），滚动版（没有版本号）排最后。
+        fn offer(name: &str, version: &str) -> Offer {
+            Offer {
+                name: name.to_owned(),
+                version: version.to_owned(),
+                sources: vec![wslc_core::mirrors::OfferSource {
+                    mirror: "lxc-tuna".to_owned(),
+                    url: format!("https://x/{name}-{version}.tar.xz"),
+                    format: "tar.xz".to_owned(),
+                }],
+            }
+        }
+
+        let mut state = MirrorState::new();
+        state.set_offers(
+            vec![
+                offer("openSUSE", "tumbleweed"),
+                offer("Rocky Linux", "10"),
+                offer("Ubuntu", "20.04"),
+                offer("Debian", "12"),
+                offer("openSUSE", "16.0"),
+                offer("Ubuntu", "24.04"),
+                offer("Debian", "13"),
+                offer("Ubuntu", "22.04"),
+                offer("Alpine", "3.22"),
+                offer("openEuler", "24.03"),
+            ],
+            "测试清单".to_owned(),
+            None,
+        );
+
+        let ids: Vec<String> = state.offers.iter().map(Offer::id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                // 1 常用度：Ubuntu 最前，同族版本倒序
+                "Ubuntu 24.04",
+                "Ubuntu 22.04",
+                "Ubuntu 20.04",
+                // 2 Debian
+                "Debian 13",
+                "Debian 12",
+                // 6 openSUSE：16.0 在滚动版前面（数值键 > 空键）
+                "openSUSE 16.0",
+                "openSUSE tumbleweed",
+                // 9 / 11 / 12
+                "Rocky Linux 10",
+                "Alpine 3.22",
+                "openEuler 24.03",
+            ]
+        );
+        // 排完之后默认选中第一条 —— 参考实现里用户打开就是 Ubuntu 24.04
+        assert_eq!(state.distro_id, "Ubuntu 24.04");
     }
 
     #[test]
