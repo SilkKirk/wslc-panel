@@ -20,7 +20,8 @@
 │  容器        │  │ WSL      3.0.1.0  │ 会话管理器    3.0.1   │       │
 │ 资源         │  │ 内核     6.18.40  │ 活动会话表            │       │
 │  镜像        │  │ Windows  10.0.26  │                       │       │
-│  网络        │  └───────────────────┴───────────────────────┘       │
+│  镜像仓库    │  └───────────────────┴───────────────────────┘       │
+│  网络        │                                                      │
 │  卷          │                                                      │
 │ 设置         │                                                      │
 │  应用设置    │                                                      │
@@ -28,7 +29,7 @@
 └──────────────┴──────────────────────────────────────────────────────┘
 ```
 
-> 侧边栏就是上面这 8 页（`Page::ALL`）。**「添加实例」不在这里** —— 它从
+> 侧边栏就是上面这 9 页（`Page::ALL`）。**「添加实例」不在这里** —— 它从
 > 「实例列表」页上的按钮进（同时列「实例列表」和「添加实例」是冗余的：
 > 后者本来就是前者的一个动作）。「wlsc 配置」与「WSL 配置」也不是页面，
 > 而是「应用设置」里的两个 tab。
@@ -42,7 +43,8 @@
 | **基本信息** | WSL/内核/Windows/Direct3D 版本、活动会话（可**终止**）、`settings.yaml` 路径与 `storagePath`、容器/镜像/网络/卷统计 | `wslc info`、`wslc system session list` / `terminate` |
 | **当前运行** | 运行中容器 + **实时资源**（CPU%、内存、网络 I/O、块 I/O、PID） | `wslc list`、`wslc stats` |
 | **全部容器** | 含已退出容器、状态徽标、端口映射、行内启动/重启/停止/**日志**/删除、批量停止/删除/`prune`；详情里强杀、**执行命令**（`exec`）、**打开终端**（`exec -it`）、**`attach` 主进程** | `wslc list -a`、`wslc stats -a`、`wslc logs` / `exec` / `attach` |
-| **镜像 / 网络 / 卷** | 镜像（同一 ID 多仓库引用会标注）、网络（内置网络禁止删除）、卷（**创建命名卷** / 删除 / **清理未使用**） | `wslc images` / `network list` / `volume list` / `volume create` / `volume prune` |
+| **镜像 / 网络 / 卷** | 镜像（同一 ID 多仓库引用会标注；「**按引用拉取…**」直接拉一条已知引用，**可以是别的 registry**）、网络（内置网络禁止删除）、卷（**创建命名卷** / 删除 / **清理未使用**） | `wslc images` / `wslc pull` / `network list` / `volume list` / `volume create` / `volume prune` |
+| **镜像仓库** | **在线浏览** registry 上的仓库 tag 再拉取。内置 **`docker.1panel.live`**（实测唯一一个 tag 与 manifest 都免认证的加速站）+ 10 个常用官方镜像的快捷入口；仓库名认 `alpine` / `library/nginx` / `grafana/grafana` / `nginx:1.27`，**粘一整条浏览器 URL 也认**；tag 列表按「**latest 优先 → 版本倒序**」排过（接口给的是字母序，`latest` 本来排在最后一个）、本地即时过滤、最多渲染 200 行；**选中某个 tag 才去量它的下载体积**（只量那一个 —— 一次要两个请求）；拉完可直接「**用这个镜像创建容器**」（镜像名预填） | `curl.exe` → Registry V2（`/v2/<repo>/tags/list`、`/v2/<repo>/manifests/<ref>`）；`wslc pull` |
 | **wlsc 配置** | 8 个配置项的当前生效值与默认值、快捷写入、原始 YAML 查看、**带时间戳备份保存**、调用系统编辑器 | 直接读写 `settings.yaml` |
 | **实例列表** | WSL 发行版：状态、WSL 版本、是否默认、安装位置与 VHDX 虚拟大小；**行内**打开终端 / 启动（由本面板吊住保持运行）/ 终止 / 设为默认；**详情里**压缩磁盘、移动位置、调整大小、导出、打开安装位置、编辑 `/etc/wsl.conf`、删除 | `wsl --list --verbose` + 注册表 `Lxss` |
 | **添加实例** | **三条来源**：**本地文件**（tar / tar.gz / tar.xz / `.vhdx` / `.wsl` 一个入口，**按后缀自动分岔**装法）/ **微软商店 (Microsoft Store)**（下拉框，可搜索）/ **在线发行版（镜像源）**（下拉框，清单照 `wsl-dashboard` 的常用度排序，选中即**自动测速择优**）。装前检查（名字、重名、目录）、实时的**执行步骤预览**、装中**日志与进度**、可取消（重定位阶段除外） | `wsl --import` / `wsl --import --vhd` / `wsl --install --from-file` / `wsl --install -d`（商店）/ `curl.exe` + wslui 清单（镜像源） |
@@ -210,8 +212,8 @@ base, component, and assets, so a Rust application lists a single dependency.」
   CI 怎么读、发布流程、弹窗约定……）。人也能看：里面全是"不知道就会踩坑"的那类东西。
 - [`docs/PLAN.md`](docs/PLAN.md) —— **当前**的实施方案、里程碑、风险对策
 - [`docs/PLAN-v0.2.md`](docs/PLAN-v0.2.md) / [`PLAN-v0.3.md`](docs/PLAN-v0.3.md) /
-  [`PLAN-v0.5.md`](docs/PLAN-v0.5.md) —— 各阶段的**历史**计划。里面的"未做"
-  说的是**当时**的状态，不是现状。
+  [`PLAN-v0.5.md`](docs/PLAN-v0.5.md) / [`PLAN-v0.6.md`](docs/PLAN-v0.6.md) ——
+  各阶段的**历史**计划。里面的"未做"说的是**当时**的状态，不是现状。
 - [`docs/wslc-schema.md`](docs/wslc-schema.md) —— **实测采集**的 `wslc` 输出字段字典（踩坑记录）
 - [`docs/SPIKE.md`](docs/SPIKE.md) —— M0 选型验证清单与回退方案
 
@@ -234,6 +236,15 @@ base, component, and assets, so a Rust application lists a single dependency.」
   所以日志浮层里给了一个「在终端里跟随」，开独立窗口（能滚、能 Ctrl+C）。
 - **本机直连 Docker Hub 会超时**：`run` 表单默认 `--pull missing`，
   并提供"使用本地已有镜像"的输入方式；离线环境请用 `--pull never`。
+- **「镜像仓库」页只连内置的 `docker.1panel.live`**：实测它是唯一一个 tag 与
+  manifest **都免认证**的加速站（`1ms.run` 的 manifest 要它自己域名下的 token，
+  `daocloud` 连 tag 列表都要，而 `registry-1.docker.io` / `hub.docker.com`
+  在这台机器上直接不可达）。要拉**别的 registry** 用「镜像」页的「按引用拉取…」
+  —— 那条路不经过浏览。认证链路（`WWW-Authenticate` → token）**没写**，
+  待补清单在 [`docs/PLAN-v0.6.md`](docs/PLAN-v0.6.md) §3.4。
+- **镜像的「体积」有两个口径，别混**：「镜像仓库」页显示的是「**下载约 N MB**」
+  （registry manifest 里各层压缩后之和），而「镜像」页 `wslc images` 的 `Size`
+  是**解压后**的落盘占用。同机 nginx 实测 60.9 MB vs 163 MB，差 2.7 倍 —— 两个数都对。
 - **GPUI 文件里写测试模块要小心**：`app.rs` / `views.rs` 里有 `use gpui_kit::*;`，
   而 gpui 会再导出 `gpui_macros` 的 `test` **属性宏** —— 测试模块里写
   `use super::*;` 会把它继承进来、遮蔽 Rust 的 `#[test]`，报
@@ -254,7 +265,7 @@ base, component, and assets, so a Rust application lists a single dependency.」
 正常启动时它长这样：
 
 ```text
-INFO wslc_panel: wslc-panel 启动（版本 0.5.13，构建 020a9df）
+INFO wslc_panel: wslc-panel 启动（版本 0.6.0，构建 020a9df）
 INFO gpui_windows::direct_write: Use Microsoft YaHei UI as UI font.
 INFO gpui_windows::directx_devices: Using GPU: Intel(R) UHD Graphics
 INFO gpui_windows::directx_devices: Created device with Direct3D 11.1 feature level.
