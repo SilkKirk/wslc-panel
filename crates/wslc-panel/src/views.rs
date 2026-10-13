@@ -23,6 +23,8 @@ use wslc_core::cmd::container::{PullPolicy, RunSpec};
 use wslc_core::mirrors;
 use wslc_core::model::install as install_model;
 use wslc_core::model::{ContainerState, ContainerSummary, Distro, DistroState};
+// 镜像仓库（Registry V2）的纯逻辑：常用镜像清单、tag 截断上限、体积累加。
+use wslc_core::registry;
 // `/etc/wsl.conf` 的字段表与保序文档模型（纯逻辑，在 `wslc-core` 里）。
 use wslc_core::model::wslconf;
 use wslc_core::settings::{SETTING_KEYS, SettingKey, SettingKind};
@@ -399,6 +401,7 @@ pub fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
         Page::AddInstance => add_instance(shell, cx, entity),
         Page::Containers => containers(state, entity).into_any_element(),
         Page::Images => images(state, entity).into_any_element(),
+        Page::Registry => registry_page(shell, cx, entity),
         Page::Networks => networks(state, entity).into_any_element(),
         Page::Volumes => volumes(state, entity).into_any_element(),
         Page::AppSettings => app_settings(state, entity),
@@ -956,8 +959,12 @@ pub fn images(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                     // 刻意**不**用 `.disabled(busy)`：禁用态的文字几乎看不清
                     // （实机截图确认过）。重复点击由 `open_pull_dialog` 里的
                     // 守卫 + 提示条处理，不需要把它变灰。
+                    //
+                    // 措辞刻意与「镜像仓库」页区分开（v0.6）：这里是"我已知完整引用"，
+                    // 那一页是"我先看看有哪些 tag"。两个入口背后是同一段拉取实现，
+                    // 但**用户的意图不同** —— 见 `pull_form_body` 的文档。
                     Button::new("pull-image")
-                        .label("拉取镜像")
+                        .label("按引用拉取…")
                         .small()
                         .on_click(move |_, window, cx| {
                             // 注意：`InputState` 只能在有 `window` 的地方创建，
@@ -990,6 +997,372 @@ pub fn images(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                     v_flex().w_full().children(rows).into_any_element()
                 }),
         )
+}
+
+/// 「镜像仓库」页（v0.6）：在线浏览某个 registry 上的仓库 tag，然后拉取。
+///
+/// # 三段：查什么 → 有哪些 tag → 拉
+///
+/// 1. **常用镜像的快捷按钮 + 仓库名 + 「查询」**。快捷按钮点下去**直接查**
+///    （用户点 `nginx` 的意图就是"看看它有哪些 tag"，再点一次「查询」是多余的）；
+/// 2. **tag 列表**：本地过滤、截断到 [`registry::MAX_VISIBLE_TAGS`] 行、可滚动。
+///    点一行即选中，并去量它的下载体积 —— **只量选中的那一个**：
+///    列表里 1339 个 tag 全量一遍就是 1339 次请求，直接撞限流；
+/// 3. 选中之后：完整引用 + 「下载约 N MB」+ 「拉取」。
+///
+/// 拉取的进度复用 [`pull_progress_body`]（和「拉取镜像」弹窗同一份），
+/// 因为背后是同一个 `Shell::start_pull` —— 两个入口、一段代码。
+///
+/// `_cx` 用不上：这一页要显示的东西全在 `state.registry` 里（tag 过滤词由
+/// 输入框的**订阅**推进去，见 `Shell::ensure_registry_form`）。
+/// 在渲染时现读 `InputState` 只会读到"上次重绘时"的值 —— 那正是过滤要订阅的原因。
+pub fn registry_page(shell: &Shell, _cx: &App, entity: &Entity<Shell>) -> AnyElement {
+    let state = &shell.state;
+    let page = &state.registry;
+
+    let Some(form) = shell.registry_form.as_ref() else {
+        // 正常走不到（进这一页时一定会先 `ensure_registry_form`），
+        // 但函数不该假设调用顺序。
+        return card("镜像仓库", empty_state("正在准备表单…")).into_any_element();
+    };
+
+    // ---- 1) 查什么 ----------------------------------------------------
+
+    let presets: Vec<AnyElement> = registry::COMMON_IMAGES
+        .iter()
+        .map(|name| {
+            // `COMMON_IMAGES` 是 `&[&str]`，`iter()` 给的是 `&&str` ——
+            // 解一层引用拿到 `&'static str`（它 `Copy`，`move` 闭包直接拷进去）。
+            //
+            // ⚠️ 写成 `let name = *name;` 而**不是** `let name: &'static str = *name;`：
+            // 后者 clippy 会报 `explicit_auto_deref`（"deref which would be done by
+            // auto-deref"），CI 的 lint 任务实测报了它。
+            let name = *name;
+            let entity = entity.clone();
+            Button::new(SharedString::from(format!("registry-preset-{name}")))
+                .label(name)
+                .small()
+                .on_click(move |_, window, cx| {
+                    entity.update(cx, |shell, cx| {
+                        shell.apply_registry_preset(name, window, cx);
+                    });
+                })
+                .into_any_element()
+        })
+        .collect();
+
+    let query_row = h_flex()
+        .w_full()
+        .gap_2()
+        .items_center()
+        .child(
+            Input::new(&form.repository)
+                .id("registry-repository")
+                .w_full(),
+        )
+        .child({
+            let entity = entity.clone();
+            // 点下去按钮先变成「查询中…」—— 从点击到结果出来之间，
+            // 界面上必须有变化（`AGENTS.md` §7.1：没有它，用户会以为按钮坏了
+            // 然后去点第二次）。
+            //
+            // 刻意**不**用 `.disabled()`：全项目都不导入 `Disableable`
+            // （禁用态的文字几乎看不清，见 `images` 那里同一条注释）。
+            Button::new("registry-query")
+                .label(if page.loading {
+                    "查询中…"
+                } else {
+                    "查询"
+                })
+                .primary()
+                .small()
+                .on_click(move |_, window, cx| {
+                    entity.update(cx, |shell, cx| shell.query_registry(window, cx));
+                })
+        });
+
+    // ---- 状态行：说清"现在是什么情况" ---------------------------------
+
+    let status: AnyElement = if page.loading {
+        div()
+            .text_sm()
+            .text_color(theme::text_muted())
+            .child("正在拉取 tag 列表…")
+            .into_any_element()
+    } else if let Some(error) = page.error.as_ref() {
+        v_flex()
+            .w_full()
+            .gap_1()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme::danger())
+                    .child(error.clone()),
+            )
+            .child(div().text_xs().text_color(theme::text_dim()).child(format!(
+                "换个仓库名再试。这一版只连得了 {}（实测它是唯一一个 tag 与 manifest \
+                 都免认证的 registry）。",
+                page.host
+            )))
+            .into_any_element()
+    } else if let Some(loaded) = page.loaded.as_ref() {
+        let note = page
+            .normalization_note()
+            .map(|note| format!("（{note}）"))
+            .unwrap_or_default();
+        div()
+            .text_sm()
+            .text_color(theme::text_muted())
+            .child(format!("{loaded}：{} 个 tag{note}", page.tags.len()))
+            .into_any_element()
+    } else {
+        div()
+            .text_sm()
+            .text_color(theme::text_dim())
+            .child("填一个仓库名，或者点上面的常用镜像。列表按「latest 优先、版本倒序」排过。")
+            .into_any_element()
+    };
+
+    // ---- 2) 有哪些 tag ------------------------------------------------
+
+    let (shown, matched) = page.visible_tags();
+    let rows: Vec<AnyElement> = shown
+        .iter()
+        .enumerate()
+        .map(|(ix, tag)| {
+            let selected = page.selected.as_deref() == Some(*tag);
+            let entity = entity.clone();
+            let for_click = (*tag).to_owned();
+            h_flex()
+                .id(SharedString::from(format!("registry-tag-{ix}")))
+                .w_full()
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .cursor_pointer()
+                // 两套配色直接用 `if` 选，不引入 `.when(...)`：全项目没用过那个
+                // 方法（`FluentBuilder` 未必在作用域里），而这里是**编译不过**
+                // 就得烧一轮 CI 的地方。
+                .bg(if selected {
+                    theme::primary_soft()
+                } else {
+                    theme::bg_card()
+                })
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(if selected {
+                            theme::primary()
+                        } else {
+                            theme::text()
+                        })
+                        .child(for_click.clone()),
+                )
+                .on_click(move |_, _, cx| {
+                    let tag = for_click.clone();
+                    entity.update(cx, |shell, cx| shell.select_registry_tag(tag, cx));
+                })
+                .into_any_element()
+        })
+        .collect();
+
+    let tag_card: AnyElement = if page.tags.is_empty() {
+        div().into_any_element()
+    } else {
+        // 截断时必须说清"一共多少、只显示了多少" —— 否则用户以为就这么多。
+        let count_line = if shown.len() == matched {
+            format!("显示全部 {matched} 个 tag")
+        } else {
+            format!(
+                "共匹配 {matched} 个，只显示前 {} 个 —— 继续输入可以缩小范围",
+                shown.len()
+            )
+        };
+
+        v_flex()
+            .w_full()
+            .gap_2()
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .items_center()
+                    .child(Input::new(&form.filter).id("registry-filter").w(px(260.)))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_dim())
+                            .child(count_line),
+                    ),
+            )
+            // ⚠️ 滚动容器**必须**带 `.id(...)`：`overflow_y_scroll` 来自
+            // `StatefulInteractiveElement`，只对带 id 的元素可用（漏了是编译错误）。
+            .child(
+                v_flex()
+                    .id("registry-tag-scroll")
+                    .w_full()
+                    .max_h(px(320.))
+                    .gap_1()
+                    .overflow_y_scroll()
+                    .children(rows),
+            )
+            .into_any_element()
+    };
+
+    // ---- 3) 选中了什么、能不能拉 --------------------------------------
+
+    let action: AnyElement = match page.selected.as_deref() {
+        None => div().into_any_element(),
+        Some(tag) => {
+            let reference = page.selected_reference().unwrap_or_default();
+            // 已经在本地了就顺手给一个「创建容器」：镜像名预填，用户不用再手打一遍。
+            //
+            // 没拉下来时**不放**这个按钮（只给一句说明）：`wslc run` 的拉取策略是
+            // `Never`，点了必然失败 —— 那是"界面上点了没反应"里最差的一种。
+            // 拉取完成后 `start_pull` 会刷新快照，按钮自己就出现了。
+            let pulled = !reference.is_empty()
+                && state
+                    .snapshot
+                    .images
+                    .iter()
+                    .any(|img| img.reference() == reference);
+
+            let size_line: AnyElement = if page.sizing {
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child("正在量体积…")
+                    .into_any_element()
+            } else if let Some(label) = page.size_label() {
+                // ⚠️ 措辞是「**下载约**」：这是 manifest 累加的**压缩后**大小，
+                // 不是落盘占用。同机 nginx 实测 60.9 MB，而「镜像」页里
+                // `wslc images` 的 `Size` 是 163 MB（差 2.7 倍）——
+                // 写成"大小"用户拿它一对就会当 bug 报上来。
+                div()
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child(label)
+                    .into_any_element()
+            } else if let Some(error) = page.size_error.as_ref() {
+                // 量不出来**不挡住拉取**：说清原因，拉不拉由用户决定。
+                div()
+                    .text_xs()
+                    .text_color(theme::warning())
+                    .child(format!("体积量不出来：{error}"))
+                    .into_any_element()
+            } else {
+                div().into_any_element()
+            };
+
+            let pull = {
+                let entity = entity.clone();
+                Button::new("registry-pull")
+                    .label("拉取")
+                    .primary()
+                    .small()
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |shell, cx| shell.pull_registry_selection(cx));
+                    })
+            };
+
+            let create: AnyElement = if pulled {
+                let entity = entity.clone();
+                let image = reference.clone();
+                Button::new("registry-create")
+                    .label("用这个镜像创建容器")
+                    .small()
+                    .on_click(move |_, window, cx| {
+                        entity.update(cx, |shell, cx| {
+                            shell.open_create_dialog_prefilled(Some(image.as_str()), window, cx);
+                        });
+                    })
+                    .into_any_element()
+            } else {
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child("拉下来之后，这里会出现「用这个镜像创建容器」。")
+                    .into_any_element()
+            };
+
+            v_flex()
+                .w_full()
+                .gap_2()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .items_center()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(theme::text())
+                                .child(format!("选中 {tag}")),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::text_muted())
+                                .child(reference),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_3()
+                        .items_center()
+                        .child(size_line)
+                        .child(pull)
+                        .child(create),
+                )
+                .into_any_element()
+        }
+    };
+
+    // 拉取中：进度内联在这一页上（不弹浮层 —— 页面本身就是"正在拉"的上下文，
+    // 再盖一层没有额外信息）。
+    let progress: AnyElement = match &state.pulling {
+        Some(progress) => card("正在拉取", pull_progress_body(progress, entity)).into_any_element(),
+        None => div().into_any_element(),
+    };
+
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(card(
+            "镜像仓库",
+            v_flex()
+                .w_full()
+                .gap_3()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme::text_muted())
+                        .child(format!(
+                            "在线浏览 {} 上的仓库，选一个 tag 拉下来。",
+                            page.host
+                        )),
+                )
+                .child(div().text_xs().text_color(theme::text_dim()).child(
+                    "实测这台机器上 Docker Hub 直连不通（registry-1.docker.io 超时），\
+                     所以内置的是这个加速站：它有完整的 Registry V2 接口，\
+                     界面上看到的 tag 就是能拉下来的那个。",
+                ))
+                .child(h_flex().w_full().gap_2().flex_wrap().children(presets))
+                .child(query_row),
+        ))
+        .child(card(
+            "结果",
+            v_flex()
+                .w_full()
+                .gap_3()
+                .child(status)
+                .child(tag_card)
+                .child(action),
+        ))
+        .child(progress)
+        .into_any_element()
 }
 
 /// 网络页。
@@ -3167,6 +3540,16 @@ pub fn pull_dialog_overlay(
 }
 
 /// 弹窗的**表单**形态（还没开始拉）。
+///
+/// # 它和「镜像仓库」页的分工（v0.6）
+///
+/// 这里是**已知完整引用**时的出口：直接写一条引用就拉，可以是**别的 registry**
+/// （例如你以前从 `docker.m.daocloud.io` 拉过东西）。「镜像仓库」页做的是
+/// "不知道有哪些 tag，先浏览着选"，而那一页只连内置的
+/// `docker.1panel.live`（实测唯一一个 tag 与 manifest 都免认证的站）。
+///
+/// 所以这两个入口**不是同一个动作的两份拷贝**：一个是你知道要什么，
+/// 一个是你要先看有什么。措辞上把这件事写出来，用户就不用猜该点哪个。
 fn pull_form_body(input: &Entity<InputState>, entity: &Entity<Shell>) -> AnyElement {
     let cancel = {
         let entity = entity.clone();
@@ -3195,7 +3578,7 @@ fn pull_form_body(input: &Entity<InputState>, entity: &Entity<Shell>) -> AnyElem
             div()
                 .text_sm()
                 .text_color(theme::text_muted())
-                .child("镜像引用，例如 nginx:latest 或 docker.1ms.run/library/nginx:latest"),
+                .child("已知完整引用就直接填，可以是别的 registry（例如 docker.m.daocloud.io/library/nginx:latest）。"),
         )
         .child(Input::new(input).id("pull-reference").w_full())
         .child(
@@ -3209,6 +3592,12 @@ fn pull_form_body(input: &Entity<InputState>, entity: &Entity<Shell>) -> AnyElem
                     "实测本机直连 Docker Hub 会超时（registry-1.docker.io 不可达），\
                      建议填写镜像加速地址。",
                 ))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child("不知道有哪些 tag？用左边「镜像仓库」页浏览着选。"),
+                )
                 .child(
                     div()
                         .text_xs()
