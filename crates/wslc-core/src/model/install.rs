@@ -286,11 +286,16 @@ impl OnlineDistro {
 /// Ubuntu-24.04    Ubuntu 24.04 LTS
 /// ```
 ///
-/// # 本机实测：这条命令现在是**坏的**
+/// # 本机实测：这条命令**时好时坏**
 ///
-/// 本机（WSL 3.0.1.0）`wsl -l -o` 直接失败：它去 `raw.githubusercontent.com`
-/// 取清单，连接被重置，退出码 `-1`（原始输出存成了
-/// `tests/fixtures/wsl_list_online_failed.txt`）。所以：
+/// 本机（WSL 3.0.1.0）`wsl -l -o` 去 `raw.githubusercontent.com` 取清单，
+/// 走的是 `wsl.exe` 自己的网络：
+///
+/// - 2026-10-10：连接被重置 / `WININET_E_TIMEOUT`，退出码 `-1`
+///   （原始输出存成了 `tests/fixtures/wsl_list_online_failed.txt`）；
+/// - 2026-10-12（开着系统代理）：0.5 秒成功，列出 24 个发行版。
+///
+/// 所以：
 ///
 /// - **失败输出必须被安静地吃成空列表**（配 `strip_config_warnings` 一起用），
 ///   而不是抛一个解析错误 —— 上层会用另一个来源兜底（见 `cmd::distro::list_online`）；
@@ -707,6 +712,25 @@ pub struct PlannedStep {
     /// 换成功之后，**真实注册的名字**是那个新 id，执行器会把后面
     /// 「等注册」「重定位」两步的参数一起改过来（见 `cmd::install::run_plan`）。
     pub retry_other_id: Option<String>,
+    /// 失败原因是"资源还被占着"时，**等一下再跑同一条命令**。
+    ///
+    /// 只给「按 `.wslconfig` 开稀疏盘」那一步用（`--set-sparse`）。
+    ///
+    /// # 为什么非重试不可
+    ///
+    /// 那一步是 [`PlannedStep::best_effort`]：失败**不会**把安装判成失败。
+    /// 于是紧接着 `--install` 跑（VHDX 还被 WSL 自己开着）时，用户明明在
+    /// `.wslconfig` 里写了 `[experimental] sparseVhd=true`，**结果静默没生效**
+    /// —— 而界面上没有第二个地方能开它（v0.4 把详情里那个开关拿掉了，
+    /// 见 `DistroAction::SetSparse` 的说明）。
+    ///
+    /// 本机实测（2026-10-12）：紧接着 `--install` 之后跑它就是
+    /// `Wsl/Service/ERROR_SHARING_VIOLATION`（退出码 -1）；同一个发行版隔一会儿
+    /// 手工再跑就"操作成功完成"。所以这里等一等就能拿到用户要的结果。
+    ///
+    /// ⚠️ 重试只认**错误码**（见 `cmd::install::is_busy`），而且用户点了取消
+    /// 就不再试 —— 别的失败（比如 WSL 因为自己的策略拒绝开稀疏盘）等多久都一样。
+    pub retry_while_busy: bool,
 }
 
 impl PlannedStep {
@@ -719,11 +743,18 @@ impl PlannedStep {
             retry_other_source: false,
             best_effort: false,
             retry_other_id: None,
+            retry_while_busy: false,
         }
     }
 
     fn uncancellable(mut self) -> Self {
         self.cancellable = false;
+        self
+    }
+
+    /// 「资源还被占着」时等一下再跑（见字段说明）。
+    fn retry_while_busy(mut self) -> Self {
+        self.retry_while_busy = true;
         self
     }
 
@@ -804,6 +835,61 @@ impl InstallPlan {
     /// 会真正起进程的那几步（日志里用得上）。
     pub fn process_steps(&self) -> impl Iterator<Item = &PlannedStep> {
         self.steps.iter().filter(|s| s.spawns_process())
+    }
+
+    /// 这个计划在**重定位之前**可能注册成的名字（只有在线安装会给出非空结果）。
+    ///
+    /// 在线安装先装成清单里的 `id`，失败时还可能换成兄弟 `id`
+    /// （见 [`PlannedStep::retry_other_id`]），重定位之后才变成
+    /// [`InstallPlan::name`]。所以这段时间里 `wsl -l -v` 上是**源名**。
+    ///
+    /// # 为什么界面需要它
+    ///
+    /// 安装期间界面上记的是最终名字（`InstallProgress::name`），而
+    /// `AppState::busy_with` 拿它去查"这个发行版是不是正在被安装"。
+    /// 改名安装时两边不一致 → **查不到** → 重定位那一步
+    /// （`--export` → `--unregister` → `--import`）全程都能被别的按钮
+    /// （终止 / 删除 / 打开终端）打断，而它的说明写着"中途停下等于把刚装好的删了"
+    /// （见 `cmd::install` 的模块说明）。本机实测过：改名安装的中间态里，
+    /// 列表上确实会先出现源名那一行。
+    ///
+    /// 从**步骤**里读、而不是从 [`InstallSpec`] 再算一遍：计划是唯一的事实来源，
+    /// 而"换 id 重试"那一手挂在步骤上 —— 重算就会漏掉它，于是
+    /// "换了兄弟 id 才装上"那条路又失去保护。
+    pub fn source_names(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+
+        for step in &self.steps {
+            if step.program != PlanProgram::Wsl {
+                continue;
+            }
+            // `--install -d <id>`：`-d` 后面那个才是会被注册的名字。
+            let Some(at) = step.args.iter().position(|arg| arg == "-d") else {
+                continue;
+            };
+
+            // 与最终名字相同的不必重复记（`busy_with` 本来就会查最终名字）；
+            // 判据用 `same_name`，和 `busy_with` 那边保持一致。
+            let mut push = |name: &str| {
+                let name = name.trim();
+                if name.is_empty()
+                    || crate::model::distro::same_name(name, &self.name)
+                    || out.iter().any(|seen| seen == name)
+                {
+                    return;
+                }
+                out.push(name.to_owned());
+            };
+
+            if let Some(id) = step.args.get(at + 1) {
+                push(id);
+            }
+            if let Some(sibling) = step.retry_other_id.as_deref() {
+                push(sibling);
+            }
+        }
+
+        out
     }
 }
 
@@ -1001,7 +1087,7 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
         InstallSource::Tar { path } => {
             let path = path.trim();
             let dir = dir.clone().unwrap_or_default();
-            steps.push(create_dir_step(dir.as_str()));
+            steps.push(create_dir_step("安装目录", dir.as_str()));
             steps.push(PlannedStep::new(
                 format!("把 {path} 展开成发行版 {name}"),
                 PlanProgram::Wsl,
@@ -1023,7 +1109,7 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
         InstallSource::Vhdx { path } => {
             let path = path.trim();
             let dir = dir.clone().unwrap_or_default();
-            steps.push(create_dir_step(dir.as_str()));
+            steps.push(create_dir_step("安装目录", dir.as_str()));
             steps.push(PlannedStep::new(
                 format!("把 {path} 作为虚拟磁盘导入并拷贝到 {dir}"),
                 PlanProgram::Wsl,
@@ -1076,6 +1162,10 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
                 .filter(|candidate| !candidate.is_empty() && *candidate != id)
                 .map(str::to_owned);
 
+            // 装完要不要**再动一次**（改名 或 挪位置）——先算出来，因为
+            // 它反过来决定要不要 `--no-launch`（见下）。
+            let needs_relocate = !same_name || target_dir.is_some();
+
             let mut args = own(&["--install", "-d", id.as_str()]);
             if *web_download {
                 args.push("--web-download".to_owned());
@@ -1097,7 +1187,20 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
             // 好处：这条路能装上，而"直接装到目标目录"在这台机器上装不上。
             args.push("--version".to_owned());
             args.push(WSL_VERSION.to_string());
-            if !launch {
+            // ⚠️ 要重定位时**必须** `--no-launch`，即使用户勾了"装完立即启动"。
+            //
+            // 原因（本机实测，2026-10-12）：`--install` 之后那个发行版的 VHDX
+            // 还被 WSL 自己占着 —— 紧接着跑 `--manage <name> --move` 会
+            // `Wsl/Service/MoveDistro/ERROR_SHARING_VIOLATION`，跑 `--export`
+            // 同样可能撞上。而**启动它只会让这件事更糟**：运行中的发行版
+            // 本来就搬不动，于是必然退到"导出 → 注销 → 导入"那条要全量拷贝的路。
+            // 顺带一提，新发行版被启动时会进 OOBE（建默认用户），而我们的
+            // stdin 是 `Stdio::null()`（见 `cli::build_command`）—— 用户根本
+            // 看不到那个交互界面。
+            //
+            // 用户勾的那个开关**没有被无声吞掉**：预览里的说明会讲清这一次为什么
+            // 不启动（见下面那段 `notes`）。
+            if !launch || needs_relocate {
                 args.push("--no-launch".to_owned());
             }
             let install_step =
@@ -1121,7 +1224,7 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
                 vec![id.clone()],
             ));
 
-            if !same_name || target_dir.is_some() {
+            if needs_relocate {
                 let target_dir = target_dir.unwrap_or_default();
                 let temp_tar = format!(
                     "{}\\wslc-panel-{}-{}.tar",
@@ -1159,6 +1262,15 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
                          搬到 {target_dir}。"
                     ));
                 }
+                if *launch {
+                    notes.push(format!(
+                        "你勾了「装完立即启动」，但这一次要先{}，所以命令里仍然带了 \
+                         `--no-launch`：运行中的发行版搬不动（实测紧接着安装之后 \
+                         `--move` 会报 `ERROR_SHARING_VIOLATION`）。装完在实例列表里点\
+                         「打开终端」就能进去。",
+                        if same_name { "挪位置" } else { "改名" }
+                    ));
+                }
             }
 
             if let Some(sibling) = fallback_id.as_deref() {
@@ -1188,13 +1300,29 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
             } else {
                 ".tar.xz"
             };
+            let temp_dir = ctx.temp_dir.trim_end_matches(['\\', '/']);
             let temp_file = format!(
-                "{}\\wslc-panel-rootfs-{}-{}{}",
-                ctx.temp_dir.trim_end_matches(['\\', '/']),
+                "{temp_dir}\\wslc-panel-rootfs-{}-{}{}",
                 sanitize_name(release),
                 ctx.stamp,
                 extension
             );
+
+            // ⚠️ **先建临时目录，再下载**。`curl -o` 不会自己建目录：父目录不存在时
+            // 它给的是 `curl: (23) client returned ERROR on write of N bytes`
+            // （本机实测，退出码 23），而那句话里**一个字都没提目录** ——
+            // 用户只会当成网络问题去查。
+            //
+            // 而 `%TEMP%\wslc-panel` 平时**并不存在**：全仓库只有在线安装的
+            // 重定位会顺手 `create_dir_all` 它（见 `cmd::install::ensure_relocated`），
+            // 而镜像源这条路的第一步就是下载。更麻烦的是 `%TEMP%` 会被
+            // Storage Sense / 磁盘清理回收 —— 所以这不是"只有第一次才会踩"，
+            // 而是"某天早上突然又踩一次"（本机实测：目录不在时 curl 退出码 23，
+            // 建出来之后同一条命令 200 / 19 MB）。
+            //
+            // 放在计划里而不是执行器里：预览和执行读的是同一份计划（见模块说明），
+            // 执行器里偷偷多做一个动作就等于界面上那句预览在说谎。
+            steps.push(create_dir_step("临时目录", temp_dir));
 
             steps.push(PlannedStep::new(
                 format!(
@@ -1239,8 +1367,7 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
                     // 前缀与上面下载的临时文件（`wslc-panel-rootfs-…`）错开，
                     // 免得重定位把还没用完的下载产物覆盖掉。
                     let temp_tar = format!(
-                        "{}\\wslc-panel-relocate-{}-{}.tar",
-                        ctx.temp_dir.trim_end_matches(['\\', '/']),
+                        "{temp_dir}\\wslc-panel-relocate-{}-{}.tar",
                         sanitize_name(&name),
                         ctx.stamp
                     );
@@ -1259,7 +1386,7 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
                      装完会把临时文件删掉。"
                 ));
             } else {
-                steps.push(create_dir_step(dir.as_str()));
+                steps.push(create_dir_step("安装目录", dir.as_str()));
                 steps.push(PlannedStep::new(
                     format!("把下载的 rootfs 展开成发行版 {name}"),
                     PlanProgram::Wsl,
@@ -1297,6 +1424,13 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
         // 这一步是 `best_effort`：WSL 哪天又改主意不给开，也**不能**把
         // "已经装好的发行版"判成安装失败（这个坑也踩过 —— 界面报"安装失败"，
         // 其实发行版好好地在那儿）。
+        //
+        // ⚠️ 但它同时是 `retry_while_busy`：**紧接着 `--install` 跑的时候
+        // VHDX 还被 WSL 自己开着**（实测 2026-10-12：`Wsl/Service/
+        // ERROR_SHARING_VIOLATION`，退出码 -1）。那一步是 `best_effort`，
+        // 所以失败只会记一条日志 —— 而用户明明在 `.wslconfig` 里要了稀疏盘，
+        // 结果是**静默不生效**（界面上没有第二个地方能开它）。
+        // 等一下再跑就能成，所以这里给它重试。
         steps.push(
             PlannedStep::new(
                 format!("按 .wslconfig 把 {name} 的 VHD 设成稀疏（自动回收空间）"),
@@ -1309,13 +1443,15 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
                     "--allow-unsafe",
                 ]),
             )
-            .best_effort(),
+            .best_effort()
+            .retry_while_busy(),
         );
         notes.push(
             "你的 `%USERPROFILE%\\.wslconfig` 里开了 `[experimental] sparseVhd`，\
              所以装完会补一条 `--set-sparse true --allow-unsafe`\
              （WSL 目前默认拒绝开稀疏盘，要显式加 `--allow-unsafe`）。\
-             这一步没做成也不影响装好的发行版。"
+             这一步没做成也不影响装好的发行版 —— 刚装完那一刻磁盘可能还被 WSL \
+             占着，它会等一会儿重试几次。"
                 .to_owned(),
         );
     }
@@ -1337,9 +1473,14 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
     })
 }
 
-fn create_dir_step(dir: &str) -> PlannedStep {
+/// 建目录的步骤。
+///
+/// `label` 说明建的是**哪个**目录（`"安装目录"` / `"临时目录"`）：计划里两处都要建，
+/// 而预览那一行必须能分辨它们 —— 原先这里写死了"创建安装目录"，临时目录那一步
+/// 会看着像在重复建安装目录。
+fn create_dir_step(label: &str, dir: &str) -> PlannedStep {
     PlannedStep::new(
-        format!("创建安装目录 {dir}"),
+        format!("创建{label} {dir}"),
         PlanProgram::CreateDir,
         vec![dir.to_owned()],
     )
@@ -1759,7 +1900,9 @@ mod tests {
             plan.notes
         );
 
-        // 要求装完启动时不加 --no-launch
+        // ⚠️ 勾了「装完立即启动」，但这一次**要改名**（`Ubuntu-24.04` → `MyUbuntu`），
+        // 所以仍然必须 `--no-launch`：运行中的发行版搬不动，而实测（2026-10-12）
+        // 紧接着 `--install` 之后 `--move` 就会撞 `ERROR_SHARING_VIOLATION`。
         spec.source = InstallSource::Online {
             id: "Ubuntu-24.04".to_owned(),
             launch: true,
@@ -1768,7 +1911,40 @@ mod tests {
         };
         let plan = super::plan(&spec, &ctx()).unwrap();
         assert!(plan.steps[0].args.iter().any(|a| a == "--web-download"));
-        assert!(!plan.steps[0].args.iter().any(|a| a == "--no-launch"));
+        assert!(
+            plan.steps[0].args.iter().any(|a| a == "--no-launch"),
+            "要重定位时必须压住那个开关：{:?}",
+            plan.steps[0].args
+        );
+        // 用户勾的东西不能被无声吞掉 —— 说明里要讲清为什么没启动
+        assert!(
+            plan.notes.iter().any(|n| n.contains("装完立即启动")),
+            "{:?}",
+            plan.notes
+        );
+
+        // 不需要重定位（名字就是 id、也没有目标目录）时，那个开关照旧生效
+        let same = InstallSpec::new(
+            "Debian",
+            InstallSource::Online {
+                id: "Debian".to_owned(),
+                launch: true,
+                web_download: false,
+                fallback_id: None,
+            },
+        );
+        let bare = PlanContext {
+            default_dir: None,
+            ..ctx()
+        };
+        let plan = super::plan(&same, &bare).unwrap();
+        assert_eq!(labels(&plan), vec!["Wsl", "WaitRegistered"]);
+        assert!(
+            !plan.steps[0].args.iter().any(|a| a == "--no-launch"),
+            "不重定位时不该压掉用户的开关：{:?}",
+            plan.steps[0].args
+        );
+        assert!(!plan.notes.iter().any(|n| n.contains("装完立即启动")));
     }
 
     #[test]
@@ -1878,10 +2054,18 @@ mod tests {
         let plan = super::plan(&spec, &ctx()).unwrap();
         assert_eq!(
             labels(&plan),
-            vec!["Curl", "CreateDir", "Wsl", "RemoveFile"]
+            vec!["CreateDir", "Curl", "CreateDir", "Wsl", "RemoveFile"]
+        );
+        // 第 1 步必须是**建临时目录**：`curl -o` 不会自己建目录，父目录不存在时
+        // 它只给 `curl: (23) client returned ERROR on write of N bytes`（本机实测），
+        // 而 `%TEMP%\wslc-panel` 平时并不存在（还会被 %TEMP% 清理回收）。
+        assert_eq!(plan.steps[0].args, vec![r"C:\Temp\wslc-panel"]);
+        assert_eq!(
+            plan.preview_lines()[0],
+            r"1. 创建临时目录 C:\Temp\wslc-panel"
         );
         assert_eq!(
-            plan.steps[0].args,
+            plan.steps[1].args,
             vec![
                 "-s",
                 "-S",
@@ -1895,12 +2079,14 @@ mod tests {
                 "https://mirrors.tuna.tsinghua.edu.cn/ubuntu-cloud-images/noble/current/noble-server-cloudimg-amd64-root.tar.xz"
             ]
         );
-        assert_eq!(plan.steps[2].args[0], "--import");
+        // 第 2 步建的是**安装目录**（和临时目录不是一回事）
+        assert_eq!(plan.steps[2].args, vec![r"D:\wsl\Ubuntu-24.04"]);
+        assert_eq!(plan.steps[3].args[0], "--import");
         // 删掉的必须是**下载下来的那个文件**（curl 参数里 `-o` 后面那个）
-        assert_eq!(plan.steps[3].args[0], plan.steps[0].args[8]);
+        assert_eq!(plan.steps[4].args[0], plan.steps[1].args[8]);
         // 下载那一步是可以取消的
-        assert!(plan.steps[0].cancellable);
-        assert!(plan.preview_lines()[0].starts_with("1. curl -s -S -L"));
+        assert!(plan.steps[1].cancellable);
+        assert!(plan.preview_lines()[1].starts_with("2. curl -s -S -L"));
     }
 
     #[test]
@@ -1919,16 +2105,16 @@ mod tests {
         let plan = super::plan(&spec, &ctx()).unwrap();
         assert_eq!(
             labels(&plan),
-            vec!["Curl", "Wsl", "EnsureRelocated", "RemoveFile"]
+            vec!["CreateDir", "Curl", "Wsl", "EnsureRelocated", "RemoveFile"]
         );
         // 临时文件按格式取后缀
         assert!(
-            plan.steps[0].args[8].ends_with(".wsl"),
+            plan.steps[1].args[8].ends_with(".wsl"),
             "{:?}",
-            plan.steps[0].args
+            plan.steps[1].args
         );
         assert_eq!(
-            plan.steps[1].args,
+            plan.steps[2].args,
             vec![
                 "--install",
                 "--from-file",
@@ -1940,23 +2126,162 @@ mod tests {
             ]
         );
         // 位置要核实（`--location` 不一定被采纳），但那一步不能取消
-        assert_eq!(plan.steps[2].args[0], "Ubuntu-24.04");
-        assert!(!plan.steps[2].cancellable);
+        assert_eq!(plan.steps[3].args[0], "Ubuntu-24.04");
+        assert!(!plan.steps[3].cancellable);
         // ⚠️ 中转 tar 的路径必须是**真路径**（第 4 个参数）。
         //
         // 原来是 `String::new()`：`--manage --move` 失败后会退到
         // 「导出 → 注销 → 导入」，而那条路的第一步就是
         // `wsl --export <name> ""` —— 整条退路等于废掉。
-        // 而这条回退是**设计上会出现**的（PLAN-v0.5 的 v0.5.2 补记：
-        // 紧接着 `--install` 之后跑 `--move` 会返回 -1）。
+        // 而这条回退是**设计上会出现**的（本机 2026-10-12 实测：
+        // 紧接着 `--install` 之后跑 `--move` 会撞 `ERROR_SHARING_VIOLATION`）。
         assert_eq!(
-            plan.steps[2].args[3],
+            plan.steps[3].args[3],
             r"C:\Temp\wslc-panel\wslc-panel-relocate-Ubuntu-24.04-1234-5678.tar"
         );
         // 删临时文件必须排在重定位之后（重定位可能还要读它？——不会，
         // `--move` 用的是发行版自己的 VHD，这里只是把顺序钉住）
-        assert_eq!(plan.steps[3].program, PlanProgram::RemoveFile);
+        assert_eq!(plan.steps[4].program, PlanProgram::RemoveFile);
         assert!(plan.notes.iter().any(|n| n.contains(".wsl")));
+    }
+
+    #[test]
+    fn every_download_step_has_its_directory_created_first() {
+        /// 同时认 `\` 与 `/`。
+        ///
+        /// ⚠️ 这里**不能**用 `Path::parent()`：它在非 Windows 上不把 `\` 当分隔符，
+        /// 这条断言会随编译平台给出不同结论（和 `is_absolute_windows_path` 的
+        /// 理由一样 —— CI 与开发机的结论必须一致）。
+        fn normalize_dir(path: &str) -> String {
+            path.trim_end_matches(['\\', '/']).to_ascii_lowercase()
+        }
+        fn parent_dir(file: &str) -> String {
+            let trimmed = file.trim_end_matches(['\\', '/']);
+            match trimmed.rfind(['\\', '/']) {
+                Some(at) => normalize_dir(&trimmed[..at]),
+                None => String::new(),
+            }
+        }
+
+        // 现在只有镜像源会下载；两种格式都要覆盖（它们走的是不同的安装步骤）
+        let specs = [
+            InstallSpec::new(
+                "X",
+                InstallSource::Mirror {
+                    url: "https://mirrors.tuna.tsinghua.edu.cn/x/rootfs.tar.xz".to_owned(),
+                    mirror: "m".to_owned(),
+                    release: "noble".to_owned(),
+                    format: "tar.xz".to_owned(),
+                },
+            ),
+            InstallSpec::new(
+                "X",
+                InstallSource::Mirror {
+                    url: "https://mirrors.tuna.tsinghua.edu.cn/x/u.wsl".to_owned(),
+                    mirror: "m".to_owned(),
+                    release: "24.04".to_owned(),
+                    format: "wsl".to_owned(),
+                },
+            ),
+        ];
+
+        for spec in &specs {
+            let plan = super::plan(spec, &ctx()).unwrap();
+            let mut created: Vec<String> = Vec::new();
+
+            for (index, step) in plan.steps.iter().enumerate() {
+                match step.program {
+                    PlanProgram::CreateDir => created.push(normalize_dir(&step.args[0])),
+                    PlanProgram::Curl => {
+                        let at = step
+                            .args
+                            .iter()
+                            .position(|arg| arg == "-o")
+                            .expect("下载步骤必然有 -o");
+                        let parent = parent_dir(&step.args[at + 1]);
+                        assert!(
+                            created.contains(&parent),
+                            "第 {} 步要往 {parent} 里下载，但前面没有任何一步建过这个目录 —— \
+                             `curl.exe` 不会自己建，它只会回一句 `curl: (23) client returned \
+                             ERROR on write of N bytes`（本机实测）。计划：{:?}",
+                            index + 1,
+                            plan.preview_lines()
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn source_names_lists_what_the_install_registers_first() {
+        // 改名安装：`wsl -l -v` 上先是 `Ubuntu-24.04`，重定位之后才是 `MyUbuntu`。
+        // 界面要靠这份名单才知道"列表上那一行正在被安装"（见 `InstallPlan::source_names`）。
+        let spec = InstallSpec::new(
+            "MyUbuntu",
+            InstallSource::Online {
+                id: "Ubuntu-24.04".to_owned(),
+                launch: false,
+                web_download: false,
+                fallback_id: Some("Ubuntu-26.04".to_owned()),
+            },
+        );
+        let plan = super::plan(&spec, &ctx()).unwrap();
+        // 兄弟 id 也要在里面：它同样会先注册成那个名字
+        assert_eq!(plan.source_names(), vec!["Ubuntu-24.04", "Ubuntu-26.04"]);
+
+        // 名字就是 id（最常见的路径）→ 不必重复记
+        let same = InstallSpec::new(
+            "Debian",
+            InstallSource::Online {
+                id: "Debian".to_owned(),
+                launch: false,
+                web_download: false,
+                fallback_id: None,
+            },
+        );
+        assert!(super::plan(&same, &ctx())
+            .unwrap()
+            .source_names()
+            .is_empty());
+
+        // 只差大小写也算"同一个名字"（`busy_with` 那边本来就不区分大小写）
+        let cased = InstallSpec::new(
+            "ubuntu-24.04",
+            InstallSource::Online {
+                id: "Ubuntu-24.04".to_owned(),
+                launch: false,
+                web_download: false,
+                fallback_id: None,
+            },
+        );
+        assert!(super::plan(&cased, &ctx())
+            .unwrap()
+            .source_names()
+            .is_empty());
+
+        // 本地来源不会"先注册成别的名字" → 永远是空的
+        for source in [
+            InstallSource::Tar {
+                path: r"D:\a.tar".to_owned(),
+            },
+            InstallSource::Vhdx {
+                path: r"D:\a.vhdx".to_owned(),
+            },
+            InstallSource::File {
+                path: r"D:\a.wsl".to_owned(),
+            },
+            InstallSource::Mirror {
+                url: "https://x/rootfs.tar.xz".to_owned(),
+                mirror: "m".to_owned(),
+                release: "1".to_owned(),
+                format: "tar.xz".to_owned(),
+            },
+        ] {
+            let plan = super::plan(&InstallSpec::new("MyDistro", source), &ctx()).unwrap();
+            assert!(plan.source_names().is_empty(), "{:?}", plan.preview_lines());
+        }
     }
 
     #[test]
@@ -2005,6 +2330,25 @@ mod tests {
         );
         // 而且它失败**不算安装失败**：那一刻发行版已经装好了
         assert!(plan.steps[2].best_effort);
+        // ⚠️ 同时要**忙就重试**：紧接着 `--install` 跑的时候 VHDX 还被 WSL 自己
+        //    开着（实测 `Wsl/Service/ERROR_SHARING_VIOLATION`），而它是
+        //    `best_effort` —— 不重试就等于用户 `.wslconfig` 里的
+        //    `sparseVhd=true` 静默不生效（界面上没有第二个地方能开它）。
+        assert!(
+            plan.steps[2].retry_while_busy,
+            "开稀疏盘那一步必须能在'VHD 还被占着'时重试：{:?}",
+            plan.steps[2]
+        );
+        // 别的步骤都不该带这个标记：它们失败的原因不是"资源被占着"，
+        // 等一会儿只会白白拖住安装
+        assert!(
+            plan.steps
+                .iter()
+                .enumerate()
+                .all(|(index, step)| index == 2 || !step.retry_while_busy),
+            "{:?}",
+            plan.preview_lines()
+        );
         assert!(plan.notes.iter().any(|n| n.contains("sparseVhd")));
     }
 

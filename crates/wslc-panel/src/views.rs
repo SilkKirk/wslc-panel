@@ -1533,7 +1533,15 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
     };
 
     let source = form.source;
-    let spec = form.to_spec(cx, &state.mirrors, &state.online);
+    let spec = form.to_spec(
+        cx,
+        &state.mirrors,
+        &state.online,
+        // 已经装过的发行版名：镜像源的"裸名字换兄弟"要拿它排除掉
+        // （见 `OnlineDistroState::sibling_id`）
+        &state.distro_names(),
+        state.prefs.install_dir.as_deref(),
+    );
     let check = state.preflight(&spec, false);
     let plan = install_model::plan(&spec, &state.plan_context());
     let running = state
@@ -2028,8 +2036,11 @@ fn online_block(
             // 选中了"不带版本号的家族名"（`Ubuntu`）时提醒一句：实测这类条目在这台机器上
             // **装不动**（`wsl --install -d Ubuntu` 两秒就 `WININET_E_CANNOT_CONNECT`），
             // 装的时候会自动换成带版本的那条（见 `OnlineDistroState::sibling_id`）。
+            //
+            // ⚠️ 兄弟**已经装过**时不能提这句：那时 `sibling_id` 会给 `None`
+            // （换了也只会撞 `ERROR_ALREADY_EXISTS`），说"会自动改用 X"就是假话。
             if let Some(picked) = state.online.selected.as_deref() {
-                if let Some(sibling) = state.online.sibling_id(picked) {
+                if let Some(sibling) = state.online.sibling_id(picked, &state.distro_names()) {
                     lines.push(
                         div()
                             .text_xs()

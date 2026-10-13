@@ -274,10 +274,16 @@ const ONLINE_TIMEOUT: Duration = Duration::from_secs(30);
 /// 返回 `(解析出来的清单, 失败原因)`：**两个都可能非空**（比如 wsl 退出码 0
 /// 却一条也没解析出来）。调用方据此决定要不要换一个来源兜底。
 ///
-/// # 本机这条命令是**坏的**（实测，见 `tests/fixtures/wsl_list_online_failed.txt`）
+/// # 本机这条命令**时好时坏**（都是实测）
 ///
-/// `wsl -l -o` 去 `raw.githubusercontent.com` 取清单，连接被重置、退出码 `-1`。
-/// 所以它失败**不是异常，而是常态**：界面会接着去拉微软那份
+/// `wsl -l -o` 去 `raw.githubusercontent.com` 取清单，走的是 **`wsl.exe` 自己的
+/// 网络**（认系统代理）：
+///
+/// - 2026-10-10：连接被重置 / `Wsl/WININET_E_TIMEOUT`，退出码 `-1`
+///   （原始输出存成了 `tests/fixtures/wsl_list_online_failed.txt`）；
+/// - 2026-10-12（开着 dev-sidecar 系统代理）：**0.5 秒成功**，列出 24 个发行版。
+///
+/// 所以它失败**不是异常，而是常态之一**：界面会接着去拉微软那份
 /// `DistributionInfo.json`（`cdn.jsdelivr.net` 能通），
 /// 见 [`crate::model::install::parse_distribution_info`]。
 ///

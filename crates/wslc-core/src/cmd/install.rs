@@ -327,15 +327,24 @@ fn arg(step: &PlannedStep, index: usize) -> Result<&str> {
 
 /// 起一个 `wsl.exe` 步骤，边跑边读。
 ///
-/// 带 [`PlannedStep::retry_other_source`] 的步骤（只有在线安装那一步）失败时会
-/// **换一个下载源**（微软商店 ⇄ `--web-download`）重试一次：两条通道走的是不同的
-/// 下载实现，实测本机上一条秒失败、另一条能连上 —— 换一次比让用户自己猜好。
+/// 三种"再试一次"都挂在这一层，各自认一个标记：
 ///
-/// 还不行的话，带 [`PlannedStep::retry_other_id`] 的步骤会**换一个 id** 再试
-/// （裸 `Ubuntu` → `Ubuntu-26.04`，见那个字段的说明）。换成功时返回
-/// `Ok(Some(真正装上的那个 id))` —— 调用方要拿它去改后面步骤的参数。
+/// 1. [`PlannedStep::retry_while_busy`]（「按 .wslconfig 开稀疏盘」那一步）——
+///    失败只是"VHD 还被 WSL 占着"时等一下再跑同一条命令；
+/// 2. [`PlannedStep::retry_other_source`]（只有在线安装那一步）—— **换一个下载源**
+///    （微软商店 ⇄ `--web-download`）：两条通道走的是不同的下载实现，
+///    实测本机上一条秒失败、另一条能连上，换一次比让用户自己猜好；
+/// 3. [`PlannedStep::retry_other_id`]—— 还不行就**换一个 id**
+///    （裸 `Ubuntu` → `Ubuntu-26.04`）。换成功时返回
+///    `Ok(Some(真正装上的那个 id))` —— 调用方要拿它去改后面步骤的参数。
 fn run_wsl_step(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions) -> Result<Option<String>> {
-    let first = run_wsl_once(wsl, &step.args, step.cancellable, opts);
+    let mut first = run_wsl_once(wsl, &step.args, step.cancellable, opts);
+
+    // ① 「资源还被占着」→ 等一下再跑同一条命令（见上面第 1 条）。
+    if step.retry_while_busy {
+        first = retry_step_while_busy(wsl, step, opts, first);
+    }
+
     if first.is_ok() {
         return Ok(None);
     }
@@ -403,6 +412,80 @@ fn run_wsl_step(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions) -> Result<Opti
         ),
     );
     retried.map(|()| None)
+}
+
+/// `retry_while_busy` 的步骤最多再试几次。
+///
+/// 7 次 + 3/6/12/24/30/30/30 秒的退避 ≈ 135 秒。
+///
+/// ⚠️ 这个数字是**量出来的，而且改过一次**：一开始按 `--move` 那次的窗口
+/// （约 60 秒）定了 5 次 / 75 秒，结果真机上量「开稀疏盘」时是
+/// **第 6 次（t≈75.3 秒）才成功** —— 正好压在最后一次上。
+/// 那种"刚好够"的预算等于没有余量：再慢一点就会回到"静默不生效"。
+/// 所以加厚到 135 秒（对实测的 75 秒有 80% 余量）。
+///
+/// 代价只是**最坏情况下**安装卡片在最后一步多停一会儿，而日志里会写明
+/// "VHD 还被 WSL 占着，等 N 秒再试" —— 比"用户要的稀疏盘没生效"好得多。
+const BUSY_RETRIES: usize = 7;
+/// 第一次等多久，之后翻倍。
+const BUSY_FIRST_WAIT: Duration = Duration::from_secs(3);
+/// 单次等待的上限。
+const BUSY_MAX_WAIT: Duration = Duration::from_secs(30);
+
+/// 这一次失败值不值得"等一会儿再试"。
+///
+/// 三个条件缺一不可：还有重试次数、不是用户取消、而且是"资源还被占着"。
+/// 抽成纯函数是为了能测 —— 它是"要不要等"的**唯一**判据。
+fn worth_retrying_busy(error: &Error, attempts_done: usize) -> bool {
+    attempts_done < BUSY_RETRIES && !matches!(error, Error::Cancelled { .. }) && is_busy(error)
+}
+
+/// 「资源还被占着」时等一下再跑同一条命令；返回**最后一次**的结果。
+///
+/// 只给标了 [`PlannedStep::retry_while_busy`] 的步骤用（目前只有「按 `.wslconfig`
+/// 开稀疏盘」那一步）：它紧跟在 `--install` 后面跑，而那时 VHDX 还被 WSL 自己开着
+/// —— 实测报 `Wsl/Service/ERROR_SHARING_VIOLATION`（退出码 -1），隔一会儿再跑
+/// 就"操作成功完成"。
+///
+/// # 为什么必须重试
+///
+/// 那一步是 `best_effort`：失败**不会**把安装判成失败。不重试的话，用户在
+/// `.wslconfig` 里写的 `[experimental] sparseVhd=true` 会**静默不生效** ——
+/// 而界面上没有第二个地方能开它（v0.4 把发行版详情里那个开关拿掉了，
+/// 见 `DistroAction::SetSparse` 的说明）。日志里有"这一步没做成"，
+/// 但那不是用户该去读的地方。
+fn retry_step_while_busy(
+    wsl: &Wsl,
+    step: &PlannedStep,
+    opts: &RunOptions,
+    mut last: Result<()>,
+) -> Result<()> {
+    let mut attempts_done = 0usize;
+    let mut wait = BUSY_FIRST_WAIT;
+
+    loop {
+        // 先看这次的失败值不值得等（判据是上面那个纯函数，有单测）
+        let worth = match &last {
+            Ok(()) => false,
+            Err(error) => worth_retrying_busy(error, attempts_done),
+        };
+        if !worth {
+            return last;
+        }
+
+        attempts_done += 1;
+        emit(
+            opts,
+            InstallEvent::Line(format!(
+                "「{}」没成 —— VHD 还被 WSL 占着，等 {} 秒再试（第 {attempts_done}/{BUSY_RETRIES} 次）",
+                step.label,
+                wait.as_secs()
+            )),
+        );
+        sleep_cancellable(wait, opts);
+        wait = (wait * 2).min(BUSY_MAX_WAIT);
+        last = run_wsl_once(wsl, &step.args, step.cancellable, opts);
+    }
 }
 
 /// 跑一条 `wsl.exe` 命令（一步，不重试）。
@@ -802,7 +885,8 @@ fn ensure_relocated(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions) -> Result<
         emit(
             opts,
             InstallEvent::Line(
-                "`--manage --move` 试了几次都没成功 —— 改用「导出 → 注销 → 导入」这条更慢但更稳的路"
+                "`--manage --move` 没能成功（等过几次）—— 改用「导出 → 注销 → 导入」\
+                 这条更慢但更稳的路"
                     .to_owned(),
             ),
         );
@@ -889,44 +973,99 @@ fn ensure_relocated(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions) -> Result<
     }
 }
 
+/// `--manage --move` 重试的**总预算**。
+///
+/// 实测（2026-10-12）：紧接着 `--install` 之后跑 `--move` 会撞
+/// `Wsl/Service/MoveDistro/ERROR_SHARING_VIOLATION`（刚装完那一刻 VHDX
+/// 还被 WSL 自己开着），本机这一次的窗口是 **约 60 秒** ——
+/// 连续 5 次 × 2 秒全部失败，第 30 次（约 60 秒后）才成功。
+/// 所以预算取 60 秒 + 50% 余量。
+///
+/// ⚠️ 低于实测窗口的代价不是"报个错"，而是**退到「导出 → 注销 → 导入」**
+/// 那条要把整个根文件系统拷一遍的路（几个 GB、几分钟）。
+/// 等待是便宜的那一边。
+const MOVE_TOTAL_BUDGET: Duration = Duration::from_secs(94);
+/// 第一次等多久，之后翻倍。
+const MOVE_FIRST_WAIT: Duration = Duration::from_secs(2);
+/// 单次等待的上限。
+const MOVE_MAX_WAIT: Duration = Duration::from_secs(32);
+
 /// `wsl --manage <name> --move <dir>`，失败就等一下再试。
 ///
-/// # 为什么要重试
+/// # 为什么要重试（2026-10-12 重新实测了一遍）
 ///
-/// 实测（2026-10-10）：紧接着 `--install` 之后跑 `--move`，WSL 返回 `-1`，
-/// 而且**不给任何有用的输出**（只有那句"如果此错误是意外错误…"的套话）；
-/// 隔一会儿在同一个发行版、同一条命令上手工再跑一次 → `操作成功完成`。
-/// 也就是装完那一刻 WSL 还没收尾。重试几次就能过去，而这里失败会退到
-/// 导出/注销/导入那条更慢的路（见调用点），所以重试次数不用太激进。
+/// 紧接着 `--install` 之后跑 `--move`，WSL 返回 `-1`，只给一句套话加错误码：
+///
+/// ```text
+/// 另一个程序正在使用此文件，进程无法访问。
+/// 错误代码： Wsl/Service/MoveDistro/ERROR_SHARING_VIOLATION
+/// ```
+///
+/// 也就是**刚装完那一刻 VHDX 还被 WSL 自己开着**（隔一会儿在同一个发行版上
+/// 手工再跑就"操作成功完成"）。
+///
+/// 等待用**指数退避**（2/4/8/16/32/32 秒，合计约 94 秒，见 [`MOVE_TOTAL_BUDGET`]）：
+/// 这个冲突的典型时长是几十秒，前面几次快速试探能命中"其实已经好了"，
+/// 后面的长等待不浪费轮次。
+///
+/// ⚠️ 只有**像是"还被占着"**的失败才值得等（见 [`is_busy`]）：路径写错、
+/// 目标盘不存在这类错误等多久都不会好，早一点退到那条通用路径反而更快。
 fn move_with_retries(wsl: &Wsl, name: &str, dir: &str, opts: &RunOptions) -> Result<()> {
-    /// 试着搬几次。
-    const TRIES: usize = 5;
-    /// 两次之间等多久（也顺便给 WSL 一点收尾时间）。
-    const WAIT: Duration = Duration::from_secs(2);
+    let started = Instant::now();
+    let mut wait = MOVE_FIRST_WAIT;
+    let mut attempt = 1usize;
 
-    let mut last: Option<Error> = None;
-    for attempt in 1..=TRIES {
+    // 第一次**单独**做：这样 `last` 一上来就是真的错误值，不必先塞一个
+    // "等会儿就被覆盖"的 `None`（clippy 的 `unused_assignments` 报的正是那个初值：
+    // 循环体至少跑一次，而每条能读到它的路径上它都已经被赋过值了）。
+    let mut last = match run_wsl_args(wsl, &["--manage", name, "--move", dir], false, None, opts) {
+        Ok(()) => return Ok(()),
+        Err(e) => e,
+    };
+
+    loop {
+        // 不是"还被占着"，或者再等就超预算了 → 交回调用方走通用路径
+        if !is_busy(&last) || started.elapsed() + wait > MOVE_TOTAL_BUDGET {
+            return Err(last);
+        }
+
+        emit(
+            opts,
+            InstallEvent::Line(format!(
+                "第 {attempt} 次搬没成功（{last}），等 {} 秒再试",
+                wait.as_secs()
+            )),
+        );
+        sleep_cancellable(wait, opts);
+        wait = (wait * 2).min(MOVE_MAX_WAIT);
+        attempt += 1;
+
         match run_wsl_args(wsl, &["--manage", name, "--move", dir], false, None, opts) {
             Ok(()) => {
-                if attempt > 1 {
-                    emit(opts, InstallEvent::Line(format!("第 {attempt} 次搬成功了")));
-                }
-                return Ok(());
-            }
-            Err(e) => {
                 emit(
                     opts,
                     InstallEvent::Line(format!(
-                        "第 {attempt}/{TRIES} 次搬没成功（{e}），等 {} 秒再试",
-                        WAIT.as_secs()
+                        "第 {attempt} 次搬成功了（一共等了约 {} 秒）",
+                        started.elapsed().as_secs()
                     )),
                 );
-                last = Some(e);
-                sleep_cancellable(WAIT, opts);
+                return Ok(());
             }
+            Err(e) => last = e,
         }
     }
-    Err(last.unwrap_or_else(|| Error::Install(format!("搬不动 {name}"))))
+}
+
+/// 这个失败是不是"资源还被占着"（等一下再试就有意义的那种）。
+///
+/// 判据用 WSL 自己给的**错误码**，而不是本地化文案：中文是
+/// "另一个程序正在使用此文件"，英文是 "The process cannot access the file
+/// because it is being used by another process"，而
+/// `ERROR_SHARING_VIOLATION` 在两种语言里都在。
+/// 文案那一条是兜底（万一某个 WSL 版本不打印错误码）。
+fn is_busy(error: &Error) -> bool {
+    let text = error.to_string();
+    text.contains("ERROR_SHARING_VIOLATION") || text.contains("正在使用")
 }
 
 /// 跑一条 `wsl.exe` 命令（内部用，参数是拼好的）。
@@ -1007,6 +1146,7 @@ mod tests {
             retry_other_source: false,
             best_effort: false,
             retry_other_id: None,
+            retry_while_busy: false,
         };
         assert!(matches!(arg(&step, 0), Err(Error::Install(_))));
     }
@@ -1103,6 +1243,7 @@ mod tests {
             retry_other_source: false,
             best_effort: false,
             retry_other_id: None,
+            retry_while_busy: false,
         };
         assert_eq!(retarget(&wait, "Ubuntu-26.04").args, vec!["Ubuntu-26.04"]);
 
@@ -1121,6 +1262,7 @@ mod tests {
             retry_other_source: false,
             best_effort: false,
             retry_other_id: None,
+            retry_while_busy: false,
         };
         assert_eq!(
             retarget(&move_step, "Ubuntu-26.04").args,
@@ -1141,6 +1283,7 @@ mod tests {
             retry_other_source: false,
             best_effort: true,
             retry_other_id: None,
+            retry_while_busy: false,
         };
         assert_eq!(retarget(&sparse, "Ubuntu-26.04").args, sparse.args);
     }
@@ -1167,6 +1310,120 @@ mod tests {
     }
 
     #[test]
+    fn the_move_retry_budget_covers_the_measured_sharing_violation_window() {
+        // 实测（2026-10-12）：紧接着 `--install` 之后 `--move` 撞
+        // `ERROR_SHARING_VIOLATION`，本机这一次的窗口是**约 60 秒**
+        // （5 次 × 2 秒全失败，第 30 次约 60 秒才成功）。
+        // 预算盖不住它，就会白退到"导出 → 注销 → 导入"那条要全量拷贝的路。
+        assert!(
+            MOVE_TOTAL_BUDGET >= Duration::from_secs(60),
+            "重试预算 {MOVE_TOTAL_BUDGET:?} 盖不住实测的 60 秒窗口"
+        );
+        // 单次等待不能超过总预算，否则第一轮就超了 —— 等于一次都不重试
+        assert!(MOVE_MAX_WAIT <= MOVE_TOTAL_BUDGET);
+        // 第一次等待必须明显小于实测窗口，否则"其实已经好了"的那种情况也白等
+        assert!(MOVE_FIRST_WAIT < MOVE_TOTAL_BUDGET / 4);
+    }
+
+    #[test]
+    fn busy_failures_are_recognized_by_the_error_code_not_by_the_language() {
+        // 实测（2026-10-12）：紧接着 `--install` 之后跑 `--move` 就是这个失败。
+        // 中文系统上的文案是"另一个程序正在使用此文件"，英文系统上完全不同 ——
+        // 所以判据必须是 WSL 自己给的错误码。
+        let chinese = Error::NonZeroExit {
+            program: "wsl",
+            args: r"--manage X --move D:\wsl\X".to_owned(),
+            code: -1,
+            stderr: "另一个程序正在使用此文件，进程无法访问。 / \
+                     错误代码： Wsl/Service/MoveDistro/ERROR_SHARING_VIOLATION"
+                .to_owned(),
+        };
+        assert!(is_busy(&chinese));
+
+        // 只给文案（某个 WSL 版本不打印错误码）也要认出来
+        let text_only = Error::NonZeroExit {
+            program: "wsl",
+            args: String::new(),
+            code: -1,
+            stderr: "无法完成该操作，因为 VHD 当前正在使用中".to_owned(),
+        };
+        assert!(is_busy(&text_only));
+
+        // ⚠️ 别的失败**不能**被当成"等一会儿就好"：路径写错、目标盘不存在这类
+        // 等多久都不会好，早一点退到「导出 → 注销 → 导入」那条路反而更快。
+        for other in [
+            Error::NonZeroExit {
+                program: "wsl",
+                args: String::new(),
+                code: -1,
+                stderr: "系统找不到指定的路径。 / 错误代码： Wsl/ERROR_PATH_NOT_FOUND".to_owned(),
+            },
+            Error::Cancelled {
+                program: "wsl",
+                args: String::new(),
+            },
+            Error::Install("建不出安装目录 D:\\x：拒绝访问".to_owned()),
+        ] {
+            assert!(!is_busy(&other), "{other}");
+        }
+    }
+
+    #[test]
+    fn only_busy_failures_are_worth_waiting_for() {
+        // 实测（2026-10-12）：紧接着 `--install` 之后跑 `--set-sparse` 就是这个失败
+        let busy = Error::NonZeroExit {
+            program: "wsl",
+            args: "--manage X --set-sparse true --allow-unsafe".to_owned(),
+            code: -1,
+            stderr: "另一个程序正在使用此文件，进程无法访问。 / \
+                     错误代码： Wsl/Service/ERROR_SHARING_VIOLATION"
+                .to_owned(),
+        };
+        // 还有次数 + 是"忙" → 值得等
+        assert!(worth_retrying_busy(&busy, 0));
+        assert!(worth_retrying_busy(&busy, BUSY_RETRIES - 1));
+        // 次数用尽 → 不再等（这条循环的出口之一）
+        assert!(!worth_retrying_busy(&busy, BUSY_RETRIES));
+
+        // 用户点了取消 → 别试了（"取消"和"再试一次"是相反的意思）
+        assert!(!worth_retrying_busy(
+            &Error::Cancelled {
+                program: "wsl",
+                args: String::new(),
+            },
+            0
+        ));
+        // 别的失败等多久都一样（比如 WSL 因为自己的策略拒绝开稀疏盘）
+        assert!(!worth_retrying_busy(
+            &Error::NonZeroExit {
+                program: "wsl",
+                args: String::new(),
+                code: -1,
+                stderr: "由于潜在的数据损坏，目前已禁用稀疏 VHD 支持。".to_owned(),
+            },
+            0
+        ));
+
+        // 预算要盖得住**实测**那个"刚装完 VHDX 还被占着"的窗口。
+        //
+        // 实测两次：`--move` 约 60 秒成功；`--set-sparse` 到 **75.3 秒**才成功
+        // （第 6 次，正好压在当时的最后一次上）。所以这里按 120 秒钉住下限，
+        // 免得日后有人"顺手"把预算调小。
+        let mut total = Duration::ZERO;
+        let mut wait = BUSY_FIRST_WAIT;
+        for _ in 0..BUSY_RETRIES {
+            total += wait;
+            wait = (wait * 2).min(BUSY_MAX_WAIT);
+        }
+        assert!(
+            total >= Duration::from_secs(120),
+            "忙重试预算 {total:?} 盖不住实测的 75 秒窗口（`--set-sparse` 那次）"
+        );
+        // 单次等待也不能超过总预算，否则第一轮就超了 —— 等于一次都不重试
+        assert!(BUSY_MAX_WAIT <= total);
+    }
+
+    #[test]
     fn a_best_effort_step_failing_does_not_fail_the_install() {
         // 场景：发行版已经装好，最后那条"按 .wslconfig 开稀疏盘"被 WSL 拒绝
         // （实测它默认就拒绝）。那一刻**不能**把整体判成失败 ——
@@ -1182,6 +1439,7 @@ mod tests {
                 retry_other_source: false,
                 best_effort: true,
                 retry_other_id: None,
+                retry_while_busy: false,
             }],
             notes: Vec::new(),
         };
@@ -1237,6 +1495,7 @@ mod tests {
                     retry_other_source: false,
                     best_effort: false,
                     retry_other_id: None,
+                    retry_while_busy: false,
                 },
                 PlannedStep {
                     label: "删掉临时文件（本来就不在，也算成功）".to_owned(),
@@ -1246,6 +1505,7 @@ mod tests {
                     retry_other_source: false,
                     best_effort: false,
                     retry_other_id: None,
+                    retry_while_busy: false,
                 },
             ],
             notes: Vec::new(),
@@ -1303,6 +1563,7 @@ mod tests {
                     retry_other_source: false,
                     best_effort: false,
                     retry_other_id: None,
+                    retry_while_busy: false,
                 },
                 PlannedStep {
                     label: "不该被执行到".to_owned(),
@@ -1312,6 +1573,7 @@ mod tests {
                     retry_other_source: false,
                     best_effort: false,
                     retry_other_id: None,
+                    retry_while_busy: false,
                 },
             ],
             notes: Vec::new(),
@@ -1359,6 +1621,7 @@ mod tests {
                 retry_other_source: false,
                 best_effort: false,
                 retry_other_id: None,
+                retry_while_busy: false,
             }],
             notes: Vec::new(),
         };

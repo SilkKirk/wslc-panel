@@ -82,13 +82,12 @@ pub(crate) struct InstallForm {
     pub(crate) set_default: bool,
     /// 在线安装是否走 `--web-download`（从网络下，而不是微软商店）。
     ///
-    /// 默认由"GitHub 通不通"决定（参考实现也这么探），但按钮在界面上，用户能改。
+    /// 默认**固定是微软商店**（本机实测这条路能连上）。曾经有个"先探 GitHub 通不通
+    /// 再决定默认值"的后台探测，v0.5.1 删掉了：它探的是**我们自己的 curl**
+    /// （不读 Windows 系统代理），而真正决定成败的是 `wsl.exe` 自己的网络通道 ——
+    /// 两者在这台机器上的结论正好相反。现在交给"失败自动换一次"
+    /// （`PlannedStep::retry_other_source`）去兜，按钮在界面上，用户也能改。
     pub(crate) web_download: bool,
-    /// 用户**自己动过**那个开关吗。
-    ///
-    /// 探测是后台跑的（几秒后才有结果），期间用户可能已经手动切过了 ——
-    /// 那时候不能再用探测结果去覆盖他的选择。
-    pub(crate) web_download_touched: bool,
     /// **上一次由我们推导出来的**安装目录。
     ///
     /// 用来判断"用户是不是自己改过目录"：值等于它（或为空）说明这个框还是我们填的，
@@ -106,6 +105,10 @@ impl InstallForm {
     /// 这也是 `views::page` 要多收一个 `&Shell` 的原因
     /// （页面要**实时**预览要跑哪些步骤）。
     ///
+    /// `taken`（已经装过的发行版名）与 `default_dir`（「新实例默认安装目录」）
+    /// 由调用方传进来，而不是在这里去读 `AppState`：渲染那一帧和提交那一刻
+    /// 拿到的是同一份，预览才不会和真正执行的走偏。
+    ///
     /// **没有版本这一项**：本项目只支持 WSL 2，装出来的固定是 WSL 2
     /// （见 [`wslc_core::model::install::WSL_VERSION`]）。
     ///
@@ -119,6 +122,8 @@ impl InstallForm {
         cx: &App,
         mirrors: &crate::state::MirrorState,
         online: &crate::state::OnlineDistroState,
+        taken: &[String],
+        default_dir: Option<&str>,
     ) -> InstallSpec {
         let text = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
         let typed_name = text(&self.name);
@@ -181,7 +186,9 @@ impl InstallForm {
                 // 裸家族名（`Ubuntu`）在这台机器上装不动（实测 2 秒
                 // `WININET_E_CANNOT_CONNECT`），换成同族带版本号的那条。
                 // 见 `OnlineDistroState::sibling_id` 的说明。
-                let fallback_id = online.sibling_id(&id);
+                // ⚠️ 已经装过的兄弟要排除掉：换过去只会撞
+                // `Wsl/InstallDistro/ERROR_ALREADY_EXISTS`（实测）。
+                let fallback_id = online.sibling_id(&id, taken);
                 InstallSource::Online {
                     id,
                     launch: self.launch,
@@ -202,9 +209,37 @@ impl InstallForm {
                 .filter(|id| !id.trim().is_empty())
                 .unwrap_or_default();
         }
-        spec.install_dir = text(&self.install_dir);
+        spec.install_dir = self.resolved_install_dir(default_dir, &spec.name, cx);
         spec.set_default = self.set_default;
         spec
+    }
+
+    /// 这次安装实际会用到的安装目录。
+    ///
+    /// # 为什么在**这里**还要再推一次（不只靠 `resync_install_dir`）
+    ///
+    /// `Shell::resync_install_dir` 只在两处被调用：从在线清单**点选**发行版、
+    /// 以及用文件选择器挑 rootfs。也就是说 **手输名字**（镜像源那条路必然手输）
+    /// 和"点选镜像源清单"都不经过它 —— 后果就是本机日志里那一幕：
+    /// 「默认安装目录」`D:\wsl` 被当成安装目录**本身**用了
+    /// （`wsl --import Ubuntu D:\wsl <tar>`），发行版直接装进父目录；
+    /// 而下一次安装又会被"这个安装目录里已经有东西了"挡住 ——
+    /// 用户看到的是两条互不相干的错，很难联想到根因。
+    ///
+    /// 放在 `to_spec` 里、而不是"提交那一刻"：预览和执行读的是同一个函数，
+    /// 否则界面上显示的目录和真正用的又不是一个
+    /// （见 `model::install` 的模块说明）。
+    ///
+    /// 只在**用户没自己改过**时才推 —— 判据与 `resync_install_dir` 完全一致：
+    /// 空着，或者还等于我们上次推出来的那个。用户亲手填 / 选的路径一律不动。
+    fn resolved_install_dir(&self, default_dir: Option<&str>, name: &str, cx: &App) -> String {
+        let typed = self.install_dir.read(cx).value().trim().to_owned();
+        let untouched =
+            typed.is_empty() || Some(typed.as_str()) == self.last_derived_dir.as_deref();
+        if !untouched {
+            return typed;
+        }
+        derive_install_dir(default_dir, name.trim()).unwrap_or(typed)
     }
 }
 
@@ -446,10 +481,11 @@ pub struct Shell {
     /// 和 `export_cancel` 并列：都是长任务、都能取消，但一个走 `wsl.exe`
     /// （外加 `curl.exe`），另一个只有 `wsl --export`。
     install_cancel: Option<InstallCancel>,
-    /// 探过"GitHub 通不通"了吗（在线安装的默认下载路径）。
+    /// 采集期间又有刷新请求进来了吗（本轮跑完要立刻补一次）。
     ///
-    /// 只探一次：它决定的是一个**默认值**，每次进页面都起一个 curl 不值得。
-    /// 采集期间又有刷新请求进来；跑完要补一次。
+    /// 丢不得：操作（启动 / 停止 / 创建 / 删除）完成后都会补刷，撞上 3 秒一次的
+    /// 自动刷新时若把这次请求丢掉，界面要等到下一个周期才变 ——
+    /// 用户看到的就是"点了停止，状态还是运行中"。
     refresh_again: bool,
     /// 当前这轮采集是否**由用户发起**（点按钮 / 操作完成后补刷）。
     ///
@@ -543,11 +579,10 @@ impl Shell {
             source: default_source,
             launch: false,
             set_default: false,
-            // 默认走**微软商店**（实测本机这条路能连上，而带 `--location` 的
-            // `--web-download` 那条不行）。开关在界面上，用户可以切；
+            // 默认走**微软商店**（实测本机这条路能连上；两条通道都不带 `--location`，
+            // 理由见 `model::install::plan` 里那张表）。开关在界面上，用户可以切；
             // 真失败了执行器还会自动换一次（见 `PlannedStep::retry_other_source`）。
             web_download: false,
-            web_download_touched: false,
             last_derived_dir: if default_dir.is_empty() {
                 None
             } else {
@@ -2710,12 +2745,9 @@ impl Shell {
     }
 
     /// 切换在线安装的下载路径（微软商店 / `--web-download`）。
-    ///
-    /// 记下"用户动过它"，免得几秒后才回来的探测结果把他的选择覆盖掉。
     pub fn toggle_web_download(&mut self, cx: &mut Context<Self>) {
         if let Some(form) = self.install_form.as_mut() {
             form.web_download = !form.web_download;
-            form.web_download_touched = true;
             cx.notify();
         }
     }
@@ -2846,8 +2878,9 @@ impl Shell {
     /// 参考实现填的是友好名（`Ubuntu 24.04 LTS` → `Ubuntu-24-04-LTS`）。
     /// 那样每次在线安装都会走"导出 → 注销 → 导入"的重定位（多拷几个 GB），
     /// 因为它和 `wsl --install -d` 认的 id 对不上。
-    /// 我们的默认值是 id（`Ubuntu-24.04`，本身就是合法名字），于是走
-    /// `--install -d Ubuntu-24.04 --location <目录>` 这条快路；
+    /// 我们的默认值是 id（`Ubuntu-24.04`，本身就是合法名字），于是**不需要改名**；
+    /// 位置由装完之后那一步 `--manage <id> --move <目录>` 补正
+    /// （在线安装**永远不带 `--location`**，理由见 `model::install::plan` 里那张表）。
     /// 用户想改名随时能改，界面上也会提示那会多一次全量拷贝。
     pub fn pick_online_distro(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(form) = self.install_form.as_mut() {
@@ -2986,6 +3019,9 @@ impl Shell {
                         bytes: probe.as_ref().and_then(|p| p.bytes),
                     })
                     .collect();
+                // 按耗时排（可用的在前）—— 探测是按清单顺序发起的，
+                // 不排一下最快的那条会散落在中间
+                shell.state.mirrors.sort_results_by_speed();
 
                 match mirrors::pick_fastest(&probed) {
                     Some((candidate, probe)) => {
@@ -3039,10 +3075,15 @@ impl Shell {
         }
 
         // 先把 spec 取出来（借用在这一句结束），下面才好 `&mut self` 发提示条。
-        let spec = self
-            .install_form
-            .as_ref()
-            .map(|form| form.to_spec(cx, &self.state.mirrors, &self.state.online));
+        let spec = self.install_form.as_ref().map(|form| {
+            form.to_spec(
+                cx,
+                &self.state.mirrors,
+                &self.state.online,
+                &self.state.distro_names(),
+                self.state.prefs.install_dir.as_deref(),
+            )
+        });
         let Some(spec) = spec else {
             self.state.notify(Toast::error("表单尚未创建"));
             cx.notify();
@@ -3088,7 +3129,10 @@ impl Shell {
         let work_done = Arc::clone(&done);
         let work_cancel = cancel.clone();
 
-        self.state.installing = Some(InstallProgress::new(plan.name.clone()));
+        // ⚠️ 两个名字都要记：改名安装的中间态里 `wsl -l -v` 上是**源名**
+        // （比如 `Ubuntu-26.04`），而重定位（导出 → 注销 → 导入）恰好在那段时间里跑。
+        // 只记最终名字的话，那一行不受任何互斥保护（见 `AppState::busy_with`）。
+        self.state.installing = Some(InstallProgress::new(plan.name.clone(), plan.source_names()));
         self.install_run = Some(InstallRun {
             events: Arc::clone(&events),
             done: Arc::clone(&done),

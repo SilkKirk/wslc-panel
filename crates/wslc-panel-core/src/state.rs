@@ -733,7 +733,14 @@ pub enum DistroAction {
     ///
     /// 单独一个动作而不是"切换"：界面不显示当前状态
     /// （注册表的 `Flags` 里哪一位是稀疏**没有实测确认**），
-    /// 所以给两个明确的入口，让用户自己说清要开还是要关。
+    /// 所以给两个明确的动作，让用户自己说清要开还是要关。
+    ///
+    /// ⚠️ **目前没有界面入口**：v0.4 按需求把发行版详情里那个稀疏开关拿掉了
+    /// （理由见 `views::distro_detail_overlay` 里的说明）。日常要开就走
+    /// `.wslconfig` 的 `[experimental] sparseVhd=true`（「应用设置 → WSL」），
+    /// 装新实例时由安装计划里那一步补上。这个变体和
+    /// [`crate::cmd::distro::set_sparse`] 留下来的是**能力**，不是"还有入口"——
+    /// 别照着一句过期的注释去界面上找那个按钮。
     SetSparse {
         /// 发行版名。
         name: String,
@@ -1466,11 +1473,26 @@ impl OnlineDistroState {
     ///
     /// 规则：取 `<id>-…` 里版本号最大的那个（`Ubuntu-26.04` > `Ubuntu-24.04`）。
     /// 没有兄弟（`Debian`、`kali-linux`）就返回 `None`，绝不硬猜。
-    pub fn sibling_id(&self, id: &str) -> Option<String> {
+    ///
+    /// # `taken`：**已经装过**的发行版名，必须排除
+    ///
+    /// 本机就是现成的例子：清单第一项是裸 `Ubuntu`，它的兄弟是 `Ubuntu-26.04`，
+    /// 而那个**已经装在 `D:\linux\Ubuntu-26.04` 了**。换过去只会立刻撞上 WSL 的
+    /// `Wsl/InstallDistro/ERROR_ALREADY_EXISTS`（实测 2026-10-12：对已安装的 id
+    /// 跑 `wsl --install -d <id> --no-launch`，2 秒返回 -1，"当文件已存在时，
+    /// 无法创建该文件"）。那次失败对用户毫无帮助 —— 不如**一开始就不换**
+    /// （返回 `None`），让"这条来源依赖 wsl.exe 自己的网络，改用国内镜像源"
+    /// 那句提示照常出现。
+    pub fn sibling_id(&self, id: &str, taken: &[String]) -> Option<String> {
         let prefix = format!("{id}-");
         self.items
             .iter()
             .filter(|item| item.id.starts_with(&prefix) && item.id.len() > prefix.len())
+            .filter(|item| {
+                !taken
+                    .iter()
+                    .any(|existing| wslc_core::model::distro::same_name(existing, &item.id))
+            })
             .max_by(|left, right| version_key(&left.id).cmp(&version_key(&right.id)))
             .map(|item| item.id.clone())
     }
@@ -1633,6 +1655,26 @@ impl MirrorState {
         self.probing = false;
     }
 
+    /// 按耗时排序：可用的在前（快的更前），连不上的 / 报错的统一排到后面。
+    ///
+    /// 界面上那一列是"哪个镜像快"，而探测是按**清单顺序**发起的 ——
+    /// 不排一下，最快的那条会散落在中间（`chosen` 有徽标，但用户想比较
+    /// 其余几条时就只能自己找）。
+    ///
+    /// ⚠️ **不能只按 `secs` 排**：探测没跑成的候选（`code == 0` 且
+    /// `secs == 0.0`，见 `app::Shell::probe_mirrors` 里那个 `unwrap_or`）
+    /// 会因此**排在最前面**，看起来像"最快的"。
+    /// 用 `total_cmp` 而不是 `partial_cmp().unwrap()`：`secs` 是 f64，
+    /// 万一出现 NaN，`unwrap()` 会让界面崩在"探测"这个动作上。
+    pub fn sort_results_by_speed(&mut self) {
+        self.results.sort_by(|left, right| {
+            right
+                .is_ok()
+                .cmp(&left.is_ok())
+                .then_with(|| left.secs.total_cmp(&right.secs))
+        });
+    }
+
     /// 按**微软商店清单里的 id**去镜像清单里找同一个发行版。
     ///
     /// 用途：商店那条路装不上时（`wsl.exe` 自己的网络不通）一键换成镜像源，
@@ -1728,8 +1770,16 @@ pub enum InstallOutcome {
 /// [`InstallProgress::apply`] 把它翻译成状态 —— 翻译逻辑是纯函数，能单测。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstallProgress {
-    /// 发行版名。
+    /// 发行版名（用户想要的**最终**名字）。
     pub name: String,
+    /// 装的时候**先**注册成的那些名字（在线安装的源 id，以及失败时换的那个兄弟 id）。
+    ///
+    /// `wsl -l -v` 上先是它们，重定位之后才变成 [`Self::name`]。
+    /// [`AppState::busy_with`] 必须两个都认 —— 否则改名安装的中间态里，
+    /// 列表上那一行（源名）不受任何互斥保护，而重定位正是
+    /// 「导出 → 注销 → 导入」那段不可逆的操作。
+    /// 来源见 `wslc_core::model::install::InstallPlan::source_names`。
+    pub source_names: Vec<String>,
     /// 计划里的步骤总数。
     pub total: usize,
     /// 当前第几步（从 1 开始；0 = 还没开始）。
@@ -1773,9 +1823,13 @@ impl InstallProgress {
     pub const MAX_LOG_LINES: usize = 2000;
 
     /// 新建一个进度记录。
-    pub fn new(name: impl Into<String>) -> Self {
+    ///
+    /// `source_names` 是"装的时候会先注册成哪些名字"（见 [`Self::source_names`]）——
+    /// 由 `InstallPlan::source_names()` 算好传进来，这里不再猜。
+    pub fn new(name: impl Into<String>, source_names: Vec<String>) -> Self {
         Self {
             name: name.into(),
+            source_names,
             total: 0,
             index: 0,
             step_label: String::new(),
@@ -2166,12 +2220,21 @@ impl AppState {
     ///
     /// 名字比较用 [`wslc_core::model::distro::same_name`]：安装时源名与用户
     /// 想要的名字可能只差大小写，用 `==` 会漏掉。
+    ///
+    /// ⚠️ **两个名字都要查**（`name` + `source_names`）：改名安装的中间态里
+    /// `wsl -l -v` 上是**源名**，只查最终名字等于那段时间完全没保护
+    /// —— 而重定位恰好就在那段时间里跑。见 [`InstallProgress::source_names`]。
     pub fn busy_with(&self, distro: &str) -> Option<&'static str> {
         // 这里用 `is_some_and` 而不是嵌套的 `if let`：后者会被 clippy 的
         // `collapsible_if` 建议改成 let-chain，而 let-chain 要 Rust 1.88，
         // 本 crate 声明的 MSRV 是 1.85（见 `Cargo.toml` 的 `rust-version`）。
         let installing = self.installing.as_ref().is_some_and(|install| {
-            install.is_running() && wslc_core::model::distro::same_name(&install.name, distro)
+            install.is_running()
+                && (wslc_core::model::distro::same_name(&install.name, distro)
+                    || install
+                        .source_names
+                        .iter()
+                        .any(|name| wslc_core::model::distro::same_name(name, distro)))
         });
         if installing {
             return Some("安装");
@@ -2432,7 +2495,7 @@ mod tests {
     fn install_progress_follows_the_events() {
         use wslc_core::cmd::install::InstallEvent;
 
-        let mut progress = InstallProgress::new("MyUbuntu");
+        let mut progress = InstallProgress::new("MyUbuntu", vec!["Ubuntu-24.04".to_owned()]);
         assert!(progress.is_running());
         assert_eq!(progress.percent(), None);
 
@@ -2505,10 +2568,40 @@ mod tests {
     }
 
     #[test]
+    fn busy_with_also_knows_the_name_the_install_registers_first() {
+        // 改名安装的中间态：`wsl -l -v` 上是**源名**（`Ubuntu-24.04`），
+        // 而用户要的是 `MyUbuntu`。只认最终名字的话，那段时间里列表上那一行
+        // 的「终止 / 删除 / 打开终端」全都可点 —— 而重定位正是
+        // 「导出 → 注销 → 导入」那段不可逆的操作（见 `busy_with` 的说明）。
+        let mut state = AppState::new(wslc_core::Wslc::new(), wslc_core::Wsl::new());
+
+        // 还没开始装：谁都不拦
+        assert_eq!(state.busy_with("Ubuntu-24.04"), None);
+
+        state.installing = Some(InstallProgress::new(
+            "MyUbuntu",
+            vec!["Ubuntu-24.04".to_owned()],
+        ));
+        assert_eq!(state.busy_with("MyUbuntu"), Some("安装"));
+        assert_eq!(state.busy_with("Ubuntu-24.04"), Some("安装"), "源名也要认");
+        // 大小写不敏感（WSL 自己就不区分）
+        assert_eq!(state.busy_with("ubuntu-24.04"), Some("安装"));
+        // 别的发行版照旧放行 —— 安装要几十分钟，不能把整页锁住
+        assert_eq!(state.busy_with("Debian"), None);
+
+        // 装完之后不再拦
+        if let Some(progress) = state.installing.as_mut() {
+            progress.finish(InstallOutcome::Success("好了".to_owned()));
+        }
+        assert_eq!(state.busy_with("Ubuntu-24.04"), None);
+        assert_eq!(state.busy_with("MyUbuntu"), None);
+    }
+
+    #[test]
     fn install_progress_log_is_capped() {
         use wslc_core::cmd::install::InstallEvent;
 
-        let mut progress = InstallProgress::new("X");
+        let mut progress = InstallProgress::new("X", Vec::new());
         for i in 0..(InstallProgress::MAX_LOG_LINES + 50) {
             progress.apply(&InstallEvent::Line(format!("第 {i} 行")));
         }
@@ -2641,16 +2734,86 @@ mod tests {
         ];
 
         // 裸 `Ubuntu` → 最新的那个版本号（不是列表里的下一个）
-        assert_eq!(online.sibling_id("Ubuntu").as_deref(), Some("Ubuntu-26.04"));
+        let none: Vec<String> = Vec::new();
+        assert_eq!(
+            online.sibling_id("Ubuntu", &none).as_deref(),
+            Some("Ubuntu-26.04")
+        );
         // 带版本的 id 自己不再往下找
-        assert_eq!(online.sibling_id("Ubuntu-24.04"), None);
-        assert_eq!(online.sibling_id("AlmaLinux-10"), None);
+        assert_eq!(online.sibling_id("Ubuntu-24.04", &none), None);
+        assert_eq!(online.sibling_id("AlmaLinux-10", &none), None);
         // 没有兄弟的不硬猜
-        assert_eq!(online.sibling_id("Debian"), None);
-        assert_eq!(online.sibling_id("kali-linux"), None);
-        assert_eq!(online.sibling_id(""), None);
+        assert_eq!(online.sibling_id("Debian", &none), None);
+        assert_eq!(online.sibling_id("kali-linux", &none), None);
+        assert_eq!(online.sibling_id("", &none), None);
         // 版本比较按数值而不是按字典序（22 < 24 < 26）
-        assert_ne!(online.sibling_id("Ubuntu").as_deref(), Some("Ubuntu-22.04"));
+        assert_ne!(
+            online.sibling_id("Ubuntu", &none).as_deref(),
+            Some("Ubuntu-22.04")
+        );
+
+        // ⚠️ 已经装过的兄弟不能选：本机就是这个状态（`Ubuntu-26.04` 装着），
+        // 换过去只会撞 `Wsl/InstallDistro/ERROR_ALREADY_EXISTS`（实测）。
+        let taken = vec!["Ubuntu-26.04".to_owned()];
+        assert_eq!(
+            online.sibling_id("Ubuntu", &taken).as_deref(),
+            Some("Ubuntu-24.04"),
+            "最新的那个装过了，就退到下一个版本"
+        );
+        // 大小写不同也是同一个发行版
+        let taken = vec!["ubuntu-26.04".to_owned()];
+        assert_eq!(
+            online.sibling_id("Ubuntu", &taken).as_deref(),
+            Some("Ubuntu-24.04")
+        );
+        // 同族的全装过了 → 干脆不换（返回 None，让界面照实说这条路装不动）
+        let taken = vec![
+            "Ubuntu-26.04".to_owned(),
+            "Ubuntu-24.04".to_owned(),
+            "Ubuntu-22.04".to_owned(),
+        ];
+        assert_eq!(online.sibling_id("Ubuntu", &taken), None);
+        // 装了别的发行版不影响
+        let taken = vec!["Debian".to_owned()];
+        assert_eq!(
+            online.sibling_id("Ubuntu", &taken).as_deref(),
+            Some("Ubuntu-26.04")
+        );
+    }
+
+    #[test]
+    fn probe_results_are_sorted_fastest_first_with_failures_last() {
+        // 探测是**按清单顺序**发起的（见 `Shell::probe_mirrors`），所以结果必须
+        // 排一下 —— 否则界面上"哪个镜像快"要靠用户自己在十几行里找。
+        fn result(site: &str, code: u16, secs: f64) -> MirrorProbeResult {
+            MirrorProbeResult {
+                site: site.to_owned(),
+                url: format!("https://x/{site}"),
+                code,
+                secs,
+                bytes: if code == 200 { Some(10) } else { None },
+            }
+        }
+
+        let mut state = MirrorState::new();
+        state.results = vec![
+            result("慢", 200, 2.0),
+            result("连不上", 0, 8.0),
+            result("快", 200, 0.3),
+            result("404", 404, 0.1),
+            // ⚠️ 探测没跑成的候选：`code == 0` 且 `secs == 0.0`
+            // （`probe_mirrors` 里那个 `unwrap_or(0.0)`）
+            result("没探", 0, 0.0),
+        ];
+        state.sort_results_by_speed();
+
+        let sites: Vec<&str> = state.results.iter().map(|r| r.site.as_str()).collect();
+        assert_eq!(
+            sites,
+            vec!["快", "慢", "没探", "404", "连不上"],
+            "可用的按耗时升序排前面，失败的排后面；\
+             只按 `secs` 排的话「没探」（0.0）会跑到最前面，看着像最快的那个"
+        );
     }
 
     #[test]

@@ -46,11 +46,24 @@
 //! 代价：`curl.exe` 被 EDR 拦掉的环境用不了镜像源这条来源 ——
 //! 界面要如实提示"改用本地 tar 导入"。
 //!
-//! ⚠️ 顺带记一条实测：**系统代理（dev-sidecar）我们的 curl 用不上**。
-//! `wsl.exe` 自己走系统代理（所以开着代理时 `wsl -l -o` 能通），
-//! 而 `curl.exe` 不读 Windows 的代理设置；手动 `--proxy` 指过去会撞
-//! MITM 证书（`000`）。所以这里的请求都按**直连**设计：
-//! `api1/api2.wslui.com` 与国内镜像站直连都通（实测 200）。
+//! ⚠️ 顺带记三条代理相关的实测（2026-10-12 复核过一遍）：
+//!
+//! 1. **`curl.exe` 不读 Windows 的代理设置**（它不认 WinINET）。所以这里的请求
+//!    都按**直连**设计：`api1/api2.wslui.com`、国内镜像站、jsdelivr、ghproxy
+//!    直连都是 200（实测）。
+//! 2. 手动 `-x http://127.0.0.1:31181` 打过去**分两种情况**：上面那几个域名是通的
+//!    （200），只有走 dev-sidecar **MITM** 的域名（`github.com`、
+//!    `raw.githubusercontent.com`）会报
+//!    `curl: (35) schannel: next InitializeSecurityContext failed:
+//!    CRYPT_E_NO_REVOCATION_CHECK` —— 那不是"代理不通"，是 Windows 的 schannel
+//!    在做**证书吊销检查**；加 `--ssl-no-revoke` 两个域名都是 200（实测）。
+//!    面板目前不碰这些域名，所以不需要这个开关 —— 真要加也别用 `-k`
+//!    （那等于把全部证书校验关掉）。
+//! 3. `curl.exe` **认 `HTTP_PROXY` / `HTTPS_PROXY` 环境变量**（实测：把
+//!    `HTTPS_PROXY` 指到一个没人听的端口，`api2` 立刻报 `curl: (7) … over proxy`）。
+//!    而面板起子进程时只额外加 `WSL_UTF8` / `NO_COLOR`、其余环境**照继承**
+//!    （见 `cli::build_command`）—— 也就是说"给面板的 curl 配代理"这条出口
+//!    **今天就能用**（在系统里设环境变量即可），只是没写进文档。
 
 use std::path::PathBuf;
 
