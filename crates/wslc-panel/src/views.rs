@@ -959,8 +959,12 @@ pub fn images(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                     // 刻意**不**用 `.disabled(busy)`：禁用态的文字几乎看不清
                     // （实机截图确认过）。重复点击由 `open_pull_dialog` 里的
                     // 守卫 + 提示条处理，不需要把它变灰。
+                    //
+                    // 措辞刻意与「镜像仓库」页区分开（v0.6）：这里是"我已知完整引用"，
+                    // 那一页是"我先看看有哪些 tag"。两个入口背后是同一段拉取实现，
+                    // 但**用户的意图不同** —— 见 `pull_form_body` 的文档。
                     Button::new("pull-image")
-                        .label("拉取镜像")
+                        .label("按引用拉取…")
                         .small()
                         .on_click(move |_, window, cx| {
                             // 注意：`InputState` 只能在有 `window` 的地方创建，
@@ -1207,6 +1211,18 @@ pub fn registry_page(shell: &Shell, _cx: &App, entity: &Entity<Shell>) -> AnyEle
         None => div().into_any_element(),
         Some(tag) => {
             let reference = page.selected_reference().unwrap_or_default();
+            // 已经在本地了就顺手给一个「创建容器」：镜像名预填，用户不用再手打一遍。
+            //
+            // 没拉下来时**不放**这个按钮（只给一句说明）：`wslc run` 的拉取策略是
+            // `Never`，点了必然失败 —— 那是"界面上点了没反应"里最差的一种。
+            // 拉取完成后 `start_pull` 会刷新快照，按钮自己就出现了。
+            let pulled = !reference.is_empty()
+                && state
+                    .snapshot
+                    .images
+                    .iter()
+                    .any(|img| img.reference() == reference);
+
             let size_line: AnyElement = if page.sizing {
                 div()
                     .text_xs()
@@ -1245,6 +1261,26 @@ pub fn registry_page(shell: &Shell, _cx: &App, entity: &Entity<Shell>) -> AnyEle
                     })
             };
 
+            let create: AnyElement = if pulled {
+                let entity = entity.clone();
+                let image = reference.clone();
+                Button::new("registry-create")
+                    .label("用这个镜像创建容器")
+                    .small()
+                    .on_click(move |_, window, cx| {
+                        entity.update(cx, |shell, cx| {
+                            shell.open_create_dialog_prefilled(Some(image.as_str()), window, cx);
+                        });
+                    })
+                    .into_any_element()
+            } else {
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child("拉下来之后，这里会出现「用这个镜像创建容器」。")
+                    .into_any_element()
+            };
+
             v_flex()
                 .w_full()
                 .gap_2()
@@ -1273,7 +1309,8 @@ pub fn registry_page(shell: &Shell, _cx: &App, entity: &Entity<Shell>) -> AnyEle
                         .gap_3()
                         .items_center()
                         .child(size_line)
-                        .child(pull),
+                        .child(pull)
+                        .child(create),
                 )
                 .into_any_element()
         }
@@ -3494,6 +3531,16 @@ pub fn pull_dialog_overlay(
 }
 
 /// 弹窗的**表单**形态（还没开始拉）。
+///
+/// # 它和「镜像仓库」页的分工（v0.6）
+///
+/// 这里是**已知完整引用**时的出口：直接写一条引用就拉，可以是**别的 registry**
+/// （例如你以前从 `docker.m.daocloud.io` 拉过东西）。「镜像仓库」页做的是
+/// "不知道有哪些 tag，先浏览着选"，而那一页只连内置的
+/// `docker.1panel.live`（实测唯一一个 tag 与 manifest 都免认证的站）。
+///
+/// 所以这两个入口**不是同一个动作的两份拷贝**：一个是你知道要什么，
+/// 一个是你要先看有什么。措辞上把这件事写出来，用户就不用猜该点哪个。
 fn pull_form_body(input: &Entity<InputState>, entity: &Entity<Shell>) -> AnyElement {
     let cancel = {
         let entity = entity.clone();
@@ -3522,7 +3569,7 @@ fn pull_form_body(input: &Entity<InputState>, entity: &Entity<Shell>) -> AnyElem
             div()
                 .text_sm()
                 .text_color(theme::text_muted())
-                .child("镜像引用，例如 nginx:latest 或 docker.1ms.run/library/nginx:latest"),
+                .child("已知完整引用就直接填，可以是别的 registry（例如 docker.m.daocloud.io/library/nginx:latest）。"),
         )
         .child(Input::new(input).id("pull-reference").w_full())
         .child(
@@ -3536,6 +3583,12 @@ fn pull_form_body(input: &Entity<InputState>, entity: &Entity<Shell>) -> AnyElem
                     "实测本机直连 Docker Hub 会超时（registry-1.docker.io 不可达），\
                      建议填写镜像加速地址。",
                 ))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child("不知道有哪些 tag？用左边「镜像仓库」页浏览着选。"),
+                )
                 .child(
                     div()
                         .text_xs()

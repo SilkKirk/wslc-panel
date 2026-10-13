@@ -1080,11 +1080,15 @@ impl Shell {
             .loaded
             .clone()
             .unwrap_or_else(|| self.state.registry.repository.clone());
+        // ⚠️ `tag` 要**两份**：一份移进后台任务（`fetch_size` 要它），
+        // 另一份留给结果回来时的核对。不克隆的话 `tag` 会被移进内层协程，
+        // 外层那个 `Some(tag.as_str())` 就成了"借用已移动的值"（CI 实测报 E0382）。
+        let fetch_tag = tag.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    wslc_core::cmd::registry::fetch_size(&host, &repository, &tag)
+                    wslc_core::cmd::registry::fetch_size(&host, &repository, &fetch_tag)
                 })
                 .await;
             let _ = this.update(cx, |shell, cx| {
@@ -1761,14 +1765,32 @@ impl Shell {
 
     // -- 创建容器弹窗 --------------------------------------------------------
 
-    /// 打开「创建容器」弹窗。
+    /// 打开「创建容器」弹窗（不带预填）。
     ///
     /// 和拉取弹窗一样是**懒创建**：`InputState::new` 要 `&mut Window`，
     /// 而 `Shell::new` 拿不到 window。
     pub fn open_create_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_create_dialog_prefilled(None, window, cx);
+    }
+
+    /// 打开「创建容器」弹窗，可**预填镜像引用**。
+    ///
+    /// 「镜像仓库」页拉完镜像直接建容器走这条：镜像名是我们刚拉下来的**完整引用**
+    /// （`docker.1panel.live/library/alpine:latest`），让用户再手打一遍没有意义 ——
+    /// 而且手打时最容易漏掉 registry 前缀，那样 `wslc run` 会去 Docker Hub 找，
+    /// 而它在这台机器上不可达（实测 000）。
+    ///
+    /// 拉取策略仍然是 [`PullPolicy::Never`]（弹窗里可改）：镜像刚拉到本地，
+    /// 再拉一次纯属白等。
+    pub fn open_create_dialog_prefilled(
+        &mut self,
+        image: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let dialog = CreateDialog {
             image: cx.new(|cx| {
-                InputState::new(window, cx).placeholder("docker.1ms.run/library/nginx:latest")
+                InputState::new(window, cx).placeholder("docker.1panel.live/library/nginx:latest")
             }),
             name: cx.new(|cx| InputState::new(window, cx).placeholder("留空则自动命名")),
             ports: cx.new(|cx| InputState::new(window, cx).placeholder("8080:80, 9090:90")),
@@ -1780,6 +1802,13 @@ impl Shell {
             cpus: cx.new(|cx| InputState::new(window, cx).placeholder("0.5")),
             pull: PullPolicy::Never,
         };
+
+        // 预填（`set_value` 要 `&mut Window`，所以只能在有 window 的地方做）
+        if let Some(image) = image {
+            dialog
+                .image
+                .update(cx, |state, cx| state.set_value(image.to_owned(), window, cx));
+        }
 
         // 焦点给第一个必填字段
         let handle = dialog.image.read(cx).focus_handle(cx);
