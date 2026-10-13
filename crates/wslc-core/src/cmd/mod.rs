@@ -11,6 +11,9 @@
 //!   轮询进度、取消），计划本身的纯逻辑在 [`crate::model::install`] 里；
 //! - [`catalog`] —— 拉「在线发行版（镜像源）」那份清单（两个 HTTP 请求走 `curl.exe`），
 //!   解析在 [`crate::mirrors`] 里；
+//! - [`registry`] —— 拉**容器镜像仓库**的 tag 列表与体积（也是 `curl.exe`），
+//!   解析在 [`crate::registry`] 里。⚠️ 和 [`catalog`] 不是一回事：
+//!   那个是 WSL **发行版**的 rootfs 文件，这个是容器**镜像**仓库；
 //! - [`win_theme`] —— 读系统"应用主题"（浅色/深色），给界面上的「跟随系统」用。
 
 pub mod catalog;
@@ -20,6 +23,7 @@ pub mod image;
 pub mod install;
 pub mod network;
 pub mod picker;
+pub mod registry;
 pub mod system;
 pub mod volume;
 pub mod win_theme;

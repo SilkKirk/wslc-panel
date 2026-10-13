@@ -37,6 +37,7 @@ pub mod error;
 pub mod jsonl;
 pub mod mirrors;
 pub mod model;
+pub mod registry;
 pub mod settings;
 pub mod storage;
 pub mod wslconfig;
