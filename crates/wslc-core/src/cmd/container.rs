@@ -207,8 +207,35 @@ pub fn exec(wslc: &Wslc, container: &str, command: &[String]) -> Result<String> 
 /// 在新控制台窗口里打开交互式 shell。
 ///
 /// 交互式程序不能内嵌进 GPUI，也不该被捕获输出。
-pub fn open_interactive_shell(wslc: &Wslc, container: &str, shell: &str) -> Result<()> {
-    wslc.spawn_in_new_console(&["exec", "-i", "-t", container, shell])
+///
+/// `workdir` 是容器内的起始目录（`wslc exec -w`），`None` = 不加 ——
+/// 那时容器落在**镜像自己的 WORKDIR**。面板为什么只对绝对路径往下传，
+/// 见 `wslc_panel_core::prefs::TerminalStartDir::container_workdir`。
+pub fn open_interactive_shell(
+    wslc: &Wslc,
+    container: &str,
+    shell: &str,
+    workdir: Option<&str>,
+) -> Result<()> {
+    let args = interactive_shell_args(container, shell, workdir);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    wslc.spawn_in_new_console(&refs)
+}
+
+/// 拼「容器交互式 shell」的参数（纯函数，便于单测）。
+///
+/// 形状是 `exec -i -t [-w <dir>] <容器> <shell>`：`wslc exec` 的位置参数是
+/// `<container-id> <command> [args...]`，所以**容器名和命令必须在最后**，
+/// 中间插开关会把它们顶掉（`logs_args` 那条不变量同理）。
+fn interactive_shell_args(container: &str, shell: &str, workdir: Option<&str>) -> Vec<String> {
+    let mut args = vec!["exec".to_owned(), "-i".to_owned(), "-t".to_owned()];
+    if let Some(dir) = workdir {
+        args.push("-w".to_owned());
+        args.push(dir.to_owned());
+    }
+    args.push(container.to_owned());
+    args.push(shell.to_owned());
+    args
 }
 
 /// 在新控制台窗口里 `attach` 到容器主进程。
@@ -429,6 +456,27 @@ mod tests {
     use super::*;
 
     // -- logs 参数形状 -----------------------------------------------------
+
+    #[test]
+    fn interactive_shell_args_keep_the_name_and_shell_last() {
+        // 不给起始目录时是原来的形状（容器落在镜像自己的 WORKDIR）
+        assert_eq!(
+            interactive_shell_args("web", "/bin/sh", None),
+            vec!["exec", "-i", "-t", "web", "/bin/sh"]
+        );
+    }
+
+    #[test]
+    fn interactive_shell_args_put_workdir_before_the_positional_ones() {
+        // `-w` 必须在 `<容器> <命令>` **之前** —— 放到后面会被当成命令的
+        // 第一个参数（位置参数一出现，后面的开关都不再解析）。
+        let args = interactive_shell_args("web", "/bin/sh", Some("/srv/app"));
+        assert_eq!(
+            args,
+            vec!["exec", "-i", "-t", "-w", "/srv/app", "web", "/bin/sh"]
+        );
+        assert_eq!(args.last().map(String::as_str), Some("/bin/sh"));
+    }
 
     #[test]
     fn logs_args_put_the_container_name_last() {

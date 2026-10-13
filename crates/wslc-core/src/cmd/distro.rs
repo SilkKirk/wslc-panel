@@ -185,7 +185,7 @@ pub fn compact(wsl: &Wsl, name: &str) -> Result<()> {
     run_action(wsl, &["--manage", name, "--compact"], DISK_TIMEOUT)
 }
 
-/// 在新控制台窗口里打开发行版的终端（`wsl -d <name>`）。
+/// 在新控制台窗口里打开发行版的终端（`wsl -d <name> [--cd <dir>]`）。
 ///
 /// # 这就是「启动」该有的样子
 ///
@@ -197,8 +197,35 @@ pub fn compact(wsl: &Wsl, name: &str) -> Result<()> {
 /// 所以**不做**一个裸的「启动」按钮 —— 点完看着是"运行中"、
 /// 20 秒后变回"已停止"，用户只会以为程序坏了。
 /// 打开终端是诚实且有用的等价物：终端开着，发行版就一直是运行中。
-pub fn open_terminal(wsl: &Wsl, name: &str) -> Result<()> {
-    wsl.spawn_in_new_console(&["-d", name])
+///
+/// # `start_dir` 为什么必须显式给
+///
+/// 不给 `--cd` 时，`wsl.exe` 会继承**调用它的那个进程**的工作目录，WSL 再把
+/// 那个 Windows 路径翻译成 `/mnt/<盘>/...`。面板自己不设 cwd，于是"打开终端"
+/// 落在哪儿取决于**用户从哪个文件夹启动了面板**（实测：从
+/// `C:\Users\76434\Downloads` 启动 → 终端落在 `/mnt/c/Users/76434/Downloads`；
+/// 路径翻译不了时回落 `~`）。这不可预期，所以起始目录由偏好显式决定，
+/// 见 `wslc_panel_core::prefs::TerminalStartDir`。
+pub fn open_terminal(wsl: &Wsl, name: &str, start_dir: Option<&str>) -> Result<()> {
+    let args = terminal_args(name, start_dir);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    wsl.spawn_in_new_console(&refs)
+}
+
+/// 拼「打开发行版终端」的参数（纯函数，便于单测）。
+///
+/// `start_dir` = 传给 `--cd` 的值；`None` 表示**不加** `--cd`
+/// （那时落点见 [`open_terminal`] 的说明）。
+///
+/// 顺序是 `-d <name> --cd <dir>`：实测 `wsl.exe -d X --cd ~ -- pwd` 打印
+/// `/home/wt`（WSL 3.0.3.0）。不加命令（只开一个交互 shell）时 `--cd` 同样生效。
+fn terminal_args(name: &str, start_dir: Option<&str>) -> Vec<String> {
+    let mut args = vec!["-d".to_owned(), name.to_owned()];
+    if let Some(dir) = start_dir {
+        args.push("--cd".to_owned());
+        args.push(dir.to_owned());
+    }
+    args
 }
 
 /// 「启动」用的哨兵命令。
@@ -975,6 +1002,32 @@ mod tests {
 
     /// 本机实测的 `reg.exe query ... /s` 输出。
     const REAL_REGISTRY: &str = include_str!("../../tests/fixtures/lxss_query.txt");
+
+    // -- 打开终端的参数形状 -------------------------------------------------
+
+    #[test]
+    fn terminal_args_put_cd_after_the_distro_name() {
+        // 实测可用的形状：`wsl -d X --cd ~`（`--` 之后再接命令也行，
+        // 不开命令时 `--cd` 一样生效）。
+        assert_eq!(
+            terminal_args("Ubuntu-26.04", Some("~")),
+            vec!["-d", "Ubuntu-26.04", "--cd", "~"]
+        );
+        assert_eq!(
+            terminal_args("Ubuntu-26.04", Some("/home/wt/src")),
+            vec!["-d", "Ubuntu-26.04", "--cd", "/home/wt/src"]
+        );
+    }
+
+    #[test]
+    fn terminal_args_omit_cd_when_there_is_no_start_dir() {
+        // `None` = 不加 `--cd`（继承面板自己的 cwd）。
+        // 绝不能拼出一个空的 `--cd ""` —— 那会被当成"切到空目录"，
+        // 实测 chdir 失败后落在 `/`，用户看到的是"终端从根目录开始"。
+        let args = terminal_args("Debian", None);
+        assert_eq!(args, vec!["-d", "Debian"]);
+        assert!(!args.iter().any(|a| a == "--cd"), "{args:?}");
+    }
 
     #[test]
     fn parses_the_real_registry_dump() {

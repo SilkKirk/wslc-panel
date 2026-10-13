@@ -404,7 +404,7 @@ pub fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
         Page::Registry => registry_page(shell, cx, entity),
         Page::Networks => networks(state, entity).into_any_element(),
         Page::Volumes => volumes(state, entity).into_any_element(),
-        Page::AppSettings => app_settings(state, entity),
+        Page::AppSettings => app_settings(shell, entity),
         Page::About => about(state, entity),
     }
 }
@@ -2804,9 +2804,13 @@ fn install_log_card(
 /// 分开放是刻意的，见 `prefs.rs` 的模块说明。
 ///
 /// v0.3 只做两项（都是"简单且立刻见效"的）：自动刷新间隔、界面主题。
-pub fn app_settings(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+/// v0.5.12 加了「终端」卡 —— 它不是纯数据：自定义路径那个输入框住在
+/// `Shell` 里（`InputState::new` 要 `&mut Window`），所以这一页现在收
+/// `&Shell` 而不是 `&AppState`（和「添加实例」页同一个理由）。
+pub fn app_settings(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
+    let state = &shell.state;
     let content: AnyElement = match state.settings_tab {
-        SettingsTab::General => settings_general(state, entity),
+        SettingsTab::General => settings_general(shell, entity),
         // 「高级」和「WSL」就是把原先那两个独立页面搬进来当 tab ——
         // 内容一行没改，只是不再各占一个侧边栏入口。
         SettingsTab::Advanced => config(state, entity),
@@ -2853,15 +2857,17 @@ fn settings_tabs(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
         .into_any_element()
 }
 
-/// 「常规」tab：界面 + 主题。
+/// 「常规」tab：界面 + 主题 + 终端。
 ///
 /// 「关于」卡片从这里**搬走了** —— 它现在是一个独立的侧边栏页面
 /// （见 [`about`]），因为那一页只有只读信息，混在设置里容易被当成开关。
-fn settings_general(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+fn settings_general(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
+    let state = &shell.state;
     v_flex()
         .w_full()
         .gap_4()
         .child(interface_card(state, entity))
+        .child(terminal_card(shell, entity))
         .child(theme_card(state, entity))
         .into_any_element()
 }
@@ -3490,6 +3496,110 @@ fn refresh_secs_picker(state: &AppState, entity: &Entity<Shell>) -> impl IntoEle
         .flex_wrap()
         .children(buttons)
         .children(extra)
+}
+
+/// 「终端」卡：新终端的起始目录。
+///
+/// # 为什么有这一项
+///
+/// 不给 `--cd` 时 `wsl.exe` 会继承**调用它的那个进程**的工作目录，WSL 再把它
+/// 翻译成 `/mnt/<盘>/...` —— 于是"打开终端"落在哪儿，取决于用户是从哪个文件夹
+/// 启动的 `wslc-panel.exe`（本机实测：从 `C:\Users\76434\Downloads` 启动，
+/// 终端就落在 `/mnt/c/Users/76434/Downloads`；路径翻译不了时回落 `~`）。
+/// 默认因此改成显式的 `--cd ~`，这一卡让用户改。
+///
+/// # 输入框是懒创建的
+///
+/// 点过「自定义路径…」才会建（`InputState::new` 要 `&mut Window`，
+/// 见 [`Shell::edit_terminal_dir`]）—— 渲染时现建会让用户一个字都打不进去。
+fn terminal_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
+    let current = &shell.state.prefs.terminal_dir;
+
+    let mut buttons: Vec<AnyElement> = crate::prefs::TerminalStartDir::FIXED
+        .iter()
+        .map(|dir| {
+            let dir = dir.clone();
+            let entity = entity.clone();
+            // id 用 `{:?}`（ASCII）而不是 label：元素 id 要稳定、
+            // 且不该随显示文案变（和主题卡同一个写法）。
+            let mut button = Button::new(SharedString::from(format!("terminal-dir-{dir:?}")))
+                .label(dir.label())
+                .small()
+                .on_click(move |_, _, cx| {
+                    let dir = dir.clone();
+                    entity.update(cx, |shell, cx| shell.set_terminal_dir(dir, cx));
+                });
+            if current == &dir {
+                button = button.primary();
+            }
+            button.into_any_element()
+        })
+        .collect();
+
+    // 「自定义路径…」单独一个按钮：它除了选档位还要**把输入框显示出来**
+    // （并在有条件时把焦点给过去）。选中的自定义档位在按钮上高亮 ——
+    // 和上面两个固定档位同一套"选中态"表达。
+    {
+        let entity = entity.clone();
+        let mut button = Button::new("terminal-dir-custom")
+            .label("自定义路径…")
+            .small()
+            .on_click(move |_, window, cx| {
+                // 和「添加实例」那个按钮一样：`window` 是必需的，
+                // 因为要现场创建 `InputState`。
+                entity.update(cx, |shell, cx| shell.edit_terminal_dir(window, cx));
+            });
+        if matches!(current, crate::prefs::TerminalStartDir::Custom(_)) {
+            button = button.primary();
+        }
+        buttons.push(button.into_any_element());
+    }
+
+    let mut body = v_flex()
+        .w_full()
+        .gap_3()
+        .child(kv("新终端的起始目录", current.describe()))
+        .child(h_flex().w_full().gap_2().flex_wrap().children(buttons))
+        .child(div().text_xs().text_color(theme::text_dim()).child(
+            "「打开终端」（实例列表）用 `wsl --cd` 指定起点；不给就是继承面板自己的工作目录，\
+             也就是从哪个文件夹启动的面板，终端就从哪儿开始。",
+        ));
+
+    // 输入框只在点过「自定义路径…」之后存在。它一直留着（不随页面离开销毁），
+    // 所以这里只要 `Some` 就画。
+    if let Some(input) = shell.terminal_dir_input.as_ref() {
+        let apply = {
+            let entity = entity.clone();
+            Button::new("terminal-dir-apply")
+                .label("应用")
+                .small()
+                .primary()
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |shell, cx| shell.apply_terminal_dir(cx));
+                })
+                .into_any_element()
+        };
+
+        body = body
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .child(Input::new(input).id("terminal-dir").w(px(360.)))
+                    .child(apply),
+            )
+            .child(div().text_xs().text_color(theme::text_dim()).child(
+                "填发行版里的路径（`/home/wt/project` 或 `~`）—— Windows 路径不认，\
+                 那是「面板所在目录」那一档的事。写错的路径 `wsl.exe` 不报错，只会落在 `/`。",
+            ));
+    }
+
+    body = body.child(div().text_xs().text_color(theme::text_dim()).child(
+        "容器的「打开终端」走 `wslc exec -w`，只对**绝对路径**生效：容器里没有\
+         「Linux home」这个概念，`~` 交给镜像自己的工作目录决定。改动只影响之后新开的终端。",
+    ));
+
+    card("终端", body).into_any_element()
 }
 
 /// 「拉取镜像」弹窗（覆盖层）。

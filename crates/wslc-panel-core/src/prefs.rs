@@ -88,6 +88,130 @@ impl ThemePref {
     }
 }
 
+/// 新终端的起始目录。
+///
+/// # 为什么需要这个偏好
+///
+/// `wsl.exe -d <name>` **不带 `--cd`** 时会继承**调用它的那个进程**的工作目录，
+/// WSL 再把这个 Windows 路径翻译成 `/mnt/<盘>/...`。于是"从实例列表打开终端"
+/// 落在哪儿，取决于用户是从哪个文件夹双击的 `wslc-panel.exe`。本机实测：
+///
+/// | 面板自己被启动时的 cwd | 终端里的起点 |
+/// |---|---|
+/// | `C:\Users\76434\Downloads` | `/mnt/c/Users/76434/Downloads` |
+/// | `E:\cnb\wslc-panel` | `/mnt/e/cnb/wslc-panel` |
+/// | 翻译不了的（UNC / 从 WSL 里起 exe） | `~`＋一行 `Failed to translate` |
+///
+/// 这既不可预期也不是用户要的，所以默认改成显式 `--cd ~` ——
+/// 和 Windows Terminal 自己的 WSL 档案（`startingDirectory` 默认 Linux home）一致。
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalStartDir {
+    /// 发行版的 Linux home（`--cd ~`）。
+    ///
+    /// ⚠️ 默认值刻意选了它，而不是"沿用老行为（继承面板 cwd）"：
+    /// 老行为不是谁设计出来的，是**从来没人设过 `--cd`** 的副作用，落点随机。
+    /// 这一条和 [`ThemePref`] 的默认值取舍刚好相反 —— 那里"保持老行为"是对的，
+    /// 这里"保持老行为"等于把一个 bug 保持下去。
+    #[default]
+    Home,
+    /// 继承面板自己的工作目录（= 加 `--cd` 之前的行为）。
+    ///
+    /// 留着是因为它偶尔有用：把 exe 放进某个项目目录里启动，终端就落在那里。
+    /// 但**不默认**选它。
+    Panel,
+    /// 用户自己写的 Linux 路径。
+    ///
+    /// 存的是**用户输入的原文**（校验只在 [`parse_custom_dir`] 里做一次，
+    /// 读的时候不再校验 —— 手工把 `prefs.json` 改坏了也不该炸）。
+    Custom(String),
+}
+
+impl TerminalStartDir {
+    /// 界面上那排固定档位。「自定义」是单独一个按钮（它要配一个输入框）。
+    pub const FIXED: [TerminalStartDir; 2] = [TerminalStartDir::Home, TerminalStartDir::Panel];
+
+    /// 档位名字（不含自定义路径）。
+    ///
+    /// 自定义那一档也返回一个名字：界面上它是按钮的标签，
+    /// 具体路径由 [`Self::describe`] 显示。
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Home => "Linux home（~）",
+            Self::Panel => "面板所在目录",
+            Self::Custom(_) => "自定义路径",
+        }
+    }
+
+    /// 给人看的当前值（自定义时带上路径）。
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Home => "发行版的 home（~）".to_owned(),
+            Self::Panel => "面板所在目录（不传 --cd）".to_owned(),
+            Self::Custom(dir) => dir.clone(),
+        }
+    }
+
+    /// 传给 `wsl.exe --cd` 的值；`None` = **不加** `--cd`（继承面板自己的 cwd）。
+    pub fn cd_arg(&self) -> Option<&str> {
+        match self {
+            Self::Home => Some("~"),
+            Self::Panel => None,
+            Self::Custom(dir) => Some(dir.as_str()),
+        }
+    }
+
+    /// 传给 `wslc exec -w` 的值（容器终端）。
+    ///
+    /// 和 [`Self::cd_arg`] 只差一处，但那处很重要：容器里**没有**"Linux home"
+    /// 这个概念 —— `~` 是谁（`/root`？`/home/xxx`？根本不存在？）由**镜像**决定，
+    /// 面板不替它猜。而且 `wslc exec -w ~` 到底怎么解释那个 `~`，我们没实测过
+    /// （本机一个容器都没有）—— **这一条是推的**，所以干脆不往下传：
+    /// 只有明确的绝对路径才给 `-w`，其余一律交给镜像自己的 WORKDIR。
+    pub fn container_workdir(&self) -> Option<&str> {
+        match self {
+            Self::Custom(dir) if dir.starts_with('/') => Some(dir.as_str()),
+            _ => None,
+        }
+    }
+}
+
+/// 校验并规范化"自定义起始目录"。
+///
+/// 只做**语法**校验，不查存在性：路径在发行版里，从 Windows 这边够不着，
+/// 每改一次就去起一个 `wsl.exe` 查一遍不值当。而且实测（WSL 3.0.3.0）：
+/// `--cd` 指向不存在的目录时 `wsl.exe` **不报错**，只在 stderr 留一行
+/// `chdir(...) failed 2`，然后落在 `/` —— 不会变成"点了没反应"。
+///
+/// 接受 `~`、`~/xxx`（实测 `wsl.exe` 自己会把 `~` 展开成 `/home/<用户>`）
+/// 和 `/` 开头的绝对路径。刻意**不接受** Windows 路径：`wsl --cd D:\wsl`
+/// 确实会被翻译成 `/mnt/d/wsl`，但让用户在两个坐标系之间猜是最容易出错的，
+/// 而"面板所在目录"那一档已经把 Windows 路径这个需求覆盖了。
+pub fn parse_custom_dir(input: &str) -> Result<String, String> {
+    let dir = input.trim();
+    if dir.is_empty() {
+        return Err("填一个发行版里的路径，例如 /home/wt/project 或 ~".to_owned());
+    }
+
+    // 先单独认一下 Windows 路径：这是**最可能**的输入错误（面板里到处都是
+    // `D:\wsl\...` 这种框），值得一句专门的提示。
+    let looks_windows = dir.starts_with(r"\\") || dir.as_bytes().get(1) == Some(&b':');
+    if looks_windows {
+        return Err(format!(
+            "{dir} 是 Windows 路径 —— 这里要写**发行版里**的路径（如 /home/wt）。\
+             想让终端落在 Windows 目录里，选「面板所在目录」并把面板从那个目录启动。"
+        ));
+    }
+
+    if dir == "~" || dir.starts_with("~/") || dir.starts_with('/') {
+        return Ok(dir.to_owned());
+    }
+
+    Err(format!(
+        "要 Linux 绝对路径（以 / 开头）或 ~，收到的是：{dir}"
+    ))
+}
+
 /// 持久化的偏好。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Prefs {
@@ -106,6 +230,14 @@ pub struct Prefs {
     /// 那时安装目录要用户自己填（和以前的行为一致）。
     #[serde(default)]
     pub install_dir: Option<String>,
+    /// 新终端的起始目录（见 [`TerminalStartDir`]）。
+    ///
+    /// 老版本的 `prefs.json` 里没有这个键 —— `#[serde(default)]` 让它升级成
+    /// [`TerminalStartDir::Home`]。⚠️ 这**会改变**老用户看到的行为：以前终端
+    /// 继承面板的 cwd（落点随机），升级后固定落在 `~`。这是**有意的**，
+    /// 理由写在 [`TerminalStartDir`] 的文档里。
+    #[serde(default)]
+    pub terminal_dir: TerminalStartDir,
 }
 
 fn default_refresh_secs() -> u64 {
@@ -118,6 +250,7 @@ impl Default for Prefs {
             refresh_secs: DEFAULT_REFRESH_SECS,
             theme: ThemePref::default(),
             install_dir: None,
+            terminal_dir: TerminalStartDir::default(),
         }
     }
 }
@@ -188,6 +321,8 @@ mod tests {
         assert_eq!(p.theme, ThemePref::Dark);
         // 没有「默认安装目录」这个键 = 没设过，而不是空字符串
         assert_eq!(p.install_dir, None);
+        // 没有「终端起始目录」= 用默认档位
+        assert_eq!(p.terminal_dir, TerminalStartDir::Home);
     }
 
     #[test]
@@ -206,6 +341,7 @@ mod tests {
             refresh_secs: 5,
             theme: ThemePref::Light,
             install_dir: Some(r"D:\wsl".to_owned()),
+            ..Prefs::default()
         };
         let text = serde_json::to_string(&p).unwrap();
         assert!(text.contains(r#""theme":"light""#), "{text}");
@@ -218,6 +354,7 @@ mod tests {
             refresh_secs: 10,
             theme: ThemePref::Light,
             install_dir: Some(r"E:\wsl".to_owned()),
+            ..Prefs::default()
         };
         let text = serde_json::to_string(&p).unwrap();
         let back: Prefs = serde_json::from_str(&text).unwrap();
@@ -261,6 +398,7 @@ mod tests {
             refresh_secs: 99999,
             theme: ThemePref::Light,
             install_dir: None,
+            ..Prefs::default()
         }
         .normalized();
         assert_eq!(prefs.theme, ThemePref::Light);
@@ -274,9 +412,143 @@ mod tests {
             refresh_secs: 99999,
             theme: ThemePref::Dark,
             install_dir: Some(r"D:\wsl".to_owned()),
+            ..Prefs::default()
         }
         .normalized();
         assert_eq!(prefs.install_dir.as_deref(), Some(r"D:\wsl"));
+    }
+
+    #[test]
+    fn normalized_does_not_touch_the_terminal_dir() {
+        // 同上：这是"以后再加字段时别忘了它"的守卫 ——
+        // 终端起点被一次刷新间隔改动顺手重置，用户完全联想不到。
+        let custom = TerminalStartDir::Custom("/home/wt/src".to_owned());
+        let prefs = Prefs {
+            refresh_secs: 99999,
+            terminal_dir: custom.clone(),
+            ..Prefs::default()
+        }
+        .normalized();
+        assert_eq!(prefs.terminal_dir, custom);
+    }
+
+    // -- 新终端的起始目录 ---------------------------------------------------
+
+    #[test]
+    fn terminal_dir_defaults_to_home() {
+        assert_eq!(Prefs::default().terminal_dir, TerminalStartDir::Home);
+        assert_eq!(TerminalStartDir::default(), TerminalStartDir::Home);
+    }
+
+    #[test]
+    fn old_prefs_without_terminal_dir_upgrade_to_home() {
+        // v0.5 的 prefs.json 里没有这个键（那时终端继承面板的 cwd）——
+        // 升级后固定落在 `~`。**这是有意的行为改变**，见 `TerminalStartDir`。
+        let p: Prefs = serde_json::from_str(r#"{"refresh_secs":10}"#).unwrap();
+        assert_eq!(p.terminal_dir, TerminalStartDir::Home);
+    }
+
+    #[test]
+    fn terminal_dir_round_trips_through_json() {
+        for dir in [
+            TerminalStartDir::Home,
+            TerminalStartDir::Panel,
+            TerminalStartDir::Custom("/home/wt/src".to_owned()),
+            // 路径里有 `"` 和空格也要活着回来（字符串是嵌进 JSON 的）
+            TerminalStartDir::Custom("/opt/my \"stuff\"".to_owned()),
+        ] {
+            let prefs = Prefs {
+                terminal_dir: dir.clone(),
+                ..Prefs::default()
+            };
+            let text = serde_json::to_string(&prefs).unwrap();
+            let back: Prefs = serde_json::from_str(&text).unwrap();
+            assert_eq!(back.terminal_dir, dir, "{text}");
+        }
+        // 落盘形状也锁一下：固定档位是裸字符串，自定义是 `{"custom": ...}` ——
+        // 手工编辑 `prefs.json` 的人看到的就是这个。
+        let home = serde_json::to_string(&Prefs::default()).unwrap();
+        assert!(home.contains(r#""terminal_dir":"home""#), "{home}");
+        let custom = serde_json::to_string(&Prefs {
+            terminal_dir: TerminalStartDir::Custom("/srv".to_owned()),
+            ..Prefs::default()
+        })
+        .unwrap();
+        assert!(
+            custom.contains(r#""terminal_dir":{"custom":"/srv"}"#),
+            "{custom}"
+        );
+    }
+
+    #[test]
+    fn cd_arg_maps_each_variant() {
+        assert_eq!(TerminalStartDir::Home.cd_arg(), Some("~"));
+        // `None` 就是"不加 --cd" —— 加一个空字符串会被 `wsl.exe` 当成
+        // 一个不存在的目录（实测：chdir 失败后落在 `/`）。
+        assert_eq!(TerminalStartDir::Panel.cd_arg(), None);
+        assert_eq!(
+            TerminalStartDir::Custom("/home/wt".to_owned()).cd_arg(),
+            Some("/home/wt")
+        );
+    }
+
+    #[test]
+    fn container_workdir_only_passes_absolute_paths() {
+        // 容器里没有"Linux home"这个概念：`~` 交给镜像自己的 WORKDIR 决定。
+        assert_eq!(TerminalStartDir::Home.container_workdir(), None);
+        assert_eq!(TerminalStartDir::Panel.container_workdir(), None);
+        assert_eq!(
+            TerminalStartDir::Custom("~".to_owned()).container_workdir(),
+            None
+        );
+        assert_eq!(
+            TerminalStartDir::Custom("~/src".to_owned()).container_workdir(),
+            None
+        );
+        assert_eq!(
+            TerminalStartDir::Custom("/srv/app".to_owned()).container_workdir(),
+            Some("/srv/app")
+        );
+    }
+
+    #[test]
+    fn custom_dir_accepts_home_and_absolute_linux_paths() {
+        // 前后空白要吃掉：用户从别处复制过来十有八九带一个空格
+        assert_eq!(parse_custom_dir("  /home/wt  "), Ok("/home/wt".to_owned()));
+        assert_eq!(parse_custom_dir("/"), Ok("/".to_owned()));
+        // `~` 与 `~/xxx`：实测 `wsl.exe --cd ~/tmp` 会自己展开成 /home/<用户>/tmp
+        assert_eq!(parse_custom_dir("~"), Ok("~".to_owned()));
+        assert_eq!(parse_custom_dir("~/src"), Ok("~/src".to_owned()));
+    }
+
+    #[test]
+    fn custom_dir_rejects_windows_paths_with_a_specific_hint() {
+        // 这是**最可能**的输入错误（面板里到处都是 `D:\wsl\...` 这种框），
+        // 所以错误信息要专门提一句，而不是只说"要绝对路径"。
+        for win in [r"D:\wsl", r"\\nas\share", r"C:\Users\76434"] {
+            let err = parse_custom_dir(win).expect_err("Windows 路径该被拒绝");
+            assert!(err.contains("Windows 路径"), "{win} → {err}");
+        }
+    }
+
+    #[test]
+    fn custom_dir_rejects_empty_and_relative_paths() {
+        for bad in ["", "   ", "home/wt", "./here", ".."] {
+            assert!(parse_custom_dir(bad).is_err(), "{bad:?} 该被拒绝");
+        }
+    }
+
+    #[test]
+    fn every_fixed_terminal_dir_has_a_label_and_is_listed() {
+        for dir in TerminalStartDir::FIXED {
+            assert!(!dir.label().is_empty());
+            assert!(!dir.describe().is_empty());
+        }
+        assert!(TerminalStartDir::FIXED.contains(&TerminalStartDir::default()));
+        // 自定义不在固定档位里：它要配一个输入框，是单独一个按钮
+        assert!(!TerminalStartDir::FIXED
+            .iter()
+            .any(|d| matches!(d, TerminalStartDir::Custom(_))));
     }
 
     #[test]
