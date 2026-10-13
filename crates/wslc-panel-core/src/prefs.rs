@@ -442,7 +442,7 @@ mod tests {
 
     #[test]
     fn old_prefs_without_terminal_dir_upgrade_to_home() {
-        // v0.5 的 prefs.json 里没有这个键（那时终端继承面板的 cwd）——
+        // 0.6.0 及更早的 prefs.json 里没有这个键（那时终端继承面板的 cwd）——
         // 升级后固定落在 `~`。**这是有意的行为改变**，见 `TerminalStartDir`。
         let p: Prefs = serde_json::from_str(r#"{"refresh_secs":10}"#).unwrap();
         assert_eq!(p.terminal_dir, TerminalStartDir::Home);

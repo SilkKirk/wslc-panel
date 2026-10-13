@@ -2804,7 +2804,7 @@ fn install_log_card(
 /// 分开放是刻意的，见 `prefs.rs` 的模块说明。
 ///
 /// v0.3 只做两项（都是"简单且立刻见效"的）：自动刷新间隔、界面主题。
-/// v0.5.12 加了「终端」卡 —— 它不是纯数据：自定义路径那个输入框住在
+/// 后来加了「终端」卡 —— 它不是纯数据：自定义路径那个输入框住在
 /// `Shell` 里（`InputState::new` 要 `&mut Window`），所以这一页现在收
 /// `&Shell` 而不是 `&AppState`（和「添加实例」页同一个理由）。
 pub fn app_settings(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
