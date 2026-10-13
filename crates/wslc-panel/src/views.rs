@@ -3519,6 +3519,10 @@ fn terminal_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         .iter()
         .map(|dir| {
             let dir = dir.clone();
+            // 闭包是 `Fn`（GPUI 会反复调用它），所以里面必须**再 clone 一次** ——
+            // 直接把捕获的那个 move 进去会编译不过（`borrow of moved value`），
+            // 而且这里 `dir` 后面还要用来判断选中态。
+            let for_click = dir.clone();
             let entity = entity.clone();
             // id 用 `{:?}`（ASCII）而不是 label：元素 id 要稳定、
             // 且不该随显示文案变（和主题卡同一个写法）。
@@ -3526,7 +3530,7 @@ fn terminal_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                 .label(dir.label())
                 .small()
                 .on_click(move |_, _, cx| {
-                    let dir = dir.clone();
+                    let dir = for_click.clone();
                     entity.update(cx, |shell, cx| shell.set_terminal_dir(dir, cx));
                 });
             if current == &dir {
