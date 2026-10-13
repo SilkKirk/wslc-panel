@@ -50,6 +50,14 @@ pub const DEFAULT_REGISTRY: &str = "docker.1panel.live";
 /// 所以过滤之后还要再截断一次，并由界面说明"共匹配多少个、继续输入可缩小范围"。
 pub const MAX_VISIBLE_TAGS: usize = 200;
 
+/// 编译期钉住这个上限的合理范围：太小了什么都看不到，
+/// 太大了又变成"每帧建几万个元素"。
+///
+/// 写成 `const _` 而不是测试里的 `assert!`：这条是**常量之间**的关系，
+/// 编译期就能判，而且 clippy 的 `assertions_on_constants` 会报测试里那种写法
+/// （CI 的 lint 任务实测报了 2 条，这是其中一条）。
+const _: () = assert!(MAX_VISIBLE_TAGS >= 50 && MAX_VISIBLE_TAGS <= 1000);
+
 /// 仓库名输入框下面的快捷入口。
 ///
 /// **为什么需要它**：这一版**没有搜索接口**（见模块说明），
@@ -71,6 +79,11 @@ pub const COMMON_IMAGES: &[&str] = &[
     "python",
     "hello-world",
 ];
+
+/// 快捷入口**不能又变成"几十个按钮铺满一屏"** —— 那正是 `PLAN-v0.5.md` §4.4
+/// 记着已经被否掉的做法（那次的结论是改用下拉框）。现在 10 个，
+/// 超过 12 个就该换成下拉框了，所以在这里编译期拦一下。
+const _: () = assert!(COMMON_IMAGES.len() <= 12);
 
 /// 一次 manifest 请求的 `Accept`。
 ///
@@ -400,11 +413,12 @@ pub fn explain_failure(body: &str, stderr: &str) -> String {
             return message;
         }
     }
+    // `rfind` 而不是 `filter(..).next_back()` —— 后者 clippy 会报
+    // `double_ended_iterator_last`（CI 的 lint 任务实测报了 2 条，这是其中一条）。
     let line = stderr
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .next_back()
+        .rfind(|line| !line.is_empty())
         .unwrap_or("");
     if line.is_empty() {
         "registry 没有响应（网络不通，或者这个 registry 地址不对）".to_owned()
@@ -1277,9 +1291,8 @@ mod tests {
         }
         // 快捷清单是**短名**：界面点一下就走 split_input 那条路补 `library/`
         assert!(COMMON_IMAGES.iter().all(|name| !name.contains('/')));
-        // 别又变回"几十个按钮铺满一屏"
-        assert!(COMMON_IMAGES.len() <= 12, "{}", COMMON_IMAGES.len());
-        assert!(MAX_VISIBLE_TAGS >= 50 && MAX_VISIBLE_TAGS <= 1000);
+        // "按钮别铺满一屏"和"tag 上限的合理范围"这两条是**常量之间**的关系，
+        // 已经在定义处用 `const _: () = assert!(...)` 编译期钉住了，这里不用再判。
         assert_eq!(DEFAULT_REGISTRY, "docker.1panel.live");
         assert!(http_timeout() >= std::time::Duration::from_secs(30));
     }

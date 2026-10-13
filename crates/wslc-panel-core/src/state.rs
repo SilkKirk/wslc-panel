@@ -33,7 +33,7 @@ use wslc_core::model::{
 use wslc_core::settings::SettingsDoc;
 use wslc_core::storage::StorageInfo;
 use wslc_core::wslconfig::MisplacedKey;
-use wslc_core::{Result, Wsl, Wslc, cmd};
+use wslc_core::{Result, Wsl, Wslc, cmd, registry};
 
 /// 左侧导航的页面。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +54,15 @@ pub enum Page {
     Containers,
     /// 镜像。
     Images,
+    /// 镜像仓库（在线浏览某个 registry 上的仓库 tag，然后拉取）。
+    ///
+    /// 和「镜像」页分成两页：那一页是**本地已有**的镜像（删除 / 详情 /
+    /// 拿去创建容器），这一页是**远端**仓库的浏览。两页都要"拉取"是不行的
+    /// （`AGENTS.md` §5：同一个动作只给一个入口），所以「镜像」页上那个
+    /// 拉取按钮改成了跳到这一页。
+    ///
+    /// 有输入框（仓库名 / tag 过滤），所以 [`Page::needs_window_to_enter`] 为真。
+    Registry,
     /// 网络。
     Networks,
     /// 卷。
@@ -89,11 +98,14 @@ impl Page {
     /// 所以 `ALL` 是"侧边栏列哪些页"，**不等于**"有哪些页"。
     /// （`wlsc 配置` / `WSL 配置` 曾经也在"不在这里"之列，但它们现在是
     /// [`SettingsTab`] 的两个 tab、不再是页面了。）
-    pub const ALL: [Page; 8] = [
+    pub const ALL: [Page; 9] = [
         Page::Dashboard,
         Page::Instances,
         Page::Containers,
         Page::Images,
+        // 「镜像仓库」紧跟「镜像」：「资源」这一组里它俩是一对
+        // （本地有什么 / 远端有什么），排在一起找起来最省事。
+        Page::Registry,
         Page::Networks,
         Page::Volumes,
         Page::AppSettings,
@@ -108,6 +120,7 @@ impl Page {
             Page::AddInstance => "添加实例",
             Page::Containers => "容器",
             Page::Images => "镜像",
+            Page::Registry => "镜像仓库",
             Page::Networks => "网络",
             Page::Volumes => "卷",
             Page::AppSettings => "应用设置",
@@ -121,7 +134,7 @@ impl Page {
             Page::Dashboard => "概览",
             Page::Instances | Page::AddInstance => "WSL 实例",
             Page::Containers => "容器",
-            Page::Images | Page::Networks | Page::Volumes => "资源",
+            Page::Images | Page::Registry | Page::Networks | Page::Volumes => "资源",
             Page::AppSettings | Page::About => "设置",
         }
     }
@@ -131,8 +144,10 @@ impl Page {
     /// 「添加实例」有输入框，而 `InputState::new` 需要 `&mut Window` ——
     /// 所以它必须在**点击导航时**（有 window）把表单建好，
     /// 不能在渲染时建（那会每帧重建一次输入框，打字都打不进去）。
+    ///
+    /// 「镜像仓库」（v0.6）同理：它有「仓库名」与「tag 过滤」两个输入框。
     pub fn needs_window_to_enter(self) -> bool {
-        matches!(self, Page::AddInstance)
+        matches!(self, Page::AddInstance | Page::Registry)
     }
 }
 
@@ -2128,6 +2143,206 @@ impl SettingsTab {
     }
 }
 
+/// 「镜像仓库」页的状态（v0.6）。
+///
+/// 全是纯数据 —— 「仓库名」和「tag 过滤」那两个输入框是 `Entity<InputState>`，
+/// 留在 `wslc-panel` 的 `Shell` 里（和「添加实例」页同一个分工）。
+///
+/// # 为什么要分开记 `repository` 与 `loaded`
+///
+/// 用户从 `nginx` 换到 `redis` 时，网络那 1~2 秒里**结果列表还是 nginx 的**。
+/// 如果界面只认一个仓库名，那段时间就会把 nginx 的 tag 挂在 redis 的标题下 ——
+/// 而这恰恰是用户最容易误判成"redis 有这些 tag"的时刻（串台）。
+/// 所以：`repository` 是"正在查谁"，`loaded` 是"列表里的东西是谁的"，
+/// 两者不等时界面显示"正在查 X"，不显示旧结果（[`RegistryState::begin_query`] 会清）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryState {
+    /// registry 地址 —— 这一版固定是 [`registry::DEFAULT_REGISTRY`]。
+    pub host: String,
+    /// 用户输进框里的原文（用来显示"由 … 解析为 …"）。
+    pub input: String,
+    /// 正在查的仓库名（**规范化之后**的，`alpine` → `library/alpine`）。
+    pub repository: String,
+    /// 上一次查成功、且列表里正显示的那个仓库名。
+    pub loaded: Option<String>,
+    /// tag 列表（已排序：`latest` 优先、版本倒序）。
+    pub tags: Vec<String>,
+    /// 正在查 tag。
+    pub loading: bool,
+    /// 查 tag 失败的原因（能给用户看的一句话）。
+    pub error: Option<String>,
+    /// tag 过滤词。由输入框的 `InputEvent::Change` 推进来（见 `app.rs`）。
+    pub filter: String,
+    /// 选中的 tag。
+    pub selected: Option<String>,
+    /// 选中 tag 的下载体积（字节，**压缩后**）。
+    pub size: Option<u64>,
+    /// 选中 tag 的层数。
+    pub layers: Option<usize>,
+    /// 正在查体积。
+    pub sizing: bool,
+    /// 查体积失败的原因。
+    pub size_error: Option<String>,
+}
+
+impl Default for RegistryState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RegistryState {
+    /// 初始状态：registry 固定，其余全是空的。
+    pub fn new() -> Self {
+        Self {
+            host: registry::DEFAULT_REGISTRY.to_owned(),
+            input: String::new(),
+            repository: String::new(),
+            loaded: None,
+            tags: Vec::new(),
+            loading: false,
+            error: None,
+            filter: String::new(),
+            selected: None,
+            size: None,
+            layers: None,
+            sizing: false,
+            size_error: None,
+        }
+    }
+
+    /// 开始查一个仓库：**先把上一次的结果清干净**。
+    ///
+    /// ⚠️ 这一步不能省，理由见类型文档（换仓库时串台）。
+    pub fn begin_query(&mut self, input: &str, repository: &str) {
+        self.input = input.to_owned();
+        self.repository = repository.to_owned();
+        self.clear_results();
+        self.loading = true;
+    }
+
+    /// 清掉"上一次查询的结果"，但保留 registry 与用户输入。
+    pub fn clear_results(&mut self) {
+        self.tags.clear();
+        self.loaded = None;
+        self.error = None;
+        self.filter.clear();
+        self.selected = None;
+        self.size = None;
+        self.layers = None;
+        self.size_error = None;
+        self.sizing = false;
+    }
+
+    /// 查 tag 成功。
+    pub fn set_tags(&mut self, repository: &str, tags: Vec<String>) {
+        self.repository = repository.to_owned();
+        self.loaded = Some(repository.to_owned());
+        self.loading = false;
+        self.error = None;
+        self.tags = tags;
+        // 换了仓库，选中的那个 tag 就不属于新列表了。
+        self.selected = None;
+        self.size = None;
+        self.layers = None;
+        self.size_error = None;
+        self.sizing = false;
+    }
+
+    /// 查 tag 失败。结果一并清掉 —— 报错的同时还留着一列旧 tag，
+    /// 用户会以为那些是"这次查到的"。
+    pub fn set_error(&mut self, message: String) {
+        self.loading = false;
+        self.sizing = false;
+        self.error = Some(message);
+        self.tags.clear();
+        self.loaded = None;
+        self.selected = None;
+        self.size = None;
+        self.layers = None;
+        self.size_error = None;
+    }
+
+    /// 选中一个 tag。体积要**重新查**，所以先把旧的那个清掉。
+    pub fn select_tag(&mut self, tag: &str) {
+        self.selected = Some(tag.to_owned());
+        self.size = None;
+        self.layers = None;
+        self.size_error = None;
+        self.sizing = true;
+    }
+
+    /// 体积到手。
+    pub fn set_size(&mut self, bytes: u64, layers: usize) {
+        self.size = Some(bytes);
+        self.layers = Some(layers);
+        self.sizing = false;
+        self.size_error = None;
+    }
+
+    /// 体积查失败（tag 本身还是选中的，只是量不出来）。
+    pub fn set_size_error(&mut self, message: String) {
+        self.sizing = false;
+        self.size = None;
+        self.layers = None;
+        self.size_error = Some(message);
+    }
+
+    /// 过滤词变了。返回**是否真的变了** —— 调用方据此决定要不要重绘
+    /// （和 [`PullProgress::push_lines`] 同一个理由：别每个按键都触发一次重绘）。
+    pub fn set_filter(&mut self, filter: &str) -> bool {
+        let trimmed = filter.trim();
+        if self.filter == trimmed {
+            return false;
+        }
+        self.filter = trimmed.to_owned();
+        true
+    }
+
+    /// 要渲染哪几行 tag（受 [`registry::MAX_VISIBLE_TAGS`] 限制）+ 匹配总数。
+    pub fn visible_tags(&self) -> (Vec<&str>, usize) {
+        registry::filter_tags(&self.tags, &self.filter, registry::MAX_VISIBLE_TAGS)
+    }
+
+    /// 选中 tag 的完整镜像引用（`docker.1panel.live/library/alpine:latest`）。
+    ///
+    /// 没有选中（或还没查过仓库）就是 `None` —— 「拉取」按钮据此决定渲不渲染。
+    ///
+    /// ⚠️ 必须带 registry 前缀：不带的话 `wslc pull` 会去 Docker Hub 找，
+    /// 而那台机器上 `registry-1.docker.io` 不可达（实测 000）。
+    pub fn selected_reference(&self) -> Option<String> {
+        let tag = self.selected.as_deref()?;
+        let repository = self.loaded.as_deref().unwrap_or(self.repository.as_str());
+        if repository.is_empty() || self.host.is_empty() {
+            return None;
+        }
+        Some(registry::pull_reference(&self.host, repository, tag))
+    }
+
+    /// 一句话说明"这个仓库名是怎么来的"—— 原文与规范化结果**不同**时才给。
+    pub fn normalization_note(&self) -> Option<String> {
+        let input = self.input.trim();
+        if input.is_empty() || input == self.repository {
+            return None;
+        }
+        Some(format!("由 {input} 解析为 {}", self.repository))
+    }
+
+    /// 体积说人话：`下载约 3.9 MB（1 层）`。
+    ///
+    /// ⚠️ 措辞必须是"**下载约**"：这是 manifest 累加的**压缩后**大小，
+    /// 而「镜像」页里 `wslc images` 的 `Size` 是解压后占用的（同机 nginx 实测
+    /// 60.9 MB vs 163 MB，差 2.7 倍）。写成"大小"用户一对就会当 bug 报。
+    pub fn size_label(&self) -> Option<String> {
+        let bytes = self.size?;
+        let layers = self.layers.unwrap_or(0);
+        Some(format!(
+            "下载约 {}（{layers} 层）",
+            mirrors::human_bytes(bytes)
+        ))
+    }
+}
+
 /// 应用的完整状态。///
 /// 这是 `app::Shell` 里唯一的字段，所有页面都是它的只读视图。
 ///
@@ -2220,6 +2435,11 @@ pub struct AppState {
     pub online: OnlineDistroState,
     /// 「在线发行版（镜像源）」那一块的状态（动态清单 + 探测结果 + 选中的那个）。
     pub mirrors: MirrorState,
+    /// 「镜像仓库」页的状态（v0.6：浏览远端 registry 的 tag → 拉取）。
+    ///
+    /// 和 [`AppState::mirrors`] 不是一回事：那个是 WSL **发行版**的 rootfs 文件，
+    /// 这个是容器**镜像**仓库（Registry V2）。
+    pub registry: RegistryState,
 }
 
 impl AppState {
@@ -2250,6 +2470,7 @@ impl AppState {
             exec: None,
             online: OnlineDistroState::new(),
             mirrors: MirrorState::new(),
+            registry: RegistryState::new(),
         }
     }
 
@@ -2451,6 +2672,7 @@ mod tests {
         // v0.4 把「wlsc 配置」「WSL 配置」收进「应用设置」的 tab、并加了「关于」，
         // 所以是 10 - 2 + 1 = 9。**总数少了不代表功能少了** —— 那两个只是换了入口。
         // v0.4 接着把「添加实例」也从侧边栏拿掉了（改从实例列表页的按钮进），9 - 1 = 8。
+        // v0.6 加了「镜像仓库」（在线浏览 registry 的 tag 再拉取），8 + 1 = 9。
         //
         // 这个断言存在的意义就是**逼人改它**：加页面时忘了同步导航分组，
         // 侧边栏会出现重复的组标题。历史上 commit 552a91c 就是被它抓到的；
@@ -2458,11 +2680,11 @@ mod tests {
         //
         // ⚠️ 注意 `cargo check --all-targets` 只编译不执行，
         // 所以它真的被跑到要靠 `cargo test -p wslc-panel-core`（见 SPIKE 7.8）。
-        assert_eq!(Page::ALL.len(), 8);
+        assert_eq!(Page::ALL.len(), 9);
     }
 
     #[test]
-    fn only_the_add_instance_page_needs_a_window_to_enter() {
+    fn only_the_pages_with_inputs_need_a_window_to_enter() {
         // 有输入框的页面必须在点击时（有 window）把表单建好。
         // 哪天给别的页面加了输入框，这个测试会提醒你一起改。
         //
@@ -2470,12 +2692,121 @@ mod tests {
         // 所以不能只遍历 `ALL` 就算完 —— 那样这条断言对它就是**空的**，
         // 哪天真把它改坏了也抓不到。显式再查一遍。
         for page in Page::ALL {
-            assert!(
-                !page.needs_window_to_enter(),
-                "{page:?} 突然需要 window 了 —— 那它得走「添加实例」那条懒创建路径"
+            let expected = matches!(page, Page::Registry);
+            assert_eq!(
+                page.needs_window_to_enter(),
+                expected,
+                "{page:?} 的 needs_window_to_enter 与预期不符 —— 有输入框的页面\
+                 得走懒创建路径（见 app.rs 的 ensure_install_form / ensure_registry_form）"
             );
         }
         assert!(Page::AddInstance.needs_window_to_enter());
+        assert!(Page::Registry.needs_window_to_enter());
+    }
+
+    #[test]
+    fn registry_state_never_shows_a_stale_repository() {
+        let mut state = RegistryState::new();
+        assert_eq!(state.host, registry::DEFAULT_REGISTRY);
+
+        state.begin_query("alpine", "library/alpine");
+        assert!(state.loading, "提交查询就该进入 loading");
+        assert_eq!(
+            state.normalization_note().as_deref(),
+            Some("由 alpine 解析为 library/alpine"),
+            "原文与规范化结果不同时要说清"
+        );
+        state.set_tags(
+            "library/alpine",
+            vec!["latest".to_owned(), "3.24.2".to_owned()],
+        );
+        assert!(!state.loading);
+        assert!(state.error.is_none());
+        assert_eq!(state.loaded.as_deref(), Some("library/alpine"));
+        assert_eq!(state.tags.len(), 2);
+
+        // 原文就是规范名时不该多嘴
+        state.begin_query("library/alpine", "library/alpine");
+        assert_eq!(state.normalization_note(), None);
+
+        // ⚠️ 换仓库：旧结果必须**立刻**消失。留着的话，网络那 1~2 秒里
+        // 界面会把 nginx 的 tag 挂在 redis 的标题下 —— 用户最容易误判的时刻。
+        state.set_tags("library/nginx", vec!["1.31.6".to_owned()]);
+        state.select_tag("1.31.6");
+        assert_eq!(state.selected.as_deref(), Some("1.31.6"));
+        state.begin_query("redis", "library/redis");
+        assert!(state.tags.is_empty(), "换仓库时旧 tag 不能留着");
+        assert!(state.loaded.is_none(), "换仓库时不能说列表是谁的");
+        assert!(state.selected.is_none(), "换仓库时选中的 tag 也不算数了");
+        assert!(state.filter.is_empty(), "过滤词也该跟着清");
+
+        // 失败时同样不能留着旧结果（报错旁边挂着一列 tag，会被读成"这次查到的"）
+        state.set_tags("library/redis", vec!["7.4".to_owned()]);
+        state.set_error("这个 registry 上没有仓库 library/nope".to_owned());
+        assert!(state.tags.is_empty());
+        assert!(state.loaded.is_none());
+        assert!(!state.loading);
+        assert!(state.error.is_some());
+    }
+
+    #[test]
+    fn registry_state_builds_the_pull_reference_with_the_registry_prefix() {
+        let mut state = RegistryState::new();
+        // 还没查过 → 没有可拉的
+        assert_eq!(state.selected_reference(), None);
+
+        state.begin_query("alpine", "library/alpine");
+        state.set_tags("library/alpine", vec!["latest".to_owned()]);
+        // 查到了但没选 tag → 还是不能拉
+        assert_eq!(state.selected_reference(), None);
+
+        state.select_tag("latest");
+        assert!(state.sizing, "选中 tag 就该开始量体积");
+        // ⚠️ 必须带 registry 前缀：不带的话 `wslc pull` 会去 Docker Hub 找，
+        // 而它在这台机器上不可达（实测 000）。
+        assert_eq!(
+            state.selected_reference().as_deref(),
+            Some("docker.1panel.live/library/alpine:latest")
+        );
+
+        state.set_size(3_850_349, 1);
+        assert!(!state.sizing);
+        assert_eq!(state.size_label().as_deref(), Some("下载约 3.9 MB（1 层）"));
+
+        // 换 tag → 体积要重量，不能留着上一个 tag 的数字
+        state.select_tag("3.24.2");
+        assert!(state.size.is_none());
+        assert!(state.size_label().is_none());
+        // 量不出来时给原因，而不是留一个空的体积
+        state.set_size_error("这个镜像没有 amd64/linux 那一份".to_owned());
+        assert!(!state.sizing);
+        assert!(state.size_error.is_some());
+        // 但那个 tag 仍然是选中的（用户还能拉它）
+        assert_eq!(
+            state.selected_reference().as_deref(),
+            Some("docker.1panel.live/library/alpine:3.24.2")
+        );
+    }
+
+    #[test]
+    fn registry_state_filters_locally_and_reports_truncation() {
+        let mut state = RegistryState::new();
+        state.set_tags("library/x", (0..300).map(|i| format!("v{i}")).collect());
+
+        // 没有过滤词：给前 MAX_VISIBLE_TAGS 个，但**总数要说真话**
+        let (shown, total) = state.visible_tags();
+        assert_eq!(shown.len(), registry::MAX_VISIBLE_TAGS);
+        assert_eq!(total, 300, "截断了也得让界面能说清一共多少");
+
+        // 过滤词变了要返回 true（调用方据此重绘）；重复设同一个值要返回 false
+        // （每次按键都重绘是没必要的，和 `PullProgress::push_lines` 同一个理由）
+        assert!(state.set_filter("  v1  "));
+        assert_eq!(state.filter, "v1", "前后空白要 trim");
+        assert!(!state.set_filter("v1"));
+        assert!(!state.set_filter("  v1  "), "trim 之后相同就不该再触发重绘");
+        let (shown, total) = state.visible_tags();
+        assert!(total > 0 && total < 300, "total = {total}");
+        assert!(shown.iter().all(|tag| tag.contains("v1")), "{shown:?}");
     }
 
     #[test]

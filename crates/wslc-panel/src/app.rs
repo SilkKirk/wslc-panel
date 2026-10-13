@@ -23,7 +23,11 @@ use std::time::{Duration, Instant};
 use gpui_kit::component::button::*;
 // `StyledExt` 提供 `font_bold` / `font_semibold` 等字重方法（由宏生成），
 // 不导入 trait 就会报 "no method named font_bold"。
-use gpui_kit::component::input::InputState;
+// `InputEvent` 是**订阅输入框内容变化**要用的（v0.6 的 tag 过滤框）——
+// 这不是猜的 API：组件库自己的 `SearchBox` 就是 `cx.subscribe(&input, ...)` +
+// `InputEvent::Change`（见 gpui-component 0.7.1 的 `src/input/search.rs`，
+// 最小例子在 gpui-kit 的 `tests/input/constraints.rs`）。
+use gpui_kit::component::input::{InputEvent, InputState};
 // 「微软商店」与「在线发行版」两张清单都走组件库的 `Select`（下拉框）——
 // 参考实现也是一个下拉框（`CustomComboBox`），而不是我们原先那种
 // "几十个按钮铺满一屏"的写法。
@@ -39,6 +43,8 @@ use wslc_core::cmd::container::{PullPolicy, RunSpec};
 use wslc_core::cmd::distro::InstallSpec;
 use wslc_core::cmd::install::{self, InstallCancel, InstallEvent, InstallSummary, RunOptions};
 use wslc_core::mirrors;
+// 镜像仓库（Registry V2）的纯逻辑：引用规范化、URL 拼装、tag 排序、错误翻译。
+use wslc_core::registry;
 use wslc_core::model::install::{
     self as install_model, InstallSource, derive_install_dir, suggest_name_from_file,
 };
@@ -109,6 +115,24 @@ pub(crate) struct InstallForm {
     /// 这么绕是因为本仓库没有"输入框内容变化"的订阅先例（本机编译不了，
     /// 猜 API 要白烧一轮 CI）—— 用"比较上次推导值"能达到同样效果。
     pub(crate) last_derived_dir: Option<String>,
+}
+
+/// 「镜像仓库」页的两个输入框（v0.6）。
+///
+/// 和 [`InstallForm`] 同一个分工：GPUI 的 `Entity<InputState>` 留在 `Shell` 里，
+/// 纯数据（tag 列表 / 选中项 / 体积）在 `AppState::registry` 里。
+/// 进页面时**懒创建**（`InputState::new` 要 `&mut Window`），离开**不销毁**。
+pub(crate) struct RegistryForm {
+    /// 仓库名。`alpine` / `library/nginx` / `grafana/grafana` / `nginx:1.27`，
+    /// 甚至粘一整条浏览器 URL 进来都认（规范化在
+    /// [`wslc_core::registry::split_input`] 里，有单测）。
+    pub(crate) repository: Entity<InputState>,
+    /// tag 过滤词。
+    ///
+    /// ⚠️ 它的 `InputEvent::Change` **必须订阅**（见 [`Shell::ensure_registry_form`]）：
+    /// 渲染整个页面的是 `Shell`，不订阅的话父级不会重绘 —— 过滤结果要等到
+    /// 下一次自动刷新（默认 3 秒）才变，打字时看着就像"过滤框坏了"。
+    pub(crate) filter: Entity<InputState>,
 }
 
 /// 下拉框里的一项：**显示文本 ≠ 取值**。
@@ -526,6 +550,15 @@ pub struct Shell {
     /// **一 drop 就退订**（组件库自己也是 `vec![cx.subscribe_in(..)]` 存起来的）。
     /// 丢了它不会报错，只是"选了下拉框什么都不会发生" —— 那种 bug 很难查。
     select_subs: Vec<Subscription>,
+    /// 「镜像仓库」页的两个输入框；进过那一页之后一直是 `Some`。
+    ///
+    /// `pub(crate)`：`views.rs` 要读它来渲染页面。
+    pub(crate) registry_form: Option<RegistryForm>,
+    /// 「镜像仓库」页那个 tag 过滤框的**订阅**。
+    ///
+    /// ⚠️ 和 `select_subs` 同一个坑：`Subscription` **一 drop 就退订**，
+    /// 表现是"在过滤框里打字，列表不动"—— 不会报错，所以很难查。
+    registry_subs: Vec<Subscription>,
     /// 单输入框提示弹窗（移动位置 / 调整大小 / 设置默认用户）；关闭时为 `None`。
     ///
     /// 同样是 `pub(crate)`：浮层在 `views.rs` 里渲染。
@@ -597,6 +630,8 @@ impl Shell {
             distro_detail: None,
             install_form: None,
             select_subs: Vec::new(),
+            registry_form: None,
+            registry_subs: Vec::new(),
             prompt: None,
             install_run: None,
             install_cancel: None,
@@ -935,6 +970,177 @@ impl Shell {
             .max(1)
     }
 
+    // -- 镜像仓库（v0.6） ----------------------------------------------------
+
+    /// 建「镜像仓库」页的两个输入框（幂等）。
+    ///
+    /// **必须**在有 `&mut Window` 的地方调用 —— `InputState::new` 要它。
+    pub fn ensure_registry_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.registry_form.is_some() {
+            return;
+        }
+
+        let repository = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("nginx / library/nginx / grafana/grafana")
+        });
+        let filter =
+            cx.new(|cx| InputState::new(window, cx).placeholder("过滤 tag，例如 alpine"));
+
+        // ⚠️ 这个订阅是**必须**的，不是优化：渲染整页的是 `Shell`，而输入框改的是
+        // `InputState` 自己的值 —— 不订阅父级就不会重绘，过滤结果要等到下一次
+        // 自动刷新（默认 3 秒）才变，打字时看着就像"过滤框坏了"。
+        //
+        // 订阅本身要存进 `Shell`：`Subscription` **一 drop 就退订**
+        // （和 `select_subs` 同一个坑，见那个字段的说明）。
+        let filter_sub = cx.subscribe(&filter, |shell, input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                let value = input.read(cx).value().trim().to_owned();
+                // 没有真的变化就不重绘 —— 每次按键都重绘是白烧
+                // （和 `PullProgress::push_lines` 返回 bool 同一个理由）。
+                if shell.state.registry.set_filter(&value) {
+                    cx.notify();
+                }
+            }
+        });
+        self.registry_subs = vec![filter_sub];
+
+        self.registry_form = Some(RegistryForm { repository, filter });
+    }
+
+    /// 「镜像仓库」页点「查询」：拉这个仓库的 tag 列表。
+    ///
+    /// ⚠️ 那个请求**必须在后台执行器上**（`AGENTS.md` §7.1）：实测 `node` 的
+    /// tag 列表是 152 KB / 2.4 秒，放界面线程上就是"点了卡两秒"。
+    pub fn query_registry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = self.registry_form.as_ref() else {
+            return;
+        };
+        let raw = form.repository.read(cx).value().trim().to_owned();
+        if raw.is_empty() {
+            self.state.notify(Toast::error("先填一个仓库名，例如 nginx"));
+            cx.notify();
+            return;
+        }
+        // 规范化（短名补 `library/`、拆开粘贴进来的 URL）。**失败就不发请求** ——
+        // 判据只有 `registry::split_input` 那一处（那里也是安全边界）。
+        let repository = match registry::split_input(&raw) {
+            Ok((repository, _tag)) => repository,
+            Err(e) => {
+                self.state.notify(Toast::error(e));
+                cx.notify();
+                return;
+            }
+        };
+        if self.state.registry.loading {
+            return;
+        }
+        self.state.registry.begin_query(&raw, &repository);
+        // 换仓库时把过滤框也清空：`begin_query` 清的是 `state.filter`，
+        // 而输入框里还留着上一次的字 —— 不清就会自相矛盾（框里写着 alpine，
+        // 列表却是 redis 的全部 tag）。
+        if let Some(form) = self.registry_form.as_ref() {
+            form.filter
+                .update(cx, |state, cx| state.set_value(String::new(), window, cx));
+        }
+        cx.notify();
+
+        let host = self.state.registry.host.clone();
+        let fetch_repository = repository.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    wslc_core::cmd::registry::fetch_tags(&host, &fetch_repository)
+                })
+                .await;
+            let _ = this.update(cx, |shell, cx| {
+                match result {
+                    Ok(tags) => shell.state.registry.set_tags(&repository, tags),
+                    Err(e) => shell.state.registry.set_error(e),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 选中一个 tag → 后台量它的**下载体积**。
+    ///
+    /// 只给**选中的那一个**量：一次要两个请求（index → 本机架构那份 manifest，
+    /// 实测内容协商省不掉），列表里 1339 个 tag 全量一遍就是 1339 次请求，
+    /// 直接撞限流。
+    pub fn select_registry_tag(&mut self, tag: String, cx: &mut Context<Self>) {
+        self.state.registry.select_tag(&tag);
+        cx.notify();
+
+        let host = self.state.registry.host.clone();
+        let repository = self
+            .state
+            .registry
+            .loaded
+            .clone()
+            .unwrap_or_else(|| self.state.registry.repository.clone());
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    wslc_core::cmd::registry::fetch_size(&host, &repository, &tag)
+                })
+                .await;
+            let _ = this.update(cx, |shell, cx| {
+                // 结果回来时用户可能已经点了别的 tag —— 那这一次就**丢掉**。
+                // 把 nginx 的体积挂到 alpine 上是比"暂时没有体积"更糟的事。
+                if shell.state.registry.selected.as_deref() != Some(tag.as_str()) {
+                    return;
+                }
+                match result {
+                    Ok(size) => shell.state.registry.set_size(size.bytes, size.layers),
+                    Err(e) => shell.state.registry.set_size_error(e),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 常用镜像的快捷入口：填进输入框并**立刻查**。
+    ///
+    /// 一键到位 —— 用户点 `nginx` 的意图就是"看看 nginx 有哪些 tag"，
+    /// 再让他点一次「查询」是多余的。
+    pub fn apply_registry_preset(
+        &mut self,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(form) = self.registry_form.as_ref() else {
+            return;
+        };
+        form.repository
+            .update(cx, |state, cx| state.set_value(name.to_owned(), window, cx));
+        self.query_registry(window, cx);
+    }
+
+    /// 「镜像仓库」页点「拉取」：把选中的 tag 拉下来。
+    ///
+    /// 和「拉取镜像」弹窗走的是**同一个** [`Shell::start_pull`]；
+    /// 进度显示在这一页内联的卡片里（见 `views::registry_page`），不弹浮层 ——
+    /// 页面本身就是"正在拉"的上下文，再盖一层浮层没有额外信息。
+    pub fn pull_registry_selection(&mut self, cx: &mut Context<Self>) {
+        if self.state.pulling.is_some() {
+            self.state
+                .notify(Toast::info("已经有一个拉取在跑了，等它结束"));
+            cx.notify();
+            return;
+        }
+        let Some(reference) = self.state.registry.selected_reference() else {
+            self.state.notify(Toast::error("先在上面选一个 tag"));
+            cx.notify();
+            return;
+        };
+        self.start_pull(reference, cx);
+    }
+
     // -- 拉取镜像弹窗 --------------------------------------------------------
 
     /// 打开「拉取镜像」弹窗，并把焦点交给输入框。
@@ -971,10 +1177,11 @@ impl Shell {
         cx.notify();
     }
 
-    /// 读取输入框内容，发起**流式** `wslc pull`。
+    /// 读取输入框内容，交给 [`Shell::start_pull`] 真正去拉。
     ///
-    /// 弹窗保持打开并切到"进度模式"：实时显示输出最后若干行 + 「取消拉取」。
-    /// 结束后自动关闭、弹提示、刷新列表。
+    /// 「拉取镜像」弹窗按 `state.pulling` 分成两种形态（表单 / 进度）：
+    /// 一提交就切到进度，拉完自动切回表单 —— 所以这里是"读引用 + 校验"，
+    /// 拉取的实现只有 [`Shell::start_pull`] 一份。
     ///
     /// 为什么不用阻塞的 `cmd::image::pull`：那个要等进程结束才返回，
     /// 用户只能干看着转圈，也没法取消。
@@ -992,6 +1199,16 @@ impl Shell {
             cx.notify();
             return;
         }
+        self.start_pull(reference, cx);
+    }
+
+    /// 发起一次**流式** `wslc pull`（不碰输入框、不弹窗）。
+    ///
+    /// v0.6 从 [`Shell::confirm_pull`] 里拆出来：拉取的入口现在有**两个** ——
+    /// 「拉取镜像」弹窗（用户手输引用）和「镜像仓库」页（选中 tag 直接拉）。
+    /// 后面那一整段（流式进度 + 取消 + 收尾提示 + 刷新）**完全一样**，
+    /// 所以它只有这一份实现 —— 两个入口背后是同一段代码，行为不会走偏。
+    pub fn start_pull(&mut self, reference: String, cx: &mut Context<Self>) {
         if self.state.pulling.is_some() {
             return;
         }
@@ -2325,21 +2542,27 @@ impl Shell {
     /// **在点击时**把表单建好。在渲染时建会每帧重建一次控件，字都打不进去。
     pub fn set_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         if page.needs_window_to_enter() {
-            self.ensure_install_form(window, cx);
+            if page == Page::Registry {
+                // 「镜像仓库」只有两个输入框，没有要预拉的清单 ——
+                // 仓库名是用户填的，进来就发请求反而是无意义的流量。
+                self.ensure_registry_form(window, cx);
+            } else {
+                self.ensure_install_form(window, cx);
 
-            // 进页面就把两份清单在后台拉起来：用户切到「微软商店」或
-            // 「在线发行版（镜像源）」时列表**已经在了**，不用先点一次「刷新」。
-            // 两个请求都很小（商店清单十几 KB、镜像清单 50 KB），
-            // 而且各自的函数里会挡住重复请求。**不在这里同步拉**：那会卡住界面。
-            if self.state.online.items.is_empty() && !self.state.online.loading {
-                self.refresh_online_list(window, cx);
-            }
-            if self.state.mirrors.offers.is_empty() && !self.state.mirrors.loading {
-                self.refresh_mirror_catalog(window, cx);
-            } else if self.state.mirrors.chosen.is_none() && !self.state.mirrors.probing {
-                // 清单已经在手（上次进来拉过）、但还没测速过 —— 补一次。
-                // 否则"换个发行版页"回来会发现 URL 还是空的（校验会挡住提交）。
-                self.probe_mirrors(cx);
+                // 进页面就把两份清单在后台拉起来：用户切到「微软商店」或
+                // 「在线发行版（镜像源）」时列表**已经在了**，不用先点一次「刷新」。
+                // 两个请求都很小（商店清单十几 KB、镜像清单 50 KB），
+                // 而且各自的函数里会挡住重复请求。**不在这里同步拉**：那会卡住界面。
+                if self.state.online.items.is_empty() && !self.state.online.loading {
+                    self.refresh_online_list(window, cx);
+                }
+                if self.state.mirrors.offers.is_empty() && !self.state.mirrors.loading {
+                    self.refresh_mirror_catalog(window, cx);
+                } else if self.state.mirrors.chosen.is_none() && !self.state.mirrors.probing {
+                    // 清单已经在手（上次进来拉过）、但还没测速过 —— 补一次。
+                    // 否则"换个发行版页"回来会发现 URL 还是空的（校验会挡住提交）。
+                    self.probe_mirrors(cx);
+                }
             }
         }
         self.goto_page(page, cx);
@@ -4033,6 +4256,7 @@ fn nav_id(page: Page) -> &'static str {
         Page::AddInstance => "nav-add-instance",
         Page::Containers => "nav-containers",
         Page::Images => "nav-images",
+        Page::Registry => "nav-registry",
         Page::Networks => "nav-networks",
         Page::Volumes => "nav-volumes",
         Page::AppSettings => "nav-app-settings",
