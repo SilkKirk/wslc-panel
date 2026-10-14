@@ -441,7 +441,11 @@ impl CreateDialog {
     /// 这也是 `views::page` 要多收一个 `cx` 的原因
     /// （弹窗底部要**实时**预览等效命令）。
     /// `pub(crate)`：`views.rs` 要用它来做**实时**等效命令预览。
-    pub(crate) fn to_spec(&self, cx: &App) -> RunSpec {
+    ///
+    /// `existing_names` 是**现有容器的名字**（`AppState::container_names()`）：
+    /// 容器名留空时按镜像推一个（见 [`wslc_core::model::suggest_container_name`]），
+    /// 撞名要能看出来，所以得知道已经有哪些名字。
+    pub(crate) fn to_spec(&self, existing_names: &[String], cx: &App) -> RunSpec {
         let text = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
 
         let mut spec = RunSpec::new(text(&self.image));
@@ -450,7 +454,16 @@ impl CreateDialog {
         spec.pull = self.pull;
 
         let name = text(&self.name);
-        if !name.is_empty() {
+        if name.is_empty() {
+            // 留空时**不让 `wslc` 随机起名**（那是 Docker 那套
+            // `shimmering_karakoram`，列表里看不出是哪个镜像起的）——
+            // 按镜像推一个：`nginx` / `nginx-2`。推不出来（镜像还没填）就
+            // 保持 `None`，交给 `wslc` 自己起（那时提交也会被"请先填写镜像引用"拦住）。
+            let suggested = wslc_core::model::suggest_container_name(&spec.image, existing_names);
+            if !suggested.is_empty() {
+                spec.name = Some(suggested);
+            }
+        } else {
             spec.name = Some(name);
         }
 
@@ -1969,7 +1982,7 @@ impl Shell {
                 InputState::new(window, cx).placeholder("docker.1panel.live/library/nginx:latest")
             }),
             image_select,
-            name: cx.new(|cx| InputState::new(window, cx).placeholder("留空则自动命名")),
+            name: cx.new(|cx| InputState::new(window, cx).placeholder("留空就按镜像命名")),
             ports: cx.new(|cx| InputState::new(window, cx).placeholder("8080:80, 9090:90")),
             env: cx.new(|cx| InputState::new(window, cx).placeholder("TZ=Asia/Shanghai")),
             volumes: cx
@@ -2131,7 +2144,10 @@ impl Shell {
         let Some(dialog) = self.create_dialog.as_ref() else {
             return;
         };
-        let spec = dialog.to_spec(cx);
+        // 查重名要用现有容器名 —— 和预览读的是同一个函数，所以
+        // "预览里写着 `--name nginx-2`" 和实际执行的名字**必然一致**。
+        let existing = self.state.container_names();
+        let spec = dialog.to_spec(&existing, cx);
 
         if spec.image.trim().is_empty() {
             self.state.notify(Toast::error("请先填写镜像引用"));
@@ -4481,7 +4497,7 @@ impl Render for Shell {
         // 所以得把 `cx` 传下去。
         let create_dialog: AnyElement = match &self.create_dialog {
             None => div().into_any_element(),
-            Some(dialog) => views::create_dialog_overlay(dialog, &entity, cx),
+            Some(dialog) => views::create_dialog_overlay(dialog, &self.state, &entity, cx),
         };
 
         // 容器详情弹窗。
