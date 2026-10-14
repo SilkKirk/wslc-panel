@@ -259,6 +259,13 @@ Invoke-RestMethod -Headers $H -Uri "$api/commits/<sha>/check-runs"
 中文，conventional commits 风格：`feat:` / `fix:` / `perf:` / `chore:` / `docs:` / `refactor:`。
 正文写清**为什么**，以及被否掉的替代方案。
 
+⚠️ **别用 `git add -A` / `git add .`** —— 这个工作区里经常躺着临时文件
+（写提交信息的 `.tmp-msg*.txt`、走 API 的 `.tmp-*.ps1`、`.tmp-readme.md`），
+`-A` 会把它们一起提交进去。**实测踩过一次**：`.tmp-msg7.txt` 就这么进了 main
+（好在不影响构建与 release 产物 —— zip 里只有 exe + README + docs），
+但仓库里凭空多一个文件，事后还得专门提交删掉。
+提交时列具体路径，或者先 `git status --short` 看一眼再 `add`。
+
 ### 界面：同一个动作只给一个入口
 
 列表行放**高频**动作，详情弹窗放**低频 / 危险**的 —— 同一个动作**不要两边都摆**。
