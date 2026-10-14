@@ -203,6 +203,26 @@ pub fn suggest_port_mappings(ports: &[u16]) -> String {
     out.join(", ")
 }
 
+/// 从 `wslc images` 的结果里挑出**可用的镜像引用**（去重、排序、排除悬空）。
+///
+/// 给"创建容器时从本地镜像里选"用：`cmd::image::local_references` 与面板的
+/// 下拉框都走这里 —— 面板直接用快照里的 `images`（每 3 秒采集一次），
+/// **不额外起一个 `wslc`**。
+///
+/// ⚠️ 必须按 `reference()` 去重：同一个镜像 ID 会有多个 `Repository` 引用
+/// （实测 `docker.1panel.live/library/hello-world:latest` 与 `hello-world:latest`
+/// 是同一个 `e2ac70e7319a`），而用户要选的是"能拿去 run 的那个名字"。
+pub fn local_references(items: &[ImageListItem]) -> Vec<String> {
+    let mut refs: Vec<String> = items
+        .iter()
+        .filter(|item| !item.is_dangling())
+        .map(ImageListItem::reference)
+        .collect();
+    refs.sort();
+    refs.dedup();
+    refs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +232,23 @@ mod tests {
     const INSPECT_NGINX: &str = include_str!("../../tests/fixtures/image_inspect_nginx.json");
     /// 同上，`hello-world`：**没有** ExposedPorts，只有一条 Cmd。
     const INSPECT_HELLO: &str = include_str!("../../tests/fixtures/image_inspect_hello_world.json");
+
+    #[test]
+    fn local_references_excludes_dangling_and_dedups() {
+        // 这份 fixture 里 hello-world 同一个 ID 有两个引用 —— **两个都留着**
+        // （它们是两个都能 `run` 的名字），而 `<none>` 那类悬空镜像要排除。
+        let items: Vec<ImageListItem> = crate::jsonl::parse_lines(FIXTURE).unwrap();
+        assert_eq!(
+            local_references(&items),
+            vec![
+                "docker.1ms.run/library/alpine:latest".to_owned(),
+                "docker.1panel.live/library/hello-world:latest".to_owned(),
+                "hello-world:latest".to_owned(),
+            ]
+        );
+        // 一个镜像都没有时不该炸（下拉框会显示占位符）
+        assert!(local_references(&[]).is_empty());
+    }
 
     #[test]
     fn parses_real_inspect_output_of_an_image_with_ports() {

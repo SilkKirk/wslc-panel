@@ -13,16 +13,11 @@ pub fn list(wslc: &Wslc) -> Result<Vec<ImageListItem>> {
 
 /// 本地已有的镜像引用（`Repository:Tag`），供创建容器表单做下拉候选。
 ///
-/// 已去重并排序，悬空镜像（`<none>:<none>`）会被排除。
+/// 去重 / 排序 / 排除悬空都在 [`crate::model::local_references`] 里
+/// （纯函数，配真机 fixture 单测）—— 面板那边直接用快照里的 `images` 调它，
+/// 不额外起这个进程。
 pub fn local_references(wslc: &Wslc) -> Result<Vec<String>> {
-    let mut refs: Vec<String> = list(wslc)?
-        .into_iter()
-        .filter(|i| !i.is_dangling())
-        .map(|i| i.reference())
-        .collect();
-    refs.sort();
-    refs.dedup();
-    Ok(refs)
+    Ok(crate::model::local_references(&list(wslc)?))
 }
 
 /// 拉取镜像。
@@ -115,28 +110,9 @@ mod tests {
         assert_eq!(items.len(), 3);
     }
 
-    #[test]
-    fn local_references_filters_dangling_and_dedups() {
-        // 用 fixture 直接跑筛选逻辑（与 local_references 内部一致）。
-        let items: Vec<ImageListItem> =
-            jsonl::parse_lines(include_str!("../../tests/fixtures/images.jsonl")).unwrap();
-        let mut refs: Vec<String> = items
-            .into_iter()
-            .filter(|i| !i.is_dangling())
-            .map(|i| i.reference())
-            .collect();
-        refs.sort();
-        refs.dedup();
-
-        assert_eq!(
-            refs,
-            vec![
-                "docker.1ms.run/library/alpine:latest".to_owned(),
-                "docker.1panel.live/library/hello-world:latest".to_owned(),
-                "hello-world:latest".to_owned(),
-            ]
-        );
-    }
+    // 「本地镜像引用」的去重 / 排序 / 排除悬空现在测在 `model::image` 里
+    // （`local_references_excludes_dangling_and_dedups`，用的同一份 fixture）——
+    // 这里不再抄一遍逻辑，免得两份实现慢慢长歪。
 
     #[test]
     fn pull_rejects_empty_reference_before_spawning() {

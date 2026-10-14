@@ -3910,13 +3910,41 @@ pub fn create_dialog_overlay(
                     .text_color(theme::text())
                     .child("创建容器"),
             )
-            .child(form_field(
-                "create-image",
-                "镜像引用（必填，例如 nginx:latest）",
-                &dialog.image,
-                cx,
-                true,
-            ))
+            .child(
+                // 左边是唯一的事实来源（可以手打、可以粘完整引用），
+                // 右边那个下拉框只是**从本地已有的镜像里挑一个**的快捷方式 ——
+                // 数据来自每 3 秒刷新的快照，不用手打一长串 registry 前缀
+                // （手打时最容易漏的就是它，漏了 `wslc run` 会去 Docker Hub 找，
+                // 而那台机器上不可达）。
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .child(form_field(
+                        "create-image",
+                        "镜像引用（必填，例如 nginx:latest）",
+                        &dialog.image,
+                        cx,
+                        false,
+                    ))
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .w(px(300.))
+                            .flex_none()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme::text_dim())
+                                    .child("或从本地镜像里选（可搜索）"),
+                            )
+                            .child(
+                                Select::new(&dialog.image_select)
+                                    .placeholder("本地还没有镜像")
+                                    .w_full()
+                                    .menu_max_h(px(320.)),
+                            ),
+                    ),
+            )
             .child(image_facts_hint(dialog))
             .child(form_field(
                 "create-name",
