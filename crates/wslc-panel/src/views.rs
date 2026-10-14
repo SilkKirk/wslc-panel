@@ -33,7 +33,10 @@ use wslc_core::settings::{SETTING_KEYS, SettingKey, SettingKind};
 // 写明来源比"碰巧 glob 里有"可靠。
 use gpui_kit::component::checkbox::Checkbox;
 
-use crate::app::{CreateDialog, InstallForm, Shell, WslConfDialog};
+// `FactsState` 是「创建容器」弹窗里那条"从镜像读来的信息"的状态机
+// （`ImageForm` 则是「拉取镜像」弹窗的表单）—— 两者的纯数据部分都在
+// `wslc-core` / `wslc-panel-core`，这里只是画出来。
+use crate::app::{CreateDialog, FactsState, ImageForm, InstallForm, Shell, WslConfDialog};
 // 列宽定义与配置项预设值都是纯数据，住在不依赖 GPUI 的 `wslc-panel-core` 里
 // —— 这样它们的单测不必链接 GPUI（见那个 crate 的顶层说明）。
 use crate::columns::{ALL_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS};
@@ -400,9 +403,9 @@ pub fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
         Page::Instances => instances(state, entity),
         Page::AddInstance => add_instance(shell, cx, entity),
         Page::Containers => containers(state, entity).into_any_element(),
-        // 「镜像」要 `&Shell`（v0.6.2 起它带着 registry / 仓库名输入框和 tag 下拉框，
-        // 那些 `Entity` 住在 `Shell` 里）。
-        Page::Images => images(shell, entity),
+        // 「镜像」页只要 `&AppState`：v0.6.3 起拉取表单在弹窗里（那个要 `&Shell`，
+        // 见 `pull_dialog_overlay`），页面本身只剩一个按钮和一张表。
+        Page::Images => images(state, entity).into_any_element(),
         Page::Networks => networks(state, entity).into_any_element(),
         Page::Volumes => volumes(state, entity).into_any_element(),
         Page::AppSettings => app_settings(shell, entity),
@@ -771,6 +774,21 @@ fn container_row_actions(name: &str, running: bool, entity: &Entity<Shell>) -> A
     let mut actions: Vec<AnyElement> = Vec::new();
 
     if running {
+        // 「终端」放**第一个**：进容器里干活是运行中的容器最高频的动作
+        // （v0.6.3 从详情挪上来的 —— 原先要"点名字 → 找按钮"两次点击，
+        // 见 `container_detail_overlay` 里那条说明）。
+        //
+        // ⚠️ 只有**运行中**才给：`wslc exec` 在停止的容器上必然失败，
+        // 那种"点了必然报错"的按钮不如不画。
+        actions.push(
+            immediate_button(
+                &format!("shell-{name}"),
+                "终端",
+                ImmediateAction::OpenContainerShell(name.to_owned()),
+                entity,
+            )
+            .into_any_element(),
+        );
         actions.push(
             immediate_button(
                 &format!("restart-{name}"),
@@ -919,41 +937,172 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
 // ③ 镜像 / 网络 / 卷
 // ---------------------------------------------------------------------------
 
-/// 镜像页（v0.6.2：远端浏览 / 拉取 / 本地已有，三件事一页）。
+/// 镜像页（v0.6.2 合并成一页，v0.6.3 把拉取表单收进弹窗）。
 ///
-/// # 三段
+/// 页面现在只剩两样东西：一个「拉取镜像…」按钮 + **本地镜像**表。
+/// 拉取表单（registry / 仓库名 / tag 下拉框 / 体积 / 拉取）在弹窗里，
+/// 见 [`pull_dialog_overlay`] —— 它和这里**是同一个入口**：点这个按钮才会
+/// 建表单、才可能拉取（`AGENTS.md` §5「同一个动作只给一个入口」）。
 ///
-/// 1. **拉取区**：registry（可改，默认内置加速站）+ 仓库名 + 「查询」。
-///    仓库名接受 `nginx` / `library/nginx` / `nginx:1.27` / 整条浏览器 URL；
-/// 2. **tag 下拉框**（可搜索）：选中即去量体积 —— **只量选中的那一个**：
-///    一次要两个请求（index → 本机架构那份 manifest，实测内容协商省不掉），
-///    实测 `node` 有 9170 个 tag，全量一遍就是 9170 次请求，直接撞限流；
-/// 3. **本地镜像表**：`wslc images` 的结果 + 删除。
+/// # 为什么表单不铺在页面上（v0.6.3 改回来）
 ///
-/// # 为什么合并（v0.6.2）
-///
-/// 原先「镜像」和「镜像仓库」是**两页**，外加「镜像」页上一个「按引用拉取…」
-/// 弹窗 —— 三个入口背后是同一段拉取实现，用户却要先判断该点哪个
-/// （`AGENTS.md` §5 那条实机教训）。当初留两个入口是因为删掉弹窗就会丢掉
-/// "从别的 registry 拉"这个能力，而 `docs/PLAN-v0.6.md` §3.6 记着那次取舍，
-/// 也写明了正确的合并方向：**把 registry 提成可编辑字段**。
-/// 现在就是这么做的：`ImageForm::host` 是输入框，所以只留一个拉取入口也不丢能力。
-///
-/// # 为什么不用 `cx`
-///
-/// 这一页要显示的东西全在 `state.registry` 里 —— 输入框与下拉框都是
-/// `Entity`，渲染时不需要从它们里读值（选中态由下拉框自己的订阅推进状态）。
-pub fn images(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
-    let state = &shell.state;
-    let page = &state.registry;
+/// v0.6.2 合并两页时把表单铺在了页面上，结果这一页被表单占满，
+/// 而"本地有什么镜像"反倒成了次要内容 —— 后者才是经常要看的。
+pub fn images(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+    let rows: Vec<AnyElement> = state
+        .snapshot
+        .images
+        .iter()
+        .enumerate()
+        .map(|(ix, img)| {
+            let reference = img.reference();
+            table_row(
+                IMAGE_COLUMNS,
+                vec![
+                    cell_text(reference.clone()),
+                    cell_muted(img.short_id().to_owned()),
+                    cell_muted(img.size.clone()),
+                    cell_muted(img.created_since.clone()),
+                    danger_button(
+                        &format!("rmi-{ix}"),
+                        "删除",
+                        PendingAction::RemoveImage(reference),
+                        entity,
+                    )
+                    .into_any_element(),
+                ],
+            )
+            .into_any_element()
+        })
+        .collect();
 
-    let Some(form) = shell.image_form.as_ref() else {
-        // 正常走不到（进这一页时一定会先 `ensure_image_form`），
-        // 但函数不该假设调用顺序。
-        return card("镜像", empty_state("正在准备表单…")).into_any_element();
+    let open_pull = {
+        let entity = entity.clone();
+        // 刻意**不**用 `.disabled()`：全项目都不导入 `Disableable`
+        // （禁用态的文字几乎看不清，实机截图确认过）。重复点击由
+        // `open_pull_dialog` 里的守卫 + 提示条处理。
+        Button::new("open-pull-dialog")
+            .label("拉取镜像…")
+            .primary()
+            .small()
+            .on_click(move |_, window, cx| {
+                // 表单里的 `InputState` / `SelectState` 只能在有 window 的地方创建，
+                // 这里正好有 —— 所以表单是**点开弹窗那一刻**才建的。
+                entity.update(cx, |shell, cx| shell.open_pull_dialog(window, cx));
+            })
     };
 
-    // ---- 1) 拉取区 ------------------------------------------------------
+    // 拉取中时这一行说明"在忙什么"：进度本身在弹窗里（而且那个弹窗关不掉），
+    // 这一行只是让页面本身也看得出它在忙。
+    let status = match &state.pulling {
+        Some(progress) => format!("正在拉取 {} …", progress.image),
+        None => format!(
+            "共 {} 条镜像记录（同一镜像可能对应多个仓库引用）",
+            state.snapshot.images.len()
+        ),
+    };
+
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(
+            h_flex()
+                .w_full()
+                .justify_between()
+                .items_center()
+                .child(open_pull)
+                .child(div().text_sm().text_color(theme::text_muted()).child(status)),
+        )
+        .child(
+            v_flex()
+                .w_full()
+                .rounded_lg()
+                .bg(theme::bg_card())
+                .border_1()
+                .border_color(theme::border())
+                .overflow_hidden()
+                .child(table_header(IMAGE_COLUMNS))
+                .child(if rows.is_empty() {
+                    empty_state("没有本地镜像").into_any_element()
+                } else {
+                    v_flex().w_full().children(rows).into_any_element()
+                }),
+        )
+        .into_any_element()
+}
+
+/// 「拉取镜像」弹窗（覆盖层）。
+///
+/// # 两种形态
+///
+/// 没在拉取时是**表单**（[`pull_dialog_form`]）；拉取中是**进度**
+/// （[`pull_progress_body`]，里面自带「取消拉取」）。
+/// ⚠️ 拉取进行中这个弹窗**关不掉**（`Shell::close_pull_dialog` 会拒绝并给提示），
+/// 所以进度形态下也不画「关闭」—— 一个按下去只会弹提示的按钮不如没有。
+///
+/// # 表单里的三段
+///
+/// 1. registry（**可编辑**，默认内置加速站）+ 仓库名 + 「查询」；
+/// 2. **tag 下拉框**（可搜索）—— 选中即去量体积，而且**只量选中的那一个**：
+///    一次要两个请求（index → 本机架构那份 manifest，实测内容协商省不掉），
+///    实测 `node` 有 9170 个 tag，全量一遍就是 9170 次请求，直接撞限流；
+/// 3. 选中之后：完整引用 + 「下载约 N MB」+「拉取」，
+///    以及镜像已经在本地时的「**用这个镜像创建容器**」。
+pub fn pull_dialog_overlay(
+    form: &ImageForm,
+    state: &AppState,
+    entity: &Entity<Shell>,
+) -> AnyElement {
+    let pulling = state.pulling.is_some();
+    let body: AnyElement = match &state.pulling {
+        Some(progress) => pull_progress_body(progress, entity),
+        None => pull_dialog_form(form, state, entity),
+    };
+
+    let mut card = v_flex()
+        // tag 下拉框展开时会很高，允许滚动，别把按钮挤没。
+        // ⚠️ 滚动容器**必须**带 `.id(...)`（`overflow_y_scroll` 来自
+        // `StatefulInteractiveElement`，只对带 id 的元素可用 —— 漏了是编译错误）。
+        .id("pull-dialog-card")
+        .w(px(720.))
+        .max_h(px(820.))
+        .overflow_y_scroll()
+        .gap_4()
+        .p_5()
+        .rounded_lg()
+        .bg(theme::bg_card())
+        .border_1()
+        .border_color(theme::border())
+        .child(
+            div()
+                .text_lg()
+                .font_bold()
+                .text_color(theme::text())
+                .child("拉取镜像"),
+        )
+        .child(body);
+
+    if !pulling {
+        let close = {
+            let entity = entity.clone();
+            Button::new("pull-dialog-close")
+                .label("关闭")
+                .small()
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |shell, cx| shell.close_pull_dialog(cx));
+                })
+        };
+        card = card.child(h_flex().w_full().justify_end().child(close));
+    }
+
+    modal_scrim(card).into_any_element()
+}
+
+/// 弹窗里那张**表单**（没在拉取时）。
+///
+/// 拆成独立函数只是为了让 [`pull_dialog_overlay`] 的两种形态一眼看得清。
+fn pull_dialog_form(form: &ImageForm, state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+    let page = &state.registry;
 
     let presets: Vec<AnyElement> = registry::COMMON_IMAGES
         .iter()
@@ -962,8 +1111,7 @@ pub fn images(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             // 解一层引用拿到 `&'static str`（它 `Copy`，`move` 闭包直接拷进去）。
             //
             // ⚠️ 写成 `let name = *name;` 而**不是** `let name: &'static str = *name;`：
-            // 后者 clippy 会报 `explicit_auto_deref`（"deref which would be done by
-            // auto-deref"），CI 的 lint 任务实测报了它。
+            // 后者 clippy 会报 `explicit_auto_deref`（CI 的 lint 任务实测报过它）。
             let name = *name;
             let entity = entity.clone();
             Button::new(SharedString::from(format!("image-preset-{name}")))
@@ -1017,9 +1165,6 @@ pub fn images(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             // 点下去按钮先变成「查询中…」—— 从点击到结果出来之间，
             // 界面上必须有变化（`AGENTS.md` §7.1：没有它，用户会以为按钮坏了
             // 然后去点第二次）。
-            //
-            // 刻意**不**用 `.disabled()`：全项目都不导入 `Disableable`
-            // （禁用态的文字几乎看不清）。
             Button::new("image-query")
                 .label(if page.loading { "查询中…" } else { "查询" })
                 .primary()
@@ -1029,7 +1174,6 @@ pub fn images(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                 })
         });
 
-    // tag 下拉框：整体喂进去（组件库的列表是虚拟化的，见 `ImageForm::tags_select`）。
     let tag_picker = v_flex()
         .w_full()
         .gap_1()
@@ -1046,8 +1190,7 @@ pub fn images(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                 .menu_max_h(px(360.)),
         );
 
-    // ---- 状态行：说清"现在是什么情况" ---------------------------------
-
+    // 状态行：说清"现在是什么情况"
     let status: AnyElement = if page.loading {
         div()
             .text_sm()
@@ -1066,7 +1209,7 @@ pub fn images(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             )
             .child(div().text_xs().text_color(theme::text_dim()).child(
                 "换一个仓库名再试；只有支持 Registry V2 的 `tags/list` 才列得出来\
-                 （私有的多半要认证）。**列不出来也照样能拉**：把 tag 写在仓库名后面\
+                 （私有的多半要认证）。**列不出来也能拉**：把 tag 写在仓库名后面\
                  （`nginx:1.27`），或者直接粘完整引用。",
             ))
             .into_any_element()
@@ -1088,17 +1231,14 @@ pub fn images(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             .into_any_element()
     };
 
-    // ---- 2) 选中了什么、能不能拉 --------------------------------------
-
+    // 选中了什么、能不能拉
     let action: AnyElement = match page.selected_reference() {
         // 一个 tag 都没有时给一句说明，别让用户以为按钮没画出来。
         // 这里也是"别的 registry 列不出 tag"时的出口。
         None => div()
             .text_xs()
             .text_color(theme::text_dim())
-            .child(
-                "选一个 tag（或者在仓库名后面写上 `:tag`）之后，这里会出现「拉取」。",
-            )
+            .child("选一个 tag（或者在仓库名后面写上 `:tag`）之后，这里会出现「拉取」。")
             .into_any_element(),
         Some(reference) => {
             // 已经在本地了就顺手给一个「创建容器」：镜像名预填，用户不用再手打一遍。
@@ -1120,7 +1260,7 @@ pub fn images(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                     .into_any_element()
             } else if let Some(label) = page.size_label() {
                 // ⚠️ 措辞是「**下载约**」：这是 manifest 累加的**压缩后**大小，
-                // 不是落盘占用。同机 nginx 实测 60.9 MB，而下面「本地镜像」表里
+                // 不是落盘占用。同机 nginx 实测 60.9 MB，而「本地镜像」表里
                 // `wslc images` 的 `Size` 是 163 MB（差 2.7 倍）——
                 // 写成"大小"用户拿它一对就会当 bug 报上来。
                 div()
@@ -1157,8 +1297,11 @@ pub fn images(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                     .label("用这个镜像创建容器")
                     .small()
                     .on_click(move |_, window, cx| {
+                        // ⚠️ 走 `use_pulled_image` 而不是直接开创建弹窗：
+                        // 它会**先关掉这个弹窗** —— 两层遮罩叠在一起没有任何好处。
+                        let image = image.clone();
                         entity.update(cx, |shell, cx| {
-                            shell.open_create_dialog_prefilled(Some(image.as_str()), window, cx);
+                            shell.use_pulled_image(image, window, cx);
                         });
                     })
                     .into_any_element()
@@ -1205,88 +1348,20 @@ pub fn images(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         }
     };
 
-    let progress: AnyElement = match &state.pulling {
-        // 拉取中：进度内联在这一页上（不弹浮层 —— 页面本身就是"正在拉"的上下文，
-        // 再盖一层没有额外信息）。
-        Some(progress) => card("正在拉取", pull_progress_body(progress, entity)).into_any_element(),
-        None => div().into_any_element(),
-    };
-
-    // ---- 3) 本地已有 ----------------------------------------------------
-
-    let rows: Vec<AnyElement> = state
-        .snapshot
-        .images
-        .iter()
-        .enumerate()
-        .map(|(ix, img)| {
-            let reference = img.reference();
-            table_row(
-                IMAGE_COLUMNS,
-                vec![
-                    cell_text(reference.clone()),
-                    cell_muted(img.short_id().to_owned()),
-                    cell_muted(img.size.clone()),
-                    cell_muted(img.created_since.clone()),
-                    danger_button(
-                        &format!("rmi-{ix}"),
-                        "删除",
-                        PendingAction::RemoveImage(reference),
-                        entity,
-                    )
-                    .into_any_element(),
-                ],
-            )
-            .into_any_element()
-        })
-        .collect();
-
     v_flex()
         .w_full()
-        .gap_4()
-        .child(card(
-            "拉取镜像",
-            v_flex()
-                .w_full()
-                .gap_3()
-                .child(div().text_xs().text_color(theme::text_dim()).child(
-                    "实测这台机器上 Docker Hub 直连不通（registry-1.docker.io 超时），\
-                     所以默认用上面那个加速站（它有完整的 Registry V2 接口）。\
-                     换别的 registry 就直接改上面那格地址 —— 列不出 tag 也能拉：\
-                     把 tag 写在仓库名后面（`nginx:1.27`），或者粘一整条完整引用。",
-                ))
-                .child(h_flex().w_full().gap_2().flex_wrap().children(presets))
-                .child(query_row)
-                .child(tag_picker)
-                .child(status)
-                .child(action),
+        .gap_3()
+        .child(div().text_xs().text_color(theme::text_dim()).child(
+            "实测这台机器上 Docker Hub 直连不通（registry-1.docker.io 超时），\
+             所以默认用上面那个加速站（它有完整的 Registry V2 接口）。\
+             换别的 registry 就直接改上面那格地址 —— 列不出 tag 也能拉：\
+             把 tag 写在仓库名后面（`nginx:1.27`），或者粘一整条完整引用。",
         ))
-        .child(progress)
-        .child(card(
-            "本地镜像",
-            v_flex()
-                .w_full()
-                .gap_3()
-                .child(div().text_sm().text_color(theme::text_muted()).child(format!(
-                    "共 {} 条镜像记录（同一镜像可能对应多个仓库引用）",
-                    state.snapshot.images.len()
-                )))
-                .child(
-                    v_flex()
-                        .w_full()
-                        .rounded_lg()
-                        .bg(theme::bg_card())
-                        .border_1()
-                        .border_color(theme::border())
-                        .overflow_hidden()
-                        .child(table_header(IMAGE_COLUMNS))
-                        .child(if rows.is_empty() {
-                            empty_state("没有本地镜像").into_any_element()
-                        } else {
-                            v_flex().w_full().children(rows).into_any_element()
-                        }),
-                ),
-        ))
+        .child(h_flex().w_full().gap_2().flex_wrap().children(presets))
+        .child(query_row)
+        .child(tag_picker)
+        .child(status)
+        .child(action)
         .into_any_element()
 }
 
@@ -3612,6 +3687,63 @@ fn pull_progress_body(progress: &PullProgress, entity: &Entity<Shell>) -> AnyEle
         .into_any_element()
 }
 
+/// 「创建容器」弹窗里那条**从镜像读来的**信息（声明端口 / 启动命令）。
+///
+/// 它是**锦上添花**：读不到照样能建容器（端口自己填），所以失败时只给一句
+/// 说明，不用红字 —— 红字是留给"要出事了"的（`AGENTS.md` 的界面约定）。
+///
+/// 数据来自 `wslc image inspect --format json`（`Shell::probe_image_facts`
+/// 在后台读、读到了顺手把端口预填），解析在 `wslc-core`
+/// （`model::parse_image_inspect`，配两个真机 fixture 单测）。
+fn image_facts_hint(dialog: &CreateDialog) -> AnyElement {
+    match &dialog.facts {
+        // 用户自己敲的镜像引用：我们没去读，就什么都不说。
+        FactsState::Idle => div().into_any_element(),
+        FactsState::Loading => div()
+            .text_xs()
+            .text_color(theme::text_dim())
+            .child("正在读镜像信息…")
+            .into_any_element(),
+        FactsState::Failed(error) => div()
+            .text_xs()
+            .text_color(theme::text_dim())
+            .child(format!(
+                "读不到镜像信息：{error}（镜像还不在本地时就是这样 —— 端口请自己填）"
+            ))
+            .into_any_element(),
+        FactsState::Ready(facts) => {
+            let ports = if facts.exposed_ports.is_empty() {
+                "这个镜像没有声明端口；要访问它得自己写端口映射（例如 8080:80）。".to_owned()
+            } else {
+                let list = facts
+                    .exposed_ports
+                    .iter()
+                    .map(|port| format!("{port}/tcp"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "镜像声明监听 {list} —— 建议 {}（上面端口那格为空时已替你填好，可改）。",
+                    wslc_core::model::suggest_port_mappings(&facts.exposed_ports)
+                )
+            };
+
+            let mut body = v_flex()
+                .w_full()
+                .gap_1()
+                .child(div().text_xs().text_color(theme::text_dim()).child(ports));
+            if !facts.command.trim().is_empty() {
+                body = body.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child(format!("启动命令：{}", facts.command)),
+                );
+            }
+            body.into_any_element()
+        }
+    }
+}
+
 /// 「创建容器」弹窗的**表单字段**：标签 + 输入框。
 ///
 /// `full` 决定宽度：直接放进 `v_flex` 的用 `w_full`，
@@ -3785,6 +3917,7 @@ pub fn create_dialog_overlay(
                 cx,
                 true,
             ))
+            .child(image_facts_hint(dialog))
             .child(form_field(
                 "create-name",
                 "容器名（留空自动命名）",
@@ -3925,16 +4058,21 @@ pub fn container_detail_overlay(
     //
     // ⚠️ **列表行里已经有的动作，这里一个都不重复。**
     //
-    // 容器列表那一行给的是高频动作：启动 / 重启 / 停止 / 日志 / 删除。
+    // 容器列表那一行给的是高频动作：**终端** / 启动 / 重启 / 停止 / 日志 / 删除。
     // 详情里再摆一遍没有意义 —— 同一个动作两个入口，用户还得判断该点哪个，
     // 而两个入口背后是同一个 `ImmediateAction` / `PendingAction`，行为完全一样。
     // （这一点是**实机看出来的**：发布版里停止的容器在列表行和详情里各有一份
     // 一模一样的「启动 / 日志 / 删除」。）
     //
-    // 详情留给**列表里没有、而且低频或危险**的那几个：强杀（列表里只有优雅停止）、
-    // 执行命令、打开终端、attach 主进程。
+    // ⚠️ v0.6.3：「打开终端」从详情**挪到了列表行**。理由是实测的使用路径 ——
+    // 建完容器想进去干活时，得"点名字开详情 → 找按钮"两次点击，而它其实是
+    // 运行中的容器最高频的动作。挪上去之后这里就**不再重复**它了
+    // （`AGENTS.md` §5 那条规矩）。
     //
-    // 所以**停止的容器在详情里一个动作都没有** —— 那是对的，它能做的三件事
+    // 详情留给**列表里没有、而且低频或危险**的那几个：强杀（列表里只有优雅停止）、
+    // 执行命令（非交互）、attach 主进程。
+    //
+    // 所以**停止的容器在详情里一个动作都没有** —— 那是对的，它能做的几件事
     // 列表行里全有。下面给一句话说明，免得看起来像按钮坏了。
     //
     // 发行版详情是同一条规矩（那边不重复 打开终端 / 启动 / 终止 / 设为默认）。
@@ -3958,17 +4096,8 @@ pub fn container_detail_overlay(
             },
             entity,
         ));
-        // 这两个都是"开一个新终端窗口"——同步调用，不等它关闭
+        // `attach` 是"开一个新终端窗口"——同步调用，不等它关闭
         // （用户可能在里面待几个小时，见 `AGENTS.md` §7.1）。
-        actions.push(
-            immediate_button(
-                "detail-shell",
-                "打开终端",
-                ImmediateAction::OpenContainerShell(name.to_owned()),
-                entity,
-            )
-            .into_any_element(),
-        );
         actions.push(
             immediate_button(
                 "detail-attach",
@@ -3983,7 +4112,7 @@ pub fn container_detail_overlay(
     // 一行说明：其余动作为什么不在这儿。
     // 没有它，用户会以为详情里少了按钮（或者按钮没画出来）。
     let hint = if running {
-        "停止 / 重启 / 日志 / 删除 在列表那一行里"
+        "终端 / 停止 / 重启 / 日志 / 删除 在列表那一行里"
     } else {
         "这个容器已经停止 —— 启动 / 日志 / 删除 都在列表那一行里"
     };
