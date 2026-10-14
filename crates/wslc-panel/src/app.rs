@@ -4515,7 +4515,25 @@ impl Render for Shell {
         // 页面渲染要 `&Shell`（不只是 `&AppState`）——「添加实例」页有输入框，
         // 而输入框的 `InputState` 住在 `Shell` 里。
         // `cx` 也只有那一页用得上（要实时读输入框的值做命令预览）。
-        let page_body = views::page(self, cx, &entity);
+        //
+        // 切页时淡入一下（120ms）：`with_animation` 的 id 用**页面标签** ——
+        // 换页就换 id，于是重新播一次；同一页的后续重绘 id 不变，不会重播
+        // （GPUI 按 id 记住播放进度，一次性动画结束后保持终值）。
+        //
+        // ⚠️ 动画得挂在 `div()` 上而不是 `AnyElement` 上：`AnyElement` 不实现
+        // `Styled`（它是类型擦除后的元素），`.opacity()` 在那儿不存在。
+        // 外面那层 `v_flex().w_full()` 负责把"整页宽"传下去 —— 动画包装层
+        // 自己不带宽度，而页面内容大量用 `w_full`。
+        let page_body: AnyElement = v_flex()
+            .w_full()
+            .child(
+                div().w_full().child(views::page(self, cx, &entity)).with_animation(
+                    state.page.label(),
+                    Animation::new(Duration::from_millis(120)),
+                    |el, delta| el.opacity(delta),
+                ),
+            )
+            .into_any_element();
 
         div()
             .relative()
@@ -4654,10 +4672,19 @@ fn nav_item(page: Page, current: Page, entity: &Entity<Shell>) -> AnyElement {
             entity.update(cx, |shell, cx| shell.set_page(page, window, cx));
         });
 
+    // ⚠️ 悬停/按下**必须**自己写：这是我们自己画的 `div`（要"选中态 + 分组标题"，
+    // 用不了组件库的 `Button`），而 `Button` 自带的那套它一点都没有 ——
+    // v0.6.5 之前鼠标移上去毫无反应，实机反馈"没有点击的感觉"。
+    //
+    // 未选中的项：悬停给一层浅底 + 文字提亮（`nav_hover` 是侧边栏底色与
+    // "已选中"之间的那一档）；按下再深一点。已选中的项不再叠悬停 ——
+    // 它已经在最亮的那一档了，再变只会让人以为选中态丢了。
     item = if active {
         item.bg(theme::bg_selected()).text_color(theme::primary())
     } else {
         item.text_color(theme::text_muted())
+            .hover(|this| this.bg(theme::nav_hover()).text_color(theme::text()))
+            .active(|this| this.bg(theme::nav_hover()))
     };
 
     item.into_any_element()
@@ -4711,7 +4738,7 @@ fn confirm_overlay(action: &ConfirmAction, entity: &Entity<Shell>) -> AnyElement
             })
     };
 
-    views::modal_scrim(
+    views::modal_scrim("confirm",
         v_flex()
             .w(px(460.))
             .gap_4()

@@ -390,6 +390,35 @@ nginx  redis  mysql  postgres  mongo  alpine  ubuntu  node  python  hello-world
 > `deferred` + `POPUP_PRIORITY`，遮罩只有 `BlockMouse`、没有点击处理器，
 > 不会和"点外面关菜单"打架 —— 但**这是推的，没有实机验证过**。
 
+### 3.9 v0.6.5 修订：补上"可点"的反馈 + 入场过渡（用户反馈）
+
+实机反馈原话："那些按钮，组件怎么使用起来感觉不顺滑，是不是没动画还是怎么了，
+没那种点击的感觉"。查下来是**三件独立的事**叠在一起，没有一件是"感觉问题"：
+
+| 层 | 问题 | 处理 |
+|---|---|---|
+| 组件库的按钮 | 主题把 `button_face_hover/active` 和 `button_face` 设成只差 ~9/255（约 3.5%），深色下根本看不出来 —— 组件库**确实**自带 hover/active，但等于没生效 | 差值拉到 ~18（深）/ ~20（浅） |
+| 自己画的 `div` | 侧边栏导航项、容器名 / 发行版名链接**一点反馈都没有**（只挂了 `cursor_pointer`） | 补 `.hover()` / `.active()`；新增 `nav_hover` / `link_hover` 两个色 token |
+| 动效 | 全项目**零动画**（`grep` 零命中）：弹窗"啪"地出现、切页硬切 | `modal_scrim(id, card)` 140ms 淡入；切页 120ms 淡入 |
+
+**为什么按钮的 hover 仍然是瞬时的**：GPUI 里要"渐入"得用**目标驱动**的
+`gpui_kit::base::transition` —— 组件库自己的动效文档明确写着：hover 这种
+"目标会被反复改变"的场景该用它，而 `with_animation` 是**播放时钟**，
+语义不对（连点两下会从头重播）。但 `transition` 需要 `&mut Window`，
+意味着把 window 一路穿过 `views.rs` 那几十个渲染函数（它们现在的签名只有
+`&AppState` / `&Entity<Shell>`）。这次先不动那条线，等观感反馈再决定值不值。
+
+**`with_animation` 的 id 规矩**（同时写进 `AGENTS.md` §7.5）：同一个弹窗的多次
+重绘必须同 id（否则每帧重播）、不同弹窗必须不同 id（否则共用一条播放进度）——
+所以 `modal_scrim` 加了一个 `&'static str` 参数，10 个调用点各传自己的字面量；
+切页淡入索性用页面标签当 id（换页即换 id → 重新播一次）。
+
+> ⚠️ 待实机确认：`with_animation` / `Animation` / `.hover()` / `.active()`
+> 都是本仓库**第一次**用（`AnimationExt` 靠 `gpui_kit::*` 带进来；
+> `gpui-pre 0.3.8` 的签名已经对着 docs.rs 核过 —— `hover` 在
+> `InteractiveElement`、`active` 在 `StatefulInteractiveElement`，
+> 都是 `FnOnce(StyleRefinement) -> StyleRefinement`）。
+
 ---
 
 ## 4. 分阶段
