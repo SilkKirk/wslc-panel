@@ -457,30 +457,51 @@ cx.spawn_in(window, async move |this, cx| {
   镜像预设表在 `model::image_preset`：**认不出来就什么都不做**（不预填、不拦），
   表里只有 mysql / mariadb / postgres / mongo / redis / nginx 这几个。
 
-### 7.6 网络：`github.com` 经常不通
+### 7.6 网络：`github.com` 经常不通 —— 拉取/推送**默认走 API**
 
-- `github.com:443` 时常连不上（`Connection was reset` / 超时）；
+- `github.com:443` 时常连不上（`Connection was reset` / 超时 **21 秒**起，
+  重试几次就是一分钟）—— `git fetch` / `git push` 基本不可指望；
 - `api.github.com` 通常通；
 - **`gitee.com` 通**（参考项目就是从那儿 clone 的）；
 - 系统代理（`127.0.0.1:31181`）可能**中途消失**，别写死依赖它。
 
-**`git push` 不通时的退路**：用 Git Data API 建提交，**逐字节精确**，
-不要手抄文件内容：
+**别跟 `git` 较劲：用 `scripts/` 下这两个脚本**（它们只走 `api.github.com`，
+token 从 `git credential` 取，脚本里不存任何密钥）：
+
+| 脚本 | 干什么 |
+|---|---|
+| `scripts/gh-api-pull.ps1` | 把远端分支的**内容**同步到本地工作区（`-DryRun` 先干跑） |
+| `scripts/gh-api-push.ps1` | 把本地若干文件推成一个提交（`-Branch` 可开新分支，`-DryRun` 可预览） |
+
+- **拉取**：`GET /git/ref/heads/<ref>` → `GET /git/trees/<tree>?recursive=1` 拿每个
+  blob 的 sha；本地用 `git hash-object`（**纯本地操作，不走网络**）算同名文件的 sha，
+  **只下载对不上的那几个**，按字节写回（顺带把 CRLF 的脏工作区纠正成 LF）。
+  ⚠️ 它只同步**内容**、不动 git 历史：本地 `git log` 仍然落后，`git status` 会显示
+  这些文件"被改过"。哪天网络通了跑一次
+  `git fetch --tags --prune && git reset --hard origin/main` 就彻底对齐。
+- **推送**：`POST /git/blobs` → `POST /git/trees`（`base_tree` = 基线分支那棵树，
+  只替换指定文件）→ `POST /git/commits`（父提交 = 基线 head）→
+  `PATCH|POST /git/refs/heads/<branch>`。两道保险：**拒绝 `.tmp*` 路径**
+  （§5 那次教训），以及提交后**自查**（用 `GET /commits/<sha>` 看实际改了哪些文件，
+  和 `-Paths` 对不上会告警）。
+
+⚠️ 手写这条路也得知其所以然（脚本就是照它写的）：
 
 ```
 POST /git/blobs          { content: <base64 of the local file>, encoding: "base64" }
-POST /git/trees          { base_tree: <main 的 tree>, tree: [{path, mode:"100644", type:"blob", sha}] }
-POST /git/commits        { message, tree, parents: [<main 的 sha>] }
+POST /git/trees          { base_tree: <基线分支的 tree>, tree: [{path, mode:"100644", type:"blob", sha}] }
+POST /git/commits        { message, tree, parents: [<基线 head 的 sha>] }
 PATCH /git/refs/heads/X  { sha: <新 commit>, force: true }
 ```
 
 标签同理：`POST /git/tags` 建 tag 对象 → `POST /git/refs` 建 `refs/tags/vX.Y.Z`。
 ⚠️ **但这样建的标签不会触发 `release.yml`** —— `POST /git/refs` 只发 `create`
-事件，而那个 workflow 监听的是 `push: tags`。要发版就用 `git push origin vX.Y.Z`，
-或者走 `release.yml` 的 `workflow_dispatch` + `release_tag`（见 §4）。
+事件，而那个 workflow 监听的是 `push: tags`。所以要么趁网络好时
+`git push origin vX.Y.Z`，要么走 `release.yml` 的 `workflow_dispatch` +
+`release_tag`（见 §4）。
 
-**用 API 建的提交和本地提交 sha 会不一样** —— 事后记得
-`git fetch --tags --prune && git reset --hard origin/main` 对齐本地。
+⚠️ **用 API 建的提交和本地提交 sha 不一样**（作者/提交时间不同）——
+对 sha 时认**远端**那个，别拿本地的比。
 
 ---
 
