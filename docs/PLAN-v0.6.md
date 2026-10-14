@@ -419,6 +419,50 @@ nginx  redis  mysql  postgres  mongo  alpine  ubuntu  node  python  hello-world
 > `InteractiveElement`、`active` 在 `StatefulInteractiveElement`，
 > 都是 `FnOnce(StyleRefinement) -> StyleRefinement`）。
 
+### 3.10 v0.6.8 修订：环境变量 / 数据卷也按镜像预填（用户拍板）
+
+起因是一次实机排障：用户建的 mysql 容器**起来就退出**，日志里才写着
+
+```
+[ERROR] [Entrypoint]: Database is uninitialized and password option is not specified
+  You need to specify one of the following as an environment variable:
+  - MYSQL_ROOT_PASSWORD
+  - MYSQL_ALLOW_EMPTY_PASSWORD
+  - MYSQL_RANDOM_ROOT_PASSWORD
+```
+
+—— 这是 **mysql 镜像自己的规矩**（数据目录还是空的时候必须先知道 root 密码怎么给），
+不是面板的问题。但暴露了面板的两处不足：`wslc run -d` **成功**不代表容器还活着
+（我们只报"容器已创建"），而"缺哪个環境变量"这种信息 `wslc image inspect`
+根本不会告诉你。用户拍板的做法是：**照端口预填那条路，把環境变量和数据卷也预填**。
+
+落地：
+
+| 预填 | 来源 | 值的形态 |
+|---|---|---|
+| 端口 | `wslc image inspect` 的 `ExposedPorts`（v0.6.3 就有） | 完整（`8080:80`） |
+| **環境变量** | `model::image_preset` 的一张硬编码表 | **只有变量名**（`MYSQL_ROOT_PASSWORD=`） |
+| **数据卷** | 同上 | 完整（`mysqldata:/var/lib/mysql`，**命名卷**不需要主机路径） |
+
+关键决定：
+
+- **只预填变量名，不填值**。密码这类值我们猜不出来；随便填一个反而让用户以为
+  配好了。代价是"看着填了、其实空着"，所以**提交时要拦**：
+  `model::prefilled_env_left_empty` 只认"我们预填的那个还留着空值"这一种情况
+  （用户删掉它、或换成同组另一个合法选项都放行 —— 他可能在复用一份**已经有数据**
+  的卷，那种情况下这些变量本来就不需要），拦住时把焦点送到环境变量那格。
+- **表在 `model/image.rs` 里，认不出来就什么都不做**（不预填、不拦）：只有
+  mysql / mariadb / postgres / mongo / redis / nginx 六个。理由和「拉取镜像」里
+  那 10 个常用官方镜像是同一个：这类知识镜像不会自报，只能按名字认。
+- 预填仍然**只在那一格是空的时候**做（和端口同一条原则：绝不覆盖用户手输的）。
+- 表单**不**挂在"知道镜像了"那两个钩子之外 —— 也就是说**手打**镜像引用不会预填
+  （那会在每次按键上起 `wslc image inspect`）。但**提示行是实时算的**：手打
+  `mysql` 时，环境变量那格下面照样会出现"必须给 MYSQL_ROOT_PASSWORD"。
+
+> 顺带记一笔**没做**的：`confirm_create` 拿到容器 ID 后**没有**回头看它是否还活着
+> （`app.rs` 里只发一条"容器已创建"）。也就是"起来就死"这种情况仍然要靠用户
+> 自己点「日志」。这次没做，是因为用户的诉求是"预填 + 提交前拦住"。
+
 ---
 
 ## 4. 分阶段

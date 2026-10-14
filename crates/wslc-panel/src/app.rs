@@ -2083,6 +2083,10 @@ impl Shell {
     ///
     /// 失败**不打断**创建流程：只是没有预填，用户照旧能手打端口。
     fn probe_image_facts(&mut self, image: String, window: &mut Window, cx: &mut Context<Self>) {
+        // 静态预设（環境变量 / 数据卷）**先**套上：它们不需要 inspect，
+        // 而且用户一看到表单就该已经填好（见 `prefill_from_image_preset`）。
+        self.prefill_from_image_preset(&image, window, cx);
+
         if let Some(dialog) = self.create_dialog.as_mut() {
             dialog.facts = FactsState::Loading;
         }
@@ -2119,6 +2123,51 @@ impl Shell {
         .detach();
     }
 
+    /// 按镜像套用**静态预设**：必需的環境变量（只填 `KEY=`）+ 建议的数据卷。
+    ///
+    /// # 和端口预填同一条原则
+    ///
+    /// **只在那一格是空的时候填**，绝不覆盖用户手输的东西。
+    ///
+    /// # 为什么環境变量只填 `KEY=`、不填值
+    ///
+    /// 这些变量的值多半是**密码**（`MYSQL_ROOT_PASSWORD`），我们猜不出来；
+    /// 随便填一个反而是害用户（他以为已经配好了）。所以只把变量名摆在那儿，
+    /// **提交时**再检查一次它有没有被填上 —— 见
+    /// [`wslc_core::model::prefilled_env_left_empty`] 与 `confirm_create`。
+    ///
+    /// 卷用**命名卷**（`mysqldata:/var/lib/mysql`）而不是绑定挂载：
+    /// 命名卷不需要用户先想好一个主机路径，而且容器删了数据还在。
+    fn prefill_from_image_preset(
+        &mut self,
+        image: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(preset) = wslc_core::model::image_preset(image) else {
+            return;
+        };
+        let Some(dialog) = self.create_dialog.as_ref() else {
+            return;
+        };
+
+        if let Some(key) = preset.prefill_env {
+            let env = dialog.env.clone();
+            if env.read(cx).value().trim().is_empty() {
+                env.update(cx, |state, cx| state.set_value(format!("{key}="), window, cx));
+            }
+        }
+
+        if let Some((volume, path)) = preset.data_volume {
+            let volumes = dialog.volumes.clone();
+            if volumes.read(cx).value().trim().is_empty() {
+                volumes.update(cx, |state, cx| {
+                    state.set_value(format!("{volume}:{path}"), window, cx)
+                });
+            }
+        }
+    }
+
     /// 关闭「创建容器」弹窗。
     pub fn close_create_dialog(&mut self, cx: &mut Context<Self>) {
         self.create_dialog = None;
@@ -2140,7 +2189,10 @@ impl Shell {
     ///
     /// **强制后台运行**（`-d`）：不带 `-d` 时 `wslc run` 会前台阻塞，
     /// 而我们的子进程有超时，超时后会把刚建好的容器连带杀掉。
-    pub fn confirm_create(&mut self, cx: &mut Context<Self>) {
+    ///
+    /// 需要 `window`：表单里那几个"预填了但没填值"的必需变量要**拦住**
+    /// 并把焦点送到那一格（见下面的检查）。
+    pub fn confirm_create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(dialog) = self.create_dialog.as_ref() else {
             return;
         };
@@ -2154,6 +2206,43 @@ impl Shell {
             cx.notify();
             return;
         }
+
+        // 预填的必需变量（`MYSQL_ROOT_PASSWORD=` 这种）**还留着一个空值**时先拦住：
+        // 它看着像填了，其实等于没填 —— 提交上去容器照样起不来（mysql 报的就是
+        // "Database is uninitialized and password option is not specified"），
+        // 用户还得再去翻一遍日志才知道。**空值等于没填**，就在这里点破。
+        //
+        // 只拦"我们预填的那个原样留着"这一种情况：用户把变量删掉、或换了同一组
+        // 里另一个合法选项（`MYSQL_ALLOW_EMPTY_PASSWORD=yes`）都放行 —— 他有可能是
+        // 故意复用一份已经初始化好的数据卷（那种情况下本来就不需要这些变量）。
+        if let Some(key) = wslc_core::model::prefilled_env_left_empty(&spec.image, &spec.env) {
+            let alternatives: Vec<&str> = wslc_core::model::image_preset(&spec.image)
+                .map(|preset| {
+                    preset
+                        .required_any_env
+                        .iter()
+                        .copied()
+                        .filter(|k| *k != key)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let hint = if alternatives.is_empty() {
+                String::new()
+            } else {
+                format!("（也可以改用同一组里的：{}）", alternatives.join(" / "))
+            };
+            self.state
+                .notify(Toast::error(format!("{key} 还没填值 —— 这个镜像第一次启动必须有它。请在「环境变量」那格里补上{hint}")));
+
+            // 焦点直接送到环境变量那格，省得用户自己找
+            if let Some(dialog) = self.create_dialog.as_ref() {
+                let handle = dialog.env.read(cx).focus_handle(cx);
+                window.focus(&handle, cx);
+            }
+            cx.notify();
+            return;
+        }
+
         if let Err(e) = spec.validate() {
             self.state.notify(Toast::error(format!("参数有误：{e}")));
             cx.notify();

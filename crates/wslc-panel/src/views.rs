@@ -3859,6 +3859,56 @@ fn auto_name_hint(dialog: &CreateDialog, state: &AppState, cx: &App) -> AnyEleme
         .into_any_element()
 }
 
+/// 「环境变量」那行下面的提示：**这个镜像第一次启动必须有**哪个变量。
+///
+/// 只对预设表里认识的镜像显示（mysql / mariadb / postgres）—— 这类信息
+/// `wslc image inspect` 不会告诉你，而少给一个变量的后果是**容器起来就退出**、
+/// 原因只写在日志里（实机就是这么踩的：mysql 一直退，翻日志才看到缺
+/// `MYSQL_ROOT_PASSWORD`）。
+///
+/// 这一行是**照着输入框实时算**的（渲染时读值），所以：
+///
+/// - 从下拉框选 / 从「镜像」页进来 → 变量已经被预填，这里说"把值补上"；
+/// - **自己手打**镜像引用 → 我们不会预填（预填只挂在"知道镜像了"那两个钩子上，
+///   见 `Shell::probe_image_facts`），这里就改说"请加上 `KEY=你的值`"。
+///
+/// 判断"预填在不在"用的是最朴素的字符串包含：这里只是一句提示，
+/// 值不值得为它把 `env` 的解析规则再抄一遍。
+fn image_env_hint(dialog: &CreateDialog, cx: &App) -> AnyElement {
+    let image = dialog.image.read(cx).value().trim().to_owned();
+    let Some(preset) = wslc_core::model::image_preset(&image) else {
+        return div().into_any_element();
+    };
+    let Some(prefill) = preset.prefill_env else {
+        return div().into_any_element();
+    };
+
+    let alternatives: Vec<&str> = preset
+        .required_any_env
+        .iter()
+        .copied()
+        .filter(|key| *key != prefill)
+        .collect();
+    let or_else = if alternatives.is_empty() {
+        String::new()
+    } else {
+        format!("（也可以改用 {}）", alternatives.join(" / "))
+    };
+
+    let raw = dialog.env.read(cx).value().to_owned();
+    let text = if raw.contains(&format!("{prefill}=")) {
+        format!("这个镜像第一次启动必须给 {prefill}：变量名已经预填，把值补上{or_else}")
+    } else {
+        format!("这个镜像第一次启动必须给 {prefill}，请在环境变量里加上 `{prefill}=你的值`{or_else}")
+    };
+
+    div()
+        .text_xs()
+        .text_color(theme::text_dim())
+        .child(text)
+        .into_any_element()
+}
+
 /// 「创建容器」弹窗的**表单字段**：标签 + 输入框。
 ///
 /// `full` 决定宽度：直接放进 `v_flex` 的用 `w_full`，
@@ -4004,8 +4054,10 @@ pub fn create_dialog_overlay(
         Button::new("create-ok")
             .label("创建并启动")
             .primary()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.confirm_create(cx));
+            .on_click(move |_, window, cx| {
+                // `window` 是必需的：提交时要检查"预填了但没填值"的必需变量，
+                // 并把焦点送到那一格（`confirm_create` 里有说明）。
+                entity.update(cx, |shell, cx| shell.confirm_create(window, cx));
             })
     };
 
@@ -4107,6 +4159,7 @@ pub fn create_dialog_overlay(
                         false,
                     )),
             )
+            .child(image_env_hint(dialog, cx))
             .child(
                 h_flex()
                     .w_full()

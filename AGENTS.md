@@ -445,6 +445,17 @@ cx.spawn_in(window, async move |this, cx| {
   另外 `.placeholder()` 是"**还没选**"的文案，**空状态**另写 `.empty(…)`：
   v0.6.5 把空状态文案写进了 placeholder，结果展开明明有候选、
   触发器却写着"本地还没有镜像"（实机截图里一眼就看得出来）。
+- **预填的值"留空"等于没填，必须在提交时拦一下**：v0.6.8 起「创建容器」按镜像
+  预设预填環境变量（mysql → `MYSQL_ROOT_PASSWORD=`）与数据卷
+  （`mysqldata:/var/lib/mysql`），但**只预填变量名** —— 密码这种值我们猜不出来，
+  随便填一个反而让用户以为配好了。代价就是"看着填了、其实空着"，所以
+  `confirm_create` 里必须检查（`model::prefilled_env_left_empty`）并把焦点送到
+  那一格。**空值等于没填**这条对任何"我们代填"的东西都成立。
+  ⚠️ 拦的范围要克制：只拦"我们预填的那个还留着空值"，用户把它删掉、或换成同一组
+  里另一个合法选项（`MYSQL_ALLOW_EMPTY_PASSWORD=yes` / `POSTGRES_HOST_AUTH_METHOD=trust`）
+  都放行 —— 他可能在复用一份**已经有数据**的卷，那种情况下这些变量本来就不需要。
+  镜像预设表在 `model::image_preset`：**认不出来就什么都不做**（不预填、不拦），
+  表里只有 mysql / mariadb / postgres / mongo / redis / nginx 这几个。
 
 ### 7.6 网络：`github.com` 经常不通
 
