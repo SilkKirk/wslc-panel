@@ -391,6 +391,16 @@ impl KeepAlive {
 /// `pub(crate)` + 公开字段：渲染在 `views.rs` 里，需要逐个读出来画。
 pub(crate) struct CreateDialog {
     pub(crate) image: Entity<InputState>,
+    /// 「从本地镜像里选」下拉框（可搜索）。
+    ///
+    /// 它只是**快捷方式**：左边那个输入框仍然是唯一的事实来源
+    /// （可以手打、可以粘完整引用）。候选来自快照里的 `wslc images`，
+    /// 见 [`Shell::fill_image_select`]。
+    ///
+    /// ⚠️ 它的 `SelectEvent::Confirm` **必须订阅**（见
+    /// [`Shell::open_create_dialog_prefilled`]）：`Subscription` 一 drop 就退订，
+    /// 表现是"选了一个镜像，输入框没变"—— 不会报错，所以很难查。
+    pub(crate) image_select: Entity<SelectState<Vec<DropdownItem>>>,
     pub(crate) name: Entity<InputState>,
     pub(crate) ports: Entity<InputState>,
     pub(crate) env: Entity<InputState>,
@@ -600,6 +610,14 @@ pub struct Shell {
     /// registry / 仓库名 / 上一批 tag 都还在），而这个布尔只管可见性。
     /// 拉取进行中**不许关**（见 [`Shell::close_pull_dialog`]）。
     pull_open: bool,
+    /// 「创建容器」弹窗里那个「从本地镜像里选」下拉框的**订阅**。
+    ///
+    /// ⚠️ 和 `select_subs` / `image_subs` 同一个坑：`Subscription`
+    /// **一 drop 就退订**，表现是"选了一个镜像，输入框没变"。
+    ///
+    /// 它跟着弹窗的**创建**走（每次开弹窗重建一份），所以这里不用
+    /// `Option` —— 弹窗关掉时订阅也跟着丢，正好。
+    create_subs: Vec<Subscription>,
     /// 单输入框提示弹窗（移动位置 / 调整大小 / 设置默认用户）；关闭时为 `None`。
     ///
     /// 同样是 `pub(crate)`：浮层在 `views.rs` 里渲染。
@@ -674,6 +692,7 @@ impl Shell {
             image_form: None,
             image_subs: Vec::new(),
             pull_open: false,
+            create_subs: Vec::new(),
             prompt: None,
             install_run: None,
             install_cancel: None,
@@ -1927,10 +1946,29 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let image_select = cx.new(|cx| {
+            SelectState::new(Vec::<DropdownItem>::new(), None, window, cx).searchable(true)
+        });
+
+        // ⚠️ 这个订阅是**必须**的：不订阅的话"从下拉框里选了一个镜像"什么都不会发生
+        // （输入框不变、也不会去读它的端口）。订阅本身要存进 `Shell` ——
+        // `Subscription` **一 drop 就退订**（和 `select_subs` 同一个坑）。
+        let pick_sub = cx.subscribe_in(
+            &image_select,
+            window,
+            |shell, _emitter, event: &SelectEvent<Vec<DropdownItem>>, window, cx| {
+                if let SelectEvent::Confirm(Some(reference)) = event {
+                    shell.pick_local_image(reference.clone(), window, cx);
+                }
+            },
+        );
+        self.create_subs = vec![pick_sub];
+
         let dialog = CreateDialog {
             image: cx.new(|cx| {
                 InputState::new(window, cx).placeholder("docker.1panel.live/library/nginx:latest")
             }),
+            image_select,
             name: cx.new(|cx| InputState::new(window, cx).placeholder("留空则自动命名")),
             ports: cx.new(|cx| InputState::new(window, cx).placeholder("8080:80, 9090:90")),
             env: cx.new(|cx| InputState::new(window, cx).placeholder("TZ=Asia/Shanghai")),
@@ -1955,11 +1993,72 @@ impl Shell {
         window.focus(&handle, cx);
 
         self.create_dialog = Some(dialog);
+        // 本地镜像候选：直接来自快照（每 3 秒采一次），**不起新进程**。
+        self.fill_image_select(window, cx);
         // 带着镜像进来时顺手读一次"它声明了哪些端口、会跑什么"——
         // 读到了就把端口预填好（见 `probe_image_facts`）。
         if let Some(image) = image {
             self.probe_image_facts(image.to_owned(), window, cx);
         }
+        cx.notify();
+    }
+
+    /// 把本地已有的镜像填进创建表单那个「从本地镜像里选」下拉框。
+    ///
+    /// 数据直接用 [`AppState::snapshot`] 里的 `images`（`wslc images` 每 3 秒
+    /// 采一次）—— **不额外起一个 `wslc`**，而且它就是页面上看到的同一份。
+    /// 筛选 / 去重 / 排序在 `wslc_core::model::local_references` 里（纯函数）。
+    ///
+    /// 标签写 `引用（体积）`（体积帮用户认人），**取到的值只有引用** ——
+    /// 那才是 `wslc run` 要的东西。
+    fn fill_image_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dialog) = self.create_dialog.as_ref() else {
+            return;
+        };
+        let select = dialog.image_select.clone();
+
+        let items: Vec<DropdownItem> =
+            wslc_core::model::local_references(&self.state.snapshot.images)
+                .into_iter()
+                .map(|reference| {
+                    let size = self
+                        .state
+                        .snapshot
+                        .images
+                        .iter()
+                        .find(|img| img.reference() == reference)
+                        .map(|img| img.size.trim().to_owned())
+                        .unwrap_or_default();
+                    let label = if size.is_empty() {
+                        reference.clone()
+                    } else {
+                        format!("{reference}（{size}）")
+                    };
+                    DropdownItem::new(label, reference)
+                })
+                .collect();
+
+        select.update(cx, |state, cx| state.set_items(items, window, cx));
+    }
+
+    /// 「创建容器」表单里从本地镜像下拉框选了一个：填进「镜像引用」并去读它。
+    ///
+    /// 顺带 [`Shell::probe_image_facts`]：选完镜像就该看到它的端口与启动命令
+    /// （和从「镜像」页带着引用进来时同一条路）。
+    pub fn pick_local_image(
+        &mut self,
+        reference: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(dialog) = self.create_dialog.as_ref() else {
+            return;
+        };
+        let input = dialog.image.clone();
+        input.update(cx, |state, cx| {
+            state.set_value(reference.clone(), window, cx)
+        });
+        self.probe_image_facts(reference, window, cx);
         cx.notify();
     }
 
@@ -2010,6 +2109,9 @@ impl Shell {
     /// 关闭「创建容器」弹窗。
     pub fn close_create_dialog(&mut self, cx: &mut Context<Self>) {
         self.create_dialog = None;
+        // 订阅跟着弹窗一起丢：下拉框已经没了，留着它只是白占一个 `Subscription`
+        // （下次开弹窗会重新建一份）。
+        self.create_subs.clear();
         cx.notify();
     }
 

@@ -34,7 +34,7 @@ pub use container::{
 };
 pub use distro::{parse_distro_list, Distro, DistroState, WslStatus};
 pub use image::{
-    parse_image_inspect, suggest_port_mappings, ImageFacts, ImageListItem,
+    local_references, parse_image_inspect, suggest_port_mappings, ImageFacts, ImageListItem,
 };
 pub use install::{
     plan, preflight, InstallPlan, InstallSource, InstallSpec, PlanContext, PlanProgram,
