@@ -259,6 +259,33 @@ com.microsoft.wsl.container.metadata={
 > 例如 `docker.1panel.live/library/hello-world` 与 `hello-world` 都是 `e2ac70e7319a`。
 > UI 需要按 `ID` 聚合或用 `Repository:Tag` 作为主键。
 
+### 5.1 `wslc image inspect <ref> --format json`（我们只取两项）
+
+⚠️ **形状有两处不一致**（实测 WSL 3.0.3.0，真机 fixture 见
+`crates/wslc-core/tests/fixtures/image_inspect_{nginx,hello_world}.json`）：
+
+1. 带 `--format json` 时是**单行数组**（`inspect` 接受多个镜像），
+   不带 `--format` 时是**缩进的对象**；
+2. `Cmd` / `Entrypoint` 可能是**字符串数组**，也可能是**单个字符串**，还可能整个缺失。
+
+本仓库只取两项（其余字段没建模型 —— inspect 有几十个字段）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `Config.ExposedPorts` | object | 键是 `"80/tcp"`（协议可能缺省），值是空对象。**只收 tcp**，用于创建容器时预填端口映射 |
+| `Config.Entrypoint` + `Config.Cmd` | string \| string[] | 拼起来就是容器实际会跑的那条命令，只用来显示 |
+
+实测两份样本：
+
+```jsonc
+// nginx：声明 80/tcp，Entrypoint + Cmd = /docker-entrypoint.sh nginx -g daemon off;
+"ExposedPorts": { "80/tcp": {} }
+// hello-world：**没有** ExposedPorts，Cmd = ["/hello"]
+```
+
+镜像**不在本地**时：stderr 打「未找到映像 'x'。」、stdout 是 `[]`、退出码 **1**
+—— 所以调用方拿到的是一句能看的原因，不是空数据（`[]` 在解析层也单独报错）。
+
 ---
 
 ## 6. `wslc network list --format json`

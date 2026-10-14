@@ -142,8 +142,12 @@ impl Page {
     /// 「镜像」也一样：它现在有 registry / 仓库名两个输入框**和**一个 tag 下拉框
     /// （`SelectState::new` 同样要 `&mut Window`）。v0.6.2 合并之前这里只有
     /// 「镜像仓库」有输入框；合并之后本地镜像那半页也跟着要 window 了。
+    ///
+    /// ⚠️ v0.6.3 起这里**只剩「添加实例」**：拉取表单挪进了弹窗，
+    /// 是在点「拉取镜像…」那一刻建的（`Shell::open_pull_dialog`）——
+    /// 页面本身只剩一个按钮和一张表，进来不需要 window。
     pub fn needs_window_to_enter(self) -> bool {
-        matches!(self, Page::AddInstance | Page::Images)
+        matches!(self, Page::AddInstance)
     }
 }
 
@@ -2708,18 +2712,15 @@ mod tests {
         // 所以不能只遍历 `ALL` 就算完 —— 那样这条断言对它就是**空的**，
         // 哪天真把它改坏了也抓不到。显式再查一遍。
         for page in Page::ALL {
-            // v0.6.2：需要 window 的从「镜像仓库」换成了「镜像」——
-            // 合并之后 registry / 仓库名输入框和 tag 下拉框都在这一页上。
-            let expected = matches!(page, Page::Images);
-            assert_eq!(
-                page.needs_window_to_enter(),
-                expected,
-                "{page:?} 的 needs_window_to_enter 与预期不符 —— 有输入框的页面\
-                 得走懒创建路径（见 app.rs 的 ensure_install_form / ensure_image_form）"
+            // v0.6.3：侧边栏这几页里一个有输入框的都没有了 ——
+            // 「镜像」的拉取表单进了弹窗，是在点「拉取镜像…」那一刻建的。
+            assert!(
+                !page.needs_window_to_enter(),
+                "{page:?} 现在说它需要 window —— 如果它真加了输入框，记得在 app.rs 的 \
+                 `set_page` 里懒创建表单，并把这条断言改回去"
             );
         }
         assert!(Page::AddInstance.needs_window_to_enter());
-        assert!(Page::Images.needs_window_to_enter());
     }
 
     #[test]

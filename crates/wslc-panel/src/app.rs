@@ -399,6 +399,29 @@ pub(crate) struct CreateDialog {
     pub(crate) memory: Entity<InputState>,
     pub(crate) cpus: Entity<InputState>,
     pub(crate) pull: PullPolicy,
+    /// 从镜像里读来的那点信息（端口 / 启动命令），见 [`FactsState`]。
+    pub(crate) facts: FactsState,
+}
+
+/// 「创建容器」弹窗里那条**从镜像读来的**信息的状态。
+///
+/// 放 `CreateDialog` 而**不是** `AppState`：它是这个弹窗的附带信息，
+/// 弹窗一关就该跟着走。而**解析**本身是纯逻辑，住在 `wslc-core`
+/// （`model::parse_image_inspect`，配两个真机 fixture 单测）。
+///
+/// 为什么要有这个状态机而不是一个 `Option`：`Idle`（用户手填的镜像，我们没去读）
+/// 和 `Loading`（正在读）在界面上是两句不同的话，用一个 `None` 表示不了。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) enum FactsState {
+    /// 还没开始读（例如镜像引用是用户自己敲的）。
+    #[default]
+    Idle,
+    /// 正在读。
+    Loading,
+    /// 读到了。
+    Ready(wslc_core::model::ImageFacts),
+    /// 读不到（多半是镜像还不在本地）。原因直接给用户看。
+    Failed(String),
 }
 
 impl CreateDialog {
@@ -571,6 +594,12 @@ pub struct Shell {
     /// ⚠️ 和 `select_subs` 同一个坑：`Subscription` **一 drop 就退订**，
     /// 表现是"在下拉框里选了一个 tag，什么都不发生"—— 不会报错，所以很难查。
     image_subs: Vec<Subscription>,
+    /// 「拉取镜像」弹窗开着吗。
+    ///
+    /// 和 `image_form` 分开记：**表单建好之后一直留着**（用户第二次打开时
+    /// registry / 仓库名 / 上一批 tag 都还在），而这个布尔只管可见性。
+    /// 拉取进行中**不许关**（见 [`Shell::close_pull_dialog`]）。
+    pull_open: bool,
     /// 单输入框提示弹窗（移动位置 / 调整大小 / 设置默认用户）；关闭时为 `None`。
     ///
     /// 同样是 `pub(crate)`：浮层在 `views.rs` 里渲染。
@@ -644,6 +673,7 @@ impl Shell {
             select_subs: Vec::new(),
             image_form: None,
             image_subs: Vec::new(),
+            pull_open: false,
             prompt: None,
             install_run: None,
             install_cancel: None,
@@ -1029,6 +1059,61 @@ impl Shell {
             repository,
             tags_select,
         });
+    }
+
+    /// 打开「拉取镜像」弹窗。
+    ///
+    /// 表单**只在第一次打开时建**（`InputState::new` / `SelectState::new` 都要
+    /// `&mut Window`），之后一直留着 —— 第二次打开时上回的 registry / 仓库名 /
+    /// 那一批 tag 都还在（重建会把它们清掉，用户得重新查一遍）。
+    pub fn open_pull_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(progress) = &self.state.pulling {
+            let image = progress.image.clone();
+            self.state
+                .notify(Toast::error(format!("{image} 正在拉取中，请等它结束")));
+            cx.notify();
+            return;
+        }
+        self.ensure_image_form(window, cx);
+        // 下拉框里得有上一次查到的 tag（表单是留着的，但列表来自状态）。
+        self.fill_tag_select(window, cx);
+        self.pull_open = true;
+        // 焦点给仓库名框：打开就能直接打字（registry 一般不用改）。
+        if let Some(form) = self.image_form.as_ref() {
+            let handle = form.repository.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
+        }
+        cx.notify();
+    }
+
+    /// 关闭「拉取镜像」弹窗。
+    ///
+    /// ⚠️ 拉取进行中**不允许关闭** —— 关掉会让人以为任务被取消了。
+    /// 关不掉时给一句提示，别让这一下点击石沉大海（`AGENTS.md` §7.1 那条
+    /// "点下去必须有变化"的同一条道理）。
+    pub fn close_pull_dialog(&mut self, cx: &mut Context<Self>) {
+        if self.state.pulling.is_some() {
+            self.state
+                .notify(Toast::info("正在拉取：要停止请点「取消拉取」"));
+            cx.notify();
+            return;
+        }
+        self.pull_open = false;
+        cx.notify();
+    }
+
+    /// 从「拉取镜像」弹窗直接去建容器：**先关弹窗**，再开创建表单。
+    ///
+    /// 两个浮层叠在一起没有任何好处（而且遮罩只有一层），关掉之后用户回头
+    /// 还能在「本地镜像」表里看见刚拉下来的那一条。
+    pub fn use_pulled_image(
+        &mut self,
+        image: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pull_open = false;
+        self.open_create_dialog_prefilled(Some(image.as_str()), window, cx);
     }
 
     /// 把 tag 列表填进下拉框。
@@ -1855,6 +1940,7 @@ impl Shell {
             memory: cx.new(|cx| InputState::new(window, cx).placeholder("512M")),
             cpus: cx.new(|cx| InputState::new(window, cx).placeholder("0.5")),
             pull: PullPolicy::Never,
+            facts: FactsState::default(),
         };
 
         // 预填（`set_value` 要 `&mut Window`，所以只能在有 window 的地方做）
@@ -1869,7 +1955,56 @@ impl Shell {
         window.focus(&handle, cx);
 
         self.create_dialog = Some(dialog);
+        // 带着镜像进来时顺手读一次"它声明了哪些端口、会跑什么"——
+        // 读到了就把端口预填好（见 `probe_image_facts`）。
+        if let Some(image) = image {
+            self.probe_image_facts(image.to_owned(), window, cx);
+        }
         cx.notify();
+    }
+
+    /// 后台读一次镜像声明的端口 / 启动命令，填进创建表单。
+    ///
+    /// ⚠️ 这是**阻塞**调用（起 `wslc image inspect`，实测几十毫秒），所以走
+    /// 后台执行器；填输入框要 `&mut Window`，所以走 `spawn_in` + `update_in`
+    /// （`AGENTS.md` §7.1 / §7.2 同一条路，和 `refresh_online_list` 一样）。
+    ///
+    /// 失败**不打断**创建流程：只是没有预填，用户照旧能手打端口。
+    fn probe_image_facts(&mut self, image: String, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(dialog) = self.create_dialog.as_mut() {
+            dialog.facts = FactsState::Loading;
+        }
+        let wslc = self.state.wslc.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { wslc_core::cmd::image::inspect_facts(&wslc, &image) })
+                .await;
+            let _ = this.update_in(cx, |shell, window, cx| {
+                // 用户可能已经把弹窗关了（或者又开了一个）—— 那就丢掉这次结果。
+                let Some(dialog) = shell.create_dialog.as_mut() else {
+                    return;
+                };
+                match result {
+                    Ok(facts) => {
+                        // 端口**只在用户还没填**的时候预填 —— 不覆盖用户手输的东西
+                        // （和「添加实例」那个 `last_derived_dir` 是同一条原则）。
+                        let empty = dialog.ports.read(cx).value().trim().is_empty();
+                        let suggested =
+                            wslc_core::model::suggest_port_mappings(&facts.exposed_ports);
+                        if empty && !suggested.is_empty() {
+                            dialog.ports.update(cx, |state, cx| {
+                                state.set_value(suggested.clone(), window, cx)
+                            });
+                        }
+                        dialog.facts = FactsState::Ready(facts);
+                    }
+                    Err(e) => dialog.facts = FactsState::Failed(e.to_string()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// 关闭「创建容器」弹窗。
@@ -2634,32 +2769,28 @@ impl Shell {
     /// 切换页面（导航点击走这里）。
     ///
     /// `window` 是给**带控件的页面**准备的：「添加实例」有输入框和两个下拉框，
-    /// 「镜像」有 registry / 仓库名输入框和 tag 下拉框，而
-    /// `InputState::new` / `SelectState::new` 都要 `&mut Window` —— 所以必须
+    /// 而 `InputState::new` / `SelectState::new` 都要 `&mut Window` —— 所以必须
     /// **在点击时**把表单建好。在渲染时建会每帧重建一次控件，字都打不进去。
+    ///
+    /// ⚠️ 「镜像」页现在**不需要** window：v0.6.3 把拉取表单挪进了弹窗，
+    /// 它是在**点「拉取镜像…」那一刻**建的（`SelectState` 同理）。
     pub fn set_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         if page.needs_window_to_enter() {
-            if page == Page::Images {
-                // 「镜像」只有两个输入框 + 一个下拉框，没有要预拉的清单 ——
-                // registry 与仓库名都是用户填的，进来就发请求反而是无意义的流量。
-                self.ensure_image_form(window, cx);
-            } else {
-                self.ensure_install_form(window, cx);
+            self.ensure_install_form(window, cx);
 
-                // 进页面就把两份清单在后台拉起来：用户切到「微软商店」或
-                // 「在线发行版（镜像源）」时列表**已经在了**，不用先点一次「刷新」。
-                // 两个请求都很小（商店清单十几 KB、镜像清单 50 KB），
-                // 而且各自的函数里会挡住重复请求。**不在这里同步拉**：那会卡住界面。
-                if self.state.online.items.is_empty() && !self.state.online.loading {
-                    self.refresh_online_list(window, cx);
-                }
-                if self.state.mirrors.offers.is_empty() && !self.state.mirrors.loading {
-                    self.refresh_mirror_catalog(window, cx);
-                } else if self.state.mirrors.chosen.is_none() && !self.state.mirrors.probing {
-                    // 清单已经在手（上次进来拉过）、但还没测速过 —— 补一次。
-                    // 否则"换个发行版页"回来会发现 URL 还是空的（校验会挡住提交）。
-                    self.probe_mirrors(cx);
-                }
+            // 进页面就把两份清单在后台拉起来：用户切到「微软商店」或
+            // 「在线发行版（镜像源）」时列表**已经在了**，不用先点一次「刷新」。
+            // 两个请求都很小（商店清单十几 KB、镜像清单 50 KB），
+            // 而且各自的函数里会挡住重复请求。**不在这里同步拉**：那会卡住界面。
+            if self.state.online.items.is_empty() && !self.state.online.loading {
+                self.refresh_online_list(window, cx);
+            }
+            if self.state.mirrors.offers.is_empty() && !self.state.mirrors.loading {
+                self.refresh_mirror_catalog(window, cx);
+            } else if self.state.mirrors.chosen.is_none() && !self.state.mirrors.probing {
+                // 清单已经在手（上次进来拉过）、但还没测速过 —— 补一次。
+                // 否则"换个发行版页"回来会发现 URL 还是空的（校验会挡住提交）。
+                self.probe_mirrors(cx);
             }
         }
         self.goto_page(page, cx);
@@ -4235,6 +4366,15 @@ impl Render for Shell {
             Some(action) => confirm_overlay(action, &entity),
         };
 
+        // 「拉取镜像」弹窗。表单住在 `Shell::image_form` 里（不在 `state` 里），
+        // 所以只有这里能画它。
+        let pull_dialog: AnyElement = match (self.pull_open, self.image_form.as_ref()) {
+            (true, Some(form)) => views::pull_dialog_overlay(form, state, &entity),
+            // `pull_open` 为真时表单一定在（`open_pull_dialog` 先建再置位）——
+            // 真走到这里也只是什么都不画，不 panic。
+            _ => div().into_any_element(),
+        };
+
         // 创建容器弹窗。要读 8 个 InputState 的值来做等效命令预览，
         // 所以得把 `cx` 传下去。
         let create_dialog: AnyElement = match &self.create_dialog {
@@ -4374,6 +4514,10 @@ impl Render for Shell {
                     ),
             )
             .child(confirm)
+            // 拉取弹窗排在创建弹窗**之前**：两者不会同时开着
+            // （`use_pulled_image` 会先关掉拉取弹窗），但万一同时开着，
+            // 后画的创建表单应该压在上面 —— 用户刚点的是它。
+            .child(pull_dialog)
             .child(create_dialog)
             .child(detail_dialog)
             .child(distro_detail_dialog)

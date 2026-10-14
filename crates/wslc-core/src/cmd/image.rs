@@ -3,7 +3,7 @@
 use crate::cli::{StreamHandle, Wslc};
 use crate::error::{Error, Result};
 use crate::jsonl;
-use crate::model::ImageListItem;
+use crate::model::{ImageFacts, ImageListItem};
 
 /// `wslc images --format json`
 pub fn list(wslc: &Wslc) -> Result<Vec<ImageListItem>> {
@@ -85,6 +85,25 @@ pub fn tag(wslc: &Wslc, source: &str, target: &str) -> Result<()> {
     Ok(())
 }
 
+/// 读一个**本地**镜像声明的端口与启动命令（`wslc image inspect --format json`）。
+///
+/// 用途：创建容器时把端口预填好、并写一句"这个镜像会跑什么"
+/// （见 [`crate::model::suggest_port_mappings`]）。
+///
+/// 实测（WSL 3.0.3.0，两个真机 fixture 在 `tests/fixtures/image_inspect_*.json`）：
+/// 本机镜像几十毫秒就回来；**镜像不在本地时** `wslc` 打「未找到映像 'x'。」
+/// 并以退出码 1 结束 —— 所以调用方拿到的是一句能看的原因，不是空数据
+/// （`[]` 那条路在 [`crate::model::parse_image_inspect`] 里也单独报错）。
+///
+/// ⚠️ **阻塞**：只能在后台执行器上调（`AGENTS.md` §7.1）。
+pub fn inspect_facts(wslc: &Wslc, reference: &str) -> Result<ImageFacts> {
+    if reference.trim().is_empty() {
+        return Err(Error::InvalidArgument("镜像引用不能为空".into()));
+    }
+    let out = wslc.run_checked(&["image", "inspect", reference, "--format", "json"])?;
+    crate::model::parse_image_inspect(&out.stdout).map_err(Error::InvalidArgument)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,6 +142,15 @@ mod tests {
     fn pull_rejects_empty_reference_before_spawning() {
         let wslc = Wslc::with_program("definitely-not-a-real-binary");
         assert!(matches!(pull(&wslc, "  "), Err(Error::InvalidArgument(_))));
+    }
+
+    #[test]
+    fn inspect_rejects_empty_reference_before_spawning() {
+        let wslc = Wslc::with_program("definitely-not-a-real-binary");
+        assert!(matches!(
+            inspect_facts(&wslc, "  "),
+            Err(Error::InvalidArgument(_))
+        ));
     }
 
     #[test]
