@@ -223,6 +223,123 @@ pub fn local_references(items: &[ImageListItem]) -> Vec<String> {
     refs
 }
 
+/// 常见镜像"第一次启动"的预设：必需的環境变量 + 建议挂的数据卷。
+///
+/// # 为什么是硬编码的一张表
+///
+/// 这类信息**镜像自己不会告诉你** —— `wslc image inspect` 里没有
+/// "启动需要哪些環境变量"这种字段，只能按镜像名认人。
+/// 表刻意小、可改，**认不出来就什么都不做**（不预填、不拦截，用户照旧手打）——
+/// 和「拉取镜像」里那 10 个常用官方镜像的快捷入口是同一个思路。
+///
+/// ⚠️ 取值来自各镜像的官方文档，只覆盖最常用的几个；镜像改了规矩这里不一定跟着变，
+/// 所以**任何时候都不该因为这张表让用户建不出容器**（提交时的拦截只在
+/// "我们预填的那个变量原样留着、值是空的"这一种情况下触发，见
+/// [`prefilled_env_left_empty`]）。
+pub struct ImagePreset {
+    /// 这一组里**至少要有一个**被设成非空值，否则镜像的入口脚本会拒绝启动
+    /// （mysql 的报错就是："Database is uninitialized and password option is
+    /// not specified"）。空切片 = 这个镜像不要求任何变量。
+    pub required_any_env: &'static [&'static str],
+    /// 我们**帮用户预填哪一个**（只填 `KEY=`，**值留给他填** —— 密码这种东西
+    /// 我们猜不出来，随便填一个反而是害他）。必须是 `required_any_env` 里的一个。
+    pub prefill_env: Option<&'static str>,
+    /// 建议挂的命名卷 `(卷名, 容器内路径)`。
+    /// 用**命名卷**而不是绑定挂载：命名卷不需要用户先想好一个主机路径。
+    pub data_volume: Option<(&'static str, &'static str)>,
+}
+
+/// 按镜像名查预设。认不出来返回 `None`（调用方什么都不做）。
+pub fn image_preset(image: &str) -> Option<ImagePreset> {
+    // `registry::split_input` 会把 registry 前缀剥掉
+    // （`docker.1panel.live/library/mysql:8` → `library/mysql`），
+    // 我们只要最后那一段 —— 和 `suggest_container_name` 认的是同一个名字。
+    let (repo, _tag) = crate::registry::split_input(image).ok()?;
+    let name = repo.rsplit('/').next()?.to_ascii_lowercase();
+
+    let preset = match name.as_str() {
+        "mysql" => ImagePreset {
+            required_any_env: &[
+                "MYSQL_ROOT_PASSWORD",
+                "MYSQL_ALLOW_EMPTY_PASSWORD",
+                "MYSQL_RANDOM_ROOT_PASSWORD",
+            ],
+            prefill_env: Some("MYSQL_ROOT_PASSWORD"),
+            data_volume: Some(("mysqldata", "/var/lib/mysql")),
+        },
+        "mariadb" => ImagePreset {
+            required_any_env: &[
+                "MARIADB_ROOT_PASSWORD",
+                "MARIADB_ALLOW_EMPTY_ROOT_PASSWORD",
+                "MARIADB_RANDOM_ROOT_PASSWORD",
+                // mariadb 也认 mysql 那几个老名字
+                "MYSQL_ROOT_PASSWORD",
+                "MYSQL_ALLOW_EMPTY_PASSWORD",
+                "MYSQL_RANDOM_ROOT_PASSWORD",
+            ],
+            prefill_env: Some("MARIADB_ROOT_PASSWORD"),
+            data_volume: Some(("mariadbdata", "/var/lib/mysql")),
+        },
+        "postgres" => ImagePreset {
+            // 不想要密码就得显式说 `POSTGRES_HOST_AUTH_METHOD=trust`
+            required_any_env: &["POSTGRES_PASSWORD", "POSTGRES_HOST_AUTH_METHOD"],
+            prefill_env: Some("POSTGRES_PASSWORD"),
+            data_volume: Some(("pgdata", "/var/lib/postgresql/data")),
+        },
+        // 下面这几个**不要求任何变量**，但都有"数据放在哪"这个坑
+        "mongo" => ImagePreset {
+            required_any_env: &[],
+            prefill_env: None,
+            data_volume: Some(("mongodata", "/data/db")),
+        },
+        "redis" => ImagePreset {
+            required_any_env: &[],
+            prefill_env: None,
+            data_volume: Some(("redisdata", "/data")),
+        },
+        "nginx" => ImagePreset {
+            required_any_env: &[],
+            prefill_env: None,
+            // 和表单里那个 placeholder 一致
+            data_volume: Some(("webdata", "/usr/share/nginx/html")),
+        },
+        _ => return None,
+    };
+
+    Some(preset)
+}
+
+/// 我们预填的那个必需变量**原样留着、值是空的**吗？是就返回它的名字。
+///
+/// 这是"预填"这套东西唯一需要拦一下的地方：`MYSQL_ROOT_PASSWORD=` 看着像填了，
+/// 其实等于没填 —— 提交上去容器照样起不来（只是把报错从"没给"变成"给了空值"），
+/// 用户还得再去看一遍日志才知道。**空值等于没填**，所以在这里点破。
+///
+/// 三种情况**不算**缺（返回 `None`）：
+///
+/// - 镜像不在预设表里（我们没预填任何东西，也就没资格拦）；
+/// - 用户已经把值填上了；
+/// - 用户**把那个变量删了/改了**，或者给了同一组里的另一个合法选项
+///   （比如 `MYSQL_ALLOW_EMPTY_PASSWORD=yes`）—— 他有可能是故意复用一份
+///   已经初始化好的数据卷，那种情况下这些变量本来就不需要。
+pub fn prefilled_env_left_empty(image: &str, env: &[(String, String)]) -> Option<&'static str> {
+    let preset = image_preset(image)?;
+    let prefill = preset.prefill_env?;
+
+    let set = |key: &str| env.iter().any(|(k, v)| k == key && !v.trim().is_empty());
+
+    // 我们预填的那个还留着、且是空的？
+    if !env.iter().any(|(k, v)| k == prefill && v.trim().is_empty()) {
+        return None;
+    }
+    // 同一组里已经有别的合法选项了，就别多嘴
+    if preset.required_any_env.iter().any(|key| set(key)) {
+        return None;
+    }
+
+    Some(prefill)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,5 +503,69 @@ mod tests {
         assert_eq!(img.reference(), "");
         assert_eq!(img.container_count(), 0);
         assert_eq!(img.size_bytes(), None);
+    }
+
+    #[test]
+    fn image_preset_recognizes_the_repo_name() {
+        // 带加速站前缀 + tag（本项目最常见的形式）
+        let mysql = image_preset("docker.1panel.live/library/mysql:8").expect("应认出 mysql");
+        assert_eq!(mysql.prefill_env, Some("MYSQL_ROOT_PASSWORD"));
+        assert!(mysql.required_any_env.contains(&"MYSQL_ROOT_PASSWORD"));
+        assert_eq!(mysql.data_volume, Some(("mysqldata", "/var/lib/mysql")));
+
+        // 裸名字 / 带命名空间 / 大小写
+        assert!(image_preset("postgres").is_some());
+        assert!(image_preset("library/redis:7").is_some());
+        assert!(image_preset("NGINX").is_some());
+
+        // 不认识的就什么都不做（不预填、也不拦）
+        assert!(image_preset("alpine:latest").is_none());
+        assert!(image_preset("grafana/grafana:11").is_none());
+        assert!(image_preset("docker.1panel.live/library/hello-world").is_none());
+        // 空的 / 坏引用也不该炸
+        assert!(image_preset("").is_none());
+        assert!(image_preset("  ").is_none());
+    }
+
+    #[test]
+    fn prefilled_env_left_empty_only_fires_on_our_own_placeholder() {
+        let pairs = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+            list.iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect()
+        };
+
+        // 我们预填的 `MYSQL_ROOT_PASSWORD=` 原样留着 → 拦
+        assert_eq!(
+            prefilled_env_left_empty("mysql:8", &pairs(&[("MYSQL_ROOT_PASSWORD", "")])),
+            Some("MYSQL_ROOT_PASSWORD")
+        );
+        // 填上值了 → 不拦
+        assert_eq!(
+            prefilled_env_left_empty("mysql:8", &pairs(&[("MYSQL_ROOT_PASSWORD", "s3cret")])),
+            None
+        );
+        // 用户**把它删了**（或换成别的合法选项）→ 不拦：
+        // 他可能是故意复用一份已经初始化好的数据卷，那种情况下本来不需要这些变量
+        assert_eq!(prefilled_env_left_empty("mysql:8", &pairs(&[("TZ", "UTC")])), None);
+        assert_eq!(
+            prefilled_env_left_empty(
+                "mysql:8",
+                &pairs(&[
+                    ("MYSQL_ROOT_PASSWORD", ""),
+                    ("MYSQL_ALLOW_EMPTY_PASSWORD", "yes"),
+                ])
+            ),
+            None,
+            "同一组里已经有别的合法选项，就别多嘴"
+        );
+        // 不认识这个镜像 → 没资格拦
+        assert_eq!(prefilled_env_left_empty("alpine", &[]), None);
+        assert_eq!(prefilled_env_left_empty("", &pairs(&[("MYSQL_ROOT_PASSWORD", "")])), None);
+        // 空字符串值（比如用户手打了空格）也算没填
+        assert_eq!(
+            prefilled_env_left_empty("postgres", &pairs(&[("POSTGRES_PASSWORD", "   ")])),
+            Some("POSTGRES_PASSWORD")
+        );
     }
 }
