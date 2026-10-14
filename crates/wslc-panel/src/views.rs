@@ -3830,6 +3830,35 @@ fn image_facts_hint(dialog: &CreateDialog) -> AnyElement {
     }
 }
 
+/// 「容器名」那格下面的提示：**留空时它会叫什么**。
+///
+/// 名字是按镜像推出来的（[`wslc_core::model::suggest_container_name`]）——
+/// 不显示出来的话，用户得等建完才在列表里看到名字，而那时已经晚了
+/// （实机反馈：随机名看不出是哪个镜像起的）。
+///
+/// 用的是和 `to_spec` 完全一样的输入，所以提示里的名字、下面等效命令里的
+/// `--name`、以及真正执行的名字三者不会不一致。
+/// 用户自己填了名字就不显示（那时候这行只会是噪音）。
+fn auto_name_hint(dialog: &CreateDialog, state: &AppState, cx: &App) -> AnyElement {
+    if !dialog.name.read(cx).value().trim().is_empty() {
+        return div().into_any_element();
+    }
+    let image = dialog.image.read(cx).value().trim().to_owned();
+    if image.is_empty() {
+        return div().into_any_element();
+    }
+    let name = wslc_core::model::suggest_container_name(&image, &state.container_names());
+    if name.is_empty() {
+        return div().into_any_element();
+    }
+
+    div()
+        .text_xs()
+        .text_color(theme::text_dim())
+        .child(format!("留空就按镜像命名：{name}"))
+        .into_any_element()
+}
+
 /// 「创建容器」弹窗的**表单字段**：标签 + 输入框。
 ///
 /// `full` 决定宽度：直接放进 `v_flex` 的用 `w_full`，
@@ -3950,10 +3979,14 @@ fn command_preview(spec: &RunSpec) -> AnyElement {
 /// 需要前台交互的场景请用 `wslc` 自己的命令。
 pub fn create_dialog_overlay(
     dialog: &CreateDialog,
+    state: &AppState,
     entity: &Entity<Shell>,
     cx: &App,
 ) -> AnyElement {
-    let spec = dialog.to_spec(cx);
+    // ⚠️ 这里传了现有容器名：容器名留空时 `to_spec` 会按镜像推一个
+    // （`nginx` / `nginx-2`），推出来的名字**同时出现在下面的等效命令里** ——
+    // 预览和实际执行读同一个函数，所以不会不一致。
+    let spec = dialog.to_spec(&state.container_names(), cx);
     let image_missing = spec.image.trim().is_empty();
 
     let cancel = {
@@ -4049,11 +4082,12 @@ pub fn create_dialog_overlay(
             .child(image_facts_hint(dialog))
             .child(form_field(
                 "create-name",
-                "容器名（留空自动命名）",
+                "容器名（留空按镜像命名）",
                 &dialog.name,
                 cx,
                 true,
             ))
+            .child(auto_name_hint(dialog, state, cx))
             .child(
                 h_flex()
                     .w_full()

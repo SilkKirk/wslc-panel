@@ -29,8 +29,8 @@ pub mod wslconf;
 pub mod install;
 
 pub use container::{
-    parse_wsl_metadata, ContainerInspect, ContainerListItem, ContainerState, ContainerStats,
-    ContainerSummary, Platform, PortMapping, WslPortSpec,
+    parse_wsl_metadata, suggest_container_name, ContainerInspect, ContainerListItem,
+    ContainerState, ContainerStats, ContainerSummary, Platform, PortMapping, WslPortSpec,
 };
 pub use distro::{parse_distro_list, Distro, DistroState, WslStatus};
 pub use image::{

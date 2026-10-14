@@ -2501,6 +2501,18 @@ impl AppState {
             .collect()
     }
 
+    /// 现有容器的名字（给"按镜像推一个默认容器名"查重名用）。
+    ///
+    /// ⚠️ 用 `all`（**含已退出的**）而不是 `running` —— 容器名在**所有**容器
+    /// 之间必须唯一，只看运行中的话，同名会撞在已退出的那个上。
+    pub fn container_names(&self) -> Vec<String> {
+        self.snapshot
+            .all
+            .iter()
+            .map(|summary| summary.item.display_name().to_owned())
+            .collect()
+    }
+
     /// 有长任务正在**动这个发行版**吗？有就返回它在干什么（`"安装"` / `"导出"`）。
     ///
     /// # 为什么需要它

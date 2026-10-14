@@ -797,6 +797,65 @@ impl ContainerInspect {
     }
 }
 
+/// 从镜像引用推一个**看得懂**的容器名（表单里"容器名"留空时用）。
+///
+/// # 为什么不让 `wslc` 自己起名
+///
+/// 留空时 `wslc`（和 Docker 一样）会生成 `shimmering_karakoram` 这种随机名 ——
+/// 列表里**看不出这个容器是哪个镜像起的**（实机反馈）。这里改成"镜像名 + 序号"：
+/// 第一个 `nginx`、第二个 `nginx-2`。
+///
+/// 规则刻意简单到可以预期：
+///
+/// - 取镜像引用的**最后一段**：`docker.1panel.live/library/nginx:latest` → `nginx`；
+///   `grafana/grafana:11` → `grafana`；`alpine@sha256:…` → `alpine`；
+///   `localhost:5000/nginx` → `nginx`（端口在主机那一段里，不会被当成 tag）；
+/// - 清洗成 Docker 允许的容器名字符（`[a-zA-Z0-9][a-zA-Z0-9_.-]*`），
+///   非法的换成 `-`，开头的非字母数字去掉；
+/// - 和现有容器重名就往后加序号（`-2`、`-3`……）。`existing` 要传**全部**容器，
+///   不只是运行中的 —— 容器名在所有容器之间必须唯一；
+/// - 推不出来（镜像名是空的 / 全被占满）就返回**空串**，调用方据此不传 `--name`
+///   （把起名权还给 `wslc`）。
+pub fn suggest_container_name(image: &str, existing: &[String]) -> String {
+    let base = name_stem(image);
+    if base.is_empty() {
+        return String::new();
+    }
+    if !existing.iter().any(|used| used == &base) {
+        return base;
+    }
+
+    (2..=999)
+        .map(|n| format!("{base}-{n}"))
+        .find(|candidate| !existing.iter().any(|used| used == candidate))
+        .unwrap_or_default()
+}
+
+/// 取镜像引用的"最后一段"，清洗成合法的容器名。
+fn name_stem(image: &str) -> String {
+    // digest 先切掉（`alpine@sha256:…`），它和 tag 不同时出现，但都可能有
+    let without_digest = image.split('@').next().unwrap_or(image);
+    let last = without_digest.rsplit('/').next().unwrap_or(without_digest);
+    // tag / 端口：只取冒号**之前**那段
+    let last = last.split(':').next().unwrap_or(last);
+
+    let cleaned: String = last
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+
+    // Docker 的容器名必须以字母数字开头
+    cleaned
+        .trim_start_matches(|c: char| !c.is_ascii_alphanumeric())
+        .to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1135,5 +1194,48 @@ mod tests {
         assert!(ContainerState::Running.is_active());
         assert!(!ContainerState::Exited.is_active());
         assert_eq!(ContainerState::Running.label(), "运行中");
+    }
+
+    #[test]
+    fn container_name_comes_from_the_image() {
+        let none: Vec<String> = Vec::new();
+        // 带加速站前缀 + tag 的那种（本项目最常见的形式）
+        assert_eq!(
+            suggest_container_name("docker.1panel.live/library/nginx:latest", &none),
+            "nginx"
+        );
+        // 带命名空间的
+        assert_eq!(suggest_container_name("grafana/grafana:11", &none), "grafana");
+        // 裸名字 / 带 digest / 带端口的 registry
+        assert_eq!(suggest_container_name("alpine", &none), "alpine");
+        assert_eq!(
+            suggest_container_name("alpine@sha256:abcdef", &none),
+            "alpine"
+        );
+        assert_eq!(
+            suggest_container_name("localhost:5000/nginx", &none),
+            "nginx",
+            "端口在主机那一段，不该被当成 tag 切掉"
+        );
+        // 镜像名里的非法字符换成 `-`，开头必须是字母数字
+        assert_eq!(
+            suggest_container_name("docker.1panel.live/library/my_app.v2:1", &none),
+            "my_app.v2"
+        );
+        assert_eq!(suggest_container_name("...weird", &none), "weird");
+    }
+
+    #[test]
+    fn container_name_avoids_taken_names() {
+        let used = vec!["nginx".to_owned(), "nginx-2".to_owned()];
+        assert_eq!(
+            suggest_container_name("nginx:latest", &used),
+            "nginx-3",
+            "撞了就往后找第一个空位"
+        );
+        // 空的镜像引用推不出东西 —— 调用方据此**不传** `--name`
+        assert_eq!(suggest_container_name("", &used), "");
+        assert_eq!(suggest_container_name("   ", &used), "");
+        assert_eq!(suggest_container_name(":latest", &used), "");
     }
 }
