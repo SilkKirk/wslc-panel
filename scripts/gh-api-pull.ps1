@@ -15,6 +15,12 @@
 # `git fetch --tags --prune && git reset --hard origin/main` 就彻底对齐了。
 # 好处是：内容一致，且不会因为一次网络抖动卡住整个流程。
 #
+# ⚠️⚠️ 它会**直接覆盖**本地未提交的改动 —— 实测踩过一次：刚改完这个脚本就顺手
+# 拉了一次，那次修改被"远端版本"盖掉了（因为还没推上去）。**先推、再拉**：
+#
+#   pwsh -NoProfile -File scripts/gh-api-push.ps1 -Paths ... -MessageFile ...
+#   pwsh -NoProfile -File scripts/gh-api-pull.ps1
+#
 # 用法：
 #   pwsh -NoProfile -File scripts/gh-api-pull.ps1
 #   pwsh -NoProfile -File scripts/gh-api-pull.ps1 -Ref main
@@ -55,8 +61,15 @@ foreach ($item in $items) {
     $path = Join-Path $root ($item.path -replace '/', '\')
     $localSha = $null
     if (Test-Path -LiteralPath $path) {
-        # `hash-object` 是纯本地操作（不碰网络）—— 用它判断"这份内容和远端一样吗"
-        $localSha = (git -C $root hash-object -- $path).Trim()
+        # `hash-object` 是纯本地操作（不碰网络）—— 用它判断"这份内容和远端一样吗"。
+        #
+        # ⚠️ 必须加 `--no-filters`（比**原始字节**，而不是"git 会把它存成什么"）：
+        # 本仓库 `.gitattributes` 是 `* text=auto eol=lf` 而 `core.autocrlf=true`，
+        # 但**有些 blob 在服务端本来就是 CRLF**（属性生效之前提交的）。那种文件用
+        # "带过滤"的哈希**永远对不上** —— 于是每次拉取都把它重写一遍（实测：9 个
+        # 夹具文件反复被"更新"）。`--no-filters` 比的正是脚本写回去的那份字节，
+        # 所以**能收敛**：连跑两遍，第二遍就是"本来就一致"。
+        $localSha = (git -C $root hash-object --no-filters -- $path).Trim()
     }
     if ($localSha -eq $item.sha) { $same++; continue }
 
