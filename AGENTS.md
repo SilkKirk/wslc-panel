@@ -421,6 +421,23 @@ cx.spawn_in(window, async move |this, cx| {
   `FnOnce(StyleRefinement) -> StyleRefinement` —— 和组件库里的写法一致。
   另外：组件库的 `Button` 只在 link/text 变体给 `cursor_pointer`，
   普通按钮悬停是**箭头**光标（刻意的，跟着 shadcn 那套），别当成 bug。
+- **给"会被截断的文字"加 tooltip，只能借组件库的控件**：tooltip 那一套
+  （`ManagedTooltipExt` / `ComponentTooltip`）在 gpui-kit 里是 `pub(crate)` 的，
+  `gpui::InteractiveElement` 本身**没有** tooltip 方法（只有一个
+  `tooltip_show_delay` 设置）。所以表格里会截断的单元格走
+  `views::cell_muted_full(key, text)` / `cell_text_full(...)` —— 它们拿
+  `Button`（`text` 变体：无内边距 / 底色 / 边框）当"承载 tooltip 的壳"，
+  内容**自己画**（保住和隔壁单元格一致的 `text_sm()` 字号与 `truncate()` 省略号）。
+  ⚠️ `key` 必须**当帧唯一**（GPUI 的 hover 状态按元素 id 记），调用点传的是
+  容器名 / 镜像引用 / 卷名 / 发行版名这类本来就唯一的标识。
+  这条能成立还有个前提：我们用 `gpui_kit::open_window` 开窗，它内部包了
+  `base::Root`（tooltip 浮层挂在 Root 的 window state 上）—— 换成裸
+  `cx.open_window` 就**没有** tooltip 了。
+- **`Select` 的下拉菜单默认和触发器一样宽**（`menu_width` 默认 `Length::Auto`），
+  所以长候选会被省略号截断 —— 要放得下就显式 `.menu_width(px(…))`。
+  另外 `.placeholder()` 是"**还没选**"的文案，**空状态**另写 `.empty(…)`：
+  v0.6.5 把空状态文案写进了 placeholder，结果展开明明有候选、
+  触发器却写着"本地还没有镜像"（实机截图里一眼就看得出来）。
 
 ### 7.6 网络：`github.com` 经常不通
 

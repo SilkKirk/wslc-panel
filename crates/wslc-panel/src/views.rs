@@ -280,6 +280,65 @@ fn cell_muted(text: impl Into<SharedString>) -> AnyElement {
         .into_any_element()
 }
 
+/// 正常色的「可悬停看全文」单元格（表格里的主要标识，比如镜像引用）。
+fn cell_text_full(key: impl Into<SharedString>, text: impl Into<SharedString>) -> AnyElement {
+    cell_full(key, text, false)
+}
+
+/// 次要色的「可悬停看全文」单元格（镜像、安装位置、挂载点这类长文本）。
+fn cell_muted_full(key: impl Into<SharedString>, text: impl Into<SharedString>) -> AnyElement {
+    cell_full(key, text, true)
+}
+
+/// 会截断的单元格：省略号 + **悬停显示全文**。
+///
+/// # 为什么借组件库的 `Button`（`text` 变体）来画一行字
+///
+/// tooltip 那一套（`ManagedTooltipExt` / `ComponentTooltip`）在 gpui-kit 里是
+/// `pub(crate)` 的 —— **只有它自己的控件**（`Button` / `Switch` / …）能挂 tooltip，
+/// 我们自己画的 `div` 挂不上（`gpui::InteractiveElement` 本身没有 tooltip 方法，
+/// 只有一个 `tooltip_show_delay` 设置）。所以这里用 `Button` 当"承载 tooltip 的壳"：
+/// `text` 变体没有内边距 / 底色 / 边框（`no_padding()`），看起来就是一行字。
+///
+/// 内容是**自己画的**而不是用 `.label()`：`.label()` 的字号由按钮尺寸决定
+/// （`button_text_size(size)`），和隔壁单元格的 `text_sm()` 未必一致；
+/// 自己画就能保证同一张表里字号 / 省略号**完全一样**，看不出是两种东西。
+///
+/// # `key` 必须当帧唯一
+///
+/// GPUI 的 hover 状态按元素 id 记，id 重复会让两个单元格互相干扰。
+/// 调用点传的是容器名 / 镜像引用 / 卷名 / 发行版名这类**本来就唯一**的标识。
+fn cell_full(
+    key: impl Into<SharedString>,
+    text: impl Into<SharedString>,
+    muted: bool,
+) -> AnyElement {
+    let key: SharedString = key.into();
+    let text: SharedString = text.into();
+    let color = if muted {
+        theme::text_muted()
+    } else {
+        theme::text()
+    };
+
+    Button::new(SharedString::from(format!("cell-tip-{key}")))
+        .text()
+        .tooltip(text.clone())
+        // 纯展示（"文字 + tooltip"），不是动作，别进 Tab 顺序
+        .tab_stop(false)
+        .w_full()
+        .child(
+            div()
+                .w_full()
+                .text_sm()
+                .text_color(color)
+                .overflow_hidden()
+                .truncate()
+                .child(text),
+        )
+        .into_any_element()
+}
+
 /// 状态徽标单元格。
 fn cell_badge(state: ContainerState) -> AnyElement {
     let (fg, bg) = theme::state_colors(&state);
@@ -878,7 +937,12 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
                 ALL_COLUMNS,
                 vec![
                     container_name_link(summary.item.display_name(), entity),
-                    cell_muted(summary.item.image.clone()),
+                    // 镜像引用通常比这一列宽（`docker.1panel.live/library/nginx:latest`），
+                    // 截断之后悬停能看全文 —— 这一格用户经常要点/要认。
+                    cell_muted_full(
+                        summary.item.display_name().to_owned(),
+                        summary.item.image.clone(),
+                    ),
                     cell_badge(summary.item.state_kind()),
                     cell_resources(summary),
                     cell_text(crate::util::ports_summary(summary)),
@@ -978,7 +1042,7 @@ pub fn images(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
             table_row(
                 IMAGE_COLUMNS,
                 vec![
-                    cell_text(reference.clone()),
+                    cell_text_full(reference.clone(), reference.clone()),
                     cell_muted(img.short_id().to_owned()),
                     cell_muted(img.size.clone()),
                     cell_muted(img.created_since.clone()),
@@ -1467,7 +1531,7 @@ pub fn volumes(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                     cell_text(vol.display_name().to_owned()),
                     cell_muted(vol.driver.clone()),
                     cell_muted(vol.scope.clone()),
-                    cell_muted(vol.mountpoint.clone()),
+                    cell_muted_full(vol.name.clone(), vol.mountpoint.clone()),
                     danger_button(
                         &format!("rmvol-{ix}"),
                         "删除",
@@ -1753,7 +1817,7 @@ fn distro_row(
             } else {
                 cell_muted("—")
             },
-            cell_muted(location),
+            cell_muted_full(distro.name.clone(), location),
             cell_muted(disk),
             distro_row_actions(distro, is_default, kept, entity),
         ],
@@ -3961,7 +4025,22 @@ pub fn create_dialog_overlay(
                             )
                             .child(
                                 Select::new(&dialog.image_select)
-                                    .placeholder("本地还没有镜像")
+                                    // 占位符说的是"还没选"，不是"没有镜像"。
+                                    // v0.6.5 把**空状态**文案写成了占位符，于是
+                                    // 展开明明有 3 个镜像、触发器却写着"本地还没有镜像"。
+                                    .placeholder("选一个本地镜像…")
+                                    // ⚠️ 菜单**默认和触发器一样宽**（`menu_width`
+                                    // 默认 `Length::Auto`），而镜像引用比这 300px
+                                    // 长得多 —— 不加宽就是每个候选都带省略号。
+                                    .menu_width(px(460.))
+                                    .empty(|_, _| {
+                                        div()
+                                            .px_3()
+                                            .py_2()
+                                            .text_sm()
+                                            .text_color(theme::text_muted())
+                                            .child("本地还没有镜像 —— 先去「镜像」页拉一个")
+                                    })
                                     .w_full()
                                     .menu_max_h(px(320.)),
                             ),
