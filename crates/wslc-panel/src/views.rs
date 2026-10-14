@@ -16,6 +16,8 @@ use gpui_kit::component::select::Select;
 // gpui-component 的禁用态文字几乎看不清，改用"守卫 + 文案"表达不可用状态。
 use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
+// 弹窗的入场动画要一个时长（`Animation::new(Duration)`）。
+use std::time::Duration;
 
 use wslc_core::cmd::container::{PullPolicy, RunSpec};
 // 安装的**计划**是纯逻辑（在 `wslc-core` 里）：页面直接把它的步骤列表画出来，
@@ -86,8 +88,15 @@ fn card(title: &'static str, body: impl IntoElement) -> impl IntoElement {
 /// 结果 8 个弹窗开着的时候都能点到背后的页面（实测：打开「创建容器」
 /// 还能点它背后那一列的按钮）。行为只有一份，才不会下次又漏一处。
 ///
-/// 没有遮罩相关的参数是**故意**的：要改遮罩就改这里，别再加开关。
-pub fn modal_scrim(card: impl IntoElement) -> AnyElement {
+/// # `id` 是给**入场动画**用的
+///
+/// v0.6.5 起这里给整个遮罩播一次 ~140ms 的淡入（`with_animation`）：
+/// 之前弹窗是"啪"地一下出现，实机反馈是"不顺滑"。
+///
+/// ⚠️ `id` 必须在**同一个弹窗**的多次重绘之间保持稳定、**不同弹窗之间不同**：
+/// 稳定才不会每帧重播（GPUI 按这个 id 记住播放进度），不同才不会让两个弹窗
+/// 共用一条进度（弹窗叠着的时候会互相干扰）。所以每个调用点都传自己的字面量。
+pub fn modal_scrim(id: &'static str, card: impl IntoElement) -> AnyElement {
     div()
         .absolute()
         .inset_0()
@@ -99,6 +108,10 @@ pub fn modal_scrim(card: impl IntoElement) -> AnyElement {
         // 点下去会穿到背后的页面上。
         .occlude()
         .child(card)
+        // 一次性入场淡入：GPUI 在这 140ms 里逐帧请求重绘，结束后**保持终值**
+        // （不再请求帧）。系统开了"减弱动态效果"时 GPUI 直接给终值 ——
+        // 这是 `AnimationExt` 自己遵守的偏好，我们不用另外判断。
+        .with_animation(id, Animation::new(Duration::from_millis(140)), |el, delta| el.opacity(delta))
         .into_any_element()
 }
 
@@ -750,6 +763,10 @@ fn cell_resources(summary: &ContainerSummary) -> AnyElement {
 ///
 /// 照 1Panel 的做法：名字就是入口，表格里不再挤一列操作按钮。
 /// 挂载这类占地方的信息全部放进详情弹窗。
+///
+/// 悬停变亮、按下回到主色（比悬停暗一档）—— 组件库的 `Button` 自带
+/// hover/active，而我们这种自己画的 `div` 得手写，否则鼠标移上去毫无反应
+/// （v0.6.5 之前就是这样，实机反馈"没有点击的感觉"）。
 fn container_name_link(name: &str, entity: &Entity<Shell>) -> AnyElement {
     let entity = entity.clone();
     let for_click = name.to_owned();
@@ -758,6 +775,8 @@ fn container_name_link(name: &str, entity: &Entity<Shell>) -> AnyElement {
         .cursor_pointer()
         .text_sm()
         .text_color(theme::primary())
+        .hover(|this| this.text_color(theme::link_hover()))
+        .active(|this| this.text_color(theme::primary()))
         .child(name.to_owned())
         .on_click(move |_, _, cx| {
             let target = for_click.clone();
@@ -1095,7 +1114,7 @@ pub fn pull_dialog_overlay(
         card = card.child(h_flex().w_full().justify_end().child(close));
     }
 
-    modal_scrim(card).into_any_element()
+    modal_scrim("pull-dialog", card).into_any_element()
 }
 
 /// 弹窗里那张**表单**（没在拉取时）。
@@ -1745,6 +1764,7 @@ fn distro_row(
 /// 发行版名字 —— 点击打开详情弹窗。
 ///
 /// 和容器页一样：名字就是入口，低频动作都收在详情里。
+/// 悬停/按下同 [`container_name_link`]。
 fn distro_name_link(name: &str, entity: &Entity<Shell>) -> AnyElement {
     let entity = entity.clone();
     let for_click = name.to_owned();
@@ -1753,6 +1773,8 @@ fn distro_name_link(name: &str, entity: &Entity<Shell>) -> AnyElement {
         .cursor_pointer()
         .text_sm()
         .text_color(theme::primary())
+        .hover(|this| this.text_color(theme::link_hover()))
+        .active(|this| this.text_color(theme::primary()))
         .overflow_hidden()
         .truncate()
         .child(name.to_owned())
@@ -3890,7 +3912,7 @@ pub fn create_dialog_overlay(
             })
     };
 
-    modal_scrim(
+    modal_scrim("create-dialog",
         v_flex()
             // 字段多，窗口矮时允许滚动，别把底部按钮挤没
             .id("create-dialog-card")
@@ -4190,7 +4212,7 @@ pub fn container_detail_overlay(
         rows.push(kv("PID", stats.pids.to_string()).into_any_element());
     }
 
-    modal_scrim(
+    modal_scrim("container-detail",
         v_flex()
             .id("detail-card")
             .w(px(700.))
@@ -4437,7 +4459,7 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
         vec![reveal.into_any_element(), edit_conf.into_any_element()];
     buttons.extend(actions);
 
-    modal_scrim(
+    modal_scrim("distro-detail",
         v_flex()
             .id("distro-detail-card")
             .w(px(760.))
@@ -4563,7 +4585,7 @@ pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEle
             .into_any_element()
     });
 
-    modal_scrim(
+    modal_scrim("prompt",
         v_flex()
             .w(px(620.))
             .gap_4()
@@ -4790,7 +4812,7 @@ pub fn logs_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
         None => log_text(logs.text.as_deref(), "logs-body"),
     };
 
-    modal_scrim(
+    modal_scrim("logs",
         v_flex()
             .id("logs-card")
             .w(px(820.))
@@ -4957,7 +4979,7 @@ pub fn exec_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEleme
             .into_any_element()
     });
 
-    modal_scrim(
+    modal_scrim("exec",
         v_flex()
             .id("exec-card")
             .w(px(760.))
@@ -5035,7 +5057,7 @@ pub fn export_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
             })
     };
 
-    modal_scrim(
+    modal_scrim("export",
         v_flex()
             .w(px(680.))
             .gap_4()
@@ -5381,7 +5403,7 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         vec![save.into_any_element(), save_restart.into_any_element()]
     };
 
-    modal_scrim(
+    modal_scrim("wslconf",
         v_flex()
             .id("wslconf-card")
             // 高度上限卡在 620：16 个字段全展开会顶满整屏

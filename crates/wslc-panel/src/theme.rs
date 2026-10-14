@@ -204,8 +204,21 @@ struct Palette {
     /// 单独列一组而不是复用 `bg_card()`：次要按钮要比它所在的卡片**亮一档**
     /// 才看得出是个按钮 —— 深色下原来几乎和背景同色，用户反馈"看不清"。
     button_face: u32,
+    /// 悬停 / 按下时的面。
+    ///
+    /// ⚠️ 这两个值和 `button_face` 的**差值要够大**：v0.6.5 之前深色下只差
+    /// ~9/255（约 3.5%），实机反馈是"点了没感觉"。现在深色差 ~18、浅色差 ~20。
     button_face_hover: u32,
     button_face_active: u32,
+
+    /// 侧边栏导航项**悬停**时的底色。
+    ///
+    /// 组件库的 `Button` 自带 hover/active，但导航项是我们自己画的 `div`
+    /// （要"选中态 + 分组标题"），所以它的悬停底色得自己给 —— 之前**一点反馈
+    /// 都没有**，鼠标移上去像块死木头。
+    nav_hover: u32,
+    /// 蓝色链接（容器名 / 发行版名）**悬停**时的文字色。
+    link_hover: u32,
 
     /// 模态遮罩的不透明度（浅色主题下要浅一些，否则像"黑屏"）。
     scrim_alpha: f32,
@@ -243,8 +256,13 @@ const DARK: Palette = Palette {
     accent_fg: 0xff_ff_ff,
 
     button_face: 0x21_28_33,
-    button_face_hover: 0x2a_33_40,
-    button_face_active: 0x1a_20_29,
+    button_face_hover: 0x33_3e_4d,
+    button_face_active: 0x15_1a_21,
+
+    // 侧边栏底色是 `0x0a0e14`、选中态是 `0x1d2c45` —— 悬停取中间偏暗那一档，
+    // 既看得出"鼠标在这"，又不会和"已选中"混淆。
+    nav_hover: 0x15_1b_24,
+    link_hover: 0x7a_ac_ff,
 
     scrim_alpha: 0.55,
 };
@@ -285,8 +303,13 @@ const LIGHT: Palette = Palette {
     accent_fg: 0xff_ff_ff,
 
     button_face: 0xed_f0_f4,
-    button_face_hover: 0xe2_e7_ed,
-    button_face_active: 0xd7_dd_e5,
+    button_face_hover: 0xdf_e5_ec,
+    button_face_active: 0xcb_d3_dd,
+
+    // 浅色下侧边栏是 `0xeaeef0`、选中态是 `0xe4ecfd`（偏蓝）—— 悬停用偏灰的一档。
+    nav_hover: 0xdd_e3_ea,
+    // 浅色下链接"悬停变深"更符合直觉（深色主题里则是变亮）。
+    link_hover: 0x18_5a_c2,
 
     scrim_alpha: 0.35,
 };
@@ -359,6 +382,20 @@ pub fn neutral() -> Rgba {
 /// 主色柔和底。
 pub fn primary_soft() -> Rgba {
     rgb(palette().primary_soft)
+}
+
+/// 侧边栏导航项**悬停**底色。
+///
+/// 给 `app.rs` 的 `nav_item` 用：那是我们自己画的 `div`（组件库的 `Button`
+/// 自带 hover，但导航项要"选中态 + 分组标题"，用不了），
+/// 之前悬停一点反馈都没有。
+pub fn nav_hover() -> Rgba {
+    rgb(palette().nav_hover)
+}
+
+/// 蓝色链接（容器名 / 发行版名）**悬停**文字色。
+pub fn link_hover() -> Rgba {
+    rgb(palette().link_hover)
 }
 /// 成功色柔和底。
 pub fn success_soft() -> Rgba {

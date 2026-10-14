@@ -405,6 +405,22 @@ cx.spawn_in(window, async move |this, cx| {
   但 ⚠️ **这一条是推的，没有实机验证过**（`docs/PLAN-v0.6.md` §3.8 也记着）。
   真出问题（弹层被遮罩盖住 / 点不到）时的退路有两条：把下拉框换回
   "输入框 + 列表"，或者把表单从弹窗移回页面。
+- **入场动画走 `with_animation`，id 必须"稳定 + 互不相同"**：v0.6.5 起
+  `views::modal_scrim(id, card)` 自带 140ms 淡入、切页也有 120ms 淡入。
+  id 是 GPUI 记住**播放进度**的钥匙 —— 同一个弹窗的多次重绘必须同 id
+  （否则每帧重播），不同弹窗必须不同 id（否则两条动画共用一份进度）。
+  切页淡入索性用页面标签当 id（换页即换 id → 重新播一次）。
+  ⚠️ 动画要挂在 `div()` 上：`AnyElement` 不实现 `Styled`，`.opacity()` 在那儿
+  不存在（`AnyElement` 只能当孩子，不能被继续修饰）。
+- **自己画的 `div` 可点元素必须手写 hover/active**：组件库的 `Button` 自带
+  （色值来自主题的 `button_*` / `button_primary_*`），但侧边栏导航项、
+  容器名 / 发行版名链接是我们自己画的 —— 只挂 `cursor_pointer()` 的话鼠标移
+  上去**毫无反应**（v0.6.5 实机反馈"没有点击的感觉"）。
+  `.hover()` 来自 `InteractiveElement`、`.active()` 来自
+  `StatefulInteractiveElement`（**所以元素必须先有 `.id()`**），两者签名都是
+  `FnOnce(StyleRefinement) -> StyleRefinement` —— 和组件库里的写法一致。
+  另外：组件库的 `Button` 只在 link/text 变体给 `cursor_pointer`，
+  普通按钮悬停是**箭头**光标（刻意的，跟着 shadcn 那套），别当成 bug。
 
 ### 7.6 网络：`github.com` 经常不通
 
