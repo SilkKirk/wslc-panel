@@ -628,11 +628,9 @@ pub enum PendingAction {
     },
     /// **恢复**一份备份（v0.8）—— 覆盖该库的现有数据，所以走二次确认。
     ///
-    /// ⚠️ 只认**容器内**的 dump（`/tmp/wslc-backups/<文件名>`）：
-    /// `wslc container cp` 的"本地→容器"方向实测是坏的（详见
-    /// `cmd::mysql` 的模块注释），所以恢复前要用
-    /// `cmd::mysql::container_backup_exists` 确认那份文件还在 ——
-    /// 容器重建过的话 `/tmp` 里的东西就没了。
+    /// dump 从 **Windows 侧存档**送进容器再恢复（`push_dump_to_container`
+    /// 的注释里有那三步的实测依据）。所以容器重建过、`/tmp` 被清过都**不影响**
+    /// —— 只要那份 Windows 文件还在，恢复就能进行。
     RestoreDatabase {
         /// 目标容器。
         container: String,
@@ -640,8 +638,8 @@ pub enum PendingAction {
         database: String,
         /// 容器里的客户端二进制名。
         client: String,
-        /// dump 在容器内的路径。
-        container_path: String,
+        /// **Windows 侧**那份 dump 的路径（恢复的输入）。
+        windows_path: std::path::PathBuf,
         /// 连接凭据。
         creds: MysqlCreds,
     },
@@ -709,10 +707,11 @@ impl PendingAction {
                  已经授出去的权限一并消失。已经建立的连接不会立刻断开，\
                  但之后它就连不上了。此操作不可撤销。"
             ),
-            PendingAction::RestoreDatabase { database, container_path, .. } => format!(
-                "将把备份 `{container_path}` 恢复进数据库 **{database}** ——\
+            PendingAction::RestoreDatabase { database, windows_path, .. } => format!(
+                "将把备份 `{}` 恢复进数据库 **{database}** ——\
                  这个库**现在的全部数据会被覆盖**（dump 是 `--databases` 形式，\
-                 恢复只能回原库）。此操作不可撤销。"
+                 恢复只能回原库）。此操作不可撤销。",
+                windows_path.display()
             ),
         }
     }
@@ -805,25 +804,28 @@ impl PendingAction {
                 cmd::mysql::run_sql(wslc, container, client, creds, &sql, None, SqlMode::Batch)?;
                 Ok(format!("已删除用户：'{user}'@'{host}'"))
             }
-            // 恢复前先确认容器里那份 dump 还在 —— 容器重建过的话 /tmp 就清空了，
-            // 那时报错要直说（而不是甩一句 mysql 的 "No such file"）
+            // 恢复：把 Windows 侧那份 dump 送进容器，再从容器内重定向进 mysql。
+            //
+            // 这里**不**假设容器里还有一份旧的 dump（实测：容器重建 / WSL 重启后
+            // `/tmp` 里那份就没了）。送进去之前先看本地文件在不在 —— 用户可能
+            // 在文件管理器里把它删了，那时要给一句人话，而不是 cp 的引擎报错。
             PendingAction::RestoreDatabase {
                 container,
                 database,
                 client,
-                container_path,
+                windows_path,
                 creds,
             } => {
-                let exists =
-                    cmd::mysql::container_backup_exists(wslc, container, container_path)?;
-                if !exists {
+                if !windows_path.is_file() {
                     return Err(wslc_core::Error::Unsupported(format!(
-                        "容器里找不到这份备份（{container_path}）。容器重建过的话，\
-                         /tmp 里的备份就没了 —— Windows 侧的文件还在（「打开位置」），\
-                         但现在没有能把它送回容器里的路（`wslc container cp` 的本地→容器方向是坏的）。"
+                        "备份文件不在了：{}。它可能被手动删掉了 —— 备份列表里\
+                         会跟着消失，重新备份一份即可。",
+                        windows_path.display()
                     )));
                 }
-                cmd::mysql::restore_database(wslc, container, client, creds, container_path)?;
+                let container_path =
+                    cmd::mysql::push_dump_to_container(wslc, container, windows_path)?;
+                cmd::mysql::restore_database(wslc, container, client, creds, &container_path)?;
                 Ok(format!("已恢复数据库：{database}（现有数据已被备份覆盖）"))
             }
         }
@@ -1647,9 +1649,8 @@ pub struct DbState {
     pub backup: Option<BackupState>,
     /// 备份列表（**Windows 侧**目录里扫出来的）。
     ///
-    /// 进页面 / 备份完成 / 删除后重扫。容器内那份 `/tmp` 备份的"还在不在"
-    /// 是**恢复那一刻**才查的（`cmd::mysql::container_backup_exists`），
-    /// 不在这里 —— 那要起进程，不能挂在渲染路径上。
+    /// 进页面 / 备份完成 / 删除后重扫。**纯本地目录扫描** —— 不碰容器、不起进程，
+    /// 所以可以在任何时机做（包括"恢复前顺手看一眼"）。
     pub backups: Vec<BackupEntry>,
     /// 备份列表浮层开没开（开的对象是哪个库；`None` = 关着）。
     pub backup_dialog: Option<String>,
@@ -1660,7 +1661,10 @@ pub struct DbState {
 pub struct BackupState {
     /// 在备份哪个库。
     pub database: String,
-    /// 备份文件在**容器里**的路径（恢复要用）。
+    /// dump 生成在**容器里**的路径（备份那一步的产物）。
+    ///
+    /// ⚠️ 恢复**不用**它（v0.8.2 起恢复从 Windows 存档重新送一份进去）——
+    /// 留着是为了「删除备份」时把容器里这份也清掉。
     pub container_path: String,
     /// 备份文件在 **Windows** 侧的路径（完成后展示 / 打开位置）。
     pub windows_path: std::path::PathBuf,
@@ -1684,7 +1688,11 @@ pub struct BackupEntry {
     pub bytes: u64,
     /// 备份时间（从文件名解出来的 `YYYYMMDD-HHMMSS`）。
     pub stamp: String,
-    /// **容器内**那份的路径（恢复用；随文件名推出来，不一定还在）。
+    /// **容器内**那份备份的路径（备份时 dump 的产地）。
+    ///
+    /// 由文件名推出来（[`wslc_core::model::mysql::CONTAINER_BACKUP_DIR`] +
+    /// 文件名），**不一定还在**（容器重建 / `/tmp` 被清就会消失）。
+    /// 只用于「删除备份」时顺手清掉它 —— 恢复不依赖这个字段。
     pub container_path: String,
 }
 

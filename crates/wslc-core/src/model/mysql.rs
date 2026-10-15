@@ -1016,27 +1016,74 @@ pub fn mysqldump_args(bin: &str, creds: &MysqlCreds, database: &str) -> Result<V
 
 /// 恢复用的容器内脚本（**纯函数**）。
 ///
-/// 恢复只能走容器内的重定向：`wslc exec` 的 stdin 是 null（`build_command`
-/// 写死），没法从 Windows 侧喂 SQL。实测（wslc 3.0.3.0）：
-/// `/bin/sh -c "mysql -uroot < /tmp/…"` 可行；`wslc container cp` 的
-/// "本地→容器"方向**实测是坏的**（`ERROR_PATH_NOT_FOUND`，连根目录都写不进），
-/// 所以 dump 文件**留在容器里**（备份时已经落在 [`CONTAINER_BACKUP_DIR`]）。
+/// 恢复走容器内的重定向：`/bin/sh -c "mysql -uroot < /tmp/…"`（实测 wslc
+/// 3.0.3.0 可行）。**不**走 stdin 是因为**我们**的 `Wslc::build_command`
+/// 把 stdin 写死成 null —— 不是 wslc 不支持：`wslc exec --help` 里明确有
+/// `-i/--interactive`（原文"附加到 Stdin 并保持其打开状态"）。
+/// 换成 stdin 那条路要先给 `cli.rs` 加"stdin 来自文件"，而目录目标的
+/// `wslc container cp` 已经够用（见 [`restore_container_path`]）。
 pub fn restore_script(bin: &str, dump_path: &str) -> String {
     format!("exec {bin} < {dump_path}")
 }
 
-/// 备份文件在**容器里**的目录（恢复时从这里读）。
+/// 备份文件在**容器里**的目录（备份时 dump 落在这里）。
 ///
 /// 放 `/tmp` 是刻意的：它一定可写，而且不用先探容器里哪块盘有空。
-/// 代价在 [`WINDOWS_BACKUP_SUBDIR`] 那条注释里。
+/// ⚠️ 这份**会随容器重建 / `/tmp` 被清而消失**（实测发生过一次），
+/// 所以恢复**不依赖它** —— 恢复用的是 Windows 侧存档，见
+/// [`CONTAINER_RESTORE_DIR`]。
 pub const CONTAINER_BACKUP_DIR: &str = "/tmp/wslc-backups";
+
+/// 恢复时把 Windows 侧 dump **送进容器**的落脚目录。
+///
+/// # 为什么恢复要重新送一份进去（v0.8.2 改的）
+///
+/// v0.8.0/0.8.1 的恢复**只认容器内那份**，理由是当时以为
+/// `wslc container cp` 的"本地→容器"方向不可用。**那个结论是错的**
+/// （见 [`restore_container_path`] 里那段实测）：于是"容器重建过就没法恢复"
+/// 这个限制根本不需要存在 —— 备份列表上的每一条都有 Windows 侧的文件，
+/// 恢复时把它 cp 进这个目录再重定向即可。
+///
+/// 用**独立目录**而不是 [`CONTAINER_BACKUP_DIR`]：这里放的是"待恢复的导入件"，
+/// 和"刚导出的备份"混在一起会让 `/tmp` 里两份同名文件互相覆盖
+///（同名文件在这个目录里语义完全不同：一个是源、一个是刚生成的目标）。
+pub const CONTAINER_RESTORE_DIR: &str = "/tmp/wslc-restore";
+
+/// dump 被送进容器后的**绝对路径**（纯函数）。
+///
+/// # 实测（wslc 3.0.3.0，2026 年，容器 `mysql` 处于 Up）
+///
+/// `wslc container cp` 有三种形式（`wslc container cp --help`）：
+/// 本地→容器、容器→本地、**stdin→容器**（`cp - CONTAINER:PATH`）。
+///
+/// | 试的 | 结果 |
+/// |---|---|
+/// | `cp <本地文件> mysql:/tmp/probe.txt`（**目标写成文件名**） | ❌ `ERROR_PATH_NOT_FOUND`：「Could not find the file /tmp/probe.txt in container …」 |
+/// | `cp <本地文件> mysql:/tmp/`（**目标是已存在的目录**） | ✅ 落在 `/tmp/<本地文件名>` |
+/// | `cp <本地文件> mysql:/tmp`（目录、无斜杠） | ✅ 同上 |
+/// | `cp <本地文件> mysql:/不存在的目录/` | ❌ `ERROR_PATH_NOT_FOUND` —— **目标目录必须先存在** |
+/// | 先 `mkdir -p` 再 `cp <本地文件> mysql:/tmp/wslc-restore/` | ✅ |
+/// | 4 MB 随机二进制（sha256 对照） | ✅ **逐字节一致** |
+/// | 本地路径含空格（`…\.tmp-cp dir with space\dump file.sql`） | ✅ |
+/// | 同名文件再传一次（覆盖） | ✅ |
+/// | `cp - mysql:/tmp/`（stdin 形式，经 `cmd /c "… < file"`） | ❌ `unexpected EOF` / `E_FAIL` —— **我没找到正确的喂法**，但目录目标的形式已经够用，所以没往下查 |
+///
+/// ⚠️ 我 v0.8.0 时只试了**第一行**那种写法，就得出"本地→容器是坏的"，
+/// 并在代码注释里写死了这个错结论 —— 用户拿 `--help` 指出来的。
+/// 教训：**"这条路不通"的结论必须多试几种参数形式**（尤其目标写成
+/// 文件名 vs 目录，这是两套语义），否则会把工具的能力误判成缺陷。
+///
+/// 所以调用方（`cmd::mysql::push_dump_to_container`）的顺序是：
+/// ① `mkdir -p <目录>` ② `cp <本地 dump> <容器>:<目录>/` ③ 用本函数算出路径。
+pub fn restore_container_path(file_name: &str) -> String {
+    format!("{CONTAINER_RESTORE_DIR}/{file_name}")
+}
 
 /// 备份在 **Windows 侧**的子目录名（`<数据目录>/backups/<容器>/<文件名>`）。
 ///
-/// 备份做成**两份**：容器内那份供恢复（同容器重定向，零拷贝）、
-/// Windows 侧那份留档（容器删了它还在）。⚠️ 容器内那份在 `/tmp` ——
-/// 容器重建就没了，所以**恢复前**必须用
-/// `cmd::mysql::container_backup_exists` 确认它还在。
+/// 备份做成**两份**：容器内那份是 dump 的产地（也是"同容器内立刻恢复"的
+/// 快路径）、Windows 侧那份留档。**恢复以 Windows 侧那份为准** ——
+/// 容器内那份在 `/tmp`，容器重建就没了（实测踩到过）。
 pub const WINDOWS_BACKUP_SUBDIR: &str = "backups";
 
 /// 备份文件名（`<库名>-<YYYYMMDD>-<HHMMSS>.sql`，定宽、可排序）。
@@ -1765,6 +1812,25 @@ mod tests {
         assert_eq!(
             restore_script("mysql", "/tmp/wslc-backups/x.sql"),
             "exec mysql < /tmp/wslc-backups/x.sql"
+        );
+    }
+
+    #[test]
+    fn restore_path_lands_in_its_own_directory() {
+        // 恢复用的目录和备份目录**必须不同**：同名文件在这两处的语义相反
+        //（一个是待恢复的导入件、一个是刚生成的导出件），混在一起会互相覆盖。
+        assert_eq!(
+            restore_container_path("djxm-20261015-035901.sql"),
+            "/tmp/wslc-restore/djxm-20261015-035901.sql"
+        );
+        assert_ne!(CONTAINER_RESTORE_DIR, CONTAINER_BACKUP_DIR);
+        // 路径里只有 `/` 和合法文件名字符 —— `restore_database` 的白名单
+        //（字母数字 + `/-_.`）必须放行它，否则恢复会在本地就被拒
+        let path = restore_container_path("djxm-20261015-035901.sql");
+        assert!(
+            path.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.')),
+            "路径里出现了白名单外的字符：{path}"
         );
     }
 

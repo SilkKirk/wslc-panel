@@ -497,3 +497,35 @@ wslc exec -e MYSQL_PWD=root mysql mysql -uroot -N -B -e "SHOW DATABASES"
 - `list` 的 `Command` 字段被**截断**成 20 字符（`"docker-entrypoint.s…"`）——
   想用"启动命令里有 `mysqld`"来认 MySQL 在官方镜像上**命中不了**，
   镜像名才是主力依据（`inspect` 的 `Config.Cmd` 是完整的）。
+
+### 12.6 `wslc container cp` 的三种形式与那个坑（v0.8.2 实测）
+
+`wslc container cp --help` 写着三种形式：
+
+| 形式 | 写法 |
+|---|---|
+| 本地 → 容器 | `wslc container cp LOCAL_PATH CONTAINER:PATH` |
+| 容器 → 本地 | `wslc container cp CONTAINER:PATH LOCAL_PATH` |
+| **标准输入 → 容器** | `wslc container cp - CONTAINER:PATH` |
+
+⚠️ **`CONTAINER:PATH` 在"送进去"这个方向上必须是一个\*\*已经存在的目录\*\***
+（`/tmp` 或 `/tmp/` 都行），**不能写成目标文件名**：
+
+| 试的 | 结果 |
+|---|---|
+| `cp <本地文件> mysql:/tmp/probe.txt`（写成文件名） | ❌ `ERROR_PATH_NOT_FOUND`：「Could not find the file /tmp/probe.txt in container …」 |
+| `cp <本地文件> mysql:/tmp/` | ✅ 落在 `/tmp/<本地文件名>`（**文件名保持源文件那个**） |
+| `cp <本地文件> mysql:/tmp`（无尾斜杠） | ✅ 同上 |
+| `cp <本地文件> mysql:/不存在的目录/` | ❌ 同一个错 —— **目录要先 `mkdir -p`** |
+| 4 MB 随机二进制（sha256 对照） | ✅ 逐字节一致 |
+| 本地路径含空格 | ✅ |
+| 同名文件再传一次（覆盖） | ✅ |
+| `cp - mysql:/tmp/`（stdin 形式，经 `cmd /c "… < file"`） | ❌ `unexpected EOF` / `E_FAIL` —— **没找到正确的喂法**，未继续查 |
+
+这个坑值得单独记一笔：v0.8.0 时只试了**第一行**那种写法，就得出
+"本地→容器是坏的"并把结论写进了代码注释 —— 直到用户拿 `--help` 指出
+`cp` 是存在的。**"这条路不通"的结论必须多试几种参数形式**（尤其
+"目标是文件名"和"目标是目录"是两套语义），否则会把工具的能力误判成缺陷。
+
+`wslc exec` 的 stdin 那条路（`-i`）本来就是支持的 —— 我们没用它只是因为
+`Wslc::build_command` 把 stdin 写死成 `null`。

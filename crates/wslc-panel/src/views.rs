@@ -2037,9 +2037,11 @@ pub fn db_backup_progress(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
 
 /// 某个库的**备份列表**浮层（v0.8）。
 ///
-/// 列表是 **Windows 侧**目录扫出来的（`AppState::rescan_backups`）；
-/// 容器内那份 `/tmp` 备份"还在不在"要到**恢复那一刻**才知道 ——
-/// 所以这里不画"可用 / 不可用"，恢复失败时再给准确的解释。
+/// 列表是 **Windows 侧**目录扫出来的（`AppState::rescan_backups`）——
+/// 这也正是**恢复的输入**：点「恢复」时会把这份文件 cp 进容器再重定向进
+/// `mysql`（v0.8.2 起不再依赖容器内 `/tmp` 里那份旧的，所以容器重建过、
+/// `/tmp` 被清过都照样能恢复）。因此这里不需要（也无法）预先画
+/// "容器里那份还在不在"—— 只认列表里这个文件在不在。
 pub fn db_backup_dialog_overlay(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
     let Some(database) = db.backup_dialog.as_ref() else {
         return div().into_any_element();
@@ -2138,9 +2140,10 @@ pub fn db_backup_dialog_overlay(db: &DbState, entity: &Entity<Shell>) -> AnyElem
                             .text_xs()
                             .text_color(theme::text_dim())
                             .child(
-                                "列表是 Windows 侧的存档（容器删了它们还在）。\
-                                 恢复**覆盖**这个库现有的全部数据；\
-                                 恢复读的是容器里 /tmp 下的那份 —— 容器重建过它可能已经没了。",
+                                "列表是 Windows 侧的存档（容器删了它们还在），\
+                                 也是**恢复的输入**：恢复时会把这份文件送进容器再导入，\
+                                 所以容器重建过也照样能恢复。\
+                                 恢复**覆盖**这个库现有的全部数据。",
                             ),
                     ),
             )

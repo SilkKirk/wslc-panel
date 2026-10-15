@@ -3348,10 +3348,12 @@ impl Shell {
 
     // -- 数据库备份 / 恢复（v0.8）--------------------------------------------
     //
-    // 实测过的路（`docs/PLAN-v0.8.md` 记录全过程）：
-    // 备份 = 容器内 `mysqldump … > /tmp/wslc-backups/…` + `container cp` 拉回；
-    // 恢复 = 容器内 `mysql … < /tmp/…`（**只认容器内那份** —— `cp` 的
-    // "本地→容器"方向实测是坏的，见 `cmd::mysql` 的模块注释）。
+    // 实测过的路：
+    // 备份 = 容器内 `mysqldump … > /tmp/wslc-backups/…` + `container cp` 拉回 Windows；
+    // 恢复 = 把 **Windows 侧那份** `container cp` 进
+    //        `/tmp/wslc-restore/`（目标写成**目录**）+ 容器内 `mysql … < …`。
+    //        容器重建 / `/tmp` 被清都不再是障碍（v0.8.2 改，
+    //        完整实测矩阵见 `wslc_core::model::mysql::restore_container_path`）。
 
     /// 备份一个数据库（长任务；状态在 `AppState::db.backup`）。
     pub fn start_db_backup(
@@ -3516,7 +3518,9 @@ impl Shell {
             container: db.container.clone(),
             database: entry.database.clone(),
             client: db.client.clone(),
-            container_path: entry.container_path.clone(),
+            // 恢复的输入是 **Windows 侧那份**：执行时会把它 cp 进容器
+            //（所以容器重建过也照样能恢复，见 `PendingAction::RestoreDatabase`）
+            windows_path: entry.path.clone(),
             creds: db.creds.clone(),
         };
         self.request(action, cx);
