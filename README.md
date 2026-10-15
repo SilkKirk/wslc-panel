@@ -41,7 +41,8 @@
 |---|---|---|
 | **基本信息** | WSL/内核/Windows/Direct3D 版本、活动会话（可**终止**）、`settings.yaml` 路径与 `storagePath`、容器/镜像/网络/卷统计 | `wslc info`、`wslc system session list` / `terminate` |
 | **当前运行** | 运行中容器 + **实时资源**（CPU%、内存、网络 I/O、块 I/O、PID） | `wslc list`、`wslc stats` |
-| **全部容器** | 含已退出容器、状态徽标、端口映射、行内**终端**（`exec -it`，仅运行中）/ 启动 / 重启 / 停止 / **日志** / 删除、批量停止/删除/`prune`；详情里强杀、**执行命令**（非交互 `exec`）、**`attach` 主进程** | `wslc list -a`、`wslc stats -a`、`wslc logs` / `exec` / `attach` |
+| **全部容器** | 含已退出容器、状态徽标、端口映射、行内**终端**（`exec -it`，仅运行中）/ **数据库**（仅认得出是 MySQL 且运行中）/ 启动 / 重启 / 停止 / **日志** / 删除、批量停止/删除/`prune`；详情里强杀、**执行命令**（非交互 `exec`）、**`attach` 主进程** | `wslc list -a`、`wslc stats -a`、`wslc logs` / `exec` / `attach` |
+| **数据库管理** | MySQL / MariaDB 容器专属（从容器行的「数据库」按钮进）：**连接卡**（用户名 / 密码 —— 密码写在容器环境变量里时**自动读出**，只存内存不落盘）、**数据库**列表（字符集 / 排序规则 / 表数 / 占用，系统库带标记）+ 新建 + 删除（二次确认）、**用户**列表（`mysql.user`：用户 / 主机 / 认证插件 / 超级权限）+ 新建（可顺带授权）+ 改密码 + 授权 + 删除、**SQL 控制台**（原样执行，表格输出） | `wslc exec -e MYSQL_PWD=…` + 容器自带的 `mysql` 客户端、`wslc inspect` |
 | **创建容器** | 弹窗表单：镜像引用（**右边有「从本地镜像里选」的可搜索下拉框** —— 候选是本地已有镜像，标签里带体积；从「镜像」页点「用这个镜像创建容器」进来时**已预填**）、容器名（**留空就按镜像命名**：`nginx`，同镜像的第二个叫 `nginx-2` —— 不让 `wslc` 起 `shimmering_karakoram` 那种随机名，否则列表里看不出是哪个镜像起的；下面那行提示会写出**具体**会叫什么）、端口 / 环境变量 / 卷挂载 / 网络 / 内存 / CPU、拉取策略（默认 `never`）；**按镜像预填三样**：① 读一次 `wslc image inspect`，按它声明的 `ExposedPorts` 预填端口（nginx → `8080:80`）；② 常见镜像（mysql / mariadb / postgres / mongo / redis / nginx）**首次启动必需的環境变量只预填变量名**（mysql → `MYSQL_ROOT_PASSWORD=`，值留给你填）；③ **建议的数据卷**（`mysqldata:/var/lib/mysql`）。碰到"预填了变量名却没填值"会在**提交时拦住**并把焦点送到那一格（空值等于没填 —— 否则容器起来就退出，原因还藏在日志里）。以上预填**只在那一格是空的时候**做，绝不覆盖手输的内容；并显示它声明的端口与启动命令；底部**实时等效命令预览**（留空时里面的 `--name` 就是上面那个名字） | `wslc run -d`、`wslc image inspect`、`wslc images`（快照） |
 | **镜像** | **本地已有 + 拉取**：页面是「**拉取镜像…**」按钮 + 本地镜像表（同一 ID 多仓库引用会标注、可删除）。拉取在**弹窗**里：registry 是**可编辑**字段（默认内置 **`docker.1panel.live`** —— 实测唯一一个 tag 与 manifest 都免认证的加速站）+ 10 个常用官方镜像的快捷入口；仓库名认 `alpine` / `library/nginx` / `grafana/grafana` / `nginx:1.27`，**粘一整条浏览器 URL 也认**；**tag 是可搜索的下拉框**（整体喂进去 —— 组件库的列表是虚拟化的，`node` 那种 9170 个 tag 也不卡），按「**latest 优先 → 版本倒序**」排过（接口给的是字母序，`latest` 本来排在最后一个）；**选中某个 tag 才去量它的下载体积**（只量那一个 —— 一次要两个请求）；别的 registry 列不出 tag 也**照样能拉**（仓库名后面写 `:tag`，或粘完整引用）；拉完可直接「**用这个镜像创建容器**」（镜像名预填） | `curl.exe` → Registry V2（`/v2/<repo>/tags/list`、`/v2/<repo>/manifests/<ref>`）、`wslc images` / `wslc pull` |
 | **网络 / 卷** | 网络（内置网络禁止删除）、卷（**创建命名卷** / 删除 / **清理未使用**） | `network list` / `volume list` / `volume create` / `volume prune` |
@@ -276,7 +277,7 @@ base, component, and assets, so a Rust application lists a single dependency.」
 正常启动时它长这样：
 
 ```text
-INFO wslc_panel: wslc-panel 启动（版本 0.6.8，构建 020a9df）
+INFO wslc_panel: wslc-panel 启动（版本 0.7.0，构建 03b1b44）
 INFO gpui_windows::direct_write: Use Microsoft YaHei UI as UI font.
 INFO gpui_windows::directx_devices: Using GPU: Intel(R) UHD Graphics
 INFO gpui_windows::directx_devices: Created device with Direct3D 11.1 feature level.
