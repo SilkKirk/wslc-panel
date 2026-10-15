@@ -3038,17 +3038,18 @@ impl Shell {
     /// 不会留下"建了库没建用户"的半成品。
     pub fn submit_db_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // 先把要用的东西取成 owned 的（下面要改 `self`，不能再借着它）
-        let prepared: Result<(String, &'static str, Option<(String, String, String)>), String> =
+        // 闭包**返回 `Result<_, wslc_core::Error>`**：里面的 `?` 全是
+        // `Error -> Error`，不需要 From 转换。`String` 的转换在**外面**做
+        //（上一版把 `?` 放进 `Result<_, String>` 的闭包里，
+        // `String: From<Error>` 不存在 —— CI 抓的）。
+        let prepared: Result<Option<(String, &'static str, Option<(String, String, String)>)>> =
             (|| {
                 let Some(dialog) = self.db_dialog.as_ref() else {
                     return Ok(None);
                 };
                 let text = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
 
-                let prepared_inner: Result<
-                    (String, &'static str, Option<(String, String, String)>),
-                    _,
-                > = match &dialog.kind {
+                match &dialog.kind {
                     DbDialogKind::NewDatabase => {
                         let charset = text(&dialog.charset);
                         let collation = text(&dialog.collation);
@@ -3076,7 +3077,7 @@ impl Shell {
                             )?);
                             to_record = Some((database, user, password));
                         }
-                        Ok((parts.join("; "), dialog.kind.title(), to_record))
+                        Ok(Some((parts.join("; "), dialog.kind.title(), to_record)))
                     }
                     DbDialogKind::NewUser => {
                         let grant_db = text(&dialog.grant_db);
@@ -3089,14 +3090,14 @@ impl Shell {
                             &text(&dialog.password),
                             grant,
                         )
-                        .map(|sql| (sql, dialog.kind.title(), None))
+                        .map(|sql| Some((sql, dialog.kind.title(), None)))
                     }
                     DbDialogKind::AlterPassword { user, host } => mysql_model::alter_user_password_sql(
                         user,
                         host,
                         &text(&dialog.password),
                     )
-                    .map(|sql| (sql, dialog.kind.title(), None)),
+                    .map(|sql| Some((sql, dialog.kind.title(), None))),
                     DbDialogKind::Grant { user, host } => {
                         let grant_db = text(&dialog.grant_db);
                         if grant_db.is_empty() {
@@ -3105,22 +3106,19 @@ impl Shell {
                             ))
                         } else {
                             mysql_model::grant_sql(&grant_db, user, host, dialog.grant)
-                                .map(|sql| (sql, dialog.kind.title(), None))
+                                .map(|sql| Some((sql, dialog.kind.title(), None)))
                         }
                     }
-                };
-                prepared_inner
-                    .map(Some)
-                    .map_err(|e| e.to_string())
+                }
             })();
 
         // 弹窗不在（理论上来不到）→ 什么都不做
         let Some((sql, title, to_record)) = match prepared {
             Ok(None) => return,
-            Ok(Some(prepared)) => Some(prepared),
-            Err(message) => {
+            Ok(Some(prepared)) => prepared,
+            Err(e) => {
                 // 不关弹窗：用户就在那一格上，改一个字比重打一遍强
-                self.state.notify(Toast::error(message));
+                self.state.notify(Toast::error(e.to_string()));
                 cx.notify();
                 return;
             }

@@ -275,6 +275,9 @@ pub fn backup_paths(
     database: &str,
     now_secs: u64,
 ) -> Result<BackupPaths> {
+    // 库名会进**文件名**和**容器内的路径** —— 非法名在这里就拦下
+    //（`backup_database` 的第一件事也是这条校验，这里是让它更早失败）
+    logic::validate_ident("库名", database)?;
     let file_name = logic::backup_file_name(database, now_secs);
     let windows_path = data_dir
         .join(logic::WINDOWS_BACKUP_SUBDIR)
