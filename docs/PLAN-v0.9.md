@@ -770,3 +770,90 @@ API 调用、逐条手算每一个新断言的字符串）。它捞出 7 条真�
 > 逻辑自洽，但用户走进去了出不来。** 这类只能靠"把用户会怎么走一遍"想一遍 ——
 > 具体到这次，就是问一句"我们预填的值，我们自己会接受吗？"
 
+---
+
+## 11. 顺带修的：「创建容器」缺**启动命令**那一格
+
+### 11.1 用户报的现象
+
+界面上一个容器点「启动」→ 提示成功 → 还是「已退出」，反复点都一样。
+（实机：`eclipse-temurin:8-jre-alpine`，用户管它叫"本地的 jre8"。）
+
+### 11.2 实测（全部在真机上跑过）
+
+```
+$ wslc image inspect docker.1panel.live/library/eclipse-temurin:8-jre-alpine
+Cmd          :                      ← 空
+Entrypoint   : {/__cacert_entrypoint.sh}
+ExposedPorts :                      ← 空
+
+$ wslc start eclipse-temurin
+eclipse-temurin                     ← **启动命令本身是成功的**
+
+$ wslc inspect eclipse-temurin
+ExitCode   : 0
+StartedAt  : 2026-10-15T10:19:14.767116477Z
+FinishedAt : 2026-10-15T10:19:14.76824708Z   ← 相隔 1.1 ms
+logs: （空）
+```
+
+**不是启动失败，是启动成功之后立刻正常退出。** 那个镜像（`-jre-alpine`，
+JRE-only）只有 `ENTRYPOINT`、没有 `CMD`，而 entrypoint 的末行是 `exec "$@"`：
+
+```sh
+exec "$@"
+```
+
+不带参数时 `exec` 在 alpine 的 ash 里没东西可执行、直接返回 0 —— 容器于是
+"跑完了"。镜像本身完全正常：`wslc run --rm … java -version` 实测打出
+`openjdk version "1.8.0_504" (Temurin)`。
+
+### 11.3 为什么面板用户走不出来（这才是缺陷本身）
+
+面板的「创建容器」弹窗**没有启动命令这一格**：
+
+- `CreateDialog` 只有 image / name / ports / env / volumes / network / memory / cpus / pull；
+- `to_spec()` 从不给 `RunSpec::command` 赋值 —— 全仓库 `spec.command` 只在
+  `cmd/container.rs` 的**测试**里出现过；
+- 弹窗里那句「启动命令：…」是 `wslc image inspect` 读来的**只读**提示
+  （`views::image_facts_hint`）。
+
+于是**对于没有 `CMD` 的镜像，面板建出来的容器必然是"起来就退"的**，跟怎么点
+没关系。而唯一能填命令的地方（「添加部署」那格）只能作用于**已存在**的容器 ——
+这个容器 1 ms 就退，来不及 `exec` 进去。**死胡同，和 §10.11 同一类。**
+
+### 11.4 改法
+
+1. `CreateDialog` 加 `command` 一格，`to_spec` 写进 `RunSpec::command`；
+2. 换算走**新的纯函数** `wslc_panel_core::state::create_command`，
+   而不是把逻辑摆在 `app.rs` 里（理由同 §2：那样单测不必链接 GPUI）；
+3. 视图里加一行 `form_field("create-command", …)`。
+
+`create_command` 上钉着一条**唯一的陷阱**，两条单测专门守它：
+
+| 输入 | 结果 | 为什么 |
+|---|---|---|
+| 空 / 只有空白 | **空 `Vec`** | 一条命令都不给，镜像自己的 `ENTRYPOINT` / `CMD` 才有机会生效 |
+| 非空 | `["/bin/sh", "-c", <原文>]` | 同 `exec_argv`：管道 / 重定向 / `&&` 不能静默失效 |
+
+⚠️ 空的时候**不能**返回 `["/bin/sh","-c",""]` —— 那同样算"用户给了命令"，
+会把镜像的 `CMD` **顶掉**：mysql / nginx 那类镜像本来能跑，用户在那格敲了个
+空格反而起不来了。这条是从"留空"到"什么都不做"的关键一步，所以它有自己的单测。
+
+顺带把 `image_facts_hint` 的措辞改了（「镜像自带的启动命令：X（「启动命令」
+那格留空时用它）」）：弹窗里现在有**两处**都叫"启动命令"，不写清哪个生效，
+用户分不出来。
+
+### 11.5 这一版**没做**的（留给下一版）
+
+- **没有在弹窗里告警"这个镜像没有 `CMD`、留空会起来就退"**。现在只是把
+  `Entrypoint + Cmd` 原样显示出来（对那个 temurin 镜像显示的是
+  `/__cacert_entrypoint.sh`），用户仍然可能读成"这镜像有命令、能跑"。
+  真的要做，就得区分"只有 `ENTRYPOINT`"和"有 `CMD`"两种情况 ——
+  `ImageFacts.command` 现在把两者拼成了一个字符串，信息已经丢了，
+  所以这需要**先改 `parse_image_inspect`**（`wslc-core`，配 fixture 单测），
+  不是加一句话的事。
+- 弹窗多一行之后**是否会出现滚动条**，属于 §8 的"必须本机点一遍"那一类
+  （卡片有 `max_h(880)` + `overflow_y_scroll` 兜底，理论上只是多滚一点）。
+
+
