@@ -1152,7 +1152,11 @@ pub fn database(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
 
     let body: AnyElement = if db.loaded {
         match db.tab {
-            DbTab::Databases => db_databases_card(db, entity),
+            // ⚠️ 凭据取**单一数据源**（`AppState.db_credentials`），不要从
+            // `DbState` 上再挂一份克隆 —— v0.8 就是这么错的：`DbState.credentials`
+            // 从没被同步过（构造函数里给的是空的），于是"建库同时建用户"
+            // 明明成功、列表里那两列却永远是 `—`（实机截图抓到的）。
+            DbTab::Databases => db_databases_card(db, &shell.state.db_credentials, entity),
             DbTab::Users => db_users_card(db, entity),
             DbTab::Sql => db_console_card(db, form, entity, cx),
         }
@@ -1160,12 +1164,21 @@ pub fn database(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
         db_loading(db.busy)
     };
 
+    // 存档读坏了要说出来 —— 否则那两列全是 `—`，用户只会以为
+    // "面板没记住我建的账号"，而真实原因是存档解析失败。
+    let creds_warning: Option<AnyElement> = shell
+        .state
+        .db_credentials_error
+        .as_ref()
+        .map(|error| db_store_warning(&format!("数据库账号存档读不出来：{error}")));
+
     v_flex()
         .w_full()
         .gap_3()
         .child(header)
         .child(connecting)
         .children(db.error.as_ref().map(db_error_banner))
+        .children(creds_warning)
         .child(db_tabs(db.tab, entity))
         .child(body)
         .into_any_element()
@@ -1333,6 +1346,23 @@ fn db_error_banner(failure: &DbFailure) -> AnyElement {
         .into_any_element()
 }
 
+/// 「账号存档读不出来」这类**纯文字**警告。
+///
+/// 和 [`db_error_banner`] 分开：那个吃 `DbFailure`（会再给一条"该怎么办"的
+/// 提示，是针对 SQL 报错分类的）；存档读坏不是 SQL 失败，没有可分类的东西，
+/// 硬塞成 `DbFailure` 只会让分类器瞎猜一条不相干的建议。
+fn db_store_warning(text: &str) -> AnyElement {
+    div()
+        .w_full()
+        .p_3()
+        .rounded_md()
+        .bg(theme::danger_soft())
+        .border_1()
+        .border_color(theme::danger_edge())
+        .child(div().text_sm().text_color(theme::danger()).child(text.to_owned()))
+        .into_any_element()
+}
+
 /// 还没读到数据时占位。
 fn db_loading(busy: bool) -> AnyElement {
     let text = if busy {
@@ -1399,7 +1429,14 @@ fn db_name_cell(entry: &wslc_core::model::DbEntry) -> AnyElement {
 }
 
 /// 「数据库」tab。
-fn db_databases_card(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
+///
+/// `credentials` 是 `AppState` 上那份**唯一**的账号存档 —— 别从 `DbState`
+/// 里取（那里曾经有一份从没同步过的克隆，见 [`database`] 里的注释）。
+fn db_databases_card(
+    db: &DbState,
+    credentials: &wslc_panel_core::dbcreds::DbCredentialStore,
+    entity: &Entity<Shell>,
+) -> AnyElement {
     let new_database = {
         let entity = entity.clone();
         Button::new("db-new-database")
@@ -1425,7 +1462,7 @@ fn db_databases_card(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
             };
             // 「用户名 / 密码」只对**面板建的库**有记录（建库时同时建的用户，
             // 记在本地存档里）。别处建的库显示 `—` —— 不猜、不编。
-            let credential = db.credentials.get(&db.container, &entry.name);
+            let credential = credentials.get(&db.container, &entry.name);
             let backup_button = overlay_button(
                 &format!("db-backup-{}", entry.name),
                 "备份",

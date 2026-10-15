@@ -1688,11 +1688,11 @@ pub struct DbState {
     pub sql_output: Option<String>,
     /// SQL 控制台跑过没有（区分"还没跑过"和"跑完了没有输出"）。
     pub sql_ran: bool,
-    /// **本地存档**的库账号（v0.8：建库同时建用户，列表要展示用户名 / 密码）。
-    ///
-    /// 整份存档（`db-credentials.json`）挂在 `AppState` 上，`DbState` 只持有
-    /// 一份克隆 —— 写盘的时机由动作（建库 / 删库）决定，不是每帧都写。
-    pub credentials: crate::dbcreds::DbCredentialStore,
+    // ⚠️ 这里**不该**再挂一份账号存档的克隆。v0.8 挂过（`credentials`），
+    // 而它从来没被同步过 —— 构造函数给的是空的，渲染却读它，于是
+    // "建库同时建用户"明明成功（SQL 成功、`db-credentials.json` 也写了）、
+    // 列表里那两列却永远是 `—`（实机截图抓到的）。
+    // 现在渲染直接用 `AppState::db_credentials`（唯一数据源）。
     /// 正在备份的库（`None` = 空闲）。
     ///
     /// 备份是**长任务**（大库可能几分钟）：照 `ExportProgress` 的样子做 ——
@@ -1804,7 +1804,6 @@ impl DbState {
             last_sql: String::new(),
             sql_output: None,
             sql_ran: false,
-            credentials: crate::dbcreds::DbCredentialStore::default(),
             backup: None,
             backups: Vec::new(),
             backup_dialog: None,
@@ -5281,31 +5280,20 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// `DbState` 的 `Debug` 里**不能**出现明文密码（守门断言）。
+    ///
+    /// 以前这里还顺带测"`DbState` 上那份凭据克隆"—— 那个字段已经删掉了
+    /// （它就是"列表里永远显示 `—`"的根因：渲染读它，而它从没被同步过）。
+    /// 这条留下来是因为 `AppState` / `DbState` 的 `Debug` 会一路把
+    /// `MysqlCreds` 带出来，而那里面**有密码**（`MysqlCreds` 的 `Debug`
+    /// 是手写脱敏的）。凭据存档自己的脱敏在 `dbcreds::tests` 里。
     #[test]
-    fn credentials_survive_the_db_state_clone_and_stay_redacted() {
-        // `DbState` 挂着一份凭据存档的克隆（真身在 `AppState`）——
-        // 克隆行为要正常，且 Debug **不能**把明文密码带出来
-        //（`DbCredential` 的 Debug 是手写脱敏的，这是守门断言）
-        let mut state = DbState::from_probe(&probe_with(RootCredHint::Unknown), "mysql:8");
-        state.credentials.put(
-            "mysql",
-            "shop",
-            crate::dbcreds::DbCredential {
-                user: "shop_user".to_owned(),
-                password: "s3cret-pw".to_owned(),
-                host: "%".to_owned(),
-            },
+    fn db_state_debug_never_leaks_the_password() {
+        let state = DbState::from_probe(
+            &probe_with(RootCredHint::Password("s3cret-pw".into())),
+            "mysql:8",
         );
-        let cloned = state.clone();
-        assert_eq!(
-            cloned
-                .credentials
-                .get("mysql", "shop")
-                .unwrap()
-                .password,
-            "s3cret-pw"
-        );
-        let text = format!("{cloned:?}");
+        let text = format!("{state:?}");
         assert!(!text.contains("s3cret-pw"), "{text}");
         assert!(text.contains("***"), "{text}");
     }
