@@ -1424,14 +1424,16 @@ mod tests {
         assert!(validate_ident("库名", "  shop  ").is_ok());
         assert!(validate_ident("库名", "").is_err());
         assert!(validate_ident("库名", &"a".repeat(65)).is_err());
-        // 下面这些都是**必须拒掉**的（它们会直接进 SQL）
+        // 下面这些都是**必须拒掉**的（它们会直接进 SQL）。
+        // ⚠️ 用「中间有换行」而不是「末尾有换行」：名字两头的空白是会被
+        // `trim()` 掉的（表单输入带个回车不该算错误），中间的才真非法。
         for bad in [
             "shop; DROP DATABASE mysql",
             "shop`",
             "shop'",
             "shop--",
             "shop db",
-            "shop\n",
+            "shop\ndrop",
             "库",
         ] {
             assert!(

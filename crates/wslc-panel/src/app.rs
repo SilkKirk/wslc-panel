@@ -58,8 +58,8 @@ use wslc_core::{Wsl, Wslc};
 use crate::state::{
     self, AppState, ConfirmAction, DbFailure, DbState, DbTab, DistroAction, ExecState,
     ExportProgress, ImmediateAction, InstallOutcome, InstallProgress, InstallSourceKind, LogsState,
-    MirrorChoice, MirrorProbeResult, Page, PendingAction, PromptKind, RegistryState, Toast,
-    ToastKind, exec_argv,
+    MirrorChoice, MirrorProbeResult, Page, PendingAction, PromptKind, Toast, ToastKind,
+    exec_argv,
 };
 use crate::theme;
 // `split_list` / `refresh_label` 是纯函数，住在不依赖 GPUI 的 `wslc-panel-core` 里
@@ -2667,7 +2667,12 @@ impl Shell {
         } else {
             user
         };
-        (user, form.password.read(cx).value().to_owned())
+        // ⚠️ `value()` 返回的是 `SharedString`（gpui 的引用计数字符串），
+        // 要自己转成 `String` —— `.trim()` 之后才是 `&str`，那种写法不用转。
+        (
+            user,
+            form.password.read(cx).value().trim().to_owned(),
+        )
     }
 
     /// 打开某个容器的数据库管理页（从容器列表行的「数据库」按钮进）。
@@ -2831,9 +2836,11 @@ impl Shell {
                         Ok(users) => db.users = users,
                         // 数据库列出来了、用户列表没列出来（多半是权限）：
                         // 照样把它说出来，但别覆盖掉数据库那边的成功。
+                        // ⚠️ 这里拿到的是 `wslc_core::Error`，`fail()` 收
+                        // `impl Display`，会自己把它变成字符串并分类。
                         Err(message) => {
                             if databases_ok {
-                                db.error = Some(DbFailure::from_text(message));
+                                db.fail(message);
                             }
                         }
                     }
@@ -2903,7 +2910,7 @@ impl Shell {
                         // 照样说出来，但别覆盖掉数据库那边的成功。
                         Err(message) => {
                             if databases_ok {
-                                db.error = Some(DbFailure::from_text(message));
+                                db.fail(message);
                             }
                         }
                     }
