@@ -623,12 +623,15 @@ pub(crate) enum DbDialogKind {
         /// 目标主机。
         host: String,
     },
-    /// **导入一份 `.sql`**（用户从本机挑的文件）。
+    /// **导入一份 `.sql` 到某个库**（从数据库列表那一行的「导入备份」进来）。
     ///
-    /// 和「恢复」的区别只在**输入从哪来**：恢复的输入是面板自己的备份
-    /// （dump 自带 `CREATE DATABASE`，所以不用选库）；导入是任意 `.sql`，
-    /// 多半要指定往哪个库灌（用户的 dump 常常没有 `USE`）。
-    ImportSql,
+    /// 目标库**由那一行定死**（`database`），不给"导入到别的库"的选项 ——
+    /// 实机反馈："数据库列表那里要一个导入备份，点击导入这个库的数据"。
+    /// 顺带这也消掉了"目标库填错"这类错误：它没有可填错的地方。
+    ImportSql {
+        /// 导入到哪个库（那一行的库名）。
+        database: String,
+    },
 }
 
 impl DbDialogKind {
@@ -639,7 +642,7 @@ impl DbDialogKind {
             Self::NewUser => "新建 MySQL 用户",
             Self::AlterPassword { .. } => "修改密码",
             Self::Grant { .. } => "授权",
-            Self::ImportSql => "导入 SQL 文件",
+            Self::ImportSql { .. } => "导入 SQL 文件",
         }
     }
 
@@ -650,7 +653,7 @@ impl DbDialogKind {
             Self::NewUser => "创建",
             Self::AlterPassword { .. } => "改密码",
             Self::Grant { .. } => "授权",
-            Self::ImportSql => "开始导入",
+            Self::ImportSql { .. } => "开始导入",
         }
     }
 
@@ -660,7 +663,7 @@ impl DbDialogKind {
     /// 送进容器再让 mysql 读它"。`submit_db_dialog` 是按 SQL 拼装的，
     /// 硬塞进去只会让那个函数里多一层和 SQL 无关的分支。
     pub(crate) fn is_import(&self) -> bool {
-        matches!(self, Self::ImportSql)
+        matches!(self, Self::ImportSql { .. })
     }
 }
 
@@ -692,13 +695,11 @@ pub(crate) struct DbDialog {
     /// 需要一个连它的账号，单独再走一遍「新建用户」纯属多余。
     pub(crate) create_user: bool,
     /// （仅导入）本机那份 `.sql` 的路径。
-    pub(crate) import_path: Entity<InputState>,
-    /// （仅导入）往哪个库灌（留空 = 由文件里的语句决定）。
     ///
-    /// ⚠️ 不复用 `grant_db`：那个的 placeholder 是"留空 = 先不授权"，
-    /// 而这里的语义完全不同（"留空 = 由文件决定"）。placeholder 是建输入框时
-    /// 定下的，改不了 —— 共用会让用户读到一句错的提示。
-    pub(crate) import_db: Entity<InputState>,
+    /// 目标库**没有输入框**：它由数据库列表那一行定死，写在
+    /// [`DbDialogKind::ImportSql`] 的 `database` 里（用户要的是"导入这个库的
+    /// 数据"，给一个能改的框只会多一个填错的机会）。
+    pub(crate) import_path: Entity<InputState>,
 }
 
 /// 这次连数据库要用哪个账号。
@@ -860,6 +861,18 @@ pub struct Shell {
     ///
     /// 和 `create_dialog` 一样懒创建（`InputState::new` 要 `&mut Window`）。
     pub(crate) db_dialog: Option<DbDialog>,
+    /// 「数据库管理」页的「基础信息」浮层开着没有。
+    ///
+    /// 连接卡（用户名 / 密码 + 那两段说明）原来**常驻页面顶部**，实机反馈
+    /// "不用进来就在上面占用空间" —— 现在收进这个浮层，页面顶上是页头 +
+    /// 一个「基础信息」按钮。
+    pub(crate) db_info_open: bool,
+    /// SQL 控制台浮层开着没有（针对 `DbState.sql_database` 那个库）。
+    ///
+    /// 控制台**不做成 tab**：SQL 是针对某个库的事，入口在数据库列表每行的
+    /// 「SQL」按钮上（实机反馈："上面不需要…sql 控制台，
+    /// 都是在具体数据库 database 操作的"）。
+    pub(crate) db_console_open: bool,
     /// 「部署管理」页的「添加部署 / 重新部署」弹窗；关闭时为 `None`。
     ///
     /// 只有这一个要 window（里面全是输入框）。这一页另外两个浮层
@@ -967,10 +980,13 @@ impl Shell {
             status_tick: 0,
             db_form: None,
             db_dialog: None,
+            db_info_open: false,
+            db_console_open: false,
             deploy_form: None,
         };
         shell.refresh(cx);
         shell.start_auto_refresh(cx);
+        shell.start_toast_reaper(cx);
         shell
     }
 
@@ -3088,8 +3104,6 @@ impl Shell {
         let import_path = cx.new(|cx| {
             InputState::new(window, cx).placeholder(r"点右边的「选择文件…」，或直接粘一个路径")
         });
-        let import_db =
-            cx.new(|cx| InputState::new(window, cx).placeholder("留空 = 由文件里的语句决定"));
 
         // 预填：把行上带过来的用户名 / 主机填好（改密码 / 授权那两种）
         if let DbDialogKind::AlterPassword { user: u, host: h }
@@ -3117,8 +3131,8 @@ impl Shell {
             DbDialogKind::NewUser => &user,
             DbDialogKind::AlterPassword { .. } => &password,
             DbDialogKind::Grant { .. } => &grant_db,
-            // 导入：最该填的是**文件**（库名可以留空）
-            DbDialogKind::ImportSql => &import_path,
+            // 导入：最该填的是**文件**（目标库已经由那一行定了）
+            DbDialogKind::ImportSql { .. } => &import_path,
         };
         let handle = first.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
@@ -3135,7 +3149,6 @@ impl Shell {
             grant: GrantKind::All,
             create_user,
             import_path,
-            import_db,
         });
         cx.notify();
     }
@@ -3163,20 +3176,26 @@ impl Shell {
 
     /// 开始导入一份 `.sql`（长任务；状态在 `AppState::db.import`）。
     ///
+    /// 目标库**来自弹窗的 kind**（`ImportSql { database }` —— 就是数据库列表
+    /// 上被点的那一行），不给用户改的机会：这一条动作的语义就是"导入这个库的
+    /// 数据"。它同时消掉了"库名填错"这类错误。
+    ///
     /// # 校验都在**起进程之前**，而且失败**不关弹窗**
     ///
     /// 用户就在那一格上（`AGENTS.md` §7.5 的"空值等于没填"同理）：
-    /// - 文件必须真的在（选了之后被删 / 手打的路径写错，都要当场说）；
-    /// - 目标库名要过白名单（它会被拼进 `mysql -D …`）。
+    /// 文件必须真的在（选了之后被删 / 手打的路径写错，都要当场说）。
     pub fn start_db_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // 先把要用的取成 owned（下面要改 self，不能再借着 db_dialog）
-        let (path_text, database_text) = {
+        let (path_text, database) = {
             let Some(dialog) = self.db_dialog.as_ref() else {
+                return;
+            };
+            let DbDialogKind::ImportSql { database } = &dialog.kind else {
                 return;
             };
             (
                 dialog.import_path.read(cx).value().trim().to_owned(),
-                dialog.import_db.read(cx).value().trim().to_owned(),
+                database.clone(),
             )
         };
 
@@ -3192,16 +3211,15 @@ impl Shell {
             cx.notify();
             return;
         }
-        let database = (!database_text.is_empty()).then_some(database_text);
-        if let Some(db_name) = database.as_deref() {
-            // 库名要进 `mysql -D …`（过一次 shell，`load_script` 会引起来），
-            // 但先把"这个名字根本不是合法标识符"的情况拦在本地
-            if let Err(e) = mysql_model::validate_ident("库名", db_name) {
-                self.state.notify(Toast::error(e.to_string()));
-                cx.notify();
-                return;
-            }
+        // 库名要进 `mysql -D …`（过一次 shell，`load_script` 会引起来），
+        // 但先把"这个名字根本不是合法标识符"的情况拦在本地。
+        // 它来自我们自己的库列表，正常永远过得去 —— 这一条是防御。
+        if let Err(e) = mysql_model::validate_ident("库名", &database) {
+            self.state.notify(Toast::error(e.to_string()));
+            cx.notify();
+            return;
         }
+        let database = Some(database);
 
         let Some(db) = self.state.db.as_ref() else {
             return;
@@ -3341,9 +3359,11 @@ impl Shell {
         }
         if let Some(db) = self.state.db.as_mut() {
             db.sql_database = Some(database.clone());
-            db.tab = DbTab::Sql;
             db.clear_error();
         }
+        // 控制台是**浮层**（不是 tab）：实机反馈"上面不需要…sql 控制台，
+        // 都是在具体数据库 database 操作的"。
+        self.db_console_open = true;
         let toast = match credential {
             Some(cred) => Toast::info(format!(
                 "控制台已指向 {database}，账号用 {}（来自面板记的账号）",
@@ -3478,7 +3498,7 @@ impl Shell {
                     // 导入**不是**一条 SQL（它是"把文件送进容器让 mysql 读它"），
                     // 所以确认按钮那边直接调 `start_db_import`，走不到这里。
                     // 这一臂只是为了让 match 完备。
-                    DbDialogKind::ImportSql => Ok(None),
+                    DbDialogKind::ImportSql { .. } => Ok(None),
                 }
             })();
 
@@ -7144,6 +7164,66 @@ impl Shell {
         cx.notify();
     }
 
+    /// 让提示条**自己消失**的小循环（每 500ms 看一眼）。
+    ///
+    /// # 为什么是一个常驻循环，而不是"弹提示时起一个定时器"
+    ///
+    /// `AppState::notify` 住在 `wslc-panel-core` 里，那一层**没有执行器**、
+    /// 起不了定时器。换成"在每个 notify 的调用点各起一个"的话：全仓库 60 多处
+    /// 都得改，而且旧定时器还得有办法认出"现在这条提示已经不是我那条了"
+    /// （提示条是单条的 `Option<Toast>`，后弹的会覆盖先弹的）。
+    ///
+    /// 一个循环只在一个地方，而且天然覆盖"以后新加的 notify"。
+    ///
+    /// # 代价
+    ///
+    /// 每 500ms 醒一次、读一个 `Option<Toast>`（外加一次 `Instant::elapsed`）。
+    /// **只有真的收掉时才 `cx.notify()`** —— 否则界面会每半秒重绘一遍，
+    /// 而 GPUI 每一帧都要跑布局 + 光栅化（`Cargo.toml` 里那段
+    /// `profile.dev` 的注释说的就是这件事）。
+    ///
+    /// 500ms 这个粒度：提示条本来就活 4~8 秒，晚半秒收掉没人看得出来；
+    /// 反过来做成一帧一查没有意义。
+    fn start_toast_reaper(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(500))
+                    .await;
+                let alive = this.update(cx, |shell, cx| {
+                    if shell.state.clear_expired_toast() {
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    // 实体已销毁 → 退出循环，避免泄漏（和 `start_auto_refresh`
+                    // 同一个写法）。
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// 打开「基础信息」浮层（数据库页的连接信息）。
+    pub fn open_db_info(&mut self, cx: &mut Context<Self>) {
+        self.db_info_open = true;
+        cx.notify();
+    }
+
+    /// 关掉「基础信息」浮层。
+    pub fn close_db_info(&mut self, cx: &mut Context<Self>) {
+        self.db_info_open = false;
+        cx.notify();
+    }
+
+    /// 关掉 SQL 控制台浮层（`sql_database` 留着 —— 下次点同一行的「SQL」
+    /// 还是那个库，省得重选）。
+    pub fn close_db_console(&mut self, cx: &mut Context<Self>) {
+        self.db_console_open = false;
+        cx.notify();
+    }
+
     /// 关闭提示条。
     pub fn dismiss_toast(&mut self, cx: &mut Context<Self>) {
         self.state.toast = None;
@@ -7359,6 +7439,26 @@ impl Render for Shell {
         // 要 `cx` 才能读表单里那几格的值。
         let db_dialog: AnyElement = views::db_dialog_overlay(self, &entity, cx);
 
+        // 「基础信息」（连接卡）—— 只有浮层开着、且确实在数据库页时才画。
+        let db_info: AnyElement = match &state.db {
+            Some(db) if self.db_info_open => {
+                match self.db_form.as_ref() {
+                    Some(form) => views::db_info_overlay(db, form, &entity, cx),
+                    None => div().into_any_element(),
+                }
+            }
+            _ => div().into_any_element(),
+        };
+
+        // SQL 控制台浮层（针对某个库）。
+        let db_console: AnyElement = match &state.db {
+            Some(db) if self.db_console_open => match self.db_form.as_ref() {
+                Some(form) => views::db_console_overlay(db, form, &entity, cx),
+                None => div().into_any_element(),
+            },
+            _ => div().into_any_element(),
+        };
+
         // 备份进度（跑着才有内容）与备份列表（点「备份」打开）。
         let db_backup_progress: AnyElement = match &state.db {
             Some(db) => views::db_backup_progress(db, &entity),
@@ -7535,6 +7635,9 @@ impl Render for Shell {
             .child(deploy_confirm)
             // 数据库页的动作弹窗排在最后：它可能盖在任一页（含容器详情）上。
             .child(db_dialog)
+            // 「基础信息」排在动作弹窗**之后**（同时开着时它在上面 —— 但两者
+            // 互斥：动作弹窗要按底下的按钮才会开，而浮层挡着那些按钮）。
+            .child(db_info)
             // 备份进度要盖住它打开时所处的一切；备份列表在进度之后
             //（进度跑完自动关，那时列表还在）。
             .child(db_backup_progress)
