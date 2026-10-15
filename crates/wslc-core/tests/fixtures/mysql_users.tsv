@@ -1,0 +1,5 @@
+mysql.infoschema	localhost	caching_sha2_password	N
+mysql.session	localhost	caching_sha2_password	Y
+mysql.sys	localhost	caching_sha2_password	N
+root	%	caching_sha2_password	Y
+root	localhost	caching_sha2_password	Y

@@ -253,6 +253,13 @@ fn table_row(columns: &'static [(&'static str, f32)], cells: Vec<AnyElement>) ->
                 .flex_grow(fractions.get(i).copied().unwrap_or(fallback))
                 .flex_basis(px(0.))
                 .min_w_0()
+                // ⚠️ 必须裁剪：`min_w_0` 只允许**这一格**被压缩，
+                // 格子里的内容（徽标、按钮都是 `flex_none`，不会被压）比格子宽时
+                // 会照原样画出去 —— 于是越过列边界、盖在隔壁单元格上。
+                // 实机踩到过一次：实例列表状态列里第二个徽标「本面板保持」
+                // 正好糊在隔壁「版本」列的数字上，看起来像乱码（见 `distro_row`）。
+                // 裁掉之后这类毛病的表现变成"被截断"，一眼能看出来。
+                .overflow_hidden()
                 .px_2()
                 .child(cell)
         }))
@@ -1616,8 +1623,9 @@ pub fn volumes(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
 /// [`wslc_core::cmd::distro::start`]）。
 ///
 /// 代价是那个进程属于**本面板**：面板关掉它也不会退，发行版继续跑。
-/// 所以列表里会给这类发行版打一个「本面板保持」的标记 —— 用户有权知道
-/// 是谁在维持它、以及关掉面板之后它会怎样。
+/// 这件事写在**详情弹窗**里 —— 用户有权知道是谁在维持它、
+/// 以及关掉面板之后它会怎样（只对少数几行成立，塞进列表行会把那一格挤破，
+/// 见 [`distro_row`]）。
 ///
 /// # 为什么"没有实例"不是错误
 ///
@@ -1650,7 +1658,8 @@ pub fn instances(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     let rows: Vec<AnyElement> = distros
         .iter()
         .map(|distro| {
-            // 本面板正在吊着它吗？（决定要不要显示"本面板保持"标记）
+            // 本面板正在吊着它吗？（决定行内还给不给「启动」按钮 ——
+            // 再吊一个没有意义。这件事本身写在详情弹窗里，列表里不显示标记）
             let kept = state.kept_alive.iter().any(|n| n == &distro.name);
             distro_row(distro, default_name.as_deref(), kept, entity)
         })
@@ -1774,7 +1783,8 @@ fn distro_summary_card(state: &AppState, distros: &[Distro]) -> AnyElement {
 /// 一行实例。
 ///
 /// `kept` = **本面板正吊着它**（见 [`KeepAlive`](crate::app)）。
-/// 有它的时候状态列会多一个标记 —— 用户得知道是谁在维持这个发行版。
+/// 列表里它只影响「启动」按钮给不给（已经吊着了，再吊一个没意义）；
+/// "谁在维持这个发行版"那句话在详情弹窗里，不在这一行 —— 原因见下面的注释。
 fn distro_row(
     distro: &Distro,
     default_name: Option<&str>,
@@ -1794,17 +1804,16 @@ fn distro_row(
         None => "—".to_owned(),
     };
 
-    // 状态 + （可选）"本面板保持"标记。标记放在状态右边而不是单独一列：
-    // 它只对少数几行出现，单独开一列会让其余所有行都空着。
-    let status = if kept {
-        h_flex()
-            .gap_1()
-            .child(cell_distro_badge(distro.state))
-            .child(badge("本面板保持", theme::primary(), theme::primary_soft()))
-            .into_any_element()
-    } else {
-        cell_distro_badge(distro.state)
-    };
+    // 状态列**只放状态徽标本身**，不在这里再标"由本面板保持运行"。
+    //
+    // ⚠️ 原先运行中的行会在状态右边再挂一个「本面板保持」徽标，实机截图里
+    // 它**盖到了隔壁「版本」列的数字上**（两个字叠在一起，成了一段乱码）。
+    // 原因是两个徽标都是 `flex_none`（不压缩），加起来比状态列宽
+    // （权重 85 / 总和 1060），而 `table_row` 的单元格**不裁剪**内容 ——
+    // 超出的部分就这么画进了下一列。单独加宽状态列只是把阈值往后推，
+    // 换一种字体 / 缩放到 125% 又会溢出来。
+    // 「谁在维持它」是低频信息，改写在详情弹窗里（`distro_detail_overlay`）。
+    let status = cell_distro_badge(distro.state);
 
     table_row(
         DISTRO_COLUMNS,
@@ -4429,6 +4438,10 @@ pub fn container_detail_overlay(
 /// 「安装位置」「虚拟磁盘」用 `kv_block`（换行不截断）：
 /// `D:\linux\Ubuntu-26.04` 这种路径在列表里被截成 `D:\linux\Ubu...`，
 /// 等于没显示，而这里正是要看清它。
+///
+/// 另外这里**替列表行承担了一件事**：如果这个发行版正被本面板吊着
+/// （`state.kept_alive`），在「状态」下面加一句说明 —— 那个标记原先画在
+/// 列表行的状态列里，会溢到隔壁「版本」列上（见 [`distro_row`]）。
 pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     let Some(distro) = state.snapshot.distros.iter().find(|d| d.name == name) else {
         // 发行版刚被删掉 —— 弹窗自己消失，别留一个空壳
@@ -4444,6 +4457,12 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
     // 但如果真有个 WSL 1 发行版，它的磁盘操作（VHDX 那套）全都不成立，
     // 与其让用户点了看报错，不如不给按钮 + 明说原因。
     let is_wsl1 = distro.version == Some(1);
+    // 「它现在是不是被**本面板**吊着的」（[`KeepAlive`](crate::app)）。
+    //
+    // 这件事原先标在列表行的状态列里，实机发现那个徽标会盖到隔壁「版本」列上
+    // （见 `distro_row`）。它是低频信息 —— 只在点了「启动」之后才成立 ——
+    // 所以搬到这儿来，列表行只留状态徽标。
+    let kept = state.kept_alive.iter().any(|n| n == name);
 
     // -- 动作 --------------------------------------------------------------
 
@@ -4616,6 +4635,23 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
                 .child(
                     "⚠️ 这是 WSL 1 发行版。本程序只支持 WSL 2，\
                      所以压缩 / 稀疏 / 调整大小这些磁盘操作对它不适用，已经隐藏。",
+                )
+                .into_any_element(),
+        );
+    }
+
+    if kept {
+        // 插在「状态」下面而不是追到末尾：它解释的正是上面那个「运行中」——
+        // 为什么一个没人用的发行版会一直跑着。文案里要写清**关掉面板之后**
+        // 会怎样，那是用户拿不到答案、只能猜的那一半。
+        rows.insert(
+            1,
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child(
+                    "它现在由本面板吊住（点了「启动」）。关掉本面板它不会跟着退出，\
+                     发行版会继续跑；要让它停下来，用「终止」。",
                 )
                 .into_any_element(),
         );

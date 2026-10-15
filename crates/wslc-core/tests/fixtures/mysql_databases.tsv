@@ -1,0 +1,4 @@
+information_schema	utf8mb3	utf8mb3_general_ci	84	0
+mysql	utf8mb4	utf8mb4_0900_ai_ci	38	8257536
+performance_schema	utf8mb4	utf8mb4_0900_ai_ci	117	0
+sys	utf8mb4	utf8mb4_0900_ai_ci	101	16384

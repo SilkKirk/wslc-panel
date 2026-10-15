@@ -2604,7 +2604,8 @@ impl Shell {
     /// 界面要等到下一个周期才变，用户会以为操作没生效。
     fn refresh_inner(&mut self, cx: &mut Context<Self>, visible: bool) {
         // 先顺手清掉已经死掉的哨兵（用户点了「终止」、或在别处 `wsl --shutdown`）。
-        // 放在最前面：`busy` 那条提前返回也不该让界面上的"保持运行中"标记过期。
+        // 放在最前面：`busy` 那条提前返回也不该让界面上的那份"谁在吊着它"
+        // 的信息过期（发行版详情弹窗里那句说明读的就是 `state.kept_alive`）。
         self.sync_keep_alive(cx);
 
         if self.state.busy {
