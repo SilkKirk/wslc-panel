@@ -24,6 +24,9 @@
 //! 所以 `app.rs` / `views.rs` 里的调用点一行都没改。
 
 pub mod columns;
+// 数据库账号的本地存档（v0.8：建库同时建用户，列表要展示用户名 / 密码 ——
+// MySQL 的密码是单向哈希，面板必须自己记）。
+pub mod dbcreds;
 pub mod prefs;
 pub mod presets;
 pub mod state;

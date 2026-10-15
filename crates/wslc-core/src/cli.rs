@@ -332,6 +332,60 @@ impl Wslc {
     pub fn raw_args(args: &[&str]) -> Vec<String> {
         to_owned_args(args)
     }
+
+    /// 把子进程的 stdout **逐块**写进本地文件，stderr 单独逐行回调。
+    ///
+    /// 给"边 dump 边传"用（数据库备份的大输出版，见 `cmd::mysql` 的模块注释）。
+    ///
+    /// # 为什么 `run` / `spawn_streaming` 都干不了这个活
+    ///
+    /// - [`Wslc::run`] 把**全部输出缓冲到内存**才返回 —— 大库的 dump
+    ///   （几百 MB）会把面板撑爆；
+    /// - [`Wslc::spawn_streaming`] 把 stdout 和 stderr **混进同一个回调**
+    ///   —— 备份文件里混进一行报错就整个坏了。备份恰恰是"stdout 是数据、
+    ///   stderr 是消息"的典型。
+    ///
+    /// # stdin 仍然是 null
+    ///
+    /// [`build_command`] 写死 `Stdio::null()`，所以**导入**（从本地喂 SQL 进
+    /// 容器）没有这条路 —— 恢复走的是容器内的重定向（`sh -c 'mysql < /tmp/…'`）。
+    pub fn spawn_to_file(
+        &self,
+        args: &[&str],
+        out_path: impl AsRef<Path>,
+        on_message: impl Fn(&str) + Send + Sync + 'static,
+    ) -> Result<FileStreamHandle> {
+        let owned = self.command_args(args);
+        let mut cmd = build_command(&self.program, &owned);
+
+        let path = out_path.as_ref();
+        let out_file = std::fs::File::create(path).map_err(|e| {
+            Error::Io(std::io::Error::new(
+                e.kind(),
+                format!("建不出备份文件 {}：{e}", path.display()),
+            ))
+        })?;
+        cmd.stdout(Stdio::from(out_file));
+        // stderr 仍然单独收着：mysqldump 的警告（比如 GTID 那条）都在这里，
+        // 用户得看见；绝不能让它混进数据里。
+        cmd.stderr(Stdio::piped());
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| map_spawn_error(&self.program, WSLC_LABEL, WSLC_NOT_FOUND_HINT, e))?;
+
+        let callback: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(on_message);
+        let mut readers: Vec<JoinHandle<()>> = Vec::new();
+        if let Some(err) = child.stderr.take() {
+            readers.push(spawn_line_reader(err, Arc::clone(&callback)));
+        }
+
+        Ok(FileStreamHandle {
+            child: Arc::new(Mutex::new(child)),
+            readers,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -916,6 +970,63 @@ impl CancelToken {
     }
 }
 
+/// [`Wslc::spawn_to_file`] 返回的句柄。
+///
+/// 和 [`StreamHandle`] 几乎一样（try_wait / cancel / finish），差别只有
+/// **stdout 去了文件**（构造时就已经接走），所以这里没有输出可取，
+/// 只有 stderr 那一条读取线程。
+///
+/// 用 [`FileStreamHandle::try_wait`] 非阻塞轮询 —— 不要阻塞 `wait()`，
+/// 调用方在 GPUI 的异步执行器上，阻塞线程会占着线程池。
+pub struct FileStreamHandle {
+    child: Arc<Mutex<Child>>,
+    readers: Vec<JoinHandle<()>>,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl FileStreamHandle {
+    /// 取一个可克隆的取消令牌（杀子进程）。
+    pub fn cancel_token(&self) -> CancelToken {
+        CancelToken {
+            child: Arc::clone(&self.child),
+            cancelled: Arc::clone(&self.cancelled),
+        }
+    }
+
+    /// 非阻塞地看一眼：`Some(退出码)` 表示已经结束。
+    pub fn try_wait(&self) -> Result<Option<i32>> {
+        let mut child = self.lock_child();
+        match child.try_wait() {
+            Ok(Some(status)) => Ok(Some(status.code().unwrap_or(-1))),
+            Ok(None) => Ok(None),
+            Err(e) => Err(Error::Io(e)),
+        }
+    }
+
+    /// 是否被取消过。
+    pub fn was_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    /// 收尾：等 stderr 的读取线程读完，返回退出码。
+    ///
+    /// 要在 `try_wait` 返回 `Some` 之后再调，否则会阻塞到进程结束。
+    pub fn finish(self) -> Result<i32> {
+        let status = {
+            let mut child = self.lock_child();
+            child.wait()
+        };
+        for reader in self.readers {
+            let _ = reader.join();
+        }
+        Ok(status.map_err(Error::Io)?.code().unwrap_or(-1))
+    }
+
+    fn lock_child(&self) -> std::sync::MutexGuard<'_, Child> {
+        self.child.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 /// 一个读取线程：按行切分并回调。
 ///
 /// 用 `read_until(b'\n')` 而不是 `BufRead::lines()`：后者遇到非 UTF-8
@@ -1214,6 +1325,53 @@ mod tests {
             lines.iter().any(|l| l.contains("world")),
             "应收到 world（说明多行被逐行读出），实际：{lines:?}"
         );
+    }
+
+    /// 端到端：stdout 落**文件**、stderr 走**回调**，两条路互不混。
+    ///
+    /// 这正是备份（`mysqldump`）要求的形状：数据在文件里一字不差，
+    /// 警告（GTID 那条）走消息。`cmd /c` 用 `1>` / `2>` 分别往两条流上写。
+    #[cfg(windows)]
+    #[test]
+    fn spawn_to_file_separates_data_from_messages() {
+        let (got, callback) = collector();
+        let wslc = Wslc::with_program("cmd");
+        let dir = std::env::temp_dir().join(format!("wslc-cli-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("out.txt");
+
+        let handle = wslc
+            .spawn_to_file(&["/c", "echo data-line& echo warn-line 1>&2"], &out, callback)
+            .expect("应能启动 cmd");
+
+        let mut code = None;
+        for _ in 0..100 {
+            if let Some(c) = handle.try_wait().expect("try_wait 不应失败") {
+                code = Some(c);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let exit = handle.finish().expect("finish 不应失败");
+        assert_eq!(exit, code.expect("5 秒内应结束"));
+        assert_eq!(exit, 0);
+
+        // 文件里**只有** stdout 那条；回调里**只有** stderr 那条。
+        let content = std::fs::read_to_string(&out).unwrap();
+        assert!(content.contains("data-line"), "{content:?}");
+        assert!(!content.contains("warn-line"), "stderr 混进了文件：{content:?}");
+
+        let lines = got.lock().unwrap().clone();
+        assert!(
+            lines.iter().any(|l| l.contains("warn-line")),
+            "应收到 stderr 的 warn-line：{lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("data-line")),
+            "stdout 混进了回调：{lines:?}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// 取消：起一个要跑很久的进程，kill 掉，确认很快结束且标记为已取消。

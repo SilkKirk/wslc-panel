@@ -56,7 +56,7 @@ use wslc_core::settings::SettingKey;
 use wslc_core::{Wsl, Wslc};
 
 use crate::state::{
-    self, AppState, ConfirmAction, DbFailure, DbState, DbTab, DistroAction, ExecState,
+    self, AppState, BackupState, ConfirmAction, DbFailure, DbState, DbTab, DistroAction, ExecState,
     ExportProgress, ImmediateAction, InstallOutcome, InstallProgress, InstallSourceKind, LogsState,
     MirrorChoice, MirrorProbeResult, Page, PendingAction, PromptKind, Toast, ToastKind,
     exec_argv,
@@ -637,6 +637,9 @@ pub(crate) struct DbDialog {
     pub(crate) grant_db: Entity<InputState>,
     /// 授权级别。
     pub(crate) grant: GrantKind,
+    /// （仅新建数据库）**同时创建用户** —— v0.8 的主路径：建库的人几乎总是
+    /// 需要一个连它的账号，单独再走一遍「新建用户」纯属多余。
+    pub(crate) create_user: bool,
 }
 
 /// 这次连数据库要用哪个账号。
@@ -2828,6 +2831,9 @@ impl Shell {
                     db.creds = creds.clone();
                     db.busy = false;
                     db.loaded = true;
+                    // 备份列表顺手重扫一次（进页面时目录可能被手动动过）；
+                    // ⚠️ 碰文件系统 —— 这里在**后台任务的回调**里，不在渲染路径上
+                    shell.state.rescan_backups(&container);
                     match lists.0 {
                         Ok(databases) => db.databases = databases,
                         Err(message) => db.fail(message),
@@ -2956,6 +2962,17 @@ impl Shell {
         } else {
             host.update(cx, |state, cx| state.set_value("%".to_owned(), window, cx));
         }
+        // 「新建数据库」默认**同时建用户**（v0.8 的主路径），密码先给一个
+        // 随机值（用户可见可改）。用户名**不在弹窗里给输入框**：
+        // 它按「库名 + _user」在提交时由库名推 —— 库名还没填呢，现在预填
+        // 只会是空串；规则写在弹窗里，改名跟着变的逻辑也因此免费。
+        let mut create_user = false;
+        if kind == DbDialogKind::NewDatabase {
+            create_user = true;
+            password.update(cx, |state, cx| {
+                state.set_value(mysql_model::generate_password(), window, cx)
+            });
+        }
         // 焦点给"最该填的那一格"
         let first = match &kind {
             DbDialogKind::NewDatabase => &database,
@@ -2976,7 +2993,16 @@ impl Shell {
             password,
             grant_db,
             grant: GrantKind::All,
+            create_user,
         });
+        cx.notify();
+    }
+
+    /// 「新建数据库」弹窗里开关「同时创建用户」。
+    pub fn set_db_create_user(&mut self, create_user: bool, cx: &mut Context<Self>) {
+        if let Some(dialog) = self.db_dialog.as_mut() {
+            dialog.create_user = create_user;
+        }
         cx.notify();
     }
 
@@ -2999,23 +3025,52 @@ impl Shell {
     /// 这里最重要的一条：**参数不合法就在本地拦下，不关弹窗** ——
     /// 用户就在那一格里，改一个字比重打一遍强（`AGENTS.md` §7.5 的
     /// 「空值等于没填」也是这个思路）。
+    ///
+    /// 「建库同时建用户」（v0.8）返回第三样 `to_record`：账号要等 SQL
+    /// **成功之后**才写进本地存档 —— 列表上不能出现一个 MySQL 里
+    /// 根本不存在的账号。所有段**先都拼出来、都校验过**再合并成一条
+    /// `-e`（`;` 分隔，实测能跑）—— 半途失败时一条都不会发出去，
+    /// 不会留下"建了库没建用户"的半成品。
     pub fn submit_db_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // 先把要用的东西取成 owned 的（下面要改 `self`，不能再借着它）
-        let prepared: Result<(String, &'static str), String> = {
+        let prepared: Result<(String, &'static str, Option<(String, String, String)>), String> = {
             let Some(dialog) = self.db_dialog.as_ref() else {
                 return;
             };
             let text = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
 
-            let sql = match &dialog.kind {
+            let prepared_inner: Result<
+                (String, &'static str, Option<(String, String, String)>),
+                _,
+            > = match &dialog.kind {
                 DbDialogKind::NewDatabase => {
                     let charset = text(&dialog.charset);
                     let collation = text(&dialog.collation);
-                    mysql_model::create_database_sql(
-                        &text(&dialog.database),
+                    let database = text(&dialog.database);
+                    let mut parts: Vec<String> = Vec::new();
+                    parts.push(mysql_model::create_database_sql(
+                        &database,
                         (!charset.is_empty()).then_some(charset.as_str()),
                         (!collation.is_empty()).then_some(collation.as_str()),
-                    )
+                    )?);
+                    // 用户名 = `<库名>_user`（规则在弹窗里写着，改名跟着变）；
+                    // host 固定 `%`（要远程连的账号，默认锁 localhost 反而添堵）。
+                    let mut to_record = None;
+                    if dialog.create_user {
+                        let user = mysql_model::default_user_for(&database);
+                        // 用户名拼出来也要过一遍白名单（库名在上面已查过）
+                        mysql_model::validate_ident("用户名", &user)?;
+                        let password = text(&dialog.password);
+                        parts.push(mysql_model::create_user_sql(&user, "%", &password)?);
+                        parts.push(mysql_model::grant_sql(
+                            &database,
+                            &user,
+                            "%",
+                            GrantKind::All,
+                        )?);
+                        to_record = Some((database, user, password));
+                    }
+                    Ok((parts.join("; "), dialog.kind.title(), to_record))
                 }
                 DbDialogKind::NewUser => {
                     let grant_db = text(&dialog.grant_db);
@@ -3027,10 +3082,14 @@ impl Shell {
                         &text(&dialog.password),
                         grant,
                     )
+                    .map(|sql| (sql, dialog.kind.title(), None))
                 }
-                DbDialogKind::AlterPassword { user, host } => {
-                    mysql_model::alter_user_password_sql(user, host, &text(&dialog.password))
-                }
+                DbDialogKind::AlterPassword { user, host } => mysql_model::alter_user_password_sql(
+                    user,
+                    host,
+                    &text(&dialog.password),
+                )
+                .map(|sql| (sql, dialog.kind.title(), None)),
                 DbDialogKind::Grant { user, host } => {
                     let grant_db = text(&dialog.grant_db);
                     if grant_db.is_empty() {
@@ -3039,14 +3098,14 @@ impl Shell {
                         ))
                     } else {
                         mysql_model::grant_sql(&grant_db, user, host, dialog.grant)
+                            .map(|sql| (sql, dialog.kind.title(), None))
                     }
                 }
             };
-            sql.map(|sql| (sql, dialog.kind.title()))
-                .map_err(|e| e.to_string())
+            prepared_inner.map_err(|e| e.to_string())
         };
 
-        let (sql, title) = match prepared {
+        let (sql, title, to_record) = match prepared {
             Ok(prepared) => prepared,
             Err(message) => {
                 // 不关弹窗：用户就在那一格上，改一个字比重打一遍强
@@ -3074,7 +3133,7 @@ impl Shell {
         };
 
         self.db_dialog = None;
-        self.run_db_statement(container, bin, creds, sql, title, window, cx);
+        self.run_db_statement(container, bin, creds, sql, title, to_record, window, cx);
     }
 
     /// SQL 控制台：执行输入框里那条语句。
@@ -3184,6 +3243,10 @@ impl Shell {
         creds: MysqlCreds,
         sql: String,
         title: &'static str,
+        // 「建库同时建用户」的账号 —— SQL **成功之后**才写进本地存档
+        //（列表里展示的就是它）。放在执行**前**传进来，是因为弹窗已经关了，
+        // 输入框的值拿不到了。
+        to_record: Option<(String, String, String)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -3225,7 +3288,25 @@ impl Shell {
                     }
                 }
                 match &result {
-                    Ok(()) => shell.state.notify(Toast::success(format!("{title}成功"))),
+                    Ok(()) => {
+                        // 成功才写档：列表上不能出现一个 MySQL 里不存在的账号。
+                        // 写档失败只提示（最坏是重启后要重新录入），不回滚。
+                        if let Some((database, user, password)) = to_record {
+                            shell.state.db_credentials.put(
+                                &container,
+                                &database,
+                                wslc_panel_core::dbcreds::DbCredential {
+                                    user,
+                                    password,
+                                    host: "%".to_owned(),
+                                },
+                            );
+                            if let Err(e) = shell.state.save_db_credentials() {
+                                shell.state.notify(Toast::error(e));
+                            }
+                        }
+                        shell.state.notify(Toast::success(format!("{title}成功")));
+                    }
                     Err(message) => {
                         // 给用户看的是"该怎么办"（分类给的），原文留在页面上
                         let failure = DbFailure::from_text(message.clone());
@@ -3241,6 +3322,259 @@ impl Shell {
             });
         })
         .detach();
+    }
+
+    // -- 数据库备份 / 恢复（v0.8）--------------------------------------------
+    //
+    // 实测过的路（`docs/PLAN-v0.8.md` 记录全过程）：
+    // 备份 = 容器内 `mysqldump … > /tmp/wslc-backups/…` + `container cp` 拉回；
+    // 恢复 = 容器内 `mysql … < /tmp/…`（**只认容器内那份** —— `cp` 的
+    // "本地→容器"方向实测是坏的，见 `cmd::mysql` 的模块注释）。
+
+    /// 备份一个数据库（长任务；状态在 `AppState::db.backup`）。
+    pub fn start_db_backup(
+        &mut self,
+        database: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(db) = self.state.db.as_ref() else {
+            return;
+        };
+        if db.backup.is_some() {
+            // 已经有一个在跑 —— 按钮那边也换成了「备份中…」
+            return;
+        }
+        if db.busy {
+            return;
+        }
+        let Some(backup_dir) = self.state.backup_dir.clone() else {
+            self.state.notify(Toast::error("LOCALAPPDATA 未设置，备份没地方放"));
+            cx.notify();
+            return;
+        };
+        let container = db.container.clone();
+        let bin = db.client.clone();
+        let (user, password) = self.read_db_form(cx);
+        let creds = MysqlCreds {
+            user,
+            password,
+            host: None,
+            port: None,
+        };
+        let paths = match wslc_core::cmd::mysql::backup_paths(
+            &backup_dir,
+            &container,
+            &database,
+            wslc_core::model::mysql::now_secs(),
+        ) {
+            Ok(paths) => paths,
+            Err(e) => {
+                self.state.notify(Toast::error(e.to_string()));
+                cx.notify();
+                return;
+            }
+        };
+
+        if let Some(db) = self.state.db.as_mut() {
+            db.backup = Some(BackupState {
+                database: database.clone(),
+                container_path: paths.container_path.clone(),
+                windows_path: paths.windows_path.clone(),
+                last_message: None,
+            });
+        }
+        self.state.notify(Toast::info(format!("正在备份数据库 {database}…")));
+        cx.notify();
+
+        let wslc = self.state.wslc.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = {
+                let wslc = wslc.clone();
+                let container = container.clone();
+                let bin = bin.clone();
+                let creds = creds.clone();
+                let database = database.clone();
+                let paths = paths.clone();
+                cx.background_executor()
+                    .spawn(move || {
+                        wslc_core::cmd::mysql::backup_database(
+                            &wslc,
+                            &container,
+                            &bin,
+                            &creds,
+                            &database,
+                            &paths,
+                        )
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                    })
+                    .await
+            };
+
+            let _ = this.update_in(cx, |shell, _window, cx| {
+                let finished = shell
+                    .state
+                    .db
+                    .as_mut()
+                    .filter(|db| db.container == container)
+                    .map(|db| db.backup.take());
+                match (&result, finished.flatten()) {
+                    (Ok(()), Some(state)) => {
+                        shell.state.rescan_backups(&container);
+                        shell.state.notify(Toast::success(format!(
+                            "备份完成：{}（容器内留了一份用于恢复）",
+                            state.windows_path.display()
+                        )));
+                    }
+                    (Ok(()), None) => {
+                        // 备份完成但页面已切走：文件是好的，一句话说明
+                        shell.state.notify(Toast::info("备份完成（数据库页已切走）"));
+                    }
+                    (Err(message), _) => {
+                        if let Some(db) = shell.state.db.as_mut() {
+                            if db.container == container {
+                                db.fail(message.clone());
+                            }
+                        }
+                        let failure = DbFailure::from_text(message.clone());
+                        shell
+                            .state
+                            .notify(Toast::error(format!("备份失败：{}", failure.summary())));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 关掉备份列表浮层。
+    pub fn close_db_backup_dialog(&mut self, cx: &mut Context<Self>) {
+        if let Some(db) = self.state.db.as_mut() {
+            db.backup_dialog = None;
+        }
+        cx.notify();
+    }
+
+    /// 打开某个库的备份列表（列表是 Windows 侧目录扫出来的）。
+    pub fn open_db_backup_dialog(
+        &mut self,
+        database: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(db) = self.state.db.as_ref() else {
+            return;
+        };
+        let container = db.container.clone();
+        if let Some(db) = self.state.db.as_mut() {
+            db.backup_dialog = Some(database);
+        }
+        // 进浮层前重扫一次（可能在文件管理器里手动删过 / 拷进来过）
+        self.state.rescan_backups(&container);
+        cx.notify();
+        let _ = window;
+    }
+
+    /// 恢复一份备份（**覆盖**该库现有数据 —— 走二次确认）。
+    pub fn restore_db_backup(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(db) = self.state.db.as_ref() else {
+            return;
+        };
+        if db.backup.is_some() || db.busy {
+            return;
+        }
+        let Some(entry) = db.backups.get(index) else {
+            return;
+        };
+        let action = PendingAction::RestoreDatabase {
+            container: db.container.clone(),
+            database: entry.database.clone(),
+            client: db.client.clone(),
+            container_path: entry.container_path.clone(),
+            creds: db.creds.clone(),
+        };
+        self.request(action, cx);
+    }
+
+    /// 删除一份备份文件（Windows 侧的；容器内那份同名的一起删）。
+    ///
+    /// 不需要 `&mut Window`：删除不需要往输入框里写东西，所以走 `cx.spawn`
+    ///（不带 `_in`）就够了 —— 这也让它能在任何回调里调。
+    pub fn delete_db_backup(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(db) = self.state.db.as_ref() else {
+            return;
+        };
+        let container = db.container.clone();
+        let Some(entry) = db.backups.get(index) else {
+            return;
+        };
+        let windows_path = entry.path.clone();
+        let container_path = entry.container_path.clone();
+        let database = entry.database.clone();
+
+        let wslc = self.state.wslc.clone();
+        cx.spawn(async move |this, cx| {
+            // Windows 侧那份是**主体**，删不掉要报错；容器内那份尽力删
+            //（容器停了 / 文件没了都不影响这次删除的结果）
+            let file_result = std::fs::remove_file(&windows_path).map_err(|e| e.to_string());
+            let container_result = wslc
+                .run(&["exec", &container, "rm", "-f", &container_path])
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+
+            let _ = this.update(cx, |shell, cx| {
+                match &file_result {
+                    Ok(()) => {
+                        let _ = container_result;
+                        shell.state.rescan_backups(&container);
+                        shell.state.notify(Toast::success(format!(
+                            "已删除 {database} 的备份（容器内那份尽力清理）"
+                        )));
+                    }
+                    Err(e) => shell
+                        .state
+                        .notify(Toast::error(format!("删不掉备份文件：{e}"))),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 取消正在跑的备份。
+    ///
+    /// 这一版**没有**接取消令牌：`backup_database` 里是两条**顺序**的短命令
+    /// （dump 一般几十秒内自己结束），接令牌要把它改成 `spawn_to_file` +
+    /// 轮询那条路 —— 等"边 dump 边传"一起做。所以现在取消 = 说明情况，
+    /// **不**假装能打断。
+    pub fn cancel_db_backup(&mut self, cx: &mut Context<Self>) {
+        self.state.notify(Toast::info(
+            "这一版还不能中途打断备份 —— mysqldump 一般几十秒内会自己结束，等它跑完即可",
+        ));
+        cx.notify();
+    }
+
+    /// 在文件管理器里打开备份目录（「打开位置」）。
+    ///
+    /// 同步 `explorer.exe`：它不等待、不捕获输出 —— `AGENTS.md` §7.1 允许。
+    pub fn reveal_backup_dir(
+        &mut self,
+        dir: Option<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(dir) = dir.filter(|d| d.is_dir()) else {
+            self.state.notify(Toast::error("备份目录不存在（可能已被清空）"));
+            cx.notify();
+            return;
+        };
+        let toast = match std::process::Command::new("explorer.exe").arg(&dir).spawn() {
+            Ok(_) => Toast::info(format!("已打开 {}", dir.display())),
+            Err(e) => Toast::error(format!("打不开文件管理器：{e}")),
+        };
+        self.state.notify(toast);
+        cx.notify();
     }
 
     // -- 在新终端窗口里打开的东西 --------------------------------------------
@@ -3698,6 +4032,14 @@ impl Shell {
 
         // 删库 / 删用户之后要重读数据库页那两张表 —— 容器的列表刷新管不到它们。
         // 这里先算好（`action` 马上要移进异步块）。
+        // 删库还要**同时清掉本地存档里的账号**：库都没了，列表上不能再出现
+        // 一个连不上的用户名 / 密码（就算哪天重建同名库，密码也对不上了）。
+        let dropped_database = match &action {
+            ConfirmAction::Container(PendingAction::DropDatabase {
+                container, database, ..
+            }) => Some((container.clone(), database.clone())),
+            _ => None,
+        };
         let reload_db = matches!(
             action,
             ConfirmAction::Container(
@@ -3721,11 +4063,22 @@ impl Shell {
                 .await;
 
             let _ = this.update(cx, |shell, cx| {
+                let ok = matches!(&result, Ok(_));
                 match result {
                     Ok(message) => shell.state.notify(Toast::success(message)),
                     Err(e) => shell
                         .state
                         .notify(Toast::error(format!("{title}失败：{e}"))),
+                }
+
+                // 删库成功：本地存档里的账号一起清（见 `dropped_database` 的注释）
+                if ok {
+                    if let Some((container, database)) = dropped_database {
+                        shell.state.db_credentials.remove(&container, &database);
+                        if let Err(e) = shell.state.save_db_credentials() {
+                            shell.state.notify(Toast::error(e));
+                        }
+                    }
                 }
 
                 if close_detail {
@@ -5407,6 +5760,16 @@ impl Render for Shell {
         // 要 `cx` 才能读表单里那几格的值。
         let db_dialog: AnyElement = views::db_dialog_overlay(self, &entity, cx);
 
+        // 备份进度（跑着才有内容）与备份列表（点「备份」打开）。
+        let db_backup_progress: AnyElement = match &state.db {
+            Some(db) => views::db_backup_progress(db, &entity),
+            None => div().into_any_element(),
+        };
+        let db_backup_dialog: AnyElement = match &state.db {
+            Some(db) => views::db_backup_dialog_overlay(db, &entity),
+            None => div().into_any_element(),
+        };
+
         // 页面渲染要 `&Shell`（不只是 `&AppState`）——「添加实例」页有输入框，
         // 而输入框的 `InputState` 住在 `Shell` 里。
         // `cx` 也只有那一页用得上（要实时读输入框的值做命令预览）。
@@ -5546,6 +5909,10 @@ impl Render for Shell {
             .child(exec_dialog)
             // 数据库页的动作弹窗排在最后：它可能盖在任一页（含容器详情）上。
             .child(db_dialog)
+            // 备份进度要盖住它打开时所处的一切；备份列表在进度之后
+            //（进度跑完自动关，那时列表还在）。
+            .child(db_backup_progress)
+            .child(db_backup_dialog)
     }
 }
 

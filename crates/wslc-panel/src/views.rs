@@ -50,8 +50,8 @@ use crate::app::{
 // 列宽定义与配置项预设值都是纯数据，住在不依赖 GPUI 的 `wslc-panel-core` 里
 // —— 这样它们的单测不必链接 GPUI（见那个 crate 的顶层说明）。
 use crate::columns::{
-    ALL_COLUMNS, DB_COLUMNS, DB_USER_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS,
-    VOLUME_COLUMNS,
+    ALL_COLUMNS, BACKUP_COLUMNS, DB_COLUMNS, DB_USER_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS,
+    NETWORK_COLUMNS, VOLUME_COLUMNS,
 };
 use crate::presets::presets_for;
 use crate::state::{
@@ -1384,15 +1384,48 @@ fn db_databases_card(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
                 client: db.client.clone(),
                 creds: db.creds.clone(),
             };
+            // 「用户名 / 密码」只对**面板建的库**有记录（建库时同时建的用户，
+            // 记在本地存档里）。别处建的库显示 `—` —— 不猜、不编。
+            let credential = db.credentials.get(&db.container, &entry.name);
+            let backup_button = overlay_button(
+                &format!("db-backup-{}", entry.name),
+                "备份",
+                {
+                    let name = entry.name.clone();
+                    move |shell, window, cx| {
+                        shell.open_db_backup_dialog(name.clone(), window, cx)
+                    }
+                },
+                entity,
+            );
             table_row(
                 DB_COLUMNS,
                 vec![
                     db_name_cell(entry),
+                    match credential {
+                        Some(cred) => cell_text(cred.user.clone()),
+                        None => cell_muted("—"),
+                    },
+                    match credential {
+                        Some(cred) => cell_text(cred.password.clone()),
+                        None => cell_muted("—"),
+                    },
                     cell_muted(entry.charset.clone()),
                     cell_muted(entry.collation.clone()),
                     cell_muted(entry.tables.to_string()),
                     cell_muted(format_bytes(entry.bytes)),
-                    danger_button(&format!("db-drop-{}", entry.name), "删除", action, entity)
+                    h_flex()
+                        .gap_2()
+                        .child(backup_button)
+                        .child(
+                            danger_button(
+                                &format!("db-drop-{}", entry.name),
+                                "删除",
+                                action,
+                                entity,
+                            )
+                            .into_any_element(),
+                        )
                         .into_any_element(),
                 ],
             )
@@ -1728,6 +1761,51 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
                     ))
                     .into_any_element(),
             );
+
+            // 「同时创建用户」是 v0.8 的主路径：建库的人几乎总要一个连它的账号。
+            // 用户名 = `<库名>_user`（在弹窗里写明，跟着库名变）；密码已预填随机值。
+            if dialog.create_user {
+                let user_name =
+                    mysql_model::default_user_for(dialog.database.read(cx).value().trim());
+                fields.push(
+                    h_flex()
+                        .w_full()
+                        .gap_3()
+                        .items_center()
+                        .child(
+                            Checkbox::new("db-dialog-create-user")
+                                .label("同时创建用户并授权")
+                                .checked(dialog.create_user)
+                                // `Checkbox` 是**受控**组件：`on_change` 给的是
+                                // "请求的新值"，存回 Shell 再 notify（和 wslconf 同一写法）
+                                .on_change({
+                                    let entity = entity.clone();
+                                    move |checked: &bool, _, cx| {
+                                        let create_user = *checked;
+                                        entity.update(cx, |shell, cx| {
+                                            shell.set_db_create_user(create_user, cx)
+                                        });
+                                    }
+                                }),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::text_dim())
+                                .child(format!(
+                                    "用户名 {user_name}（跟库名走）· 主机 %（允许远程连接）"
+                                )),
+                        )
+                        .into_any_element(),
+                );
+                fields.push(form_field(
+                    "db-dialog-password",
+                    "该用户的密码（已生成随机值，可改）",
+                    &dialog.password,
+                    cx,
+                    true,
+                ));
+            }
         }
         DbDialogKind::NewUser => {
             fields.push(
@@ -1890,6 +1968,199 @@ fn grant_kind_row(current: GrantKind, entity: &Entity<Shell>) -> AnyElement {
         )
         .children(buttons)
         .into_any_element()
+}
+
+/// 备份进度浮层（备份跑着的时候盖在页面上）。
+///
+/// 没在备份时返回空 —— 进度不是常驻的（跑完就关）。
+/// ⚠️ 这一版**没有实时进度**（dump 输出直接落在容器里，见 `cmd::mysql`
+/// 的模块注释），所以只有一句"备份中…"和目标文件路径。
+pub fn db_backup_progress(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
+    let Some(state) = db.backup.as_ref() else {
+        return div().into_any_element();
+    };
+
+    let cancel = {
+        let entity = entity.clone();
+        Button::new("db-backup-cancel")
+            .label("知道了")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.cancel_db_backup(cx));
+            })
+    };
+
+    modal_scrim(
+        "db-backup-progress",
+        v_flex()
+            .w(px(560.))
+            .gap_4()
+            .p_5()
+            .rounded_lg()
+            .bg(theme::bg_card())
+            .border_1()
+            .border_color(theme::border())
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_bold()
+                            .text_color(theme::text())
+                            .child(format!("正在备份 {}", state.database)),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_dim())
+                            .child(format!("目标文件：{}", state.windows_path.display())),
+                    ),
+            )
+            .child(
+                div().text_sm().text_color(theme::text_muted()).child(
+                    "在容器里执行 mysqldump，一般几十秒内结束（大库会久一些）。\
+                     完成后会在 Windows 侧存一份档案，容器内 /tmp 也留一份用于恢复。",
+                ),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_end()
+                    .gap_2()
+                    .child(div().text_sm().text_color(theme::text_muted()).child("备份中…"))
+                    .child(cancel),
+            ),
+    )
+    .into_any_element()
+}
+
+/// 某个库的**备份列表**浮层（v0.8）。
+///
+/// 列表是 **Windows 侧**目录扫出来的（`AppState::rescan_backups`）；
+/// 容器内那份 `/tmp` 备份"还在不在"要到**恢复那一刻**才知道 ——
+/// 所以这里不画"可用 / 不可用"，恢复失败时再给准确的解释。
+pub fn db_backup_dialog_overlay(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
+    let Some(database) = db.backup_dialog.as_ref() else {
+        return div().into_any_element();
+    };
+    let database = database.clone();
+
+    let rows: Vec<AnyElement> = db
+        .backups
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.database == database)
+        .map(|(index, entry)| {
+            let restore = Button::new(SharedString::from(format!("db-restore-{index}")))
+                .label("恢复")
+                .small()
+                .primary()
+                .on_click({
+                    let entity = entity.clone();
+                    move |_, _, cx| {
+                        entity.update(cx, |shell, cx| shell.restore_db_backup(index, cx));
+                    }
+                })
+                .into_any_element();
+            let open_dir = overlay_button(
+                &format!("db-open-backup-{index}"),
+                "打开位置",
+                {
+                    let dir = entry.path.parent().map(|p| p.to_path_buf());
+                    move |shell, _, cx| shell.reveal_backup_dir(dir.clone(), cx)
+                },
+                entity,
+            );
+            let delete = {
+                let entity = entity.clone();
+                Button::new(SharedString::from(format!("db-delete-backup-{index}")))
+                    .label("删除")
+                    .small()
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |shell, cx| shell.delete_db_backup(index, cx));
+                    })
+                    .into_any_element()
+            };
+            table_row(
+                BACKUP_COLUMNS,
+                vec![
+                    cell_text_full(entry.file_name.clone(), entry.file_name.clone()),
+                    cell_muted(format_bytes(entry.bytes)),
+                    cell_muted(entry.stamp.clone()),
+                    h_flex()
+                        .gap_2()
+                        .child(restore)
+                        .child(open_dir)
+                        .child(delete)
+                        .into_any_element(),
+                ],
+            )
+            .into_any_element()
+        })
+        .collect();
+
+    let close = {
+        let entity = entity.clone();
+        Button::new("db-backup-close")
+            .label("关闭")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.close_db_backup_dialog(cx));
+            })
+    };
+
+    modal_scrim(
+        "db-backup-dialog",
+        v_flex()
+            .id("db-backup-dialog-card")
+            .w(px(780.))
+            .max_h(px(560.))
+            .gap_4()
+            .p_5()
+            .rounded_lg()
+            .bg(theme::bg_card())
+            .border_1()
+            .border_color(theme::border())
+            .overflow_y_scroll()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_bold()
+                            .text_color(theme::text())
+                            .child(format!("备份 —— {database}")),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_dim())
+                            .child(
+                                "列表是 Windows 侧的存档（容器删了它们还在）。\
+                                 恢复**覆盖**这个库现有的全部数据；\
+                                 恢复读的是容器里 /tmp 下的那份 —— 容器重建过它可能已经没了。",
+                            ),
+                    ),
+            )
+            .child(if rows.is_empty() {
+                empty_state("还没有备份").into_any_element()
+            } else {
+                v_flex()
+                    .w_full()
+                    .rounded_lg()
+                    .bg(theme::bg())
+                    .border_1()
+                    .border_color(theme::border())
+                    .overflow_hidden()
+                    .child(table_header(BACKUP_COLUMNS))
+                    .children(rows)
+                    .into_any_element()
+            })
+            .child(h_flex().w_full().justify_end().child(close)),
+    )
+    .into_any_element()
 }
 
 // ---------------------------------------------------------------------------

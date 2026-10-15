@@ -88,13 +88,19 @@ pub const DISTRO_COLUMNS: &[(&str, f32)] = &[
 ///
 /// 字符集和排序规则分开两列（而不是挤成一格）：它们经常一起被念出来
 /// （`utf8mb4` + `utf8mb4_0900_ai_ci`），但改的时候是两件事。
+///
+/// v0.8 加了「用户名 / 密码」两列：**面板建的库**才有（建库时同时建的用户，
+/// 记在本地 `db-credentials.json`）；别处建的库显示 `—`。密码这一列**明文**
+/// 是产品决定（用户要抄去别处连），存档与风险说明见 `dbcreds` 的模块注释。
 pub const DB_COLUMNS: &[(&str, f32)] = &[
-    ("名称", 220.0),
-    ("字符集", 150.0),
-    ("排序规则", 230.0),
-    ("表数", 80.0),
-    ("占用", 110.0),
-    ("操作", 140.0),
+    ("名称", 200.0),
+    ("用户名", 170.0),
+    ("密码", 150.0),
+    ("字符集", 130.0),
+    ("排序规则", 210.0),
+    ("表数", 70.0),
+    ("占用", 100.0),
+    ("操作", 190.0),
 ];
 
 /// 「数据库管理」页 → **用户列表**的列。
@@ -110,6 +116,17 @@ pub const DB_USER_COLUMNS: &[(&str, f32)] = &[
     ("认证插件", 200.0),
     ("超级权限", 90.0),
     ("操作", 320.0),
+];
+
+/// 「备份列表」浮层的列（v0.8）。
+///
+/// 文件名给得最宽（`djxm-20261015-035901.sql` 很长，且它就是要认的东西）；
+/// 时间直接用文件名里那段（定宽、可排序）。
+pub const BACKUP_COLUMNS: &[(&str, f32)] = &[
+    ("文件", 420.0),
+    ("大小", 100.0),
+    ("备份时间", 180.0),
+    ("操作", 300.0),
 ];
 
 /// 把"权重"换算成**比例**（加起来正好 1），交给 `flex_grow` 分配实际宽度。
@@ -136,8 +153,8 @@ pub fn column_fractions(columns: &[(&str, f32)]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ALL_COLUMNS, DB_COLUMNS, DB_USER_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS,
-        VOLUME_COLUMNS,
+        ALL_COLUMNS, BACKUP_COLUMNS, DB_COLUMNS, DB_USER_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS,
+        NETWORK_COLUMNS, VOLUME_COLUMNS,
     };
 
     /// 汇总所有表格的列定义，方便逐个检查。
@@ -150,6 +167,7 @@ mod tests {
             DISTRO_COLUMNS,
             DB_COLUMNS,
             DB_USER_COLUMNS,
+            BACKUP_COLUMNS,
         ]
     }
 
@@ -172,9 +190,10 @@ mod tests {
         // 和 `distro_row` 里 push 的 7 个 cell 对应 ——
         // 改一边就必须改另一边，这个断言就是盯着这件事的。
         //
-        // 后两个是 v0.7.0 的数据库管理页（数据库 6 列 / 用户 5 列）。
+        // 后两个是 v0.7.0 的数据库管理页（v0.8 起数据库 8 列：加了用户名 / 密码）；
+        // 最后一个是 v0.8 的备份列表（4 列）。
         let counts: Vec<usize> = all_column_sets().iter().map(|c| c.len()).collect();
-        assert_eq!(counts, vec![6, 5, 6, 5, 7, 6, 5]);
+        assert_eq!(counts, vec![6, 5, 6, 5, 7, 8, 5, 4]);
     }
 
     #[test]
