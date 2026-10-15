@@ -6430,12 +6430,17 @@ fn image_facts_hint(dialog: &CreateDialog) -> AnyElement {
                 .gap_1()
                 .child(div().text_xs().text_color(theme::text_dim()).child(ports));
             if !facts.command.trim().is_empty() {
-                body = body.child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_dim())
-                        .child(format!("启动命令：{}", facts.command)),
-                );
+                // 说清"这是**镜像自带**的"：下面有一格同名的输入框
+                // （`create-command`），两处都写"启动命令"用户会分不清哪个生效。
+                //
+                // ⚠️ 这一行**不能**读成"这个镜像跑得起来" —— 它拼的是
+                // `Entrypoint + Cmd`，而只有 ENTRYPOINT、没有 CMD 的镜像
+                // （`eclipse-temurin:*-jre-alpine` 就是，这里显示的是
+                // `/__cacert_entrypoint.sh`）起来就退。判定见 `create_command`。
+                body = body.child(div().text_xs().text_color(theme::text_dim()).child(format!(
+                    "镜像自带的启动命令：{}（「启动命令」那格留空时用它）",
+                    facts.command
+                )));
             }
             body.into_any_element()
         }
@@ -6752,6 +6757,13 @@ pub fn create_dialog_overlay(
                 true,
             ))
             .child(auto_name_hint(dialog, state, cx))
+            .child(form_field(
+                "create-command",
+                "启动命令（留空用镜像自己的，支持管道与 &&）",
+                &dialog.command,
+                cx,
+                true,
+            ))
             .child(
                 h_flex()
                     .w_full()

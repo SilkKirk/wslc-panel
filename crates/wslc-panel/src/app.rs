@@ -66,7 +66,8 @@ use crate::state::{
     self, AppState, BackupState, ConfirmAction, DbFailure, DbState, DbTab, DeployFailure,
     DeployLogs, DeployPhase, DeployProgress, DeployState, DistroAction, ExecState, ExportProgress,
     ImmediateAction, ImportState, InstallOutcome, InstallProgress, InstallSourceKind, LogsState,
-    MirrorChoice, MirrorProbeResult, Page, PendingAction, PromptKind, Toast, ToastKind, exec_argv,
+    MirrorChoice, MirrorProbeResult, Page, PendingAction, PromptKind, Toast, ToastKind,
+    create_command, exec_argv,
 };
 use crate::theme;
 // `split_list` / `refresh_label` 是纯函数，住在不依赖 GPUI 的 `wslc-panel-core` 里
@@ -414,6 +415,19 @@ pub(crate) struct CreateDialog {
     /// 表现是"选了一个镜像，输入框没变"—— 不会报错，所以很难查。
     pub(crate) image_select: Entity<SelectState<Vec<DropdownItem>>>,
     pub(crate) name: Entity<InputState>,
+    /// 启动命令。**留空 = 用镜像自己的 `ENTRYPOINT` / `CMD`**（见
+    /// [`create_command`] —— 留空必须真的"不给命令"：给一条空命令会把
+    /// 镜像的 `CMD` 顶掉，mysql / nginx 那类镜像就起不来了）。
+    ///
+    /// ⚠️ 原样交给容器里的 `/bin/sh -c`（不引号、不转义），和「添加部署」
+    /// 那一格同一条规矩：用户在这一格写的就是他要执行的命令行。
+    ///
+    /// 这一格是补上的：之前**没有**它，于是"只有 `ENTRYPOINT`、没有 `CMD`"的
+    /// 镜像从面板建出来必然**起来就退**。实测 `eclipse-temurin:8-jre-alpine`：
+    /// `wslc start` 成功，但 `StartedAt` 与 `FinishedAt` 相隔 **1.1 ms**、
+    /// 退出码 0、logs 为空（那个镜像的 entrypoint 末行是 `exec "$@"`，
+    /// 不带参数时就等于什么都不做）—— 界面上只看到"点了启动还是已退出"。
+    pub(crate) command: Entity<InputState>,
     pub(crate) ports: Entity<InputState>,
     pub(crate) env: Entity<InputState>,
     pub(crate) volumes: Entity<InputState>,
@@ -478,6 +492,14 @@ impl CreateDialog {
         } else {
             spec.name = Some(name);
         }
+
+        // 留空就**一条命令都不给** —— 镜像自己的 ENTRYPOINT / CMD 才有机会生效
+        // （为什么不能给一条空命令，见 `create_command` 的说明）。
+        //
+        // 位置在 `--name` 之后、`spec.ports` 之前只是可读性；真正要紧的是
+        // `RunSpec::to_args` 把它拼在**镜像引用之后** —— 那是 `wslc run` 认
+        // "覆盖 CMD" 的位置。
+        spec.command = create_command(&text(&self.command));
 
         spec.ports = split_list(&text(&self.ports));
         spec.volumes = split_list(&text(&self.volumes));
@@ -2285,6 +2307,9 @@ impl Shell {
             }),
             image_select,
             name: cx.new(|cx| InputState::new(window, cx).placeholder("留空就按镜像命名")),
+            command: cx.new(|cx| {
+                InputState::new(window, cx).placeholder("留空用镜像自己的，如 tail -f /dev/null")
+            }),
             ports: cx.new(|cx| InputState::new(window, cx).placeholder("8080:80, 9090:90")),
             env: cx.new(|cx| InputState::new(window, cx).placeholder("TZ=Asia/Shanghai")),
             volumes: cx

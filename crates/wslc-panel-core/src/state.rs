@@ -1932,6 +1932,30 @@ pub fn exec_argv(text: &str) -> Vec<String> {
     vec!["/bin/sh".to_owned(), "-c".to_owned(), text.to_owned()]
 }
 
+/// 「创建容器」弹窗里那一格启动命令 → `wslc run` 尾部的 argv。
+///
+/// # 留空**不等于**"给一条空命令"
+///
+/// 空 → 返回空 `Vec`，`wslc run` 就**不带命令** —— 这时容器用的是
+/// **镜像自己的 `ENTRYPOINT` / `CMD`**，mysql / nginx 这类镜像全靠它跑起来。
+/// 一旦返回 `["/bin/sh", "-c", ""]`，那也算"用户给了命令"，会把镜像的 `CMD`
+/// 顶掉：本来能跑的镜像**填了个空反而起不来**。这条是这一格唯一的陷阱。
+///
+/// 非空 → 走 [`exec_argv`]，和「容器 exec」那一格同一条路、同一个理由：
+/// 管道 / 重定向 / `&&` 是用户预期能用的，按空格切会让它们**静默失效**
+/// （命令看起来还成功了，最难查的一类）。
+///
+/// `trim()` 放在这里而不是 [`exec_argv`] 里：只敲了空格的那一格等于没敲，
+/// 不 trim 就变成 `sh -c " "` —— 又是一个"起来就退"。
+pub fn create_command(text: &str) -> Vec<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        exec_argv(text)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 容器里的应用部署管理（nginx / Java / Node.js / Go，v0.9）
 // ---------------------------------------------------------------------------
@@ -4778,6 +4802,34 @@ mod tests {
         assert_eq!(exec_argv("true")[0], "/bin/sh");
         // 原文一个字都不改地传下去（包括引号）
         assert_eq!(exec_argv("echo 'a b'")[2], "echo 'a b'");
+    }
+
+    // -- 「创建容器」的启动命令那一格 ---------------------------------------
+
+    #[test]
+    fn create_command_leaves_the_image_default_alone_when_empty() {
+        // 空 → **一条命令都不给**，镜像自己的 ENTRYPOINT / CMD 才有机会生效。
+        // 这条是 mysql / nginx 那类镜像的命门：返回 `["/bin/sh","-c",""]` 同样
+        // 算"用户给了命令"，会把 CMD 顶掉 —— 表现是"本来能跑，填了个空反而起不来"。
+        assert!(create_command("").is_empty());
+        // 只敲空格 / 制表符也算没敲（不 trim 就是 `sh -c " "`，起来就退）
+        assert!(create_command("   ").is_empty());
+        assert!(create_command("\t\n ").is_empty());
+    }
+
+    #[test]
+    fn create_command_goes_through_a_shell_and_trims() {
+        assert_eq!(
+            create_command("  tail -f /dev/null  "),
+            vec!["/bin/sh", "-c", "tail -f /dev/null"]
+        );
+        // `/bin/sh` 而不是 `/bin/bash`：alpine 这类镜像里没有 bash
+        assert_eq!(create_command("java -jar /app/a.jar")[0], "/bin/sh");
+        // 管道 / 重定向不能静默失效（理由同 `exec_argv`）
+        assert_eq!(
+            create_command("nginx -g 'daemon off;' | tee /tmp/log")[2],
+            "nginx -g 'daemon off;' | tee /tmp/log"
+        );
     }
 
     // -- 日志浮层的状态 ----------------------------------------------------
