@@ -3042,8 +3042,12 @@ impl Shell {
         // `Error -> Error`，不需要 From 转换。`String` 的转换在**外面**做
         //（上一版把 `?` 放进 `Result<_, String>` 的闭包里，
         // `String: From<Error>` 不存在 —— CI 抓的）。
-        let prepared: Result<Option<(String, &'static str, Option<(String, String, String)>)>> =
-            (|| {
+        // ⚠️ 类型要写**全路径** `wslc_core::Result`：app.rs 作用域里的裸
+        // `Result` 来自 `gpui_kit::*`，它的默认错误类型是 anyhow —— 两个
+        // "Result" 长得一样，是不同的类型（CI 抓的）。
+        let prepared: wslc_core::Result<
+            Option<(String, &'static str, Option<(String, String, String)>)>,
+        > = (|| {
                 let Some(dialog) = self.db_dialog.as_ref() else {
                     return Ok(None);
                 };
@@ -3113,7 +3117,7 @@ impl Shell {
             })();
 
         // 弹窗不在（理论上来不到）→ 什么都不做
-        let Some((sql, title, to_record)) = match prepared {
+        let (sql, title, to_record) = match prepared {
             Ok(None) => return,
             Ok(Some(prepared)) => prepared,
             Err(e) => {
@@ -3122,8 +3126,6 @@ impl Shell {
                 cx.notify();
                 return;
             }
-        } else {
-            return;
         };
 
         let Some(db) = self.state.db.as_ref() else {
