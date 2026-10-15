@@ -1747,7 +1747,9 @@ fn db_databases_card(
                 .w_full()
                 .justify_between()
                 .items_center()
-                .child(h_flex().gap_2().child(new_database).child(import_sql))
+                // 页头只剩「新建数据库…」：库级动作（导入备份 / SQL / 备份 /
+                // 删除）全在下面每一行上。
+                .child(h_flex().gap_2().child(new_database))
                 .child(
                     div()
                         .text_sm()
