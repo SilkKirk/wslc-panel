@@ -539,7 +539,7 @@ mod tests {
     #[test]
     fn backup_paths_scope_by_container_and_database() {
         let dir = std::path::Path::new(r"C:\Users\x\AppData\Local\wslc-panel");
-        let paths = backup_paths(dir, "mysql", "djxm", 1_792_727_941).expect("应能算出落点");
+        let paths = backup_paths(dir, "mysql", "djxm", 1_792_036_741).expect("应能算出落点");
         assert_eq!(
             paths.container_path,
             "/tmp/wslc-backups/djxm-20261015-035901.sql"
@@ -551,7 +551,7 @@ mod tests {
                 .join("djxm-20261015-035901.sql")
         );
         // 另一个容器的落点必须不同（目录里带了容器名）
-        let other = backup_paths(dir, "mysql2", "djxm", 1_792_727_941).unwrap();
+        let other = backup_paths(dir, "mysql2", "djxm", 1_792_036_741).unwrap();
         assert_ne!(paths.windows_path, other.windows_path);
         // 非法库名本地拦下
         assert!(backup_paths(dir, "mysql", "shop; drop", 0).is_err());

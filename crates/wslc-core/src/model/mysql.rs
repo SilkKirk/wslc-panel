@@ -1743,14 +1743,14 @@ mod tests {
 
     #[test]
     fn backup_file_names_are_sortable_and_unique_per_second() {
-        // 2026-10-15 03:59:01 UTC = 1792727941
+        // 2026-10-15 03:59:01 UTC = 1_792_036_741（用 PowerShell 换算核过）
         assert_eq!(
-            backup_file_name("djxm", 1_792_727_941),
+            backup_file_name("djxm", 1_792_036_741),
             "djxm-20261015-035901.sql"
         );
         assert_ne!(
-            backup_file_name("djxm", 1_792_727_941),
-            backup_file_name("djxm", 1_792_727_942)
+            backup_file_name("djxm", 1_792_036_741),
+            backup_file_name("djxm", 1_792_036_742)
         );
     }
 

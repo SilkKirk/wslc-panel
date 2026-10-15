@@ -2818,6 +2818,8 @@ impl Shell {
                 // ⚠️ 这一整块借着 `shell.state.db`，而下面的提示条要
                 // `&mut shell.state` —— 借用没结束就调 `notify` 是编译错误，
                 // 所以先把要说的那句话算成 owned 的，出了块再发。
+                // 备份列表的重扫同理：等 `db` 借用结束、出了块再做。
+                let mut rescan = false;
                 let failure_summary: Option<String> = {
                     let Some(db) = shell.state.db.as_mut() else {
                         cx.notify();
@@ -2831,9 +2833,7 @@ impl Shell {
                     db.creds = creds.clone();
                     db.busy = false;
                     db.loaded = true;
-                    // 备份列表顺手重扫一次（进页面时目录可能被手动动过）；
-                    // ⚠️ 碰文件系统 —— 这里在**后台任务的回调**里，不在渲染路径上
-                    shell.state.rescan_backups(&container);
+                    rescan = true;
                     match lists.0 {
                         Ok(databases) => db.databases = databases,
                         Err(message) => db.fail(message),
@@ -2852,6 +2852,11 @@ impl Shell {
                     }
                     db.error.as_ref().map(DbFailure::summary)
                 };
+                // 备份列表顺手重扫一次（进页面时目录可能被手动动过）；
+                // ⚠️ 碰文件系统 —— 这里在**后台任务的回调**里，不在渲染路径上
+                if rescan {
+                    shell.state.rescan_backups(&container);
+                }
                 if let Some(summary) = failure_summary {
                     shell
                         .state
@@ -3033,86 +3038,94 @@ impl Shell {
     /// 不会留下"建了库没建用户"的半成品。
     pub fn submit_db_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // 先把要用的东西取成 owned 的（下面要改 `self`，不能再借着它）
-        let prepared: Result<(String, &'static str, Option<(String, String, String)>), String> = {
-            let Some(dialog) = self.db_dialog.as_ref() else {
-                return;
-            };
-            let text = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
+        let prepared: Result<(String, &'static str, Option<(String, String, String)>), String> =
+            (|| {
+                let Some(dialog) = self.db_dialog.as_ref() else {
+                    return Ok(None);
+                };
+                let text = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
 
-            let prepared_inner: Result<
-                (String, &'static str, Option<(String, String, String)>),
-                _,
-            > = match &dialog.kind {
-                DbDialogKind::NewDatabase => {
-                    let charset = text(&dialog.charset);
-                    let collation = text(&dialog.collation);
-                    let database = text(&dialog.database);
-                    let mut parts: Vec<String> = Vec::new();
-                    parts.push(mysql_model::create_database_sql(
-                        &database,
-                        (!charset.is_empty()).then_some(charset.as_str()),
-                        (!collation.is_empty()).then_some(collation.as_str()),
-                    )?);
-                    // 用户名 = `<库名>_user`（规则在弹窗里写着，改名跟着变）；
-                    // host 固定 `%`（要远程连的账号，默认锁 localhost 反而添堵）。
-                    let mut to_record = None;
-                    if dialog.create_user {
-                        let user = mysql_model::default_user_for(&database);
-                        // 用户名拼出来也要过一遍白名单（库名在上面已查过）
-                        mysql_model::validate_ident("用户名", &user)?;
-                        let password = text(&dialog.password);
-                        parts.push(mysql_model::create_user_sql(&user, "%", &password)?);
-                        parts.push(mysql_model::grant_sql(
+                let prepared_inner: Result<
+                    (String, &'static str, Option<(String, String, String)>),
+                    _,
+                > = match &dialog.kind {
+                    DbDialogKind::NewDatabase => {
+                        let charset = text(&dialog.charset);
+                        let collation = text(&dialog.collation);
+                        let database = text(&dialog.database);
+                        let mut parts: Vec<String> = Vec::new();
+                        parts.push(mysql_model::create_database_sql(
                             &database,
-                            &user,
-                            "%",
-                            GrantKind::All,
+                            (!charset.is_empty()).then_some(charset.as_str()),
+                            (!collation.is_empty()).then_some(collation.as_str()),
                         )?);
-                        to_record = Some((database, user, password));
+                        // 用户名 = `<库名>_user`（规则在弹窗里写着，改名跟着变）；
+                        // host 固定 `%`（要远程连的账号，默认锁 localhost 反而添堵）。
+                        let mut to_record = None;
+                        if dialog.create_user {
+                            let user = mysql_model::default_user_for(&database);
+                            // 用户名拼出来也要过一遍白名单（库名在上面已查过）
+                            mysql_model::validate_ident("用户名", &user)?;
+                            let password = text(&dialog.password);
+                            parts.push(mysql_model::create_user_sql(&user, "%", &password)?);
+                            parts.push(mysql_model::grant_sql(
+                                &database,
+                                &user,
+                                "%",
+                                GrantKind::All,
+                            )?);
+                            to_record = Some((database, user, password));
+                        }
+                        Ok((parts.join("; "), dialog.kind.title(), to_record))
                     }
-                    Ok((parts.join("; "), dialog.kind.title(), to_record))
-                }
-                DbDialogKind::NewUser => {
-                    let grant_db = text(&dialog.grant_db);
-                    let host = text(&dialog.host);
-                    let grant = (!grant_db.is_empty()).then(|| (grant_db.as_str(), dialog.grant));
-                    mysql_model::create_user_statements(
-                        &text(&dialog.user),
-                        &host,
+                    DbDialogKind::NewUser => {
+                        let grant_db = text(&dialog.grant_db);
+                        let host = text(&dialog.host);
+                        let grant =
+                            (!grant_db.is_empty()).then(|| (grant_db.as_str(), dialog.grant));
+                        mysql_model::create_user_statements(
+                            &text(&dialog.user),
+                            &host,
+                            &text(&dialog.password),
+                            grant,
+                        )
+                        .map(|sql| (sql, dialog.kind.title(), None))
+                    }
+                    DbDialogKind::AlterPassword { user, host } => mysql_model::alter_user_password_sql(
+                        user,
+                        host,
                         &text(&dialog.password),
-                        grant,
                     )
-                    .map(|sql| (sql, dialog.kind.title(), None))
-                }
-                DbDialogKind::AlterPassword { user, host } => mysql_model::alter_user_password_sql(
-                    user,
-                    host,
-                    &text(&dialog.password),
-                )
-                .map(|sql| (sql, dialog.kind.title(), None)),
-                DbDialogKind::Grant { user, host } => {
-                    let grant_db = text(&dialog.grant_db);
-                    if grant_db.is_empty() {
-                        Err(wslc_core::Error::InvalidArgument(
-                            "请填要授权给哪个数据库".to_owned(),
-                        ))
-                    } else {
-                        mysql_model::grant_sql(&grant_db, user, host, dialog.grant)
-                            .map(|sql| (sql, dialog.kind.title(), None))
+                    .map(|sql| (sql, dialog.kind.title(), None)),
+                    DbDialogKind::Grant { user, host } => {
+                        let grant_db = text(&dialog.grant_db);
+                        if grant_db.is_empty() {
+                            Err(wslc_core::Error::InvalidArgument(
+                                "请填要授权给哪个数据库".to_owned(),
+                            ))
+                        } else {
+                            mysql_model::grant_sql(&grant_db, user, host, dialog.grant)
+                                .map(|sql| (sql, dialog.kind.title(), None))
+                        }
                     }
-                }
-            };
-            prepared_inner.map_err(|e| e.to_string())
-        };
+                };
+                prepared_inner
+                    .map(Some)
+                    .map_err(|e| e.to_string())
+            })();
 
-        let (sql, title, to_record) = match prepared {
-            Ok(prepared) => prepared,
+        // 弹窗不在（理论上来不到）→ 什么都不做
+        let Some((sql, title, to_record)) = match prepared {
+            Ok(None) => return,
+            Ok(Some(prepared)) => Some(prepared),
             Err(message) => {
                 // 不关弹窗：用户就在那一格上，改一个字比重打一遍强
                 self.state.notify(Toast::error(message));
                 cx.notify();
                 return;
             }
+        } else {
+            return;
         };
 
         let Some(db) = self.state.db.as_ref() else {
@@ -3396,8 +3409,10 @@ impl Shell {
                 let creds = creds.clone();
                 let database = database.clone();
                 let paths = paths.clone();
+                // ⚠️ `BackgroundExecutor::spawn` 只吃 **future**（不是普通闭包）
+                // —— `async move { 阻塞活 }` 把同步调用包进去，跟其它命令一个写法
                 cx.background_executor()
-                    .spawn(move || {
+                    .spawn(async move {
                         wslc_core::cmd::mysql::backup_database(
                             &wslc,
                             &container,
