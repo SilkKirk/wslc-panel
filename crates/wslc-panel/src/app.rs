@@ -3301,7 +3301,7 @@ impl Shell {
                                     host: "%".to_owned(),
                                 },
                             );
-                            if let Err(e) = shell.state.save_db_credentials() {
+                            if let Some(e) = shell.state.save_db_credentials() {
                                 shell.state.notify(Toast::error(e));
                             }
                         }
@@ -4075,7 +4075,7 @@ impl Shell {
                 if ok {
                     if let Some((container, database)) = dropped_database {
                         shell.state.db_credentials.remove(&container, &database);
-                        if let Err(e) = shell.state.save_db_credentials() {
+                        if let Some(e) = shell.state.save_db_credentials() {
                             shell.state.notify(Toast::error(e));
                         }
                     }

@@ -869,7 +869,7 @@ fn db_credentials_at_startup() -> (crate::dbcreds::DbCredentialStore, Option<Str
 ///
 /// ⚠️ 碰文件系统 —— 只在**点击后**和**长任务完成回调**里调，
 /// 绝不在渲染路径上（`AGENTS.md` §7.1）。
-pub fn scan_backup_dir(dir: &Path) -> std::io::Result<Vec<BackupEntry>> {
+pub fn scan_backup_dir(dir: &std::path::Path) -> std::io::Result<Vec<BackupEntry>> {
     let mut out: Vec<BackupEntry> = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -2963,15 +2963,21 @@ impl AppState {
 
     /// 把凭据存档写回磁盘（建库 / 删库之后调）。
     ///
-    /// 失败只返回一句说明（界面提示），**不 panic**：存档写不进去最坏是
+    /// 返回 `Option<String>`：`Some(说明)` = 没写成（界面提示），`None` = 成功。
+    /// 刻意**不用 crate 的 `Result` 别名** —— 那个别名把错误类型钉死在
+    /// `wslc_core::Error` 上，而这里的失败原因（磁盘满 / 路径不对）不是
+    /// 子进程错误，硬塞进去只会造出一个没人会匹配的变体。
+    ///
+    /// 失败只返回一句说明，**不 panic**：存档写不进去最坏是
     /// "重启后账号要重新录入"，不值得为它崩掉界面。
-    pub fn save_db_credentials(&self) -> Result<(), String> {
+    pub fn save_db_credentials(&self) -> Option<String> {
         let Some(path) = self.db_credentials_path() else {
-            return Err("LOCALAPPDATA 未设置，账号存不了盘".to_owned());
+            return Some("LOCALAPPDATA 未设置，账号存不了盘".to_owned());
         };
         self.db_credentials
             .save(&path)
-            .map_err(|e| format!("写凭据存档失败：{e}"))
+            .err()
+            .map(|e| format!("写凭据存档失败：{e}"))
     }
 
     /// 某个容器的备份目录（`<数据目录>/backups/<容器>`）。
