@@ -2993,13 +2993,16 @@ impl AppState {
     /// ⚠️ 碰文件系统 —— 只在**点击后**和**长任务完成回调**里调，
     /// 绝不在渲染路径上（`AGENTS.md` §7.1）。
     pub fn rescan_backups(&mut self, container: &str) {
+        // ⚠️ 先把**目录**算出来、再借 `self.db`：`db.backups = …` 赋值时
+        // `db`（对 `self.db` 的可变借用）还活着，那时再去调 `self.…`
+        // 就是 E0502 —— 借用检查器看得见，人眼容易漏。
+        let Some(dir) = self.container_backup_dir(container) else {
+            return;
+        };
         let Some(db) = self.db.as_mut().filter(|db| db.container == container) else {
             return;
         };
-        db.backups = self
-            .container_backup_dir(container)
-            .and_then(|dir| scan_backup_dir(&dir).ok())
-            .unwrap_or_default();
+        db.backups = scan_backup_dir(&dir).unwrap_or_default();
     }
     /// 新建初始状态。
     pub fn new(wslc: Wslc, wsl: Wsl) -> Self {
