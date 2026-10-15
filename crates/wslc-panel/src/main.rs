@@ -49,6 +49,12 @@ mod views;
 mod columns {
     pub use wslc_panel_core::columns::*;
 }
+// 部署记录的本地存档（v0.9）—— 和 `dbcreds` 并列，但那个是直接在
+// `state.rs` 里按 `crate::dbcreds::…` 用的（它没有垫片）。
+// 这里给 `deploys` 一个垫片，是因为 `app.rs` 要拿 `DeployRecord` 建记录。
+mod deploys {
+    pub use wslc_panel_core::deploys::*;
+}
 mod prefs {
     pub use wslc_panel_core::prefs::*;
 }

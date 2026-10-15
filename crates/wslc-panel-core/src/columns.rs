@@ -129,6 +129,27 @@ pub const BACKUP_COLUMNS: &[(&str, f32)] = &[
     ("操作", 300.0),
 ];
 
+/// 「部署管理」页 → **已部署列表**的列（v0.9）。
+///
+/// 「形态」那一列是 **内容 / 进程**（见 `AppRuntime::kind`）：它决定了这一行
+/// 有哪些按钮能按 —— 内容形态（nginx）没有"启动 / 停止"，只有"重新上传 / 重载"。
+/// 把它画出来，用户就不用猜"为什么这个应用没有启动按钮"。
+///
+/// 「目标路径」给得最宽：它是这一行**最要紧的一格**（部署到底铺到了哪儿、
+/// 删除会删掉什么都在它身上），而且容器路径经常很长 ——
+/// 所以它在 `views.rs` 里走 `cell_muted_full`（截断了也能悬停看全文）。
+///
+/// 「端口」是**信息性**的：已存在的容器改不了端口发布（`-p` 只在 `run` 时给），
+/// 所以这一格只能如实报"发布了没有"。
+pub const DEPLOY_COLUMNS: &[(&str, f32)] = &[
+    ("应用名", 200.0),
+    ("形态", 90.0),
+    ("目标路径", 340.0),
+    ("状态", 170.0),
+    ("端口", 110.0),
+    ("操作", 330.0),
+];
+
 /// 把"权重"换算成**比例**（加起来正好 1），交给 `flex_grow` 分配实际宽度。
 ///
 /// 全是 0 / 负数（不该发生，但别 panic）时退回等分。
@@ -153,8 +174,8 @@ pub fn column_fractions(columns: &[(&str, f32)]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ALL_COLUMNS, BACKUP_COLUMNS, DB_COLUMNS, DB_USER_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS,
-        NETWORK_COLUMNS, VOLUME_COLUMNS,
+        ALL_COLUMNS, BACKUP_COLUMNS, DB_COLUMNS, DB_USER_COLUMNS, DEPLOY_COLUMNS,
+        DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS,
     };
 
     /// 汇总所有表格的列定义，方便逐个检查。
@@ -168,6 +189,7 @@ mod tests {
             DB_COLUMNS,
             DB_USER_COLUMNS,
             BACKUP_COLUMNS,
+            DEPLOY_COLUMNS,
         ]
     }
 
@@ -191,9 +213,9 @@ mod tests {
         // 改一边就必须改另一边，这个断言就是盯着这件事的。
         //
         // 后两个是 v0.7.0 的数据库管理页（v0.8 起数据库 8 列：加了用户名 / 密码）；
-        // 最后一个是 v0.8 的备份列表（4 列）。
+        // 最后一个是 v0.8 的备份列表（4 列），倒数第二个是 v0.9 的部署列表（6 列）。
         let counts: Vec<usize> = all_column_sets().iter().map(|c| c.len()).collect();
-        assert_eq!(counts, vec![6, 5, 6, 5, 7, 8, 5, 4]);
+        assert_eq!(counts, vec![6, 5, 6, 5, 7, 8, 5, 4, 6]);
     }
 
     #[test]

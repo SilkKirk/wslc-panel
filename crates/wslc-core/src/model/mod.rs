@@ -11,6 +11,10 @@
 mod container;
 mod image;
 mod network;
+// 「部署应用」的纯逻辑：nginx / Java / Node.js / Go 的识别、脚本生成、输出解析。
+// `pub` 的理由和 `mysql` 一样：`container_app_kind` 在**渲染期**就要用
+// （见 `views::container_row_actions`），面板也直接装它的类型。
+pub mod deploy;
 // MySQL 容器的识别 / 命令行拼装 / 输出解析 / SQL 生成。
 // `pub` 是因为面板要直接用它的类型（`MysqlCreds` / `DbEntry` ……）和函数
 // （`mysql_container_kind` 在**渲染期**就要用，见 `views::container_row_actions`）。
@@ -34,7 +38,14 @@ pub mod install;
 
 pub use container::{
     parse_wsl_metadata, suggest_container_name, ContainerInspect, ContainerListItem,
-    ContainerState, ContainerStats, ContainerSummary, Platform, PortMapping, WslPortSpec,
+    ContainerMount, ContainerState, ContainerStats, ContainerSummary, Platform, PortMapping,
+    WslPortSpec,
+};
+// 「部署应用」那一族的类型，和 mysql 一样在这里平铺出来
+// （函数仍走 `model::deploy::`，一看就知道来自哪）。
+pub use deploy::{
+    container_app_kind, AppRuntime, DeployCandidate, DeployErrorKind, DeployKind, DeploySignal,
+    ProbeResult, ProcessStatus, SourceKind,
 };
 pub use distro::{parse_distro_list, Distro, DistroState, WslStatus};
 pub use image::{
@@ -143,6 +154,26 @@ pub fn split_outside_brackets(input: &str, sep: char) -> Vec<&str> {
     }
     parts.push(&input[start..]);
     parts
+}
+
+/// 取镜像引用的**最后一段**（去掉 registry 前缀、tag、digest），小写。
+///
+/// 例如 `docker.1panel.live/library/nginx:latest` → `nginx`。
+///
+/// ⚠️ 刻意**不用** `registry::split_input`：那个函数在遇到
+/// `alpine@sha256:…` 这类**合法**引用时会返回 `Err`（它服务的是"拉取"那条路，
+/// 按摘要拉取这一版不支持）。而这里的调用点全在**渲染路径**上 ——
+/// 判定失败必须是"认不出来"，不能是"报错"。
+///
+/// 放在 `mod.rs` 而不是某个子模块里：`mysql`（认 MySQL 家族）和 `deploy`
+/// （认 nginx / Java / Node / Go）都要它，两个模块各存一份必然会漂移。
+pub fn image_last_segment(image: &str) -> String {
+    let without_digest = image.split('@').next().unwrap_or(image);
+    let last = without_digest.rsplit('/').next().unwrap_or(without_digest);
+    // ⚠️ 只切**最后一段**里的冒号：`localhost:5000/mysql` 的端口在主机名那段，
+    // 先 rsplit('/') 之后已经不在 last 里了。
+    let last = last.split(':').next().unwrap_or(last);
+    last.trim().to_ascii_lowercase()
 }
 
 #[cfg(test)]

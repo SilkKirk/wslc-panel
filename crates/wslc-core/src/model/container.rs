@@ -784,6 +784,50 @@ impl ContainerInspect {
             .unwrap_or(0)
     }
 
+    /// 挂载点列表（`inspect` 的 `Mounts`）。
+    ///
+    /// ⚠️ **别和 [`ContainerListItem::mounts`] 搞混**：两者字段名一样、
+    /// 含义完全不同。列表那个 `Mounts` 是一个**字符串**，给的是 VM 里的路径
+    /// （形如 `/mnt/{078dfade-…}`，见那条的说明）；`inspect` 的这个才是
+    /// "哪个宿主的卷挂在容器的哪个目录"。
+    ///
+    /// 「部署应用」靠它推 nginx 的 Web 根（`model::deploy::nginx_web_root`）：
+    /// 本机那个容器实测给出的是 `{Type: volume, Name: webdata,
+    /// Destination: /usr/share/nginx/html}`。
+    ///
+    /// 缺字段 / 形状不对的行**跳过**，不报错也不 panic —— 和这个结构体其他
+    /// 访问器同一条原则：schema 漂移只让某一项变空。
+    pub fn mounts(&self) -> Vec<ContainerMount> {
+        self.get(&["Mounts"])
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| {
+                        let destination = m.get("Destination")?.as_str()?.to_owned();
+                        // `Source` 是**卷名**（volume）或**宿主路径**（bind）；
+                        // 有些驱动两个都不给，那就空着，界面显示成 `—`。
+                        let source = m
+                            .get("Source")
+                            .or_else(|| m.get("Name"))
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned();
+                        let kind = m
+                            .get("Type")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned();
+                        Some(ContainerMount {
+                            kind,
+                            source,
+                            destination,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     fn string_array(&self, path: &[&str]) -> Vec<String> {
         self.get(path)
             .and_then(Value::as_array)
@@ -795,6 +839,20 @@ impl ContainerInspect {
             })
             .unwrap_or_default()
     }
+}
+
+/// `inspect` 里的一个挂载点（`Mounts[]`）。
+///
+/// 字段刻意都是 `String` 而不是枚举：`wslc` 的 `Type` 值没有文档
+/// （实测见过 `volume`），拿它做穷尽匹配等于把未文档化的东西钉死。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerMount {
+    /// 类型：实测见过 `volume`（`bind` / `tmpfs` 是 Docker 那边常见的值）。
+    pub kind: String,
+    /// 卷名（`volume`）或宿主路径（`bind`）；两个都没有时是空串。
+    pub source: String,
+    /// 容器内路径。
+    pub destination: String,
 }
 
 /// 从镜像引用推一个**看得懂**的容器名（表单里"容器名"留空时用）。
