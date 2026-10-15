@@ -439,7 +439,17 @@ pub fn explain_error_code(code: &str, message: &str, name: &str) -> String {
             "registry 拒绝了这次请求（{code}）—— 这个仓库可能是私有的，这一版只支持公开仓库"
         ),
         "MANIFEST_UNKNOWN" => {
-            "这个 tag 在 registry 上不存在（可能已经被删了，换一个 tag 试试）".to_owned()
+            // ⚠️ 别写成"已经被删了 / 换一个 tag"：**实测（2026-10-15，
+            // docker.1panel.live / library/openjdk）**
+            //  - 同一个 tag 第一次请求就可能回这个码，而**几秒后同一条 URL 是
+            //    200**（那家镜像源在 tag 还没进它自己缓存时就是这么答的）；
+            //  - 它的 `tags/list` 本身也可能不全：`library/openjdk` 只回了
+            //    17282 个，里面**没有** `8-jre-slim`、也没有 `latest`，
+            //    而这两个的 manifest 都是 **200**（能拉）。
+            // 所以这句话不能断言"不存在"，得把"重试"这条出路说出来。
+            "registry 说这个 tag 不存在：名字写错了、被删了，或者镜像源的缓存\
+             还没命中（等几秒重新「查询」一次往往就有了）"
+                .to_owned()
         }
         "TOOMANYREQUESTS" | "TOO_MANY_REQUESTS" => {
             "registry 限流了，等一会儿再试（这个站点有按小时计数的限流）".to_owned()
