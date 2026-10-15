@@ -145,10 +145,9 @@ pub fn mysql_container_kind(item: &ContainerListItem) -> Option<MysqlCandidate> 
 /// 按镜像名认家族。认不出来返回 `None`（**什么都不做**，和 `image_preset` 同一条原则）。
 ///
 /// 表刻意小：只认最常见的几个。命名带前缀的那种（`docker.1panel.live/library/mysql:8`）
-/// 走 `model::image_last_segment` 取最后一段，所以自动命中。
-/// （它和 `deploy` 那一族共用一份实现，见 `model/mod.rs` 的说明。）
+/// 走 [`image_last_segment`] 取最后一段，所以自动命中。
 pub fn family_from_image(image: &str) -> Option<MysqlFamily> {
-    match super::image_last_segment(image).as_str() {
+    match image_last_segment(image).as_str() {
         "mysql" | "mysql-server" | "mysql-community-server" => Some(MysqlFamily::Mysql),
         "mariadb" | "mariadb-server" => Some(MysqlFamily::Mariadb),
         "percona" | "percona-server" => Some(MysqlFamily::Percona),
@@ -168,6 +167,21 @@ pub fn family_from_command(command: &str) -> Option<MysqlFamily> {
     } else {
         None
     }
+}
+
+/// 取镜像引用的**最后一段**（去掉 registry 前缀、tag、digest），小写。
+///
+/// ⚠️ 刻意**不用** `registry::split_input`：那个函数在遇到
+/// `alpine@sha256:…` 这类**合法**引用时会返回 `Err`（它服务的是"拉取"那条路，
+/// 按摘要拉取这一版不支持）。而这里的调用点在渲染路径上 ——
+/// 判定失败必须是"认不出来"，不能是"报错"。
+fn image_last_segment(image: &str) -> String {
+    let without_digest = image.split('@').next().unwrap_or(image);
+    let last = without_digest.rsplit('/').next().unwrap_or(without_digest);
+    // ⚠️ 只切**最后一段**里的冒号：`localhost:5000/mysql` 的端口在主机名那段，
+    // 先 rsplit('/') 之后已经不在 last 里了。
+    let last = last.split(':').next().unwrap_or(last);
+    last.trim().to_ascii_lowercase()
 }
 
 /// 从 `inspect` 的结果判断（**权威判定**，进页面时跑一次）。
