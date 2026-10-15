@@ -11,6 +11,10 @@
 mod container;
 mod image;
 mod network;
+// MySQL 容器的识别 / 命令行拼装 / 输出解析 / SQL 生成。
+// `pub` 是因为面板要直接用它的类型（`MysqlCreds` / `DbEntry` ……）和函数
+// （`mysql_container_kind` 在**渲染期**就要用，见 `views::container_row_actions`）。
+pub mod mysql;
 // `pub` 是因为表格解析函数 `parse_session_table` 需要被 `cmd::system` 复用。
 pub mod session;
 mod system;
@@ -42,6 +46,12 @@ pub use install::{
     PlannedStep, Preflight, WSL_VERSION,
 };
 pub use network::NetworkListItem;
+// MySQL 这一族的类型：面板的 `DbState`（在 `wslc-panel-core` 里）直接装它们，
+// 所以常用的那些在这里平铺出来（函数仍走 `model::mysql::`，一看就知道来自哪）。
+pub use mysql::{
+    ClientProbe, DbEntry, DbUser, GrantKind, MysqlCandidate, MysqlCreds, MysqlErrorKind,
+    MysqlFamily, MysqlSignal, RootCredHint, SqlMode,
+};
 pub use session::{parse_session_table, Session};
 pub use system::{ClientInfo, ServerInfo, SessionInfo, SystemInfo};
 pub use volume::VolumeListItem;

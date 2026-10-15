@@ -27,7 +27,8 @@ use wslc_core::model::install::{
 // 定义在 `wslc-core` 里；这里转出去，界面按它显示那句说明。
 pub use wslc_core::model::install::OnlineListSource;
 use wslc_core::model::{
-    ContainerSummary, Distro, ImageListItem, NetworkListItem, Session, SystemInfo, VolumeListItem,
+    ContainerSummary, DbEntry, DbUser, Distro, ImageListItem, MysqlCreds, MysqlErrorKind,
+    MysqlFamily, NetworkListItem, RootCredHint, Session, SqlMode, SystemInfo, VolumeListItem,
     WslStatus,
 };
 use wslc_core::settings::SettingsDoc;
@@ -65,6 +66,16 @@ pub enum Page {
     Networks,
     /// 卷。
     Volumes,
+    /// 容器里的**数据库管理**（MySQL / MariaDB 容器）。
+    ///
+    /// ⚠️ **不在 [`Page::ALL`] 里** —— 和 `AddInstance` 同一个取舍：它不是一个
+    /// 并列的站点，而是"针对某一个容器"的页面，只能从**容器列表行上那个
+    /// 「数据库」按钮**进来（只有认得出是 MySQL 的那一行才画它）。
+    /// 所以页面顶部有「← 返回容器」，侧边栏里没有它。
+    ///
+    /// 进这一页需要 window：连接卡上有用户名 / 密码输入框，
+    /// 而 `InputState::new` 要 `&mut Window`（见 [`Page::needs_window_to_enter`]）。
+    Database,
     /// 应用自己的设置（刷新间隔、主题……）。
     ///
     /// 这里存的是**本程序的偏好**（`%LOCALAPPDATA%\wslc-panel\prefs.json`）。
@@ -117,6 +128,7 @@ impl Page {
             Page::Images => "镜像",
             Page::Networks => "网络",
             Page::Volumes => "卷",
+            Page::Database => "数据库管理",
             Page::AppSettings => "应用设置",
             Page::About => "关于",
         }
@@ -127,7 +139,7 @@ impl Page {
         match self {
             Page::Dashboard => "概览",
             Page::Instances | Page::AddInstance => "WSL 实例",
-            Page::Containers => "容器",
+            Page::Containers | Page::Database => "容器",
             Page::Images | Page::Networks | Page::Volumes => "资源",
             Page::AppSettings | Page::About => "设置",
         }
@@ -146,8 +158,13 @@ impl Page {
     /// ⚠️ v0.6.3 起这里**只剩「添加实例」**：拉取表单挪进了弹窗，
     /// 是在点「拉取镜像…」那一刻建的（`Shell::open_pull_dialog`）——
     /// 页面本身只剩一个按钮和一张表，进来不需要 window。
+    ///
+    /// v0.7.0 起「数据库管理」也回到了这一列：它的**连接卡**（用户名 / 密码）
+    /// 是页面上的输入框，而不是弹窗 —— 因为它描述的是"这一页现在连的是谁"，
+    /// 属于**页面状态**，不是一次性动作。一次性动作（新建库 / 新建用户 / 改密码 /
+    /// 授权）仍然走弹窗（`Shell::open_db_dialog`），和拉取镜像同一个理由。
     pub fn needs_window_to_enter(self) -> bool {
-        matches!(self, Page::AddInstance)
+        matches!(self, Page::AddInstance | Page::Database)
     }
 }
 
@@ -578,6 +595,37 @@ pub enum PendingAction {
         /// 用户没法确认自己点的是哪一个。
         name: String,
     },
+    /// 删除一个**数据库**（数据库管理页）。
+    ///
+    /// 为什么要带凭据：`PendingAction::execute` 只拿到 `&Wslc`，
+    /// 而 `DROP DATABASE` 得先连上 mysqld —— 连接信息必须随动作一起过来。
+    /// （`MysqlCreds` 的 `Debug` 是脱敏的，所以进 `AppState::confirm` 是安全的。）
+    DropDatabase {
+        /// 目标容器。
+        container: String,
+        /// 库名。
+        database: String,
+        /// 容器里的客户端二进制名（探测得来，别在这里再猜一次）。
+        client: String,
+        /// 连接凭据。
+        creds: MysqlCreds,
+    },
+    /// 删除一个 **MySQL 用户**。
+    ///
+    /// `'user'@'host'` 才是完整身份（实测 `root@%` 和 `root@localhost` 是两条
+    /// 独立的记录），所以两个都要带着。
+    DropUser {
+        /// 目标容器。
+        container: String,
+        /// 用户名。
+        user: String,
+        /// 主机。
+        host: String,
+        /// 容器里的客户端二进制名。
+        client: String,
+        /// 连接凭据。
+        creds: MysqlCreds,
+    },
 }
 
 impl PendingAction {
@@ -593,6 +641,8 @@ impl PendingAction {
             PendingAction::RemoveVolume(_) => "删除卷",
             PendingAction::PruneVolumes => "清理未使用的卷",
             PendingAction::TerminateSession { .. } => "终止会话",
+            PendingAction::DropDatabase { .. } => "删除数据库",
+            PendingAction::DropUser { .. } => "删除 MySQL 用户",
         }
     }
 
@@ -629,6 +679,16 @@ impl PendingAction {
                 "将终止会话 {name}（#{id}）。这个会话里**正在运行**的容器会一起停下。\
                  镜像 / 容器 / 卷都在这个会话的 storage.vhdx 里，终止会话不删它们。"
             ),
+            PendingAction::DropDatabase { database, .. } => format!(
+                "将执行 `DROP DATABASE {database}` —— 这个库里**所有表和数据**都没了。\
+                 此操作不可撤销，面板里也没有回收站。\
+                 （挂着的卷不受影响：库是 mysqld 管的，删库不删卷。）"
+            ),
+            PendingAction::DropUser { user, host, .. } => format!(
+                "将执行 `DROP USER '{user}'@'{host}'` —— 这个账号会被删掉，\
+                 已经授出去的权限一并消失。已经建立的连接不会立刻断开，\
+                 但之后它就连不上了。此操作不可撤销。"
+            ),
         }
     }
 
@@ -643,6 +703,8 @@ impl PendingAction {
             PendingAction::RemoveVolume(_) => "删除卷",
             PendingAction::PruneVolumes => "清理",
             PendingAction::TerminateSession { .. } => "终止会话",
+            PendingAction::DropDatabase { .. } => "删除数据库",
+            PendingAction::DropUser { .. } => "删除用户",
         }
     }
 
@@ -692,6 +754,30 @@ impl PendingAction {
             PendingAction::TerminateSession { id, name } => {
                 cmd::system::terminate_session(wslc, *id)?;
                 Ok(format!("已终止会话：{name}"))
+            }
+            // 数据库管理页的两条危险动作：走容器里的 mysql 客户端执行 DDL。
+            // `run_sql` 内部已经把错误脱敏（`cmd::mysql::sanitize`），
+            // 所以密码不会跟着错误冒到提示条上。
+            PendingAction::DropDatabase {
+                container,
+                database,
+                client,
+                creds,
+            } => {
+                let sql = wslc_core::model::mysql::drop_database_sql(database)?;
+                cmd::mysql::run_sql(wslc, container, client, creds, &sql, None, SqlMode::Batch)?;
+                Ok(format!("已删除数据库：{database}"))
+            }
+            PendingAction::DropUser {
+                container,
+                user,
+                host,
+                client,
+                creds,
+            } => {
+                let sql = wslc_core::model::mysql::drop_user_sql(user, host)?;
+                cmd::mysql::run_sql(wslc, container, client, creds, &sql, None, SqlMode::Batch)?;
+                Ok(format!("已删除用户：'{user}'@'{host}'"))
             }
         }
     }
@@ -1157,7 +1243,9 @@ pub enum ImmediateAction {
     /// 就不会回收发行版）。细节和实测见 [`wslc_core::cmd::distro::start`]。
     ///
     /// ⚠️ 吊着它的那个进程属于**本面板**。面板关掉后它不会跟着退出，
-    /// 发行版会继续跑 —— 所以界面上要标出"由本面板保持运行中"。
+    /// 发行版会继续跑 —— 所以界面上要写明"它由本面板吊住"。
+    /// 那句话在**发行版详情弹窗**里（列表行的状态列装不下它，
+    /// 曾经硬塞进去，结果溢到隔壁列上）。
     StartDistro(String),
     /// 打开发行版的终端（`wsl -d <name>`，会开一个新的控制台窗口）。
     ///
@@ -1313,6 +1401,223 @@ impl ExecState {
             container: container.into(),
             ..Default::default()
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 容器里的数据库管理（MySQL / MariaDB）
+// ---------------------------------------------------------------------------
+
+/// 「数据库管理」页的三个 tab。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DbTab {
+    /// 数据库列表 + 新建 / 删除。
+    #[default]
+    Databases,
+    /// MySQL 用户列表 + 新建 / 改密码 / 授权 / 删除。
+    Users,
+    /// SQL 控制台。
+    Sql,
+}
+
+impl DbTab {
+    /// 全部 tab（决定界面上的顺序）。
+    pub const ALL: [DbTab; 3] = [Self::Databases, Self::Users, Self::Sql];
+
+    /// 标签。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Databases => "数据库",
+            Self::Users => "用户",
+            Self::Sql => "SQL 控制台",
+        }
+    }
+}
+
+/// 一次数据库操作失败：分类 + 原文。
+///
+/// 分开存是为了界面上能说**两句话**：一句"该怎么办"（分类给的），
+/// 一句原文（排障要用，用户可能还想把它贴给别人看）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DbFailure {
+    /// 分类（决定给什么建议）。
+    pub kind: MysqlErrorKind,
+    /// 报错原文。⚠️ 到这里的文本**已经脱敏过**（出口在 `cmd::mysql::sanitize`）。
+    pub detail: String,
+}
+
+impl DbFailure {
+    /// 从一段报错文本分类。
+    ///
+    /// 退出码不传（`None`）：能走到这里的错误都已经被
+    /// [`wslc_core::error::Error`] 格式化过，退出码也写在文本里了
+    /// （`… 返回退出码 126：…`），而分类里真正稳的判据是那些**文本**。
+    pub fn from_text(detail: impl Into<String>) -> Self {
+        let detail = detail.into();
+        Self {
+            kind: wslc_core::model::mysql::classify_error(&detail, None),
+            detail,
+        }
+    }
+
+    /// 给用户的一句话建议（`None` = 直接看原文就行）。
+    pub fn hint(&self) -> Option<&'static str> {
+        self.kind.hint()
+    }
+
+    /// 提示条上那一句。
+    ///
+    /// 有建议就给建议；没有就给原文的**第一行**并截断 —— 提示条是一条单行横幅，
+    /// 整段 `stderr` 塞进去会把界面撑变形。
+    pub fn summary(&self) -> String {
+        if let Some(hint) = self.hint() {
+            return hint.to_owned();
+        }
+        let first = self.detail.lines().next().unwrap_or_default().trim();
+        truncate_chars(first, 120)
+    }
+}
+
+/// 按**字符**（不是字节）截断，超长时加省略号。
+///
+/// 不能按字节切：`&s[..120]` 落在多字节字符中间会 panic，
+/// 而这里的输入是**外部命令的输出**（什么字符都可能有）。
+fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let mut out: String = text.chars().take(max).collect();
+    out.push('…');
+    out
+}
+
+/// 「数据库管理」页的状态。
+///
+/// 纯数据（一个 GPUI 类型都没有），所以住在 `AppState` 里、也能被单测；
+/// 页面上那些输入框是 GPUI 的 `Entity<InputState>`，住在 `Shell` 里。
+///
+/// ⚠️ **密码在这里**（[`MysqlCreds::password`]）—— 它的 `Debug` 是手写脱敏的，
+/// 所以这里派生 `Debug` 是安全的。除此之外密码**哪儿都不存**：
+/// 不落盘（`prefs.json` 里没有这个字段）、不进日志、不进错误消息。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DbState {
+    /// 目标容器名。
+    pub container: String,
+    /// 容器镜像引用（页面上显示，让用户确认点对了容器）。
+    pub image: String,
+    /// 家族（MySQL / MariaDB / Percona）。
+    pub family: MysqlFamily,
+    /// 容器里的客户端二进制名（探测得来）。
+    pub client: String,
+    /// 客户端版本那一行（`mysql  Ver 26.7.0 …`）。
+    pub client_version: Option<String>,
+    /// 连接凭据。
+    pub creds: MysqlCreds,
+    /// 这份凭据是怎么来的（"已从容器环境变量读出 root 密码"这类说明）。
+    pub cred_note: Option<String>,
+    /// 正在后台跑（探测 / 读列表 / 执行 SQL）。
+    pub busy: bool,
+    /// **根本性**的问题（不是 MySQL / 镜像里没客户端 / 容器没运行）。
+    /// 有值时页面只显示它 —— 那些空表没有意义。
+    pub blocked: Option<DbFailure>,
+    /// 最近一次操作的失败。
+    pub error: Option<DbFailure>,
+    /// 数据库列表。
+    pub databases: Vec<DbEntry>,
+    /// MySQL 用户列表。
+    pub users: Vec<DbUser>,
+    /// 成功读过一次没有？
+    ///
+    /// 用来区分「还没读」和「读到了，确实是空的」—— 两者在界面上是两句话。
+    pub loaded: bool,
+    /// 当前 tab。
+    pub tab: DbTab,
+    /// SQL 控制台：上一次执行的语句（回显用）。
+    pub last_sql: String,
+    /// SQL 控制台的输出。
+    pub sql_output: Option<String>,
+    /// SQL 控制台跑过没有（区分"还没跑过"和"跑完了没有输出"）。
+    pub sql_ran: bool,
+}
+
+impl DbState {
+    /// 页面刚打开、还没探测完时的状态。
+    ///
+    /// `family` 来自**列表那条启发式**（镜像名 / 命令 / 3306 端口），
+    /// 客户端名先用家族的兜底值 —— 这样页面立刻就能画出来，
+    /// 而权威判定（`inspect` + 客户端探测）回来后由 [`Self::apply_probe`] 覆盖。
+    pub fn provisional(
+        container: impl Into<String>,
+        image: impl Into<String>,
+        family: MysqlFamily,
+    ) -> Self {
+        Self {
+            container: container.into(),
+            image: image.into(),
+            family,
+            client: family.fallback_client().to_owned(),
+            client_version: None,
+            creds: MysqlCreds::root(""),
+            cred_note: None,
+            // 马上就要去探测 —— 一开始就是"忙"，页面上的按钮才会是「读取中…」
+            busy: true,
+            blocked: None,
+            error: None,
+            databases: Vec::new(),
+            users: Vec::new(),
+            loaded: false,
+            tab: DbTab::default(),
+            last_sql: String::new(),
+            sql_output: None,
+            sql_ran: false,
+        }
+    }
+
+    /// 一次探测之后建初始状态。
+    ///
+    /// root 密码如果写在容器环境变量里，**直接填好** —— 那是用户自己在
+    /// `-e MYSQL_ROOT_PASSWORD=…` 里给的，再让他手抄一遍没有意义。
+    /// 其它情况（空密码 / 随机密码 / 什么都没有）只给一句说明。
+    pub fn from_probe(probe: &wslc_core::cmd::mysql::MysqlProbe, image: impl Into<String>) -> Self {
+        let mut state = Self::provisional(probe.container.clone(), image, probe.family);
+        state.apply_probe(probe);
+        state
+    }
+
+    /// 探测结果回来了：覆盖字段，但**绝不覆盖用户已经填好的密码**。
+    ///
+    /// 那条判断（"密码为空 且 用户名还是默认的 root"）是刻意的：
+    /// 用户可能刚在连接卡上换成 `app` 账号并留空密码（那是这个账号真的没密码），
+    /// 这时把 root 的密码塞进去会**连错账号**。
+    pub fn apply_probe(&mut self, probe: &wslc_core::cmd::mysql::MysqlProbe) {
+        self.family = probe.family;
+        self.client = probe.client.bin.clone();
+        self.client_version = probe.client.version.clone();
+        if self.creds.password.is_empty() && self.creds.user == "root" {
+            if let RootCredHint::Password(password) = &probe.root_hint {
+                self.creds.password = password.clone();
+            }
+        }
+        // 说明只写一次（用户自己改过账号之后就别再提环境变量了）
+        if self.cred_note.is_none() {
+            self.cred_note = probe.root_hint.note();
+        }
+        self.busy = false;
+    }
+
+    /// 记一次失败（分类 + 原文都留着）。
+    pub fn fail(&mut self, error: impl std::fmt::Display) {
+        self.error = Some(DbFailure::from_text(error.to_string()));
+    }
+
+    /// 清掉上一次的错误（每次动作开始前调）。
+    pub fn clear_error(&mut self) {
+        self.error = None;
+    }
+
+    /// 页面能不能真的干活：探测通过、而且没有根本性问题。
+    pub fn usable(&self) -> bool {
+        self.blocked.is_none()
     }
 }
 
@@ -2420,7 +2725,8 @@ pub struct AppState {
     /// `Shell::keep_alive` 里 —— 那是"能力"，不是界面状态。
     ///
     /// 界面上要标出来，因为这是**我们**在维持它：用户有权知道
-    /// 关掉面板之后它还会继续跑。
+    /// 关掉面板之后它还会继续跑。标的地方是**发行版详情弹窗**里那一句说明 ——
+    /// 列表行的状态列挤不下第二个徽标（它会盖到隔壁「版本」列上）。
     pub kept_alive: Vec<String>,
     /// 「发行版配置（`/etc/wsl.conf`）」弹窗；关闭时为 `None`。
     ///
@@ -2458,6 +2764,12 @@ pub struct AppState {
     /// 和 [`AppState::mirrors`] 不是一回事：那个是 WSL **发行版**的 rootfs 文件，
     /// 这个是容器**镜像**仓库（Registry V2）。
     pub registry: RegistryState,
+    /// 「数据库管理」页的状态；没在那一页时为 `None`。
+    ///
+    /// 一次只服务**一个**容器（页面就是"针对某个容器"的），所以这里是
+    /// `Option<DbState>` 而不是 `HashMap`：切到另一个容器的数据库页时
+    /// 整个换掉，连接信息不会串台。
+    pub db: Option<DbState>,
 }
 
 impl AppState {
@@ -2489,6 +2801,7 @@ impl AppState {
             online: OnlineDistroState::new(),
             mirrors: MirrorState::new(),
             registry: RegistryState::new(),
+            db: None,
         }
     }
 
@@ -3904,5 +4217,152 @@ mod tests {
             .unwrap(),
         );
         assert_eq!(state.session_label(), "#1 wslc-cli-76434");
+    }
+
+    // -- 数据库管理页（v0.7.0）---------------------------------------------
+
+    /// 一份探测结果（形状照 `cmd::mysql::detect` 真实返回的那个）。
+    fn probe_with(hint: RootCredHint) -> wslc_core::cmd::mysql::MysqlProbe {
+        wslc_core::cmd::mysql::MysqlProbe {
+            family: MysqlFamily::Mysql,
+            client: wslc_core::model::ClientProbe {
+                bin: "mysql".to_owned(),
+                path: "/usr/bin/mysql".to_owned(),
+                version: Some("mysql  Ver 26.7.0 for Linux on x86_64".to_owned()),
+            },
+            root_hint: hint,
+            container: "mysql".to_owned(),
+        }
+    }
+
+    #[test]
+    fn db_page_is_not_in_the_sidebar_but_needs_a_window() {
+        // 「数据库管理」只能从容器行上的按钮进 —— 和「添加实例」同一个取舍，
+        // 所以它**不在** `Page::ALL` 里。
+        assert!(!Page::ALL.contains(&Page::Database));
+        assert_eq!(Page::Database.group(), "容器");
+        assert_eq!(Page::Database.label(), "数据库管理");
+        // 连接卡上有输入框 → 进这一页必须有 window
+        assert!(Page::Database.needs_window_to_enter());
+    }
+
+    #[test]
+    fn db_state_takes_the_root_password_from_the_container_env() {
+        let state = DbState::from_probe(&probe_with(RootCredHint::Password("pw".into())), "mysql:8");
+        assert_eq!(state.creds.user, "root");
+        assert_eq!(state.creds.password, "pw");
+        assert!(state.cred_note.is_some(), "要说清密码是哪来的");
+        assert!(state.usable());
+        // 还没读过列表：界面要区分"还没读"和"读到空的"
+        assert!(!state.loaded);
+        assert!(state.databases.is_empty());
+        assert_eq!(state.tab, DbTab::Databases);
+        assert_eq!(state.client, "mysql");
+        assert_eq!(state.family, MysqlFamily::Mysql);
+    }
+
+    #[test]
+    fn db_state_leaves_the_password_empty_for_random_and_unknown() {
+        let random = DbState::from_probe(&probe_with(RootCredHint::Random), "mysql:8");
+        assert_eq!(random.creds.password, "");
+        assert!(
+            random
+                .cred_note
+                .as_deref()
+                .unwrap_or_default()
+                .contains("随机"),
+            "{:?}",
+            random.cred_note
+        );
+
+        // 什么都没探测到 → 连说明都不给（没有可说的，别凑一句）
+        let unknown = DbState::from_probe(&probe_with(RootCredHint::Unknown), "mysql:8");
+        assert!(unknown.cred_note.is_none());
+        // 空密码是**合法**状态（`MYSQL_ALLOW_EMPTY_PASSWORD`），所以不算"不可用"
+        assert!(unknown.usable());
+    }
+
+    #[test]
+    fn db_state_debug_never_shows_the_password() {
+        // ⚠️ `AppState` 是 `#[derive(Debug)]`，它会一路打印到 `DbState` 和
+        // 里面的 `MysqlCreds` —— 这条守住"密码不进日志"。
+        let state = DbState::from_probe(&probe_with(RootCredHint::Password("s3cret-pw".into())), "mysql:8");
+        let text = format!("{state:?}");
+        assert!(!text.contains("s3cret-pw"), "{text}");
+        assert!(text.contains("***"), "{text}");
+        // 用户名、容器名还是要看得见的（排障要用）
+        assert!(text.contains("root"), "{text}");
+        assert!(text.contains("mysql"), "{text}");
+    }
+
+    #[test]
+    fn db_failure_gives_the_next_step_for_the_real_errors() {
+        let denied = DbFailure::from_text(
+            "ERROR 1045 (28000): Access denied for user 'root'@'localhost' (using password: YES)",
+        );
+        assert_eq!(denied.kind, MysqlErrorKind::AccessDenied);
+        assert!(denied.summary().contains("密码"), "{denied:?}");
+
+        let stopped =
+            DbFailure::from_text("容器“947c4f25”未运行。错误代码： WSLC_E_CONTAINER_NOT_RUNNING");
+        assert_eq!(stopped.kind, MysqlErrorKind::ContainerNotRunning);
+        assert!(stopped.summary().contains("没在运行"), "{stopped:?}");
+
+        let no_client = DbFailure::from_text(
+            "OCI runtime exec failed: exec: \"mysql\": executable file not found in $PATH",
+        );
+        assert_eq!(no_client.kind, MysqlErrorKind::ClientMissing);
+        assert!(no_client.summary().contains("客户端"), "{no_client:?}");
+    }
+
+    #[test]
+    fn db_failure_summary_is_one_line_and_survives_multibyte_output() {
+        // 认不出来的错误：给原文第一行；长文本按**字符**截断（按字节会 panic）
+        let weird = DbFailure::from_text(format!("{}\n第二行不该出现", "汉".repeat(300)));
+        assert_eq!(weird.kind, MysqlErrorKind::Unknown);
+        let summary = weird.summary();
+        assert!(summary.ends_with('…'), "{summary}");
+        assert_eq!(summary.chars().count(), 121);
+        assert!(!summary.contains("第二行"), "{summary}");
+    }
+
+    #[test]
+    fn db_drop_actions_say_what_they_destroy_and_never_leak_the_password() {
+        let drop_db = PendingAction::DropDatabase {
+            container: "mysql".to_owned(),
+            database: "shop".to_owned(),
+            client: "mysql".to_owned(),
+            creds: MysqlCreds::root("s3cret-pw"),
+        };
+        assert_eq!(drop_db.title(), "删除数据库");
+        assert_eq!(drop_db.confirm_label(), "删除数据库");
+        let body = drop_db.body();
+        assert!(body.contains("DROP DATABASE shop"), "{body}");
+        assert!(body.contains("不可撤销"), "{body}");
+        assert!(!body.contains("s3cret-pw"), "确认文案里漏了密码：{body}");
+
+        let drop_user = PendingAction::DropUser {
+            container: "mysql".to_owned(),
+            user: "app".to_owned(),
+            host: "%".to_owned(),
+            client: "mysql".to_owned(),
+            creds: MysqlCreds::root("s3cret-pw"),
+        };
+        assert_eq!(drop_user.title(), "删除 MySQL 用户");
+        assert!(drop_user.body().contains("'app'@'%'"), "{drop_user:?}");
+        assert!(
+            !drop_user.body().contains("s3cret-pw"),
+            "确认文案里漏了密码"
+        );
+    }
+
+    #[test]
+    fn db_error_state_clears_before_the_next_action() {
+        let mut state = DbState::from_probe(&probe_with(RootCredHint::Unknown), "mysql:8");
+        state.fail("ERROR 1045 (28000): Access denied");
+        assert!(state.error.is_some());
+        assert!(state.error.as_ref().unwrap().hint().is_some());
+        state.clear_error();
+        assert!(state.error.is_none());
     }
 }

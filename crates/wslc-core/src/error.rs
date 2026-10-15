@@ -96,6 +96,15 @@ pub enum Error {
     /// 消息本身就是**给用户的一句话**，所以这里不再套前缀。
     #[error("{0}")]
     Install(String),
+
+    /// 这个对象**不支持**这个功能。
+    ///
+    /// 目前两处：容器看着不像 MySQL（数据库管理页用不了）、
+    /// 镜像里没有 mysql / mariadb 客户端（面板靠容器自带的客户端执行 SQL）。
+    /// 消息本身就是给用户的一句话（含"下一步怎么办"），所以**不套前缀** ——
+    /// 和 [`Error::Install`] 同一个理由：套一层「参数错误」会把话说歪。
+    #[error("{0}")]
+    Unsupported(String),
 }
 
 impl Error {
@@ -176,5 +185,13 @@ mod tests {
     fn user_message_matches_display() {
         let err = Error::InvalidArgument("x".to_owned());
         assert_eq!(err.user_message(), err.to_string());
+    }
+
+    #[test]
+    fn unsupported_carries_the_message_verbatim() {
+        // 这一族的消息是**写给人看的整句话**（含下一步），前面挂个
+        // 「参数错误：」只会把话说歪 —— 所以它和 `Install` 一样不套前缀。
+        let err = Error::Unsupported("这个镜像里没有 mysql 客户端，请换镜像。".to_owned());
+        assert_eq!(err.to_string(), "这个镜像里没有 mysql 客户端，请换镜像。");
     }
 }

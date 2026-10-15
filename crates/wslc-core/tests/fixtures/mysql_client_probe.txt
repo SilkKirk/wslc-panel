@@ -1,0 +1,2 @@
+/usr/bin/mysql
+mysql  Ver 26.7.0 for Linux on x86_64 (MySQL Community Server - GPL)

@@ -37,6 +37,10 @@ use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 
 use wslc_core::cmd::container::{PullPolicy, RunSpec};
+// 数据库管理页（v0.7.0）：真正的活都在 `cmd::mysql` 里（起进程 + 脱敏），
+// 识别 / 拼参数 / SQL 生成是 `model::mysql` 的纯逻辑。
+use wslc_core::cmd::mysql::{MysqlProbe, run_console_sql, run_sql};
+use wslc_core::model::{GrantKind, MysqlCreds, MysqlFamily, RootCredHint, SqlMode, mysql as mysql_model};
 // 安装现在是**多步计划**（见 `wslc_core::model::install` 的模块说明）：
 // `InstallSpec` 是用户填的东西，`plan()` 把它变成步骤，`run_plan` 把它做出来。
 use wslc_core::cmd::distro::InstallSpec;
@@ -52,9 +56,10 @@ use wslc_core::settings::SettingKey;
 use wslc_core::{Wsl, Wslc};
 
 use crate::state::{
-    self, AppState, ConfirmAction, DistroAction, ExecState, ExportProgress, ImmediateAction,
-    InstallOutcome, InstallProgress, InstallSourceKind, LogsState, MirrorChoice, MirrorProbeResult,
-    Page, PendingAction, PromptKind, RegistryState, Toast, ToastKind, exec_argv,
+    self, AppState, ConfirmAction, DbFailure, DbState, DbTab, DistroAction, ExecState,
+    ExportProgress, ImmediateAction, InstallOutcome, InstallProgress, InstallSourceKind, LogsState,
+    MirrorChoice, MirrorProbeResult, Page, PendingAction, PromptKind, Toast, ToastKind,
+    exec_argv,
 };
 use crate::theme;
 // `split_list` / `refresh_label` 是纯函数，住在不依赖 GPUI 的 `wslc-panel-core` 里
@@ -541,6 +546,129 @@ fn dir_non_empty(dir: &str) -> bool {
     }
 }
 
+/// 「数据库管理」页上那三个输入框（连接卡两个 + SQL 控制台一个）。
+///
+/// 为什么它们是**页面**的一部分而不是弹窗（和「拉取镜像」正相反）：
+/// 连接卡描述的是"这一页现在连的是谁"，属于**页面状态** —— 用户扫一眼就知道
+/// 现在用的是哪个账号，而不用点开一个弹窗去确认。
+///
+/// 它们同样懒创建（`InputState::new` 要 `&mut Window`），但**不随页面离开销毁**：
+/// 切走再回来时用户刚填的密码与 SQL 还在（和 `install_form` 同一条：重建输入框
+/// 会让用户一个字都打不进去，而且这里还会丢掉他要用的密码）。
+pub(crate) struct DbPageForm {
+    /// 用户名（默认 `root`）。
+    pub(crate) user: Entity<InputState>,
+    /// 密码。
+    ///
+    /// ⚠️ 明文显示。`MysqlCreds` 的 `Debug` 是脱敏的（密码不会进日志），
+    /// 但这一格是画在屏幕上的 —— 换成掩码要先确认组件库支持
+    /// （`AGENTS.md` 说"推测的结论要写明"），所以这一版照实显示。
+    pub(crate) password: Entity<InputState>,
+    /// SQL 控制台里那条语句。
+    pub(crate) sql: Entity<InputState>,
+}
+
+/// 「数据库管理」页的一次性动作弹窗在做什么。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DbDialogKind {
+    /// 新建数据库。
+    NewDatabase,
+    /// 新建用户（可顺带授权到某个库）。
+    NewUser,
+    /// 改密码。⚠️ 用户名 / 主机是**锁定**的：改了就是另一个账号了。
+    AlterPassword {
+        /// 目标用户。
+        user: String,
+        /// 目标主机。
+        host: String,
+    },
+    /// 给已有用户授权。
+    Grant {
+        /// 目标用户。
+        user: String,
+        /// 目标主机。
+        host: String,
+    },
+}
+
+impl DbDialogKind {
+    /// 弹窗标题。
+    pub(crate) fn title(&self) -> &'static str {
+        match self {
+            Self::NewDatabase => "新建数据库",
+            Self::NewUser => "新建 MySQL 用户",
+            Self::AlterPassword { .. } => "修改密码",
+            Self::Grant { .. } => "授权",
+        }
+    }
+
+    /// 提交按钮文案。
+    pub(crate) fn confirm_label(&self) -> &'static str {
+        match self {
+            Self::NewDatabase => "创建",
+            Self::NewUser => "创建",
+            Self::AlterPassword { .. } => "改密码",
+            Self::Grant { .. } => "授权",
+        }
+    }
+}
+
+/// 「数据库管理」页的动作弹窗。
+///
+/// 四种动作共用一个结构体（而不是四个 `Option` 字段）：同时只可能开一个，
+/// 而且它们共用"用户名 / 主机 / 密码 / 库名"这几个输入框 —— 分成四份就要
+/// 把同一套输入框建四遍，还要各自记住"上一份填了什么"。
+pub(crate) struct DbDialog {
+    /// 在做什么。
+    pub(crate) kind: DbDialogKind,
+    /// 新建数据库：库名。
+    pub(crate) database: Entity<InputState>,
+    /// 新建数据库：字符集（留空 = 服务器的默认值）。
+    pub(crate) charset: Entity<InputState>,
+    /// 新建数据库：排序规则（留空 = 跟着字符集）。
+    pub(crate) collation: Entity<InputState>,
+    /// 新建用户 / 改密码：用户名。
+    pub(crate) user: Entity<InputState>,
+    /// 新建用户 / 改密码：主机。
+    pub(crate) host: Entity<InputState>,
+    /// 新建用户 / 改密码：密码。
+    pub(crate) password: Entity<InputState>,
+    /// 新建用户 / 授权：授权到哪个库（留空 = 不授权）。
+    pub(crate) grant_db: Entity<InputState>,
+    /// 授权级别。
+    pub(crate) grant: GrantKind,
+}
+
+/// 这次连数据库要用哪个账号。
+///
+/// 规则只有一条：**用户填了就用他的**，没填才用探测到的那个
+/// （容器环境变量里的 `MYSQL_ROOT_PASSWORD`）。
+///
+/// 为什么"空密码"要特殊对待：空密码是 MySQL 的**合法配置**
+/// （`MYSQL_ALLOW_EMPTY_PASSWORD=yes`），而"还没填"和"就是要空密码"在界面上
+/// 长得一模一样。这里选"环境变量优先" —— 那种容器里环境变量写的本来就是
+/// 空密码（`RootCredHint::Empty`），两条路殊途同归。
+fn effective_db_creds(
+    probe: &MysqlProbe,
+    typed_user: &str,
+    typed_password: &str,
+) -> (String, String) {
+    let user = if typed_user.is_empty() {
+        "root".to_owned()
+    } else {
+        typed_user.to_owned()
+    };
+    let password = if typed_password.is_empty() {
+        match &probe.root_hint {
+            RootCredHint::Password(password) => password.clone(),
+            _ => String::new(),
+        }
+    } else {
+        typed_password.to_owned()
+    };
+    (user, password)
+}
+
 /// 应用外壳。
 pub struct Shell {
     /// 全部状态。
@@ -662,6 +790,14 @@ pub struct Shell {
     /// 用来把 `wsl --status` 降到 30 秒一次（见 [`Shell::status_every_n_ticks`]）。
     /// 放在 `Shell` 而不是 `AppState`：这是**调度细节**，不是界面要展示的状态。
     status_tick: u32,
+    /// 「数据库管理」页的连接卡 / SQL 输入框；没进过那一页时为 `None`。
+    ///
+    /// `pub(crate)`：页面在 `views.rs` 里渲染。
+    pub(crate) db_form: Option<DbPageForm>,
+    /// 「数据库管理」页的一次性动作弹窗；关闭时为 `None`。
+    ///
+    /// 和 `create_dialog` 一样懒创建（`InputState::new` 要 `&mut Window`）。
+    pub(crate) db_dialog: Option<DbDialog>,
 }
 
 /// `wsl --status` 的采集周期（秒）。
@@ -712,6 +848,8 @@ impl Shell {
             refresh_again: false,
             refresh_visible: false,
             status_tick: 0,
+            db_form: None,
+            db_dialog: None,
         };
         shell.refresh(cx);
         shell.start_auto_refresh(cx);
@@ -2484,6 +2622,627 @@ impl Shell {
         .detach();
     }
 
+    // -- 容器里的数据库管理（MySQL / MariaDB，v0.7.0）------------------------
+    //
+    // 这一整块都遵守同一条规矩：**起进程的东西一律在后台执行器上**
+    // （`AGENTS.md` §7.1）。`wslc exec` 一次几百毫秒，放在界面线程上点两下
+    // 窗口就会「未响应」。
+
+    /// 建数据库页的三个输入框（幂等）。
+    ///
+    /// 幂等很要紧：`open_database_page` 每次进来都会调它，而重建输入框会让
+    /// 用户刚打的字和刚填的密码全丢。
+    fn ensure_db_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.db_form.is_some() {
+            return;
+        }
+        let user = cx.new(|cx| InputState::new(window, cx).placeholder("root"));
+        let password = cx.new(|cx| InputState::new(window, cx).placeholder("root 的密码"));
+        let sql = cx.new(|cx| InputState::new(window, cx).placeholder("SHOW DATABASES"));
+
+        // 用户名预填 root：绝大多数人只填密码那一格。
+        user.update(cx, |state, cx| state.set_value("root".to_owned(), window, cx));
+        // 焦点给密码（最可能要填的就是它）。
+        let handle = password.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+
+        self.db_form = Some(DbPageForm {
+            user,
+            password,
+            sql,
+        });
+    }
+
+    /// 读连接卡上**此刻**的值。
+    ///
+    /// 「执行时用连接卡上的值」是刻意的：那份值就是用户眼睛看到的那个，
+    /// 不存在"界面显示 A、实际用 B"的可能（`DbState::creds` 只是它的镜像）。
+    fn read_db_form(&self, cx: &App) -> (String, String) {
+        let Some(form) = self.db_form.as_ref() else {
+            return ("root".to_owned(), String::new());
+        };
+        let user = form.user.read(cx).value().trim().to_owned();
+        let user = if user.is_empty() {
+            "root".to_owned()
+        } else {
+            user
+        };
+        // ⚠️ `value()` 返回的是 `SharedString`（gpui 的引用计数字符串），
+        // 要自己转成 `String` —— `.trim()` 之后才是 `&str`，那种写法不用转。
+        (
+            user,
+            form.password.read(cx).value().trim().to_owned(),
+        )
+    }
+
+    /// 打开某个容器的数据库管理页（从容器列表行的「数据库」按钮进）。
+    ///
+    /// `image` 只用于显示和"用镜像名兜底判家族"；**权威判定**在
+    /// [`Shell::load_db`] 里用 `inspect` 做。
+    pub fn open_database_page(
+        &mut self,
+        name: String,
+        image: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.ensure_db_form(window, cx);
+
+        // 同一个容器就**不重建状态**：切走再回来时不该把连接信息清掉。
+        let same_container = self
+            .state
+            .db
+            .as_ref()
+            .is_some_and(|db| db.container == name);
+
+        if !same_container {
+            let family =
+                mysql_model::family_from_image(&image).unwrap_or(MysqlFamily::Mysql);
+            self.state.db = Some(DbState::provisional(name, image, family));
+            // 换了容器就要清密码：上一个容器的密码留在这儿会**连错库**
+            // （两个容器恰好都有个 root 账号时，这个错误会非常难发现）。
+            if let Some(form) = self.db_form.as_ref() {
+                form.password
+                    .update(cx, |state, cx| state.set_value(String::new(), window, cx));
+                form.user
+                    .update(cx, |state, cx| state.set_value("root".to_owned(), window, cx));
+            }
+            self.goto_page(Page::Database, cx);
+            self.load_db(window, cx);
+            return;
+        }
+
+        self.goto_page(Page::Database, cx);
+        cx.notify();
+    }
+
+    /// 探测容器 + 读两张表（进页面、点「重新读取」都走这里）。
+    ///
+    /// 「重新读取」是**唯一**的刷新入口：连接卡上刚改的账号要靠它生效
+    /// （不然用户改完密码还得猜"什么时候才算生效"）。
+    pub fn load_db(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(db) = self.state.db.as_ref() else {
+            return;
+        };
+        // 正在跑就不叠第二次（按钮那边也已经换成「读取中…」）。
+        if db.busy {
+            return;
+        }
+        let container = db.container.clone();
+        // 用户此刻填在连接卡上的值。密码为空 = "还没填" → 用探测到的那个
+        // （容器环境变量里的 `MYSQL_ROOT_PASSWORD` 就是给这种时候用的）。
+        let (typed_user, typed_password) = self.read_db_form(cx);
+
+        if let Some(db) = self.state.db.as_mut() {
+            db.busy = true;
+            db.blocked = None;
+            db.clear_error();
+        }
+        cx.notify();
+
+        let wslc = self.state.wslc.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let target = container.clone();
+            let wslc_probe = wslc.clone();
+            let probe = cx
+                .background_executor()
+                .spawn(async move {
+                    wslc_core::cmd::mysql::detect(&wslc_probe, &target).map_err(|e| e.to_string())
+                })
+                .await;
+
+            let probe = match probe {
+                Ok(probe) => probe,
+                Err(message) => {
+                    // 探测就失败：页面只显示这一条（那些空表没有意义）
+                    let _ = this.update_in(cx, |shell, _window, cx| {
+                        let failure = DbFailure::from_text(message);
+                        let summary = failure.summary();
+                        if let Some(db) = shell.state.db.as_mut() {
+                            if db.container == container {
+                                db.busy = false;
+                                db.loaded = false;
+                                db.blocked = Some(failure);
+                            }
+                        }
+                        // ⚠️ 提示条要 `&mut shell.state`，而上面那个 `db` 借用
+                        // 必须**先结束**才能调它 —— 所以 summary 是 owned 的。
+                        shell
+                            .state
+                            .notify(Toast::error(format!("读取失败：{summary}")));
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
+
+            // 用哪个密码：**用户填了就用他的**，没填才用环境变量里那个
+            let (user, password) = effective_db_creds(&probe, &typed_user, &typed_password);
+            let creds = MysqlCreds {
+                user: user.clone(),
+                password: password.clone(),
+                host: None,
+                port: None,
+            };
+            let bin = probe.client.bin.clone();
+            let lists = {
+                let target = container.clone();
+                let bin = bin.clone();
+                let creds = creds.clone();
+                cx.background_executor()
+                    .spawn(async move {
+                        let databases =
+                            wslc_core::cmd::mysql::list_databases(&wslc, &target, &bin, &creds);
+                        // 用户列表**单独**取：普通账号读不到 `mysql.user`
+                        // （ERROR 1142），那不该把数据库列表一起判成失败。
+                        let users = wslc_core::cmd::mysql::list_users(&wslc, &target, &bin, &creds);
+                        (databases, users)
+                    })
+                    .await
+            };
+
+            let _ = this.update_in(cx, |shell, window, cx| {
+                // 把这次实际用的账号同步到连接卡上：用户看得见"用的是哪个密码"
+                // （从环境变量读出来的那个也要显示出来，否则他会以为没生效）
+                if let Some(form) = shell.db_form.as_ref() {
+                    form.user
+                        .update(cx, |state, cx| state.set_value(user.clone(), window, cx));
+                    form.password
+                        .update(cx, |state, cx| state.set_value(password.clone(), window, cx));
+                }
+
+                let databases_ok = lists.0.is_ok();
+                // ⚠️ 这一整块借着 `shell.state.db`，而下面的提示条要
+                // `&mut shell.state` —— 借用没结束就调 `notify` 是编译错误，
+                // 所以先把要说的那句话算成 owned 的，出了块再发。
+                let failure_summary: Option<String> = {
+                    let Some(db) = shell.state.db.as_mut() else {
+                        cx.notify();
+                        return;
+                    };
+                    if db.container != container {
+                        // 已经切到别的容器了，这份结果丢掉
+                        return;
+                    }
+                    db.apply_probe(&probe);
+                    db.creds = creds.clone();
+                    db.busy = false;
+                    db.loaded = true;
+                    match lists.0 {
+                        Ok(databases) => db.databases = databases,
+                        Err(message) => db.fail(message),
+                    }
+                    match lists.1 {
+                        Ok(users) => db.users = users,
+                        // 数据库列出来了、用户列表没列出来（多半是权限）：
+                        // 照样把它说出来，但别覆盖掉数据库那边的成功。
+                        // ⚠️ 这里拿到的是 `wslc_core::Error`，`fail()` 收
+                        // `impl Display`，会自己把它变成字符串并分类。
+                        Err(message) => {
+                            if databases_ok {
+                                db.fail(message);
+                            }
+                        }
+                    }
+                    db.error.as_ref().map(DbFailure::summary)
+                };
+                if let Some(summary) = failure_summary {
+                    shell
+                        .state
+                        .notify(Toast::error(format!("读取失败：{summary}")));
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 只重读两张表（表结构变更之后调）。
+    ///
+    /// 和 [`Shell::load_db`] 分开：那个要重新跑 `inspect` + 客户端探测（两个进程），
+    /// 而"刚建完一个库"只需要把列表拿回来。
+    ///
+    /// ⚠️ 它刻意**不收 `&mut Window`**：这一步不需要往输入框里写东西，
+    /// 于是确认弹窗那条路（`confirm_pending` 的异步块里没有 window）也能直接调它。
+    pub fn reload_db_lists(&mut self, cx: &mut Context<Self>) {
+        let Some(db) = self.state.db.as_ref() else {
+            return;
+        };
+        let container = db.container.clone();
+        let bin = db.client.clone();
+        let creds = db.creds.clone();
+        if let Some(db) = self.state.db.as_mut() {
+            db.busy = true;
+        }
+        cx.notify();
+
+        let wslc = self.state.wslc.clone();
+        cx.spawn(async move |this, cx| {
+            let lists = {
+                let target = container.clone();
+                let bin = bin.clone();
+                let creds = creds.clone();
+                cx.background_executor()
+                    .spawn(async move {
+                        let databases =
+                            wslc_core::cmd::mysql::list_databases(&wslc, &target, &bin, &creds);
+                        let users = wslc_core::cmd::mysql::list_users(&wslc, &target, &bin, &creds);
+                        (databases, users)
+                    })
+                    .await
+            };
+
+            let _ = this.update(cx, |shell, cx| {
+                let databases_ok = lists.0.is_ok();
+                if let Some(db) = shell.state.db.as_mut() {
+                    if db.container != container {
+                        return;
+                    }
+                    db.busy = false;
+                    db.loaded = true;
+                    match lists.0 {
+                        Ok(databases) => db.databases = databases,
+                        Err(message) => db.fail(message),
+                    }
+                    match lists.1 {
+                        Ok(users) => db.users = users,
+                        // 数据库列出来了、用户列表没列出来（多半是权限）：
+                        // 照样说出来，但别覆盖掉数据库那边的成功。
+                        Err(message) => {
+                            if databases_ok {
+                                db.fail(message);
+                            }
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 切换数据库页的 tab。
+    pub fn set_db_tab(&mut self, tab: DbTab, cx: &mut Context<Self>) {
+        if let Some(db) = self.state.db.as_mut() {
+            db.tab = tab;
+        }
+        cx.notify();
+    }
+
+    /// 打开一个动作弹窗（新建库 / 新建用户 / 改密码 / 授权）。
+    ///
+    /// 输入框只能在这里建：`InputState::new` 要 `&mut Window`，而这个函数
+    /// 是从**点击回调**里调的（那里正好有 window）。
+    pub fn open_db_dialog(
+        &mut self,
+        kind: DbDialogKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let database = cx.new(|cx| InputState::new(window, cx).placeholder("shop"));
+        let charset = cx.new(|cx| InputState::new(window, cx).placeholder("留空 = 服务器默认（一般为 utf8mb4）"));
+        let collation = cx.new(|cx| InputState::new(window, cx).placeholder("留空 = 跟着字符集"));
+        let user = cx.new(|cx| InputState::new(window, cx).placeholder("app"));
+        let host = cx.new(|cx| InputState::new(window, cx).placeholder("%（任意主机）"));
+        let password = cx.new(|cx| InputState::new(window, cx).placeholder("密码"));
+        let grant_db = cx.new(|cx| InputState::new(window, cx).placeholder("留空 = 先不授权"));
+
+        // 预填：把行上带过来的用户名 / 主机填好（改密码 / 授权那两种）
+        if let DbDialogKind::AlterPassword { user: u, host: h }
+        | DbDialogKind::Grant { user: u, host: h } = &kind
+        {
+            user.update(cx, |state, cx| state.set_value(u.clone(), window, cx));
+            host.update(cx, |state, cx| state.set_value(h.clone(), window, cx));
+        } else {
+            host.update(cx, |state, cx| state.set_value("%".to_owned(), window, cx));
+        }
+        // 焦点给"最该填的那一格"
+        let first = match &kind {
+            DbDialogKind::NewDatabase => &database,
+            DbDialogKind::NewUser => &user,
+            DbDialogKind::AlterPassword { .. } => &password,
+            DbDialogKind::Grant { .. } => &grant_db,
+        };
+        let handle = first.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+
+        self.db_dialog = Some(DbDialog {
+            kind,
+            database,
+            charset,
+            collation,
+            user,
+            host,
+            password,
+            grant_db,
+            grant: GrantKind::All,
+        });
+        cx.notify();
+    }
+
+    /// 关掉动作弹窗（不提交）。
+    pub fn close_db_dialog(&mut self, cx: &mut Context<Self>) {
+        self.db_dialog = None;
+        cx.notify();
+    }
+
+    /// 选授权级别。
+    pub fn set_db_grant(&mut self, grant: GrantKind, cx: &mut Context<Self>) {
+        if let Some(dialog) = self.db_dialog.as_mut() {
+            dialog.grant = grant;
+        }
+        cx.notify();
+    }
+
+    /// 提交动作弹窗。
+    ///
+    /// 这里最重要的一条：**参数不合法就在本地拦下，不关弹窗** ——
+    /// 用户就在那一格里，改一个字比重打一遍强（`AGENTS.md` §7.5 的
+    /// 「空值等于没填」也是这个思路）。
+    pub fn submit_db_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 先把要用的东西取成 owned 的（下面要改 `self`，不能再借着它）
+        let prepared: Result<(String, &'static str), String> = {
+            let Some(dialog) = self.db_dialog.as_ref() else {
+                return;
+            };
+            let text = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
+
+            let sql = match &dialog.kind {
+                DbDialogKind::NewDatabase => {
+                    let charset = text(&dialog.charset);
+                    let collation = text(&dialog.collation);
+                    mysql_model::create_database_sql(
+                        &text(&dialog.database),
+                        (!charset.is_empty()).then_some(charset.as_str()),
+                        (!collation.is_empty()).then_some(collation.as_str()),
+                    )
+                }
+                DbDialogKind::NewUser => {
+                    let grant_db = text(&dialog.grant_db);
+                    let host = text(&dialog.host);
+                    let grant = (!grant_db.is_empty()).then(|| (grant_db.as_str(), dialog.grant));
+                    mysql_model::create_user_statements(
+                        &text(&dialog.user),
+                        &host,
+                        &text(&dialog.password),
+                        grant,
+                    )
+                }
+                DbDialogKind::AlterPassword { user, host } => {
+                    mysql_model::alter_user_password_sql(user, host, &text(&dialog.password))
+                }
+                DbDialogKind::Grant { user, host } => {
+                    let grant_db = text(&dialog.grant_db);
+                    if grant_db.is_empty() {
+                        Err(wslc_core::Error::InvalidArgument(
+                            "请填要授权给哪个数据库".to_owned(),
+                        ))
+                    } else {
+                        mysql_model::grant_sql(&grant_db, user, host, dialog.grant)
+                    }
+                }
+            };
+            sql.map(|sql| (sql, dialog.kind.title()))
+                .map_err(|e| e.to_string())
+        };
+
+        let (sql, title) = match prepared {
+            Ok(prepared) => prepared,
+            Err(message) => {
+                // 不关弹窗：用户就在那一格上，改一个字比重打一遍强
+                self.state.notify(Toast::error(message));
+                cx.notify();
+                return;
+            }
+        };
+
+        let Some(db) = self.state.db.as_ref() else {
+            return;
+        };
+        if db.busy {
+            return;
+        }
+        let container = db.container.clone();
+        let bin = db.client.clone();
+        // 执行用的是**连接卡**上的账号（弹窗里的 user/host 是"被操作的对象"）
+        let (user, password) = self.read_db_form(cx);
+        let creds = MysqlCreds {
+            user,
+            password,
+            host: None,
+            port: None,
+        };
+
+        self.db_dialog = None;
+        self.run_db_statement(container, bin, creds, sql, title, window, cx);
+    }
+
+    /// SQL 控制台：执行输入框里那条语句。
+    ///
+    /// 结果**原样**展示（`--table` 形态：stdout 不是 tty 时 mysql 默认是
+    /// batch，不显式要表格的话控制台里会是一堆 tab）。
+    pub fn run_db_console(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = self.db_form.as_ref() else {
+            return;
+        };
+        let sql = form.sql.read(cx).value().trim().to_owned();
+        if sql.is_empty() {
+            self.state.notify(Toast::error("先写一条 SQL 再执行"));
+            cx.notify();
+            return;
+        }
+        let Some(db) = self.state.db.as_ref() else {
+            return;
+        };
+        if db.busy {
+            return;
+        }
+        let container = db.container.clone();
+        let bin = db.client.clone();
+        let (user, password) = self.read_db_form(cx);
+        let creds = MysqlCreds {
+            user,
+            password,
+            host: None,
+            port: None,
+        };
+
+        if let Some(db) = self.state.db.as_mut() {
+            db.busy = true;
+            db.clear_error();
+            db.last_sql = sql.clone();
+            db.sql_output = None;
+            db.sql_ran = false;
+        }
+        cx.notify();
+
+        let wslc = self.state.wslc.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let target = container.clone();
+            let result = {
+                let bin = bin.clone();
+                let creds = creds.clone();
+                let sql = sql.clone();
+                cx.background_executor()
+                    .spawn(async move {
+                        run_console_sql(&wslc, &target, &bin, &creds, &sql, None)
+                            .map_err(|e| e.to_string())
+                    })
+                    .await
+            };
+
+            let _ = this.update_in(cx, |shell, _window, cx| {
+                let mut reload = false;
+                if let Some(db) = shell.state.db.as_mut() {
+                    if db.container != container {
+                        return;
+                    }
+                    db.busy = false;
+                    db.sql_ran = true;
+                    match result {
+                        Ok(output) => {
+                            db.sql_output = Some(output);
+                            db.clear_error();
+                            // 控制台可能刚改了库 / 表 —— 顺手把列表刷新一次。
+                            // 失败时列表不会变，就不白跑一趟了。
+                            reload = true;
+                        }
+                        Err(message) => {
+                            // SQL 报错**不算**页面级错误：它就发生在控制台里，
+                            // 显示在控制台下面比顶到页头更贴合上下文
+                            db.sql_output = None;
+                            db.fail(message);
+                        }
+                    }
+                }
+                if reload {
+                    shell.reload_db_lists(cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 从数据库管理页回到容器列表。
+    ///
+    /// **不**清 `state.db`：下次再进来时连接信息与刚读到的两张表都还在
+    /// （省掉一次探测 + 两次查询）。
+    pub fn close_database_page(&mut self, cx: &mut Context<Self>) {
+        self.goto_page(Page::Containers, cx);
+        cx.notify();
+    }
+
+    /// 在后台执行一条 DDL，成功后重读两张表。
+    ///
+    /// 和 [`Shell::run_db_console`] 的区别：那个把结果显示在控制台里，
+    /// 这个只报一句成功 / 失败（表单提交的路径上没有"结果区"）。
+    fn run_db_statement(
+        &mut self,
+        container: String,
+        bin: String,
+        creds: MysqlCreds,
+        sql: String,
+        title: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(db) = self.state.db.as_mut() {
+            db.busy = true;
+            db.clear_error();
+        }
+        self.state.notify(Toast::info(format!("正在{title}…")));
+        cx.notify();
+
+        let wslc = self.state.wslc.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let target = container.clone();
+            let result = {
+                let bin = bin.clone();
+                let creds = creds.clone();
+                let sql = sql.clone();
+                cx.background_executor()
+                    .spawn(async move {
+                        run_sql(&wslc, &target, &bin, &creds, &sql, None, SqlMode::Batch)
+                            .map(|_| ())
+                            .map_err(|e| e.to_string())
+                    })
+                    .await
+            };
+
+            let _ = this.update_in(cx, |shell, _window, cx| {
+                let mut ok = false;
+                if let Some(db) = shell.state.db.as_mut() {
+                    if db.container == container {
+                        db.busy = false;
+                        match &result {
+                            Ok(()) => {
+                                db.clear_error();
+                                ok = true;
+                            }
+                            Err(message) => db.fail(message.clone()),
+                        }
+                    }
+                }
+                match &result {
+                    Ok(()) => shell.state.notify(Toast::success(format!("{title}成功"))),
+                    Err(message) => {
+                        // 给用户看的是"该怎么办"（分类给的），原文留在页面上
+                        let failure = DbFailure::from_text(message.clone());
+                        shell
+                            .state
+                            .notify(Toast::error(format!("{title}失败：{}", failure.summary())));
+                    }
+                }
+                if ok {
+                    shell.reload_db_lists(cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     // -- 在新终端窗口里打开的东西 --------------------------------------------
 
     /// 在新终端窗口里打开容器的交互式 shell。
@@ -2604,7 +3363,8 @@ impl Shell {
     /// 界面要等到下一个周期才变，用户会以为操作没生效。
     fn refresh_inner(&mut self, cx: &mut Context<Self>, visible: bool) {
         // 先顺手清掉已经死掉的哨兵（用户点了「终止」、或在别处 `wsl --shutdown`）。
-        // 放在最前面：`busy` 那条提前返回也不该让界面上的"保持运行中"标记过期。
+        // 放在最前面：`busy` 那条提前返回也不该让界面上的那份"谁在吊着它"
+        // 的信息过期（发行版详情弹窗里那句说明读的就是 `state.kept_alive`）。
         self.sync_keep_alive(cx);
 
         if self.state.busy {
@@ -2936,6 +3696,15 @@ impl Shell {
             _ => false,
         };
 
+        // 删库 / 删用户之后要重读数据库页那两张表 —— 容器的列表刷新管不到它们。
+        // 这里先算好（`action` 马上要移进异步块）。
+        let reload_db = matches!(
+            action,
+            ConfirmAction::Container(
+                PendingAction::DropDatabase { .. } | PendingAction::DropUser { .. }
+            )
+        );
+
         // 点下去先给个回应。慢动作（压缩/移动）要等很久，
         // 没有这条的话用户只会觉得按钮坏了，然后去点第二次。
         let title = action.title();
@@ -2963,6 +3732,12 @@ impl Shell {
                     shell.distro_detail = None;
                 }
 
+                // 删库 / 删用户：重读数据库页那两张表（成功失败都读一次 ——
+                // 失败了也要让用户看到"它到底还在不在"）。
+                if reload_db {
+                    shell.reload_db_lists(cx);
+                }
+
                 // 立即刷新，让列表反映最新状态。
                 shell.refresh(cx);
                 cx.notify();
@@ -2983,21 +3758,32 @@ impl Shell {
     /// 它是在**点「拉取镜像…」那一刻**建的（`SelectState` 同理）。
     pub fn set_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         if page.needs_window_to_enter() {
-            self.ensure_install_form(window, cx);
+            // 「添加实例」那一套：表单 + 两份清单的预取。
+            //
+            // ⚠️ 必须**按页判断**，不能只看 `needs_window_to_enter()`：
+            // 「数据库管理」也是要 window 的页（连接卡有输入框），
+            // 但它不需要装发行版的那份表单，更不该顺手去拉商店 / 镜像源清单。
+            if page == Page::AddInstance {
+                self.ensure_install_form(window, cx);
 
-            // 进页面就把两份清单在后台拉起来：用户切到「微软商店」或
-            // 「在线发行版（镜像源）」时列表**已经在了**，不用先点一次「刷新」。
-            // 两个请求都很小（商店清单十几 KB、镜像清单 50 KB），
-            // 而且各自的函数里会挡住重复请求。**不在这里同步拉**：那会卡住界面。
-            if self.state.online.items.is_empty() && !self.state.online.loading {
-                self.refresh_online_list(window, cx);
+                // 进页面就把两份清单在后台拉起来：用户切到「微软商店」或
+                // 「在线发行版（镜像源）」时列表**已经在了**，不用先点一次「刷新」。
+                // 两个请求都很小（商店清单十几 KB、镜像清单 50 KB），
+                // 而且各自的函数里会挡住重复请求。**不在这里同步拉**：那会卡住界面。
+                if self.state.online.items.is_empty() && !self.state.online.loading {
+                    self.refresh_online_list(window, cx);
+                }
+                if self.state.mirrors.offers.is_empty() && !self.state.mirrors.loading {
+                    self.refresh_mirror_catalog(window, cx);
+                } else if self.state.mirrors.chosen.is_none() && !self.state.mirrors.probing {
+                    // 清单已经在手（上次进来拉过）、但还没测速过 —— 补一次。
+                    // 否则"换个发行版页"回来会发现 URL 还是空的（校验会挡住提交）。
+                    self.probe_mirrors(cx);
+                }
             }
-            if self.state.mirrors.offers.is_empty() && !self.state.mirrors.loading {
-                self.refresh_mirror_catalog(window, cx);
-            } else if self.state.mirrors.chosen.is_none() && !self.state.mirrors.probing {
-                // 清单已经在手（上次进来拉过）、但还没测速过 —— 补一次。
-                // 否则"换个发行版页"回来会发现 URL 还是空的（校验会挡住提交）。
-                self.probe_mirrors(cx);
+            // 「数据库管理」：连接卡那三个输入框（懒创建，幂等）
+            if page == Page::Database {
+                self.ensure_db_form(window, cx);
             }
         }
         self.goto_page(page, cx);
@@ -4617,6 +5403,10 @@ impl Render for Shell {
         // 容器 exec 浮层。要 `cx` 才能读命令输入框的值。
         let exec_dialog: AnyElement = views::exec_overlay(self, &entity, cx);
 
+        // 数据库页的动作弹窗（新建库 / 新建用户 / 改密码 / 授权）。
+        // 要 `cx` 才能读表单里那几格的值。
+        let db_dialog: AnyElement = views::db_dialog_overlay(self, &entity, cx);
+
         // 页面渲染要 `&Shell`（不只是 `&AppState`）——「添加实例」页有输入框，
         // 而输入框的 `InputState` 住在 `Shell` 里。
         // `cx` 也只有那一页用得上（要实时读输入框的值做命令预览）。
@@ -4754,6 +5544,8 @@ impl Render for Shell {
             // 日志和 exec 都可能是从容器详情里打开的，所以排在它之后。
             .child(logs_dialog)
             .child(exec_dialog)
+            // 数据库页的动作弹窗排在最后：它可能盖在任一页（含容器详情）上。
+            .child(db_dialog)
     }
 }
 
@@ -4800,8 +5592,9 @@ fn nav_item(page: Page, current: Page, entity: &Entity<Shell>) -> AnyElement {
 /// 用 `&'static str` 而不是格式化出来的 `String`：
 /// GPUI 的交互元素要求 ID 稳定，静态字符串最不容易出错。
 ///
-/// ⚠️ 这个 match 只覆盖 `Page::ALL` 里那 8 页 —— `AddInstance` 不是导航项
-/// （它从实例列表页的按钮进），所以这里也不需要它的 id。
+/// ⚠️ 这个 match 只覆盖 `Page::ALL` 里那 8 页 —— `AddInstance` / `Database`
+/// 都不是导航项（它们从别的页面的按钮进），所以这里也不需要它们的 id
+/// （真走到那两页也只是给一个不会被用到的 id）。
 fn nav_id(page: Page) -> &'static str {
     match page {
         Page::Dashboard => "nav-dashboard",
@@ -4813,6 +5606,9 @@ fn nav_id(page: Page) -> &'static str {
         Page::Images => "nav-images",
         Page::Networks => "nav-networks",
         Page::Volumes => "nav-volumes",
+        // 同 `AddInstance`：侧边栏不列它（只能从容器行上的按钮进），
+        // 但 `Page` 是穷尽的，这一支必须有。
+        Page::Database => "nav-database",
         Page::AppSettings => "nav-app-settings",
         Page::About => "nav-about",
     }

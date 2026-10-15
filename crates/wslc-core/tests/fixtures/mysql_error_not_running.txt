@@ -1,0 +1,3 @@
+容器“947c4f25885000c20cb1492501a964dfff72882abc4d0f828e38642ee782e8a1”未运行。
+错误代码： WSLC_E_CONTAINER_NOT_RUNNING
+如果此错误是意外错误，请考虑搜索现有问题或在 https://github.com/microsoft/WSL/issues 提交新问题。

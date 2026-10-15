@@ -428,3 +428,72 @@ wslc remove wslc-panel-probe
 
 > 注意：本机直连 Docker Hub 会超时（`registry-1.docker.io` 不可达），
 > 必须用**已存在的本地镜像全名** + `--pull never`。
+
+---
+
+## 12. `wslc exec` 的补充实测（v0.7.0，数据库管理页）
+
+为了"在容器里跑 mysql 客户端"这个功能实测的（背景见 `docs/PLAN-v0.7.md`）。
+容器是本机那个 `mysql`（`docker.1panel.live/library/mysql:latest`，26.7.0）。
+
+### 12.1 `exec` 的选项
+
+`wslc exec --help`（3.0.3.0）给出的选项：
+
+| 选项 | 说明 |
+|---|---|
+| `-e --env` | 环境变量的 `Key=Value` 对（**可重复**，每对一条） |
+| `--env-file` | 从文件读 |
+| `-i` / `-t` | 交互 / TTY |
+| `-u --user` | `name\|uid\|uid:gid` |
+| `-w --workdir` | 容器内起始目录 |
+
+选项在 `<container-id>` **之前**：位置参数一开始，后面的开关就会被当成
+命令的一部分（和 `logs` 那条"名字必须在最后"是同一个坑）。
+
+### 12.2 密码走 `-e`，不走 `-p`
+
+```powershell
+wslc exec -e MYSQL_PWD=root mysql mysql -uroot -N -B -e "SHOW DATABASES"
+# → exit 0，输出 4 行 TSV
+```
+
+- `-e MYSQL_PWD=…` 让密码以**环境变量**的形式进容器进程 —— mysql 的
+  `-p<密码>` 会出现在容器内的进程列表里，环境变量不会；
+- 面板侧的约束：`cli.rs::build_command` 把子进程 stdin 写死为
+  `Stdio::null()`，所以**没有**"从 stdin 喂密码"这条更隐蔽的路；
+- ⚠️ 代价：密码会短暂出现在 **Windows 侧 `wslc.exe` 的命令行**里
+  （本机同会话的进程能看到）。以及一条更实际的：`Error::NonZeroExit`
+  的 Display 会把 `args` 拼进消息 —— 所以**所有**错误出口都要脱敏
+  （`cmd::mysql::sanitize`），否则一次 SQL 报错就把明文密码送进提示条。
+
+### 12.3 输出形态与解析
+
+| 试的 | 结果 |
+|---|---|
+| stdout 不是 tty 时的默认输出 | **batch（TSV，带表头）** —— `a\tb`，不是带框表格 |
+| 显式 `--table` | ASCII 表格（`+---+`） |
+| `-N -B` | 去表头 + tab 分隔（给机器解析用） |
+| `-B` 下值里含 tab | 输出 `a\tb`（字面 `\t`），反斜杠输出 `\\` → **解析前要还原** |
+| SQL 里带 `'` `"` `\` 空格 | 经 argv 原样到达（面板不过 shell，无 shell 注入面） |
+| 一条 `-e` 里多条语句（`;` 分隔） | 能跑，逐条返回 |
+
+### 12.4 三种失败（分类的判据）
+
+| 情况 | 退出码 | 原文（判据） |
+|---|---|---|
+| 密码错 | 1 | `ERROR 1045 (28000): Access denied for user …` |
+| 容器没运行 | 1 | `容器“<64位ID>”未运行。错误代码： WSLC_E_CONTAINER_NOT_RUNNING` |
+| 镜像里没客户端 | **126** | `OCI runtime exec failed: … exec: "mysql": executable file not found in $PATH: unknown` |
+
+前两种都是 1，最后一种是 126 —— **退出码不能单独当判据**，稳定的是那些文本
+（`WSLC_E_CONTAINER_NOT_RUNNING` 和 `executable file not found` 不随系统语言变）。
+
+### 12.5 `inspect` 的两个坑
+
+- `Config.ExposedPorts` 在 wslc 的 inspect 输出里**是空的**（实测）——
+  想知道容器声明了哪些端口，看 `list` 输出里 `Labels` 的
+  `com.microsoft.wsl.container.metadata`（里面有 `Ports[].ContainerPort`）；
+- `list` 的 `Command` 字段被**截断**成 20 字符（`"docker-entrypoint.s…"`）——
+  想用"启动命令里有 `mysqld`"来认 MySQL 在官方镜像上**命中不了**，
+  镜像名才是主力依据（`inspect` 的 `Config.Cmd` 是完整的）。
