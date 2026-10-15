@@ -2716,6 +2716,15 @@ impl Shell {
         }
 
         self.goto_page(Page::Database, cx);
+        // 同一个容器：**不重建状态**（连接卡上填的账号要留着），
+        // 但**没读到过**就再读一次 —— 否则上一轮读失败（密码错、容器刚起来
+        // 还没就绪）之后，切走再回来只会看到同一张空页面：
+        // 「重新读取」按钮在，但用户没理由知道要去点它。
+        // 正在读的时候 `load_db` 自己会挡住（它第一句就是那条守卫）。
+        if !self.state.db.as_ref().is_some_and(|db| db.loaded) {
+            self.load_db(window, cx);
+            return;
+        }
         cx.notify();
     }
 
