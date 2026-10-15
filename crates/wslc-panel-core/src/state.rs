@@ -3210,6 +3210,32 @@ impl RegistryState {
         self.selected.as_deref().or(self.input_tag.as_deref())
     }
 
+    /// 下拉框里该列出哪些 tag：**列表 + （列表里缺的）用户手打的那个**。
+    ///
+    /// # 为什么手打的要补进去（v0.9.4 的实机 bug）
+    ///
+    /// 反馈原文："我想拉取 openjdk:8-jre-slim，结果啥东东都出来了"。现象是下拉框
+    /// 显示 `28-ea`、"将拉取"也变成 `:28-ea` —— **拉错镜像**。
+    ///
+    /// 根因：用户打的 `8-jre-slim` 不在 registry 返回的列表里，于是界面那边
+    /// `set_selected_value` 找不到对应项 → 下拉框没有任何选中 → 组件**自己选中
+    /// 第一项**。而"列表里没有"不等于"拉不了"：**实测（2026-10-15，
+    /// docker.1panel.live / library/openjdk）** 它的 `tags/list` 只回了 17282 个，
+    /// 里面既没有 `8-jre-slim` 也没有 `latest`，可这两个 tag 的 `manifests/`
+    /// 都是 **200**（能拉）。列表不全不是用户的错，更不该因此把要拉的东西换掉。
+    ///
+    /// 手打的那个放**最前面**：它是用户明确要的，而列表可能有两万项，
+    /// 排在后面等于找不到。
+    pub fn tag_items(&self) -> Vec<String> {
+        let mut items: Vec<String> = self.tags.clone();
+        if let Some(tag) = self.effective_tag() {
+            if !self.tags.iter().any(|t| t == tag) {
+                items.insert(0, tag.to_owned());
+            }
+        }
+        items
+    }
+
     /// 将要拉取的完整镜像引用（`docker.1panel.live/library/alpine:latest`）。
     ///
     /// 没有 tag（既没选、输入里也没写）或还没查过仓库就是 `None` ——
@@ -5412,5 +5438,45 @@ mod tests {
         assert!(state.toast.is_none());
         // 已经空了：再来一次不该报 true
         assert!(!state.clear_expired_toast());
+    }
+
+    #[test]
+    fn a_typed_tag_that_the_list_lacks_is_still_a_choice() {
+        // 实机 bug（v0.9.4）：用户打 `openjdk:8-jre-slim`，而这个 registry 的
+        // tags/list 里**没有**它（实测 docker.1panel.live 对 library/openjdk
+        // 只回 17282 个，没有 8-jre-slim 也没有 latest，但两者的 manifest 都是
+        // 200）。那时下拉框必须**仍然把用户要的那个列出来** —— 否则组件找不到
+        // 选中项就会自己选中第一项，把"将拉取"换成另一个 tag（**拉错镜像**）。
+        let mut registry = RegistryState::default();
+        registry.tags = vec!["28-ea".to_owned(), "10-ea".to_owned()];
+        registry.input_tag = Some("8-jre-slim".to_owned());
+
+        let items = registry.tag_items();
+        assert_eq!(
+            items.first().map(String::as_str),
+            Some("8-jre-slim"),
+            "手打的 tag 要补进候选项、而且放最前面：{items:?}"
+        );
+        assert_eq!(items.len(), 3, "{items:?}");
+        assert_eq!(
+            items.iter().filter(|tag| *tag == "8-jre-slim").count(),
+            1,
+            "不能重复插：{items:?}"
+        );
+
+        // 列表里**已经有**它时，顺序和条数都不该变（免得列表被搅乱）
+        registry.tags = vec!["8-jre-slim".to_owned(), "28-ea".to_owned()];
+        assert_eq!(
+            registry.tag_items(),
+            vec!["8-jre-slim".to_owned(), "28-ea".to_owned()]
+        );
+
+        // 既没选、输入里也没 tag → 就是列表本身
+        registry.input_tag = None;
+        registry.selected = None;
+        assert_eq!(
+            registry.tag_items(),
+            vec!["8-jre-slim".to_owned(), "28-ea".to_owned()]
+        );
     }
 }

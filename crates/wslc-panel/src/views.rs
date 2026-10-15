@@ -3896,10 +3896,25 @@ fn pull_dialog_form(form: &ImageForm, state: &AppState, entity: &Entity<Shell>) 
             .normalization_note()
             .map(|note| format!("（{note}）"))
             .unwrap_or_default();
+        let mut text = format!("{loaded}：{} 个 tag{note}", page.tags.len());
+        // 用户打的 tag 不在列表里 —— 这件事**必须说出来**，否则用户会以为
+        // 自己要的那个 tag 不存在（实机反馈："我想拉取 openjdk:8-jre-slim，
+        // 结果啥东东都出来了"）。实测这个镜像源的 tags/list 确实可能不全：
+        // `library/openjdk` 回 17282 个，里面没有 `8-jre-slim` 也没有 `latest`，
+        // 但两者的 manifest 都是 200（能拉）。
+        if let Some(tag) = page
+            .effective_tag()
+            .filter(|tag| !page.tags.iter().any(|t| t.as_str() == *tag))
+        {
+            text.push_str(&format!(
+                " —— 你要的 {tag} 不在这个列表里。这个镜像源的列表可能不全\
+                 （它的 manifest 存在时照样能拉，只是体积可能量不出来）"
+            ));
+        }
         div()
             .text_sm()
             .text_color(theme::text_muted())
-            .child(format!("{loaded}：{} 个 tag{note}", page.tags.len()))
+            .child(text)
             .into_any_element()
     } else {
         div()

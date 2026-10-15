@@ -1441,12 +1441,21 @@ impl Shell {
         };
         let select = form.tags_select.clone();
 
+        // ⚠️ 候选项由 `RegistryState::tag_items()` 给（纯逻辑，那边有测试）——
+        // 它会把**列表里没有、但用户手打的**那个 tag 补在最前面。
+        //
+        // 为什么这条必须有：实机反馈"我想拉取 openjdk:8-jre-slim，结果啥东东都
+        // 出来了" —— 用户打的 tag 不在这个 registry 返回的列表里（实测它的
+        // `tags/list` 对 `library/openjdk` 只回 17282 个，既没有 `8-jre-slim`
+        // 也没有 `latest`，而两者的 manifest 都是 200/能拉），于是
+        // `set_selected_value` 找不到对应项 → 组件**自动选中第一项** `28-ea`
+        // → "将拉取"跟着变成 `:28-ea`，**拉错镜像**。
         let items: Vec<DropdownItem> = self
             .state
             .registry
-            .tags
-            .iter()
-            .map(|tag| DropdownItem::new(tag.clone(), tag.clone()))
+            .tag_items()
+            .into_iter()
+            .map(|tag| DropdownItem::new(tag.clone(), tag))
             .collect();
         let keep = self
             .state
@@ -1566,6 +1575,15 @@ impl Shell {
     /// 实测内容协商省不掉），列表里 1339 个 tag 全量一遍就是 1339 次请求，
     /// 直接撞限流。
     pub fn select_registry_tag(&mut self, tag: String, cx: &mut Context<Self>) {
+        // 已经选中的 tag 再选一次 = 什么都不做。
+        //
+        // 两个理由：① [`Shell::fill_tag_select`] 换清单后会**重新选一次**，而组件
+        // 也会为"选中变了"发事件 —— 不判重就会多量一次体积（两次请求，还可能撞
+        // 限流）；② 那条路径下重选同一个 tag 会把刚量到的体积**清掉**
+        //（`select_tag` 里 `size = None`），于是"量出来了又变回量不出来"。
+        if self.state.registry.selected.as_deref() == Some(tag.as_str()) {
+            return;
+        }
         self.state.registry.select_tag(&tag);
         cx.notify();
 
