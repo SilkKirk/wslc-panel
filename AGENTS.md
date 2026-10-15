@@ -196,8 +196,12 @@ Invoke-RestMethod -Headers $H -Uri "$api/commits/<sha>/check-runs"
      `version.workspace = true`，是个小遗留）
    - **`Cargo.lock` 里三个 workspace 成员的 `version`** —— 锁文件记着成员版本，
      不改的话 `--locked` 直接报"锁文件与清单不一致"。本机没有 cargo 只能手改：
-     先 `Select-String` 确认**只有那三处**（都在 `[[package]]` 的成员条目下），
-     再整体替换。不放心就用 `gen-lock.yml` 重新生成。
+     先 `Select-String` 确认**只有那三处**（都在 `[[package]]` 的成员条目下）。
+     ⚠️ **但别对这个版本号做全局替换**：`Select-String '0\.8\.0'` 实测命中**五**处，
+     只有三处在成员条目下（`wslc-core` / `wslc-panel` / `wslc-panel-core`），
+     另外两处是**第三方 crate** 恰好也叫这个版本（0.8.0 那轮是 `xkbcommon`
+     和 `y4m`）—— 一起改掉就是改坏锁文件。所以按 `name = "wslc-…"` +
+     紧跟一行的 `version` **成对**替换。不放心就用 `gen-lock.yml` 重新生成。
    - `README.md` 里那行启动日志样例（`版本 x.y.z，构建 <短 sha>`）
 3. 推 main → **等 CI 全绿** → 打 `vX.Y.Z` 标签 → 推标签。
 4. `release.yml` 由 `push: tags: ["v*"]` 触发，编译并发布

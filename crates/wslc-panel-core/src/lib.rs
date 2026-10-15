@@ -27,6 +27,8 @@ pub mod columns;
 // 数据库账号的本地存档（v0.8：建库同时建用户，列表要展示用户名 / 密码 ——
 // MySQL 的密码是单向哈希，面板必须自己记）。
 pub mod dbcreds;
+// 部署记录的本地存档（v0.9：部署过什么由面板记；"它现在跑没跑"问容器）。
+pub mod deploys;
 pub mod prefs;
 pub mod presets;
 pub mod state;
