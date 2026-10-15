@@ -694,6 +694,14 @@ pub(crate) struct DbDialog {
     /// （仅新建数据库）**同时创建用户** —— v0.8 的主路径：建库的人几乎总是
     /// 需要一个连它的账号，单独再走一遍「新建用户」纯属多余。
     pub(crate) create_user: bool,
+    /// （仅新建数据库）**数据库用户名**（用户手填）。
+    ///
+    /// 以前它是按库名推出来的（`<库名>_user`），弹窗里只画一行"跟库名走"的
+    /// 说明。实机反馈："创建数据库的创建用户名这里让手填，不要自动生成" ——
+    /// 所以现在它是真输入框：**留空就拦下来**（`AGENTS.md` §7.5 的
+    /// "空值等于没填"），旁边那个「用建议值」按钮把 `<库名>_user` 填进去，
+    /// 但**不自动写**（用户不点就不动）。
+    pub(crate) db_user: Entity<InputState>,
     /// （仅导入）本机那份 `.sql` 的路径。
     ///
     /// 目标库**没有输入框**：它由数据库列表那一行定死，写在
@@ -3101,6 +3109,7 @@ impl Shell {
         let host = cx.new(|cx| InputState::new(window, cx).placeholder("%（任意主机）"));
         let password = cx.new(|cx| InputState::new(window, cx).placeholder("密码"));
         let grant_db = cx.new(|cx| InputState::new(window, cx).placeholder("留空 = 先不授权"));
+        let db_user = cx.new(|cx| InputState::new(window, cx).placeholder("例如 shop_user"));
         let import_path = cx.new(|cx| {
             InputState::new(window, cx).placeholder(r"点右边的「选择文件…」，或直接粘一个路径")
         });
@@ -3148,6 +3157,7 @@ impl Shell {
             grant_db,
             grant: GrantKind::All,
             create_user,
+            db_user,
             import_path,
         });
         cx.notify();
@@ -3393,6 +3403,31 @@ impl Shell {
         cx.notify();
     }
 
+    /// 把「数据库用户名」填成建议值 `<库名>_user`（弹窗里那个「用建议值」按钮）。
+    ///
+    /// ⚠️ 刻意**不**做成"输入库名时自动联动" —— 实机反馈是"让手填，不要自动
+    /// 生成"。这里只在用户**主动点**的时候写一次，而且写完就不再联动
+    ///（后面改库名不会把它改掉）。
+    ///
+    /// 建议值取自**当前**库名，所以先填库名再点，值才符合直觉；库名还空着时
+    /// 算出来是 `_user`（没有意义），这时只给一句提示。
+    pub fn fill_db_username(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dialog) = self.db_dialog.as_ref() else {
+            return;
+        };
+        let database = dialog.database.read(cx).value().trim().to_owned();
+        if database.is_empty() {
+            self.state
+                .notify(Toast::error("先填库名，再点「用建议值」（建议值就是库名 + _user）"));
+            cx.notify();
+            return;
+        }
+        let suggested = mysql_model::default_user_for(&database);
+        let input = dialog.db_user.clone();
+        input.update(cx, |state, cx| state.set_value(suggested, window, cx));
+        cx.notify();
+    }
+
     /// 关掉动作弹窗（不提交）。
     pub fn close_db_dialog(&mut self, cx: &mut Context<Self>) {
         self.db_dialog = None;
@@ -3446,12 +3481,20 @@ impl Shell {
                             (!charset.is_empty()).then_some(charset.as_str()),
                             (!collation.is_empty()).then_some(collation.as_str()),
                         )?);
-                        // 用户名 = `<库名>_user`（规则在弹窗里写着，改名跟着变）；
+                        // 用户名**由用户手填**（v0.9.3 起）。
                         // host 固定 `%`（要远程连的账号，默认锁 localhost 反而添堵）。
                         let mut to_record = None;
                         if dialog.create_user {
-                            let user = mysql_model::default_user_for(&database);
-                            // 用户名拼出来也要过一遍白名单（库名在上面已查过）
+                            let user = text(&dialog.db_user);
+                            // 留空就拦下来：这条路径下"没填用户名"= 建了一个连不上
+                            // 的库，属于 §7.5 那种"看着填了、其实空着"的陷阱。
+                            // 报错**不关弹窗**（外面的 Err 分支只发提示），
+                            // 用户改一个字就能重试。
+                            if user.is_empty() {
+                                return Err(wslc_core::Error::InvalidArgument(
+                                    "请填数据库用户名（不知道填什么就点「用建议值」）".to_owned(),
+                                ));
+                            }
                             mysql_model::validate_ident("用户名", &user)?;
                             let password = text(&dialog.password);
                             parts.push(mysql_model::create_user_sql(&user, "%", &password)?);

@@ -2109,10 +2109,10 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
             );
 
             // 「同时创建用户」是 v0.8 的主路径：建库的人几乎总要一个连它的账号。
-            // 用户名 = `<库名>_user`（在弹窗里写明，跟着库名变）；密码已预填随机值。
+            // ⚠️ v0.9.3 起**用户名由用户手填**（以前是按库名推的 `<库名>_user`，
+            // 弹窗里只画一行"跟库名走"）—— 实机反馈"创建数据库的创建用户名
+            // 这里让手填，不要自动生成"。密码仍然预填随机值（那个是真猜不出来）。
             if dialog.create_user {
-                let user_name =
-                    mysql_model::default_user_for(dialog.database.read(cx).value().trim());
                 fields.push(
                     h_flex()
                         .w_full()
@@ -2138,10 +2138,46 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
                             div()
                                 .text_xs()
                                 .text_color(theme::text_dim())
-                                .child(format!(
-                                    "用户名 {user_name}（跟库名走）· 主机 %（允许远程连接）"
-                                )),
+                                .child("主机 %（允许远程连接）"),
                         )
+                        .into_any_element(),
+                );
+                // 用户名输入框 + 一个「用建议值」。
+                // 按钮**只填一次**、不联动：用户点了之后自己改库名也不会被覆盖
+                //（"不要自动生成"那条反馈要的就是这个）。
+                fields.push(form_field(
+                    "db-dialog-db-user",
+                    "数据库用户名",
+                    &dialog.db_user,
+                    cx,
+                    false,
+                ));
+                let suggest = {
+                    let entity = entity.clone();
+                    Button::new("db-dialog-suggest-user")
+                        .label("用建议值")
+                        .small()
+                        .on_click(move |_, window, cx| {
+                            entity.update(cx, |shell, cx| shell.fill_db_username(window, cx));
+                        })
+                };
+                // 建议值本身显示在提示里，让用户知道点下去会填什么
+                //（按钮标签是静态的 —— `.label()` 在本仓库一律收 `&'static str`）。
+                let suggested =
+                    mysql_model::default_user_for(dialog.database.read(cx).value().trim());
+                let hint = if suggested == "_user" {
+                    // 库名还没填：算出来是 `_user`，别把这种半成品显示给用户
+                    "要手填。填好库名后点「用建议值」会自动算成「库名_user」".to_owned()
+                } else {
+                    format!("要手填。「用建议值」会填：{suggested}")
+                };
+                fields.push(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .items_center()
+                        .child(suggest)
+                        .child(div().text_xs().text_color(theme::text_dim()).child(hint))
                         .into_any_element(),
                 );
                 fields.push(form_field(
