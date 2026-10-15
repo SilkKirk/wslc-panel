@@ -18,13 +18,17 @@
 //! 想让整体更宽松就加窗口 —— 不会再有"总和超了/少了"的问题。
 
 /// 「全部容器」页的列。
+///
+/// ⚠️ 「操作」的权重 v0.7.0 从 250 提到 330：MySQL / MariaDB 容器的行上多了一个
+/// 「数据库」按钮（最多 5 个按钮 + 换行）。数字是**权重**不是像素，
+/// 所以调它只影响相对宽窄 —— 但实机得看一眼会不会挤（`AGENTS.md` §8）。
 pub const ALL_COLUMNS: &[(&str, f32)] = &[
     ("名称", 240.0),
     ("镜像", 260.0),
     ("状态", 120.0),
     ("资源", 190.0),
     ("端口", 200.0),
-    ("操作", 250.0),
+    ("操作", 330.0),
 ];
 
 /// 镜像页的列。
@@ -76,6 +80,38 @@ pub const DISTRO_COLUMNS: &[(&str, f32)] = &[
     ("操作", 320.),
 ];
 
+/// 「数据库管理」页 → **数据库列表**的列。
+///
+/// 数据来自一条 SQL（`information_schema.SCHEMATA` + 两个子查询），
+/// 见 `wslc_core::model::mysql::list_databases_sql` —— 一次 exec 拿全，
+/// 不是每个库去问一次。
+///
+/// 字符集和排序规则分开两列（而不是挤成一格）：它们经常一起被念出来
+/// （`utf8mb4` + `utf8mb4_0900_ai_ci`），但改的时候是两件事。
+pub const DB_COLUMNS: &[(&str, f32)] = &[
+    ("名称", 220.0),
+    ("字符集", 150.0),
+    ("排序规则", 230.0),
+    ("表数", 80.0),
+    ("占用", 110.0),
+    ("操作", 140.0),
+];
+
+/// 「数据库管理」页 → **用户列表**的列。
+///
+/// ⚠️ 「主机」必须单独一列：`'root'@'%'` 和 `'root'@'localhost'` 在 MySQL 里是
+/// **两条独立的记录**（实测那个容器的 `mysql.user` 里就有这两条），
+/// 不写 host 的话用户根本分不清自己在改哪一个。
+///
+/// 「操作」给得最宽：行内要放「改密码 / 授权 / 删除」三个按钮。
+pub const DB_USER_COLUMNS: &[(&str, f32)] = &[
+    ("用户", 200.0),
+    ("主机", 160.0),
+    ("认证插件", 200.0),
+    ("超级权限", 90.0),
+    ("操作", 320.0),
+];
+
 /// 把"权重"换算成**比例**（加起来正好 1），交给 `flex_grow` 分配实际宽度。
 ///
 /// 全是 0 / 负数（不该发生，但别 panic）时退回等分。
@@ -99,7 +135,10 @@ pub fn column_fractions(columns: &[(&str, f32)]) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ALL_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS};
+    use super::{
+        ALL_COLUMNS, DB_COLUMNS, DB_USER_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS,
+        VOLUME_COLUMNS,
+    };
 
     /// 汇总所有表格的列定义，方便逐个检查。
     fn all_column_sets() -> Vec<&'static [(&'static str, f32)]> {
@@ -109,6 +148,8 @@ mod tests {
             NETWORK_COLUMNS,
             VOLUME_COLUMNS,
             DISTRO_COLUMNS,
+            DB_COLUMNS,
+            DB_USER_COLUMNS,
         ]
     }
 
@@ -130,8 +171,10 @@ mod tests {
         // `DISTRO_COLUMNS` 是 7 列（P2 加了「操作」），
         // 和 `distro_row` 里 push 的 7 个 cell 对应 ——
         // 改一边就必须改另一边，这个断言就是盯着这件事的。
+        //
+        // 后两个是 v0.7.0 的数据库管理页（数据库 6 列 / 用户 5 列）。
         let counts: Vec<usize> = all_column_sets().iter().map(|c| c.len()).collect();
-        assert_eq!(counts, vec![6, 5, 6, 5, 7]);
+        assert_eq!(counts, vec![6, 5, 6, 5, 7, 6, 5]);
     }
 
     #[test]

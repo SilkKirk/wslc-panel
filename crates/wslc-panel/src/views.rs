@@ -24,7 +24,12 @@ use wslc_core::cmd::container::{PullPolicy, RunSpec};
 // 和执行时读的是同一份数据 —— 预览不会和执行走偏。
 use wslc_core::mirrors;
 use wslc_core::model::install as install_model;
-use wslc_core::model::{ContainerState, ContainerSummary, Distro, DistroState};
+// MySQL 容器的识别是**纯逻辑**（镜像名 / 命令 / 3306 端口），
+// 所以列表行每帧都能白拿这个判断 —— 见 `container_row_actions`。
+use wslc_core::model::mysql as mysql_model;
+use wslc_core::model::{
+    ContainerListItem, ContainerState, ContainerSummary, Distro, DistroState, GrantKind,
+};
 // 镜像仓库（Registry V2）的纯逻辑：常用镜像清单、引用/主机名校验、体积累加。
 use wslc_core::registry;
 // `/etc/wsl.conf` 的字段表与保序文档模型（纯逻辑，在 `wslc-core` 里）。
@@ -38,15 +43,21 @@ use gpui_kit::component::checkbox::Checkbox;
 // `FactsState` 是「创建容器」弹窗里那条"从镜像读来的信息"的状态机
 // （`ImageForm` 则是「拉取镜像」弹窗的表单）—— 两者的纯数据部分都在
 // `wslc-core` / `wslc-panel-core`，这里只是画出来。
-use crate::app::{CreateDialog, FactsState, ImageForm, InstallForm, Shell, WslConfDialog};
+use crate::app::{
+    CreateDialog, DbDialogKind, DbPageForm, FactsState, ImageForm, InstallForm, Shell,
+    WslConfDialog,
+};
 // 列宽定义与配置项预设值都是纯数据，住在不依赖 GPUI 的 `wslc-panel-core` 里
 // —— 这样它们的单测不必链接 GPUI（见那个 crate 的顶层说明）。
-use crate::columns::{ALL_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS};
+use crate::columns::{
+    ALL_COLUMNS, DB_COLUMNS, DB_USER_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS,
+    VOLUME_COLUMNS,
+};
 use crate::presets::presets_for;
 use crate::state::{
-    AppState, DistroAction, ImmediateAction, InstallOutcome, InstallProgress, InstallSourceKind,
-    LogsState, OnlineListSource, Page, PendingAction, PromptKind, PullProgress, SettingsTab,
-    WslConfState, format_bytes,
+    AppState, DbFailure, DbState, DbTab, DistroAction, ImmediateAction, InstallOutcome,
+    InstallProgress, InstallSourceKind, LogsState, OnlineListSource, Page, PendingAction,
+    PromptKind, PullProgress, SettingsTab, WslConfState, format_bytes,
 };
 use crate::theme;
 
@@ -487,6 +498,9 @@ pub fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
         Page::Images => images(state, entity).into_any_element(),
         Page::Networks => networks(state, entity).into_any_element(),
         Page::Volumes => volumes(state, entity).into_any_element(),
+        // 「数据库管理」要 `&Shell`（连接卡那三个输入框住在 `Shell` 里）
+        // **和** `cx`（渲染时要读输入框的值）—— 和「添加实例」同一类页面。
+        Page::Database => database(shell, cx, entity),
         Page::AppSettings => app_settings(shell, entity),
         Page::About => about(state, entity),
     }
@@ -855,7 +869,12 @@ fn container_name_link(name: &str, entity: &Entity<Shell>) -> AnyElement {
 ///
 /// 「强杀」这种低频且危险的操作留在详情弹窗里 —— 列表里塞满按钮
 /// 反而找不到常用的那个。
-fn container_row_actions(name: &str, running: bool, entity: &Entity<Shell>) -> AnyElement {
+///
+/// MySQL / MariaDB 容器多一个「数据库」按钮（v0.7.0）：它是那一类容器上
+/// 最高频的动作，而且**只能从这里进**（数据库管理页不在侧边栏里）。
+fn container_row_actions(item: &ContainerListItem, entity: &Entity<Shell>) -> AnyElement {
+    let name = item.display_name();
+    let running = item.is_running();
     let mut actions: Vec<AnyElement> = Vec::new();
 
     if running {
@@ -874,6 +893,32 @@ fn container_row_actions(name: &str, running: bool, entity: &Entity<Shell>) -> A
             )
             .into_any_element(),
         );
+
+        // 「数据库」：只有**认得出是 MySQL 家族**的容器才有。
+        //
+        // 判定是**纯字符串**（镜像名 / 命令 / 3306 端口，见
+        // `mysql_container_kind`）—— 渲染每帧都跑，绝不能在这里起进程。
+        // 认不出来就什么都不画（和 `image_preset` 同一条原则：
+        // 宁可少一个按钮，也不要给一个点进去全是报错的按钮）。
+        //
+        // 同样的理由省略了「停止的容器」那一支：页面里每一格都要
+        // `wslc exec`，容器没跑就只有 `WSLC_E_CONTAINER_NOT_RUNNING`。
+        // 先在上面那行点「启动」，按钮自然会出来。
+        if let Some(_candidate) = mysql_model::mysql_container_kind(item) {
+            let target = name.to_owned();
+            let image = item.image.clone();
+            actions.push(overlay_button(
+                &format!("db-{name}"),
+                // 依据（镜像名 / 命令 / 3306 端口）不进按钮文案 ——
+                // 数据库页上写着，这里是清单，只放得下动作。
+                "数据库",
+                move |shell, window, cx| {
+                    shell.open_database_page(target.clone(), image.clone(), window, cx)
+                },
+                entity,
+            ));
+        }
+
         actions.push(
             immediate_button(
                 &format!("restart-{name}"),
@@ -953,11 +998,7 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
                     cell_badge(summary.item.state_kind()),
                     cell_resources(summary),
                     cell_text(crate::util::ports_summary(summary)),
-                    container_row_actions(
-                        summary.item.display_name(),
-                        summary.item.is_running(),
-                        entity,
-                    ),
+                    container_row_actions(&summary.item, entity),
                 ],
             )
             .into_any_element()
@@ -1023,6 +1064,834 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
                 }),
         )
 }
+// ---------------------------------------------------------------------------
+// ②b 容器里的数据库管理（MySQL / MariaDB，v0.7.0）
+// ---------------------------------------------------------------------------
+
+/// 「数据库管理」页。
+///
+/// # 它为什么不在侧边栏
+///
+/// 它服务**一个**容器（`AppState::db` 里记着是哪个），所以顶部有
+/// 「← 返回容器」—— 和「添加实例」是同一类页面（只能从列表上的按钮进）。
+///
+/// # 三种形态
+///
+/// 1. **探测就失败**（不是 MySQL / 容器没运行 / 镜像里没客户端）：
+///    只画那张说明卡片。这时候再摆一排空表和连接卡只会干扰判断。
+/// 2. **正常**：连接卡 + tab（数据库 / 用户 / SQL 控制台）。
+/// 3. **还没读到数据**：表格的位置放一句"正在读取…"。
+///
+/// # 密码
+///
+/// 连接卡上的密码是**明文**的（`DbPageForm` 的注释里写了为什么这一版不做掩码），
+/// 而它只存在内存里：不写进 `prefs.json`、不进日志（`MysqlCreds` 的 `Debug`
+/// 是手写脱敏的）、也不进错误消息（出口是 `cmd::mysql::sanitize`）。
+pub fn database(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
+    let Some(db) = shell.state.db.as_ref() else {
+        // 理论上来不到（只可能从容器行上的按钮进，那里已经建好状态了），
+        // 但真到了这里就说一句人话，别画一片空白。
+        return empty_state("还没有选中容器 —— 请到「容器」页点某一行的「数据库」")
+            .into_any_element();
+    };
+    let Some(form) = shell.db_form.as_ref() else {
+        return empty_state("连接表单还没建好 —— 请重新从容器列表进入这一页").into_any_element();
+    };
+
+    let header = db_header(db, entity);
+    let connecting = db_connection_card(db, form, cx);
+
+    if let Some(blocked) = db.blocked.as_ref() {
+        return v_flex()
+            .w_full()
+            .gap_3()
+            .child(header)
+            .child(connecting)
+            .child(db_blocked_card(blocked))
+            .into_any_element();
+    }
+
+    let body: AnyElement = if db.loaded {
+        match db.tab {
+            DbTab::Databases => db_databases_card(db, entity),
+            DbTab::Users => db_users_card(db, entity),
+            DbTab::Sql => db_console_card(db, form, entity, cx),
+        }
+    } else {
+        db_loading(db.busy)
+    };
+
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(header)
+        .child(connecting)
+        .children(db.error.as_ref().map(db_error_banner))
+        .child(db_tabs(db.tab, entity))
+        .child(body)
+        .into_any_element()
+}
+
+/// 页头：容器 / 镜像 / 家族 / 客户端 + 「← 返回容器」「重新读取」。
+fn db_header(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
+    let back = {
+        let entity = entity.clone();
+        Button::new("db-back")
+            .label("← 返回容器")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.close_database_page(cx));
+            })
+    };
+
+    // 读取期间把按钮**换掉**（项目里不用 `.disabled()`）：置灰的按钮会让人
+    // 反复去点，而"读取中…"说清了现在在等什么。
+    let reload: AnyElement = if db.busy {
+        div()
+            .text_sm()
+            .text_color(theme::text_muted())
+            .child("读取中…")
+            .into_any_element()
+    } else {
+        let entity = entity.clone();
+        Button::new("db-reload")
+            .label("重新读取")
+            .small()
+            .primary()
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |shell, cx| shell.load_db(window, cx));
+            })
+            .into_any_element()
+    };
+
+    h_flex()
+        .w_full()
+        .justify_between()
+        .items_center()
+        .child(
+            v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_semibold()
+                        .child(format!("容器 {}", db.container)),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child(format!(
+                            "{} · {} · 客户端 {}",
+                            db.family.label(),
+                            db.image,
+                            db.client_version.as_deref().unwrap_or(db.client.as_str()),
+                        )),
+                ),
+        )
+        .child(h_flex().gap_2().child(back).child(reload))
+        .into_any_element()
+}
+
+/// 连接卡：用户名 / 密码 + 一句说明。
+///
+/// 它挂在**页面**上而不是弹窗里：它描述的是"这一页现在连的是谁"，
+/// 用户扫一眼就该知道，而不必点开一个弹窗去确认。
+fn db_connection_card(db: &DbState, form: &DbPageForm, cx: &App) -> AnyElement {
+    let mut body = v_flex()
+        .w_full()
+        .gap_3()
+        .child(
+            h_flex()
+                .w_full()
+                .gap_3()
+                .child(form_field("db-user", "用户名", &form.user, cx, false))
+                .child(form_field(
+                    "db-password",
+                    "密码（只存在内存里）",
+                    &form.password,
+                    cx,
+                    false,
+                )),
+        );
+
+    if let Some(note) = db.cred_note.clone() {
+        body = body.child(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child(crate::util::strip_md(&note)),
+        );
+    }
+
+    body = body.child(
+        div()
+            .text_xs()
+            .text_color(theme::text_muted())
+            .child(
+                "面板靠**容器自带的** mysql / mariadb 客户端执行 SQL —— 所以容器要在运行、\
+                 镜像里得有客户端（不要求把端口发布到主机）。密码走 MYSQL_PWD 环境变量，\
+                 不进命令行；改完点右上角「重新读取」生效。",
+            ),
+    );
+
+    card("连接", body).into_any_element()
+}
+
+/// 探测就失败时的说明卡（不是 MySQL / 没客户端 / 容器没运行）。
+fn db_blocked_card(failure: &DbFailure) -> AnyElement {
+    v_flex()
+        .w_full()
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .bg(theme::danger_soft())
+        .border_1()
+        .border_color(theme::danger_edge())
+        .child(
+            div()
+                .text_sm()
+                .font_semibold()
+                .text_color(theme::danger())
+                .child("这个容器现在管不了数据库"),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_color(theme::text())
+                .child(crate::util::strip_md(&failure.summary())),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child(
+                    "面板不自己连 3306，而是驱动容器里的客户端 —— 所以它不依赖端口有没有\
+                     发布出来，但要求那个客户端存在。想自己进去看，用「容器」页那一行的「终端」。",
+                ),
+        )
+        .child(log_text(Some(&failure.detail), "db-blocked-detail"))
+        .into_any_element()
+}
+
+/// 上一次失败：一句"该怎么办" +（可滚动的）原文。
+fn db_error_banner(failure: &DbFailure) -> AnyElement {
+    v_flex()
+        .w_full()
+        .gap_2()
+        .p_3()
+        .rounded_md()
+        .bg(theme::danger_soft())
+        .border_1()
+        .border_color(theme::danger_edge())
+        .child(
+            div()
+                .text_sm()
+                .text_color(theme::danger())
+                .child(crate::util::strip_md(&failure.summary())),
+        )
+        .child(log_text(Some(&failure.detail), "db-error-detail"))
+        .into_any_element()
+}
+
+/// 还没读到数据时占位。
+fn db_loading(busy: bool) -> AnyElement {
+    let text = if busy {
+        "正在读取…"
+    } else {
+        "还没有读到数据 —— 点右上角「重新读取」"
+    };
+    v_flex()
+        .w_full()
+        .py_8()
+        .items_center()
+        .justify_center()
+        .child(div().text_sm().text_color(theme::text_dim()).child(text))
+        .into_any_element()
+}
+
+/// 三个 tab。
+fn db_tabs(current: DbTab, entity: &Entity<Shell>) -> AnyElement {
+    let buttons: Vec<AnyElement> = DbTab::ALL
+        .iter()
+        .map(|tab| {
+            let tab = *tab;
+            let entity = entity.clone();
+            // id 用 `{:?}`：稳定、且与显示语言无关（和设置页那几个 tab 一致）
+            let mut button = Button::new(SharedString::from(format!("db-tab-{tab:?}")))
+                .label(tab.label())
+                .small()
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |shell, cx| shell.set_db_tab(tab, cx));
+                });
+            if current == tab {
+                button = button.primary();
+            }
+            button.into_any_element()
+        })
+        .collect();
+
+    h_flex()
+        .w_full()
+        .gap_2()
+        .children(buttons)
+        .into_any_element()
+}
+
+/// 库名那一格：名字 + （系统库时）一个「系统」标记。
+///
+/// 系统库**不隐藏**（它们真实存在，`sys` / `performance_schema` 偶尔真要去看），
+/// 但得让用户一眼看出"这不是我建的、删了会出事"。
+fn db_name_cell(entry: &wslc_core::model::DbEntry) -> AnyElement {
+    h_flex()
+        .gap_2()
+        .min_w_0()
+        .child(
+            div()
+                .text_sm()
+                .overflow_hidden()
+                .truncate()
+                .child(entry.name.clone()),
+        )
+        .children(entry.is_system().then(|| {
+            badge("系统", theme::text_dim(), theme::neutral_soft()).into_any_element()
+        }))
+        .into_any_element()
+}
+
+/// 「数据库」tab。
+fn db_databases_card(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
+    let new_database = {
+        let entity = entity.clone();
+        Button::new("db-new-database")
+            .label("新建数据库…")
+            .small()
+            .primary()
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |shell, cx| {
+                    shell.open_db_dialog(DbDialogKind::NewDatabase, window, cx)
+                });
+            })
+    };
+
+    let rows: Vec<AnyElement> = db
+        .databases
+        .iter()
+        .map(|entry| {
+            let action = PendingAction::DropDatabase {
+                container: db.container.clone(),
+                database: entry.name.clone(),
+                client: db.client.clone(),
+                creds: db.creds.clone(),
+            };
+            table_row(
+                DB_COLUMNS,
+                vec![
+                    db_name_cell(entry),
+                    cell_muted(entry.charset.clone()),
+                    cell_muted(entry.collation.clone()),
+                    cell_muted(entry.tables.to_string()),
+                    cell_muted(format_bytes(entry.bytes)),
+                    danger_button(&format!("db-drop-{}", entry.name), "删除", action, entity)
+                        .into_any_element(),
+                ],
+            )
+            .into_any_element()
+        })
+        .collect();
+
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(
+            h_flex()
+                .w_full()
+                .justify_between()
+                .items_center()
+                .child(new_database)
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme::text_muted())
+                        .child(format!(
+                            "共 {} 个数据库（含系统库）",
+                            db.databases.len()
+                        )),
+                ),
+        )
+        .child(
+            v_flex()
+                .w_full()
+                .rounded_lg()
+                .bg(theme::bg_card())
+                .border_1()
+                .border_color(theme::border())
+                .overflow_hidden()
+                .child(table_header(DB_COLUMNS))
+                .child(if rows.is_empty() {
+                    empty_state("没有读到任何数据库").into_any_element()
+                } else {
+                    v_flex().w_full().children(rows).into_any_element()
+                }),
+        )
+        .into_any_element()
+}
+
+/// 「用户」tab。
+fn db_users_card(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
+    let new_user = {
+        let entity = entity.clone();
+        Button::new("db-new-user")
+            .label("新建用户…")
+            .small()
+            .primary()
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |shell, cx| {
+                    shell.open_db_dialog(DbDialogKind::NewUser, window, cx)
+                });
+            })
+    };
+
+    let rows: Vec<AnyElement> = db
+        .users
+        .iter()
+        .map(|user| {
+            let user_name = user.user.clone();
+            let host = user.host.clone();
+
+            let alter = overlay_button(
+                &format!("db-pass-{user_name}-{host}"),
+                "改密码",
+                {
+                    let (user_name, host) = (user_name.clone(), host.clone());
+                    move |shell, window, cx| {
+                        shell.open_db_dialog(
+                            DbDialogKind::AlterPassword {
+                                user: user_name.clone(),
+                                host: host.clone(),
+                            },
+                            window,
+                            cx,
+                        )
+                    }
+                },
+                entity,
+            );
+            let grant = overlay_button(
+                &format!("db-grant-{user_name}-{host}"),
+                "授权",
+                {
+                    let (user_name, host) = (user_name.clone(), host.clone());
+                    move |shell, window, cx| {
+                        shell.open_db_dialog(
+                            DbDialogKind::Grant {
+                                user: user_name.clone(),
+                                host: host.clone(),
+                            },
+                            window,
+                            cx,
+                        )
+                    }
+                },
+                entity,
+            );
+            let drop = danger_button(
+                &format!("db-drop-user-{user_name}-{host}"),
+                "删除",
+                PendingAction::DropUser {
+                    container: db.container.clone(),
+                    user: user_name.clone(),
+                    host: host.clone(),
+                    client: db.client.clone(),
+                    creds: db.creds.clone(),
+                },
+                entity,
+            )
+            .into_any_element();
+
+            table_row(
+                DB_USER_COLUMNS,
+                vec![
+                    h_flex()
+                        .gap_2()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .text_sm()
+                                .overflow_hidden()
+                                .truncate()
+                                .child(user.user.clone()),
+                        )
+                        .children(user.is_system().then(|| {
+                            badge("内部", theme::text_dim(), theme::neutral_soft())
+                                .into_any_element()
+                        }))
+                        .into_any_element(),
+                    cell_muted(user.host.clone()),
+                    cell_muted(user.plugin.clone()),
+                    if user.super_priv {
+                        badge("Y", theme::success(), theme::success_soft()).into_any_element()
+                    } else {
+                        cell_muted("N")
+                    },
+                    h_flex()
+                        .gap_2()
+                        .flex_wrap()
+                        .child(alter)
+                        .child(grant)
+                        .child(drop)
+                        .into_any_element(),
+                ],
+            )
+            .into_any_element()
+        })
+        .collect();
+
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(
+            h_flex()
+                .w_full()
+                .justify_between()
+                .items_center()
+                .child(new_user)
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme::text_muted())
+                        .child(format!(
+                            "共 {} 条账号记录（同一个用户名可以有多个主机）",
+                            db.users.len()
+                        )),
+                ),
+        )
+        .child(
+            v_flex()
+                .w_full()
+                .rounded_lg()
+                .bg(theme::bg_card())
+                .border_1()
+                .border_color(theme::border())
+                .overflow_hidden()
+                .child(table_header(DB_USER_COLUMNS))
+                .child(if rows.is_empty() {
+                    empty_state("没有读到任何用户（当前账号可能没有读 mysql.user 的权限）")
+                        .into_any_element()
+                } else {
+                    v_flex().w_full().children(rows).into_any_element()
+                }),
+        )
+        .into_any_element()
+}
+
+/// 「SQL 控制台」tab。
+///
+/// 它是"上面两张表没做的功能"的**逃生口**：面板不解析、不改写用户写的 SQL，
+/// 原样交给容器里的客户端。⚠️ 输出用 `--table`（stdout 不是 tty 时 mysql
+/// 默认是 batch，不显式要表格的话控制台里会是一堆 tab —— 实测）。
+fn db_console_card(
+    db: &DbState,
+    form: &DbPageForm,
+    entity: &Entity<Shell>,
+    cx: &App,
+) -> AnyElement {
+    let run: AnyElement = if db.busy {
+        div()
+            .text_sm()
+            .text_color(theme::text_muted())
+            .child("执行中…")
+            .into_any_element()
+    } else {
+        let entity = entity.clone();
+        Button::new("db-run-sql")
+            .label("执行")
+            .small()
+            .primary()
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |shell, cx| shell.run_db_console(window, cx));
+            })
+            .into_any_element()
+    };
+
+    // 回显这次输出是哪条语句的 —— 连着跑两条之后没有这一行就分不清了
+    // （和 exec 浮层里那条"上一次执行"同一个理由）。
+    let echo: AnyElement = if db.last_sql.is_empty() {
+        div().into_any_element()
+    } else {
+        h_flex()
+            .w_full()
+            .gap_2()
+            .items_center()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child("上一次执行"),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .font_family("Consolas")
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .overflow_hidden()
+                    .truncate()
+                    .child(db.last_sql.clone()),
+            )
+            .into_any_element()
+    };
+
+    // 三种状态分开：没跑过 / 跑完了没输出 / 有输出。
+    // （`log_text(None, ..)` 会显示"正在加载…"，那在这儿是错的。）
+    let output: AnyElement = if db.sql_ran || db.sql_output.is_some() {
+        log_text(db.sql_output.as_deref(), "db-sql-output")
+    } else {
+        div()
+            .text_sm()
+            .text_color(theme::text_dim())
+            .child("还没有执行任何语句")
+            .into_any_element()
+    };
+
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(
+            v_flex()
+                .w_full()
+                .gap_3()
+                .p_4()
+                .rounded_lg()
+                .bg(theme::bg_card())
+                .border_1()
+                .border_color(theme::border())
+                .child(form_field(
+                    "db-sql",
+                    "语句（原样执行，面板不改写、也不解析）",
+                    &form.sql,
+                    cx,
+                    true,
+                ))
+                .child(
+                    h_flex()
+                        .w_full()
+                        .justify_between()
+                        .items_center()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::text_muted())
+                                .child("SHOW / SELECT / DDL 都能跑；输出是 mysql 客户端的表格形态。"),
+                        )
+                        .child(run),
+                ),
+        )
+        .child(echo)
+        .child(output)
+        .into_any_element()
+}
+
+/// 「数据库管理」页的动作弹窗（新建库 / 新建用户 / 改密码 / 授权）。
+///
+/// 四种动作共用一个弹窗：同时只可能开一个，而且它们共用"用户名 / 主机 / 密码 /
+/// 库名"那几格。哪种动作决定**画哪几格**，也决定提交时拼哪条 SQL
+/// （拼装在 `app.rs::submit_db_dialog` 里，用的是 `wslc-core` 的纯函数）。
+///
+/// ⚠️ 提交前的校验（标识符白名单）在 `submit_db_dialog` 里：不合法就**不关弹窗**，
+/// 只给一条提示 —— 用户就在那一格上，改一个字比重打一遍强。
+pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyElement {
+    let Some(dialog) = shell.db_dialog.as_ref() else {
+        return div().into_any_element();
+    };
+
+    let kind = dialog.kind.clone();
+    let locked_user = matches!(kind, DbDialogKind::AlterPassword { .. } | DbDialogKind::Grant { .. });
+
+    // 按动作画不同的字段
+    let mut fields: Vec<AnyElement> = Vec::new();
+    match &kind {
+        DbDialogKind::NewDatabase => {
+            fields.push(form_field("db-dialog-name", "库名", &dialog.database, cx, true));
+            fields.push(
+                h_flex()
+                    .w_full()
+                    .gap_3()
+                    .child(form_field("db-dialog-charset", "字符集（可留空）", &dialog.charset, cx, false))
+                    .child(form_field(
+                        "db-dialog-collation",
+                        "排序规则（可留空）",
+                        &dialog.collation,
+                        cx,
+                        false,
+                    ))
+                    .into_any_element(),
+            );
+        }
+        DbDialogKind::NewUser => {
+            fields.push(
+                h_flex()
+                    .w_full()
+                    .gap_3()
+                    .child(form_field("db-dialog-user", "用户名", &dialog.user, cx, false))
+                    .child(form_field("db-dialog-host", "主机", &dialog.host, cx, false))
+                    .into_any_element(),
+            );
+            fields.push(form_field("db-dialog-password", "密码", &dialog.password, cx, true));
+            fields.push(form_field(
+                "db-dialog-grant-db",
+                "授权到哪个库（可留空）",
+                &dialog.grant_db,
+                cx,
+                true,
+            ));
+            fields.push(grant_kind_row(dialog.grant, entity));
+        }
+        DbDialogKind::AlterPassword { user, host } => {
+            fields.push(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child(format!("账号：'{user}'@'{host}'（用户名和主机不能在这里改）"))
+                    .into_any_element(),
+            );
+            fields.push(form_field("db-dialog-password", "新密码", &dialog.password, cx, true));
+        }
+        DbDialogKind::Grant { user, host } => {
+            fields.push(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child(format!("账号：'{user}'@'{host}'"))
+                    .into_any_element(),
+            );
+            fields.push(form_field(
+                "db-dialog-grant-db",
+                "授权到哪个库",
+                &dialog.grant_db,
+                cx,
+                true,
+            ));
+            fields.push(grant_kind_row(dialog.grant, entity));
+        }
+    }
+
+    // 用户名 / 主机在"改密码 / 授权"里是**锁定**的：那样画出来才看得出
+    // 这条动作作用在谁身上（而不是让用户以为还能改）。
+    if locked_user {
+        fields.insert(
+            0,
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child("下面这条语句作用在上面那个账号上。")
+                .into_any_element(),
+        );
+    }
+
+    let cancel = {
+        let entity = entity.clone();
+        Button::new("db-dialog-cancel")
+            .label("取消")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.close_db_dialog(cx));
+            })
+    };
+    let confirm = {
+        let entity = entity.clone();
+        Button::new("db-dialog-confirm")
+            .label(kind.confirm_label())
+            .small()
+            .primary()
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |shell, cx| shell.submit_db_dialog(window, cx));
+            })
+    };
+
+    modal_scrim(
+        "db-dialog",
+        v_flex()
+            .w(px(680.))
+            .gap_4()
+            .p_5()
+            .rounded_lg()
+            .bg(theme::bg_card())
+            .border_1()
+            .border_color(theme::border())
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_bold()
+                            .text_color(theme::text())
+                            .child(kind.title()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_dim())
+                            .child(format!(
+                                "在容器 {} 上执行 —— 用的是数据库页连接卡里那个账号。",
+                                shell
+                                    .state
+                                    .db
+                                    .as_ref()
+                                    .map(|db| db.container.clone())
+                                    .unwrap_or_default()
+                            )),
+                    ),
+            )
+            .children(fields)
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_end()
+                    .gap_2()
+                    .child(cancel)
+                    .child(confirm),
+            ),
+    )
+    .into_any_element()
+}
+
+/// 授权级别那一排按钮（选中态用 `primary` 配色，和别处一致）。
+fn grant_kind_row(current: GrantKind, entity: &Entity<Shell>) -> AnyElement {
+    let buttons: Vec<AnyElement> = GrantKind::ALL
+        .iter()
+        .map(|kind| {
+            let kind = *kind;
+            let entity = entity.clone();
+            let mut button = Button::new(SharedString::from(format!("db-grant-{kind:?}")))
+                .label(kind.label())
+                .small()
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |shell, cx| shell.set_db_grant(kind, cx));
+                });
+            if current == kind {
+                button = button.primary();
+            }
+            button.into_any_element()
+        })
+        .collect();
+
+    h_flex()
+        .w_full()
+        .gap_2()
+        .items_center()
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child("权限"),
+        )
+        .children(buttons)
+        .into_any_element()
+}
+
 // ---------------------------------------------------------------------------
 // ③ 镜像 / 网络 / 卷
 // ---------------------------------------------------------------------------
