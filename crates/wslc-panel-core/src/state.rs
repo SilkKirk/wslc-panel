@@ -626,6 +626,25 @@ pub enum PendingAction {
         /// 连接凭据。
         creds: MysqlCreds,
     },
+    /// **恢复**一份备份（v0.8）—— 覆盖该库的现有数据，所以走二次确认。
+    ///
+    /// ⚠️ 只认**容器内**的 dump（`/tmp/wslc-backups/<文件名>`）：
+    /// `wslc container cp` 的"本地→容器"方向实测是坏的（详见
+    /// `cmd::mysql` 的模块注释），所以恢复前要用
+    /// `cmd::mysql::container_backup_exists` 确认那份文件还在 ——
+    /// 容器重建过的话 `/tmp` 里的东西就没了。
+    RestoreDatabase {
+        /// 目标容器。
+        container: String,
+        /// 要恢复的库（dump 是 `--databases` 出来的，恢复回**原名**）。
+        database: String,
+        /// 容器里的客户端二进制名。
+        client: String,
+        /// dump 在容器内的路径。
+        container_path: String,
+        /// 连接凭据。
+        creds: MysqlCreds,
+    },
 }
 
 impl PendingAction {
@@ -643,6 +662,7 @@ impl PendingAction {
             PendingAction::TerminateSession { .. } => "终止会话",
             PendingAction::DropDatabase { .. } => "删除数据库",
             PendingAction::DropUser { .. } => "删除 MySQL 用户",
+            PendingAction::RestoreDatabase { .. } => "恢复备份",
         }
     }
 
@@ -689,6 +709,11 @@ impl PendingAction {
                  已经授出去的权限一并消失。已经建立的连接不会立刻断开，\
                  但之后它就连不上了。此操作不可撤销。"
             ),
+            PendingAction::RestoreDatabase { database, container_path, .. } => format!(
+                "将把备份 `{container_path}` 恢复进数据库 **{database}** ——\
+                 这个库**现在的全部数据会被覆盖**（dump 是 `--databases` 形式，\
+                 恢复只能回原库）。此操作不可撤销。"
+            ),
         }
     }
 
@@ -705,6 +730,7 @@ impl PendingAction {
             PendingAction::TerminateSession { .. } => "终止会话",
             PendingAction::DropDatabase { .. } => "删除数据库",
             PendingAction::DropUser { .. } => "删除用户",
+            PendingAction::RestoreDatabase { .. } => "恢复",
         }
     }
 
@@ -779,6 +805,27 @@ impl PendingAction {
                 cmd::mysql::run_sql(wslc, container, client, creds, &sql, None, SqlMode::Batch)?;
                 Ok(format!("已删除用户：'{user}'@'{host}'"))
             }
+            // 恢复前先确认容器里那份 dump 还在 —— 容器重建过的话 /tmp 就清空了，
+            // 那时报错要直说（而不是甩一句 mysql 的 "No such file"）
+            PendingAction::RestoreDatabase {
+                container,
+                database,
+                client,
+                container_path,
+                creds,
+            } => {
+                let exists =
+                    cmd::mysql::container_backup_exists(wslc, container, container_path)?;
+                if !exists {
+                    return Err(wslc_core::Error::Unsupported(format!(
+                        "容器里找不到这份备份（{container_path}）。容器重建过的话，\
+                         /tmp 里的备份就没了 —— Windows 侧的文件还在（「打开位置」），\
+                         但现在没有能把它送回容器里的路（`wslc container cp` 的本地→容器方向是坏的）。"
+                    )));
+                }
+                cmd::mysql::restore_database(wslc, container, client, creds, container_path)?;
+                Ok(format!("已恢复数据库：{database}（现有数据已被备份覆盖）"))
+            }
         }
     }
 }
@@ -803,6 +850,56 @@ pub fn format_bytes(bytes: u64) -> String {
     } else {
         format!("{value:.2} {}", UNITS[unit])
     }
+}
+
+/// 启动时读一次数据库账号存档。
+///
+/// 拆成自由函数是因为它**碰文件系统**：`AppState::new` 的构造表达式里
+/// 塞 IO 会让那个函数没法一眼看完，而且测试也注入不进去。
+fn db_credentials_at_startup() -> (crate::dbcreds::DbCredentialStore, Option<String>) {
+    crate::dbcreds::DbCredentialStore::load(&crate::dbcreds::store_path(
+        crate::prefs::app_dir().unwrap_or_default(),
+    ))
+}
+
+/// 扫一个备份目录，按**时间倒序**返回（新的在上）。
+///
+/// 只认 `<库名>-<YYYYMMDD>-<HHMMSS>.sql` 这个形状（面板自己生成的）；
+/// 不认识的文件**跳过** —— 目录里可能有用户手动拷进来的东西，报错只会烦人。
+///
+/// ⚠️ 碰文件系统 —— 只在**点击后**和**长任务完成回调**里调，
+/// 绝不在渲染路径上（`AGENTS.md` §7.1）。
+pub fn scan_backup_dir(dir: &std::path::Path) -> std::io::Result<Vec<BackupEntry>> {
+    let mut out: Vec<BackupEntry> = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some((database, stamp)) = parse_backup_file_name(file_name) else {
+            continue;
+        };
+        let bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        out.push(BackupEntry {
+            container_path: format!(
+                "{}/{}",
+                wslc_core::model::mysql::CONTAINER_BACKUP_DIR,
+                file_name
+            ),
+            database,
+            file_name: file_name.to_owned(),
+            path,
+            bytes,
+            stamp,
+        });
+    }
+    // 文件名里的时间戳是定宽的，字典序 == 时间序
+    out.sort_by(|a, b| b.stamp.cmp(&a.stamp));
+    Ok(out)
 }
 
 /// 需要二次确认的 **WSL 发行版**动作。
@@ -1538,6 +1635,76 @@ pub struct DbState {
     pub sql_output: Option<String>,
     /// SQL 控制台跑过没有（区分"还没跑过"和"跑完了没有输出"）。
     pub sql_ran: bool,
+    /// **本地存档**的库账号（v0.8：建库同时建用户，列表要展示用户名 / 密码）。
+    ///
+    /// 整份存档（`db-credentials.json`）挂在 `AppState` 上，`DbState` 只持有
+    /// 一份克隆 —— 写盘的时机由动作（建库 / 删库）决定，不是每帧都写。
+    pub credentials: crate::dbcreds::DbCredentialStore,
+    /// 正在备份的库（`None` = 空闲）。
+    ///
+    /// 备份是**长任务**（大库可能几分钟）：照 `ExportProgress` 的样子做 ——
+    /// 状态在这里、取消令牌在 `Shell`、界面把按钮换成"备份中…"。
+    pub backup: Option<BackupState>,
+    /// 备份列表（**Windows 侧**目录里扫出来的）。
+    ///
+    /// 进页面 / 备份完成 / 删除后重扫。容器内那份 `/tmp` 备份的"还在不在"
+    /// 是**恢复那一刻**才查的（`cmd::mysql::container_backup_exists`），
+    /// 不在这里 —— 那要起进程，不能挂在渲染路径上。
+    pub backups: Vec<BackupEntry>,
+    /// 备份列表浮层开没开（开的对象是哪个库；`None` = 关着）。
+    pub backup_dialog: Option<String>,
+}
+
+/// 一次备份的状态（跑着的那一个）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupState {
+    /// 在备份哪个库。
+    pub database: String,
+    /// 备份文件在**容器里**的路径（恢复要用）。
+    pub container_path: String,
+    /// 备份文件在 **Windows** 侧的路径（完成后展示 / 打开位置）。
+    pub windows_path: std::path::PathBuf,
+    /// 最近一条 mysqldump 的 stderr（警告类消息，比如 GTID 那条）。
+    ///
+    /// 这一版是 `None`：输出直接落在容器内（见 `cmd::mysql` 的模块注释），
+    /// 字段留着是给"边 dump 边传"那条路用的。
+    pub last_message: Option<String>,
+}
+
+/// 一条备份记录（**Windows 侧**目录里扫出来的文件）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupEntry {
+    /// 备份的库（从文件名解出来：`djxm-20261015-035901.sql` → `djxm`）。
+    pub database: String,
+    /// 文件名（不含目录）。
+    pub file_name: String,
+    /// Windows 侧完整路径。
+    pub path: std::path::PathBuf,
+    /// 文件大小（字节）。
+    pub bytes: u64,
+    /// 备份时间（从文件名解出来的 `YYYYMMDD-HHMMSS`）。
+    pub stamp: String,
+    /// **容器内**那份的路径（恢复用；随文件名推出来，不一定还在）。
+    pub container_path: String,
+}
+
+/// 从备份文件名解出 `(库名, 时间戳)`；不像的文件名返回 `None`（跳过）。
+///
+/// 目录里可能躺着用户手动拷进来的东西 —— 不认识的**跳过**而不是报错。
+pub fn parse_backup_file_name(file_name: &str) -> Option<(String, String)> {
+    let raw = file_name.strip_suffix(".sql")?;
+    // 形如 `djxm-20261015-035901`：库自身也可能带 `-`，所以从**右边**找两段
+    let (head, stamp2) = raw.rsplit_once('-')?;
+    let (database, stamp1) = head.rsplit_once('-')?;
+    if database.is_empty()
+        || stamp1.len() != 8
+        || stamp2.len() != 6
+        || !stamp1.chars().all(|c| c.is_ascii_digit())
+        || !stamp2.chars().all(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
+    Some((database.to_owned(), format!("{stamp1}-{stamp2}")))
 }
 
 impl DbState {
@@ -1570,6 +1737,10 @@ impl DbState {
             last_sql: String::new(),
             sql_output: None,
             sql_ran: false,
+            credentials: crate::dbcreds::DbCredentialStore::default(),
+            backup: None,
+            backups: Vec::new(),
+            backup_dialog: None,
         }
     }
 
@@ -2770,9 +2941,69 @@ pub struct AppState {
     /// `Option<DbState>` 而不是 `HashMap`：切到另一个容器的数据库页时
     /// 整个换掉，连接信息不会串台。
     pub db: Option<DbState>,
+    /// 数据库账号的**本地存档**（`db-credentials.json`，v0.8）。
+    ///
+    /// ⚠️ **明文存密码** —— 这是"列表里要展示密码"这个产品决定的直接代价，
+    /// 见 `dbcreds` 的模块注释（1Panel 同样这么做）。启动时读一次，
+    /// 建库 / 删库时改 + 写盘。
+    pub db_credentials: crate::dbcreds::DbCredentialStore,
+    /// 凭据存档**读不出来**的原因（损坏时提示；`None` = 一切正常）。
+    pub db_credentials_error: Option<String>,
+    /// 备份文件在磁盘上的家：`<数据目录>/backups/<容器>/<文件名>`。
+    ///
+    /// `None` = `LOCALAPPDATA` 没设置（备份功能整体不可用，界面上给一句说明）。
+    pub backup_dir: Option<PathBuf>,
 }
 
 impl AppState {
+    /// 数据库账号存档落在哪里（没设 `LOCALAPPDATA` 时是 `None`）。
+    pub fn db_credentials_path(&self) -> Option<PathBuf> {
+        crate::prefs::app_dir().map(crate::dbcreds::store_path)
+    }
+
+    /// 把凭据存档写回磁盘（建库 / 删库之后调）。
+    ///
+    /// 返回 `Option<String>`：`Some(说明)` = 没写成（界面提示），`None` = 成功。
+    /// 刻意**不用 crate 的 `Result` 别名** —— 那个别名把错误类型钉死在
+    /// `wslc_core::Error` 上，而这里的失败原因（磁盘满 / 路径不对）不是
+    /// 子进程错误，硬塞进去只会造出一个没人会匹配的变体。
+    ///
+    /// 失败只返回一句说明，**不 panic**：存档写不进去最坏是
+    /// "重启后账号要重新录入"，不值得为它崩掉界面。
+    pub fn save_db_credentials(&self) -> Option<String> {
+        let Some(path) = self.db_credentials_path() else {
+            return Some("LOCALAPPDATA 未设置，账号存不了盘".to_owned());
+        };
+        self.db_credentials
+            .save(&path)
+            .err()
+            .map(|e| format!("写凭据存档失败：{e}"))
+    }
+
+    /// 某个容器的备份目录（`<数据目录>/backups/<容器>`）。
+    pub fn container_backup_dir(&self, container: &str) -> Option<PathBuf> {
+        self.backup_dir.as_ref().map(|dir| {
+            dir.join(wslc_core::model::mysql::WINDOWS_BACKUP_SUBDIR)
+                .join(container.trim())
+        })
+    }
+
+    /// 重扫一个容器的备份目录（备份完成 / 删除后调）。
+    ///
+    /// ⚠️ 碰文件系统 —— 只在**点击后**和**长任务完成回调**里调，
+    /// 绝不在渲染路径上（`AGENTS.md` §7.1）。
+    pub fn rescan_backups(&mut self, container: &str) {
+        // ⚠️ 先把**目录**算出来、再借 `self.db`：`db.backups = …` 赋值时
+        // `db`（对 `self.db` 的可变借用）还活着，那时再去调 `self.…`
+        // 就是 E0502 —— 借用检查器看得见，人眼容易漏。
+        let Some(dir) = self.container_backup_dir(container) else {
+            return;
+        };
+        let Some(db) = self.db.as_mut().filter(|db| db.container == container) else {
+            return;
+        };
+        db.backups = scan_backup_dir(&dir).unwrap_or_default();
+    }
     /// 新建初始状态。
     pub fn new(wslc: Wslc, wsl: Wsl) -> Self {
         Self {
@@ -2802,6 +3033,11 @@ impl AppState {
             mirrors: MirrorState::new(),
             registry: RegistryState::new(),
             db: None,
+            // 凭据存档 / 备份目录都挂在面板自己的数据目录下（读坏了给提示，
+            // 不 panic —— 账号可以在建库时重新录入）
+            db_credentials: db_credentials_at_startup().0,
+            db_credentials_error: db_credentials_at_startup().1,
+            backup_dir: crate::prefs::app_dir(),
         }
     }
 
@@ -4364,5 +4600,79 @@ mod tests {
         assert!(state.error.as_ref().unwrap().hint().is_some());
         state.clear_error();
         assert!(state.error.is_none());
+    }
+
+    #[test]
+    fn backup_file_names_parse_and_junk_is_skipped() {
+        // 面板自己生成的形状：`<库名>-<日期>-<时间>.sql`
+        let (database, stamp) =
+            parse_backup_file_name("djxm-20261015-035901.sql").expect("应能解出");
+        assert_eq!(database, "djxm");
+        assert_eq!(stamp, "20261015-035901");
+        // 库名自己带 `-`：从**右边**解，库名保持完整
+        let (database, _) =
+            parse_backup_file_name("my-app-db-20261015-035901.sql").expect("应能解出");
+        assert_eq!(database, "my-app-db");
+        // 不认识的文件**跳过**（目录里可能有用户手动拷进来的东西）
+        assert_eq!(parse_backup_file_name("readme.txt"), None);
+        assert_eq!(parse_backup_file_name("abc.sql"), None);
+        assert_eq!(parse_backup_file_name("abc-20261015.sql"), None);
+        assert_eq!(parse_backup_file_name("abc-2026-035901.sql"), None);
+        assert_eq!(parse_backup_file_name(""), None);
+    }
+
+    #[test]
+    fn scan_backup_dir_sorts_newest_first_and_skips_junk() {
+        let dir = std::env::temp_dir().join(format!("wslc-scan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a-20261015-035901.sql"), "x").unwrap();
+        std::fs::write(dir.join("a-20261016-035901.sql"), "xy").unwrap();
+        std::fs::write(dir.join("b-20261010-000000.sql"), "xyz").unwrap();
+        // 垃圾文件：解不出来 → 跳过
+        std::fs::write(dir.join("notes.txt"), "junk").unwrap();
+
+        let entries = scan_backup_dir(&dir).expect("应能扫出备份");
+        assert_eq!(entries.len(), 3, "{entries:?}");
+        // 新的在上（时间戳定宽，字典序 == 时间序）
+        assert_eq!(entries[0].database, "a");
+        assert_eq!(entries[0].stamp, "20261016-035901");
+        assert_eq!(entries[0].bytes, 2);
+        assert_eq!(entries[2].database, "b");
+        // 容器内那份的路径由文件名推出来（不一定还在，恢复前会查）
+        assert_eq!(
+            entries[0].container_path,
+            "/tmp/wslc-backups/a-20261016-035901.sql"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn credentials_survive_the_db_state_clone_and_stay_redacted() {
+        // `DbState` 挂着一份凭据存档的克隆（真身在 `AppState`）——
+        // 克隆行为要正常，且 Debug **不能**把明文密码带出来
+        //（`DbCredential` 的 Debug 是手写脱敏的，这是守门断言）
+        let mut state = DbState::from_probe(&probe_with(RootCredHint::Unknown), "mysql:8");
+        state.credentials.put(
+            "mysql",
+            "shop",
+            crate::dbcreds::DbCredential {
+                user: "shop_user".to_owned(),
+                password: "s3cret-pw".to_owned(),
+                host: "%".to_owned(),
+            },
+        );
+        let cloned = state.clone();
+        assert_eq!(
+            cloned
+                .credentials
+                .get("mysql", "shop")
+                .unwrap()
+                .password,
+            "s3cret-pw"
+        );
+        let text = format!("{cloned:?}");
+        assert!(!text.contains("s3cret-pw"), "{text}");
+        assert!(text.contains("***"), "{text}");
     }
 }

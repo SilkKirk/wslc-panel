@@ -928,6 +928,157 @@ pub fn create_user_statements(
 }
 
 // ---------------------------------------------------------------------------
+// 「建库同时建用户」与备份（v0.8）
+// ---------------------------------------------------------------------------
+
+/// 生成一个随机密码（**16 位**）。
+///
+/// # 为什么是这条字符集
+///
+/// 密码要被拼进 SQL 字符串字面量（[`quote_literal`] 会转义 `'` / `\` / `"`），
+/// 但**少给用户添麻烦**更重要：字符集里干脆**不放**那三个字符，转义就永远
+/// 不会被触发；也不放空格 / `` ` `` / `$`，让它能原样贴进任何客户端。
+///
+/// # 随机源
+///
+/// 没有 rand 依赖（不为本期引入新 crate），用 `std` 自带的来源拼熵：
+/// 纳秒时间 + 进程内逐次递增的计数器 + 栈地址（ASLR 给的盐），过
+/// `DefaultHasher` 后用 LCG 摊开。单机场景下"同一个面板进程里两次点击
+/// 生成的密码不同"就够了。⚠️ **不是密码学安全的随机** —— 威胁模型是
+/// "别让两个库同密码"，不是"对抗能读你内存的攻击者"。这条写明了，是推的边界。
+pub fn generate_password() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // 24 个**无歧义**字符（没有 0/O、1/l/I）—— 密码是要抄到别的机器上用的
+    const ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hasher.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
+    hasher.write_u64(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0),
+    );
+    hasher.write_u64(process_salt());
+    let mut state = hasher.finish();
+
+    let mut out = String::with_capacity(16);
+    for _ in 0..16 {
+        // LCG 只是把 64 位熵摊开；安全性来自熵源，不来自它
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        out.push(ALPHABET[(state >> 33) as usize % ALPHABET.len()] as char);
+    }
+    out
+}
+
+/// 进程启动时的一个盐（栈地址，ASLR 让它每次运行都不同）。
+fn process_salt() -> u64 {
+    let marker = 0u8;
+    &marker as *const u8 as u64
+}
+
+/// 默认的用户名规则：`<库名>_user`（`djxm` → `djxm_user`）。
+///
+/// ⚠️ 结果**仍要**过 [`validate_ident`]（调用方自己查）：库名受白名单约束时
+/// 拼上 `_user` 一定合法，但这个函数不知道调用方的库名从哪来。
+pub fn default_user_for(database: &str) -> String {
+    format!("{}_user", database.trim())
+}
+
+/// `mysqldump` 的参数（**纯函数**，`cmd::mysql` 拿它去拼 `wslc exec`）。
+///
+/// # 实测（wslc 3.0.3.0 / mysql 26.7.0）
+///
+/// - `--databases <库名>`：dump 里带 `CREATE DATABASE`，恢复时能落回原库；
+/// - `--single-transaction`：InnoDB 一致性快照，不锁表（MyISAM 不吃这套，
+///   那类表本来就该 dump 时锁 —— 权衡写在这里）；
+/// - `--quick`：逐行取，不在内存里攒整个结果集 —— 对大表是**必须的**；
+/// - `--set-gtid-purged=OFF`：实测不加会往 stderr 打一条 GTID 警告；
+///   恢复到同一个实例的场景 GTID 本来就不该带，加上它把警告也消了。
+pub fn mysqldump_args(bin: &str, creds: &MysqlCreds, database: &str) -> Result<Vec<String>> {
+    validate_ident("库名", database)?;
+    let mut args = client_args(bin, creds, "", None, SqlMode::Batch);
+    // client_args 的尾巴是 `-e <sql>`，dump 不需要它 —— 掐掉再接自己的参数
+    args.truncate(args.len() - 2);
+    args.push("--databases".to_owned());
+    args.push(database.trim().to_owned());
+    args.push("--single-transaction".to_owned());
+    args.push("--quick".to_owned());
+    args.push("--set-gtid-purged=OFF".to_owned());
+    Ok(args)
+}
+
+/// 恢复用的容器内脚本（**纯函数**）。
+///
+/// 恢复只能走容器内的重定向：`wslc exec` 的 stdin 是 null（`build_command`
+/// 写死），没法从 Windows 侧喂 SQL。实测（wslc 3.0.3.0）：
+/// `/bin/sh -c "mysql -uroot < /tmp/…"` 可行；`wslc container cp` 的
+/// "本地→容器"方向**实测是坏的**（`ERROR_PATH_NOT_FOUND`，连根目录都写不进），
+/// 所以 dump 文件**留在容器里**（备份时已经落在 [`CONTAINER_BACKUP_DIR`]）。
+pub fn restore_script(bin: &str, dump_path: &str) -> String {
+    format!("exec {bin} < {dump_path}")
+}
+
+/// 备份文件在**容器里**的目录（恢复时从这里读）。
+///
+/// 放 `/tmp` 是刻意的：它一定可写，而且不用先探容器里哪块盘有空。
+/// 代价在 [`WINDOWS_BACKUP_SUBDIR`] 那条注释里。
+pub const CONTAINER_BACKUP_DIR: &str = "/tmp/wslc-backups";
+
+/// 备份在 **Windows 侧**的子目录名（`<数据目录>/backups/<容器>/<文件名>`）。
+///
+/// 备份做成**两份**：容器内那份供恢复（同容器重定向，零拷贝）、
+/// Windows 侧那份留档（容器删了它还在）。⚠️ 容器内那份在 `/tmp` ——
+/// 容器重建就没了，所以**恢复前**必须用
+/// `cmd::mysql::container_backup_exists` 确认它还在。
+pub const WINDOWS_BACKUP_SUBDIR: &str = "backups";
+
+/// 备份文件名（`<库名>-<YYYYMMDD>-<HHMMSS>.sql`，定宽、可排序）。
+///
+/// 同一秒同库会撞名 —— 调用方撞了就报"刚备份过一次"，比自动加序号诚实。
+pub fn backup_file_name(database: &str, now_secs: u64) -> String {
+    let (y, m, d) = civil_from_days((now_secs / 86_400) as i64);
+    let secs = now_secs % 86_400;
+    format!(
+        "{database}-{:04}{:02}{:02}-{:02}{:02}{:02}.sql",
+        y,
+        m,
+        d,
+        secs / 3600,
+        (secs % 3600) / 60,
+        secs % 60
+    )
+}
+
+/// 从 Windows 侧时间戳算 UTC 秒（给 [`backup_file_name`] 用）。
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 天数 → (年, 月, 日)（Howard Hinnant 的算法，公共领域）。
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+// ---------------------------------------------------------------------------
 // 错误分类
 // ---------------------------------------------------------------------------
 
@@ -1539,6 +1690,84 @@ mod tests {
         assert!(!only.contains(';'), "{only}");
         // 授权对象非法 → 整条拒绝（不会出现"建了用户但没授权"的半成品）
         assert!(create_user_statements("app", "%", "pw", Some(("bad name", GrantKind::All))).is_err());
+    }
+
+    // -- 建库同时建用户 / 备份（v0.8）---------------------------------------
+
+    #[test]
+    fn generated_passwords_are_stable_in_shape_and_unique() {
+        let first = generate_password();
+        assert_eq!(first.len(), 16, "{first}");
+        // 字符集里没有需要转义的东西 —— 这是 quote_literal 永不触发的保证
+        assert!(
+            first.chars().all(|c| c.is_ascii_alphanumeric()),
+            "出现需要转义的字符：{first}"
+        );
+        // 连续生成不相同（同一次点击链路里至少要保证这个）
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..32 {
+            seen.insert(generate_password());
+        }
+        assert_eq!(seen.len(), 32, "32 次里出了重复密码：{seen:?}");
+    }
+
+    #[test]
+    fn default_user_follows_the_database_name() {
+        assert_eq!(default_user_for("djxm"), "djxm_user");
+        assert_eq!(default_user_for("  shop  "), "shop_user");
+        assert_eq!(default_user_for(""), "_user");
+        // 拼出来的名字仍然要能过校验（库名受白名单约束，所以一定过）
+        assert!(validate_ident("用户名", &default_user_for("djxm")).is_ok());
+    }
+
+    #[test]
+    fn mysqldump_args_are_the_verified_shape() {
+        let creds = MysqlCreds::root("pw");
+        let args = mysqldump_args("mysqldump", &creds, "shop").unwrap();
+        assert!(
+            args.windows(2).any(|w| w[0] == "-u" && w[1] == "root"),
+            "{args:?}"
+        );
+        assert!(
+            args.windows(2).any(|w| w[0] == "--databases" && w[1] == "shop"),
+            "{args:?}"
+        );
+        for flag in ["--single-transaction", "--quick", "--set-gtid-purged=OFF"] {
+            assert!(args.contains(&flag.to_owned()), "缺 {flag}：{args:?}");
+        }
+        // 密码不进 argv（和 exec 同一条纪律）
+        assert!(!args.iter().any(|a| a.contains("pw")), "{args:?}");
+        // 非法库名在本地就拦下，不起进程
+        assert!(mysqldump_args("mysqldump", &creds, "shop; drop").is_err());
+    }
+
+    #[test]
+    fn backup_file_names_are_sortable_and_unique_per_second() {
+        // 2026-10-15 03:59:01 UTC = 1_792_036_741（用 PowerShell 换算核过）
+        assert_eq!(
+            backup_file_name("djxm", 1_792_036_741),
+            "djxm-20261015-035901.sql"
+        );
+        assert_ne!(
+            backup_file_name("djxm", 1_792_036_741),
+            backup_file_name("djxm", 1_792_036_742)
+        );
+    }
+
+    #[test]
+    fn restore_script_is_a_container_side_redirect() {
+        assert_eq!(
+            restore_script("mysql", "/tmp/wslc-backups/x.sql"),
+            "exec mysql < /tmp/wslc-backups/x.sql"
+        );
+    }
+
+    #[test]
+    fn civil_dates_are_correct_around_leap_years() {
+        // 已知锚点：1970-01-01 = day 0；2000-02-29 与 2024-02-29 都是闰日
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(11_016), (2000, 2, 29));
+        assert_eq!(civil_from_days(19_782), (2024, 2, 29));
     }
 
     // -- 错误分类 -----------------------------------------------------------
