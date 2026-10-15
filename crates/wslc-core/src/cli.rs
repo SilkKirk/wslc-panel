@@ -345,10 +345,17 @@ impl Wslc {
     ///   —— 备份文件里混进一行报错就整个坏了。备份恰恰是"stdout 是数据、
     ///   stderr 是消息"的典型。
     ///
-    /// # stdin 仍然是 null
+    /// # stdin
     ///
-    /// [`build_command`] 写死 `Stdio::null()`，所以**导入**（从本地喂 SQL 进
-    /// 容器）没有这条路 —— 恢复走的是容器内的重定向（`sh -c 'mysql < /tmp/…'`）。
+    /// 这个方法**只覆写 stdout**，stdin 仍然是 [`build_command`] 写死的
+    /// `Stdio::null()`。**这不是 wslc 的限制**（`wslc exec --help` 有
+    /// `-i/--interactive`，原文"附加到 Stdin 并保持其打开状态"）——
+    /// 是我们这个封装还没做"stdin 来自文件"。要加的话在这里加一个
+    /// `cmd.stdin(Stdio::from(File::open(in_path)?))` 的同族方法即可。
+    ///
+    /// 数据库的"把 dump 送进容器"**不走这条路**：`wslc container cp <本地文件>
+    /// <容器>:<已存在的目录>/` 更直接（实测逐字节一致，见
+    /// `model::mysql::restore_container_path`）。
     pub fn spawn_to_file(
         &self,
         args: &[&str],

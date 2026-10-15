@@ -27,9 +27,9 @@ use wslc_core::model::install::{
 // 定义在 `wslc-core` 里；这里转出去，界面按它显示那句说明。
 pub use wslc_core::model::install::OnlineListSource;
 use wslc_core::model::{
-    ContainerSummary, DbEntry, DbUser, Distro, ImageListItem, MysqlCreds, MysqlErrorKind,
-    MysqlFamily, NetworkListItem, RootCredHint, Session, SqlMode, SystemInfo, VolumeListItem,
-    WslStatus,
+    AppRuntime, ContainerSummary, DbEntry, DbUser, DeployErrorKind, DeploySignal, Distro,
+    ImageListItem, MysqlCreds, MysqlErrorKind, MysqlFamily, NetworkListItem, ProcessStatus,
+    RootCredHint, Session, SqlMode, SystemInfo, VolumeListItem, WslStatus,
 };
 use wslc_core::settings::SettingsDoc;
 use wslc_core::storage::StorageInfo;
@@ -76,6 +76,16 @@ pub enum Page {
     /// 进这一页需要 window：连接卡上有用户名 / 密码输入框，
     /// 而 `InputState::new` 要 `&mut Window`（见 [`Page::needs_window_to_enter`]）。
     Database,
+    /// 容器里的**应用部署管理**（nginx / Java / Node.js / Go 容器）。
+    ///
+    /// ⚠️ **不在 [`Page::ALL`] 里** —— 和 `AddInstance` / `Database` 同一个取舍：
+    /// 它服务**某一个**容器，只能从**容器列表行上那个「部署管理」按钮**进来
+    /// （只有认得出是这几类运行时的那一行才画它）。所以顶部有「← 返回容器」，
+    /// 侧边栏里没有它。
+    ///
+    /// 进这一页需要 window：「添加部署」弹窗里全是输入框，而
+    /// `InputState::new` 要 `&mut Window`（见 [`Page::needs_window_to_enter`]）。
+    Deploy,
     /// 应用自己的设置（刷新间隔、主题……）。
     ///
     /// 这里存的是**本程序的偏好**（`%LOCALAPPDATA%\wslc-panel\prefs.json`）。
@@ -129,6 +139,7 @@ impl Page {
             Page::Networks => "网络",
             Page::Volumes => "卷",
             Page::Database => "数据库管理",
+            Page::Deploy => "部署管理",
             Page::AppSettings => "应用设置",
             Page::About => "关于",
         }
@@ -139,7 +150,7 @@ impl Page {
         match self {
             Page::Dashboard => "概览",
             Page::Instances | Page::AddInstance => "WSL 实例",
-            Page::Containers | Page::Database => "容器",
+            Page::Containers | Page::Database | Page::Deploy => "容器",
             Page::Images | Page::Networks | Page::Volumes => "资源",
             Page::AppSettings | Page::About => "设置",
         }
@@ -163,6 +174,13 @@ impl Page {
     /// 是页面上的输入框，而不是弹窗 —— 因为它描述的是"这一页现在连的是谁"，
     /// 属于**页面状态**，不是一次性动作。一次性动作（新建库 / 新建用户 / 改密码 /
     /// 授权）仍然走弹窗（`Shell::open_db_dialog`），和拉取镜像同一个理由。
+    ///
+    /// ⚠️ v0.9 的「部署管理」**故意不在这里**：它页面上一个输入框都没有，
+    /// 「添加部署」那五个框是**点按钮那一刻**才建的 ——
+    /// 和 v0.6.3 的「拉取镜像」同一个形状（那次也是把表单挪进弹窗，
+    /// 于是「镜像」页从这一列里退出去了）。多写一个进去不是"更保险"：
+    /// 它会让 `set_page` 里多一个**永远不会被执行**的分支，
+    /// 而那正是 v0.4 删掉 `Page::Config` / `Page::WslConfig` 时清掉的那种垃圾。
     pub fn needs_window_to_enter(self) -> bool {
         matches!(self, Page::AddInstance | Page::Database)
     }
@@ -628,11 +646,9 @@ pub enum PendingAction {
     },
     /// **恢复**一份备份（v0.8）—— 覆盖该库的现有数据，所以走二次确认。
     ///
-    /// ⚠️ 只认**容器内**的 dump（`/tmp/wslc-backups/<文件名>`）：
-    /// `wslc container cp` 的"本地→容器"方向实测是坏的（详见
-    /// `cmd::mysql` 的模块注释），所以恢复前要用
-    /// `cmd::mysql::container_backup_exists` 确认那份文件还在 ——
-    /// 容器重建过的话 `/tmp` 里的东西就没了。
+    /// dump 从 **Windows 侧存档**送进容器再恢复（`push_dump_to_container`
+    /// 的注释里有那三步的实测依据）。所以容器重建过、`/tmp` 被清过都**不影响**
+    /// —— 只要那份 Windows 文件还在，恢复就能进行。
     RestoreDatabase {
         /// 目标容器。
         container: String,
@@ -640,8 +656,8 @@ pub enum PendingAction {
         database: String,
         /// 容器里的客户端二进制名。
         client: String,
-        /// dump 在容器内的路径。
-        container_path: String,
+        /// **Windows 侧**那份 dump 的路径（恢复的输入）。
+        windows_path: std::path::PathBuf,
         /// 连接凭据。
         creds: MysqlCreds,
     },
@@ -709,10 +725,11 @@ impl PendingAction {
                  已经授出去的权限一并消失。已经建立的连接不会立刻断开，\
                  但之后它就连不上了。此操作不可撤销。"
             ),
-            PendingAction::RestoreDatabase { database, container_path, .. } => format!(
-                "将把备份 `{container_path}` 恢复进数据库 **{database}** ——\
+            PendingAction::RestoreDatabase { database, windows_path, .. } => format!(
+                "将把备份 `{}` 恢复进数据库 **{database}** ——\
                  这个库**现在的全部数据会被覆盖**（dump 是 `--databases` 形式，\
-                 恢复只能回原库）。此操作不可撤销。"
+                 恢复只能回原库）。此操作不可撤销。",
+                windows_path.display()
             ),
         }
     }
@@ -805,25 +822,28 @@ impl PendingAction {
                 cmd::mysql::run_sql(wslc, container, client, creds, &sql, None, SqlMode::Batch)?;
                 Ok(format!("已删除用户：'{user}'@'{host}'"))
             }
-            // 恢复前先确认容器里那份 dump 还在 —— 容器重建过的话 /tmp 就清空了，
-            // 那时报错要直说（而不是甩一句 mysql 的 "No such file"）
+            // 恢复：把 Windows 侧那份 dump 送进容器，再从容器内重定向进 mysql。
+            //
+            // 这里**不**假设容器里还有一份旧的 dump（实测：容器重建 / WSL 重启后
+            // `/tmp` 里那份就没了）。送进去之前先看本地文件在不在 —— 用户可能
+            // 在文件管理器里把它删了，那时要给一句人话，而不是 cp 的引擎报错。
             PendingAction::RestoreDatabase {
                 container,
                 database,
                 client,
-                container_path,
+                windows_path,
                 creds,
             } => {
-                let exists =
-                    cmd::mysql::container_backup_exists(wslc, container, container_path)?;
-                if !exists {
+                if !windows_path.is_file() {
                     return Err(wslc_core::Error::Unsupported(format!(
-                        "容器里找不到这份备份（{container_path}）。容器重建过的话，\
-                         /tmp 里的备份就没了 —— Windows 侧的文件还在（「打开位置」），\
-                         但现在没有能把它送回容器里的路（`wslc container cp` 的本地→容器方向是坏的）。"
+                        "备份文件不在了：{}。它可能被手动删掉了 —— 备份列表里\
+                         会跟着消失，重新备份一份即可。",
+                        windows_path.display()
                     )));
                 }
-                cmd::mysql::restore_database(wslc, container, client, creds, container_path)?;
+                let container_path =
+                    cmd::mysql::push_dump_to_container(wslc, container, windows_path)?;
+                cmd::mysql::restore_database(wslc, container, client, creds, &container_path)?;
                 Ok(format!("已恢复数据库：{database}（现有数据已被备份覆盖）"))
             }
         }
@@ -858,6 +878,17 @@ pub fn format_bytes(bytes: u64) -> String {
 /// 塞 IO 会让那个函数没法一眼看完，而且测试也注入不进去。
 fn db_credentials_at_startup() -> (crate::dbcreds::DbCredentialStore, Option<String>) {
     crate::dbcreds::DbCredentialStore::load(&crate::dbcreds::store_path(
+        crate::prefs::app_dir().unwrap_or_default(),
+    ))
+}
+
+/// 启动时读一次部署记录存档（理由同 [`db_credentials_at_startup`]）。
+///
+/// ⚠️ 和那个不同的是：**这个的第二项必须真的显示到界面上**
+/// （`AppState::deploy_store_error` → 部署页的提示条）。`db_credentials_error`
+/// 算出来了却全仓库没人读，是个洞；不能因为"照抄那边的形状"再挖一个。
+fn deploy_store_at_startup() -> (crate::deploys::DeployStore, Option<String>) {
+    crate::deploys::DeployStore::load(&crate::deploys::store_path(
         crate::prefs::app_dir().unwrap_or_default(),
     ))
 }
@@ -1363,6 +1394,15 @@ pub enum ImmediateAction {
     /// 不带行数 / 时间戳参数：那两项从 `AppState::logs` 里现读
     /// （按钮就在日志浮层上，用户刚选的就是他要的）。
     FollowContainerLogs(String),
+    /// 启动一条部署（v0.9）—— 面板在容器里起一个受 pidfile 管的进程。
+    ///
+    /// 参数是**应用名**（不是容器名）：具体跑在哪个容器、哪个目录、哪条命令
+    /// 由 `AppState::deploy` + 本地存档决定（`Shell::deploy_action` 去取）。
+    /// 刻意不把容器名 / 命令塞进这个变体：那会让"界面上显示的那一条"和
+    /// "实际执行的那一条"有两个真相来源。
+    StartDeployment(String),
+    /// 停止一条部署（只发 `TERM`，不做 `kill -9`）。
+    StopDeployment(String),
 }
 
 /// 「容器日志」浮层的状态。
@@ -1647,9 +1687,8 @@ pub struct DbState {
     pub backup: Option<BackupState>,
     /// 备份列表（**Windows 侧**目录里扫出来的）。
     ///
-    /// 进页面 / 备份完成 / 删除后重扫。容器内那份 `/tmp` 备份的"还在不在"
-    /// 是**恢复那一刻**才查的（`cmd::mysql::container_backup_exists`），
-    /// 不在这里 —— 那要起进程，不能挂在渲染路径上。
+    /// 进页面 / 备份完成 / 删除后重扫。**纯本地目录扫描** —— 不碰容器、不起进程，
+    /// 所以可以在任何时机做（包括"恢复前顺手看一眼"）。
     pub backups: Vec<BackupEntry>,
     /// 备份列表浮层开没开（开的对象是哪个库；`None` = 关着）。
     pub backup_dialog: Option<String>,
@@ -1660,7 +1699,10 @@ pub struct DbState {
 pub struct BackupState {
     /// 在备份哪个库。
     pub database: String,
-    /// 备份文件在**容器里**的路径（恢复要用）。
+    /// dump 生成在**容器里**的路径（备份那一步的产物）。
+    ///
+    /// ⚠️ 恢复**不用**它（v0.8.2 起恢复从 Windows 存档重新送一份进去）——
+    /// 留着是为了「删除备份」时把容器里这份也清掉。
     pub container_path: String,
     /// 备份文件在 **Windows** 侧的路径（完成后展示 / 打开位置）。
     pub windows_path: std::path::PathBuf,
@@ -1684,7 +1726,11 @@ pub struct BackupEntry {
     pub bytes: u64,
     /// 备份时间（从文件名解出来的 `YYYYMMDD-HHMMSS`）。
     pub stamp: String,
-    /// **容器内**那份的路径（恢复用；随文件名推出来，不一定还在）。
+    /// **容器内**那份备份的路径（备份时 dump 的产地）。
+    ///
+    /// 由文件名推出来（[`wslc_core::model::mysql::CONTAINER_BACKUP_DIR`] +
+    /// 文件名），**不一定还在**（容器重建 / `/tmp` 被清就会消失）。
+    /// 只用于「删除备份」时顺手清掉它 —— 恢复不依赖这个字段。
     pub container_path: String,
 }
 
@@ -1817,6 +1863,304 @@ impl DbState {
 /// 而不是拦用户自己想执行的命令。
 pub fn exec_argv(text: &str) -> Vec<String> {
     vec!["/bin/sh".to_owned(), "-c".to_owned(), text.to_owned()]
+}
+
+// ---------------------------------------------------------------------------
+// 容器里的应用部署管理（nginx / Java / Node.js / Go，v0.9）
+// ---------------------------------------------------------------------------
+
+/// 一次部署相关动作失败：分类 + 原文。
+///
+/// 和 [`DbFailure`] 同一个形状、同一个理由：分开存是为了界面上能说**两句话**
+/// —— 一句"该怎么办"（分类给的），一句原文（排障要用）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployFailure {
+    /// 分类（决定给什么建议）。
+    pub kind: DeployErrorKind,
+    /// 报错原文。
+    pub detail: String,
+}
+
+impl DeployFailure {
+    /// 从一段报错文本分类。退出码不传（理由同 [`DbFailure::from_text`]）。
+    pub fn from_text(detail: impl Into<String>) -> Self {
+        let detail = detail.into();
+        Self {
+            kind: wslc_core::model::deploy::classify_error(&detail, None),
+            detail,
+        }
+    }
+
+    /// 给用户的一句话建议（`None` = 直接看原文就行）。
+    pub fn hint(&self) -> Option<&'static str> {
+        self.kind.hint()
+    }
+
+    /// 提示条上那一句（没建议时给原文第一行，截断 —— 提示条是单行横幅）。
+    pub fn summary(&self) -> String {
+        if let Some(hint) = self.hint() {
+            return hint.to_owned();
+        }
+        let first = self.detail.lines().next().unwrap_or_default().trim();
+        truncate_chars(first, 120)
+    }
+}
+
+/// 「添加部署」这个长任务走到了哪一步。
+///
+/// 每一步都要在界面上**看得见**（`AGENTS.md` §7.1）：从点下「部署」到有结果之间
+/// 可能要几十秒（一个目录里几千个文件要一个个 `wslc container cp` 过去），
+/// 界面上什么都不变的话用户会以为按钮坏了。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeployPhase {
+    /// 准备目标目录 + 把文件复制进去 + 核对 + 补可执行位。
+    ///
+    /// 合成一档而不是拆成四档：这四步在界面上**都是"在搬东西"**，
+    /// 而它们的耗时完全由体积决定 —— 拆开只会让按钮文案闪来闪去。
+    Uploading,
+    /// 文件到位了，正在起进程（进程形态）/ 这一步内容形态没有。
+    Starting,
+    /// 正在删掉目标目录里的内容（"删除部署"，不可撤销）。
+    Removing,
+}
+
+impl DeployPhase {
+    /// 界面上那一句（按钮文案 / 提示条都用它）。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Uploading => "正在上传…",
+            Self::Starting => "正在启动…",
+            Self::Removing => "正在删除…",
+        }
+    }
+}
+
+/// 正在跑的那一次部署。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployProgress {
+    /// 在部署哪个应用。
+    pub app: String,
+    /// 走到哪一步了。
+    pub phase: DeployPhase,
+}
+
+/// 已部署列表里的一行：**本地存档的记录** + **容器报回来的现状**。
+///
+/// 这两半的来源刻意分开（见 `crate::deploys` 的模块注释）：
+/// 记录来自本地面板，`process` / `files` 必须问容器 —— 那是事实。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployEntry {
+    /// 本地存档里那条记录。
+    pub record: crate::deploys::DeployRecord,
+    /// 存档里那个运行时键还原出来的运行时。
+    ///
+    /// `None` = **存档里的键认不出来**（手改坏了 / 是更新的版本写的）。
+    /// 这时**不猜**默认值（猜错会把文件铺到别的地方），那一行只给「删除记录」，
+    /// 并说明为什么其它按钮没有。见 `AppRuntime::from_key` 的说明。
+    pub runtime: Option<AppRuntime>,
+    /// 进程形态：跑没跑；内容形态恒为 `None`。
+    pub process: Option<ProcessStatus>,
+    /// 目标目录里的文件数；`None` = 目录不存在。
+    pub files: Option<u64>,
+    /// **问过容器了没有**。
+    ///
+    /// 用来区分"还没读"（画「读取中…」）和"读了，确实没有目录"
+    /// —— 两者在界面上是两句话。`files` 的 `None` 一个人扛不了这个区分。
+    pub probed: bool,
+    /// 问容器的时候**失败了**（`Some` = 原因）。
+    ///
+    /// ⚠️ 这跟"目标不存在"是**两件事**，在界面上必须分开画：
+    /// 这个是"没问出来"（容器刚停、`exec` 报错、超时），那个是"真的没有了"。
+    /// 把前者显示成后者会让人以为**文件丢了** —— 那是要吓死人的一句话。
+    pub probe_error: Option<String>,
+}
+
+impl DeployEntry {
+    /// 状态列上那一句话。
+    pub fn status_label(&self) -> &'static str {
+        if self.runtime.is_none() {
+            return "类型认不出来";
+        }
+        // 问容器失败了要说"读不到"，**不能**说成"目标不存在"
+        //（后者会让人以为文件丢了）
+        if self.probe_error.is_some() {
+            return "读不到状态";
+        }
+        if !self.probed {
+            return "读取中…";
+        }
+        match self.process {
+            Some(ProcessStatus::Running) => "运行中",
+            Some(ProcessStatus::Stopped) => {
+                if self.files.is_some() {
+                    "已停止"
+                } else {
+                    "目标不存在"
+                }
+            }
+            // 内容形态（nginx）：没有属于我们的进程，看文件在不在
+            None => {
+                if self.files.is_some_and(|n| n > 0) {
+                    "已部署"
+                } else if self.files.is_some() {
+                    "目标目录是空的"
+                } else {
+                    "目标不存在"
+                }
+            }
+        }
+    }
+
+    /// 这一行现在能不能干活（类型认得出、而且容器里能看到目标目录）。
+    pub fn is_process(&self) -> bool {
+        self.runtime
+            .is_some_and(|r| r.kind() == wslc_core::model::DeployKind::Process)
+    }
+}
+
+/// 「部署管理」页的状态。
+///
+/// 纯数据（一个 GPUI 类型都没有），所以住在 `AppState` 里、也能被单测；
+/// 弹窗里那些输入框是 GPUI 的 `Entity<InputState>`，住在 `Shell` 里。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployState {
+    /// 目标容器名。
+    pub container: String,
+    /// 容器镜像引用（页面上显示，让用户确认点对了容器）。
+    pub image: String,
+    /// 运行时（列表那条启发式先给一个，`inspect` 回来后覆盖成权威值）。
+    pub runtime: AppRuntime,
+    /// 判定依据（页面上说出来，用户才知道该不该信）。
+    pub signal: DeploySignal,
+    /// 从挂载点推出来的 nginx Web 根（「添加部署」的默认目标目录用它）。
+    pub web_root: Option<String>,
+    /// 容器**已经发布**的端口：`"80/tcp" -> [(host_ip, host_port)]`。
+    ///
+    /// 只用来**报告**（已存在的容器改不了端口发布），见
+    /// `cmd::deploy::DeployProbe::publishes` 的说明。
+    pub ports: Vec<(String, Vec<(String, String)>)>,
+    /// 正在后台跑（探测 / 读状态 / 上传）。
+    pub busy: bool,
+    /// **根本性**的问题（不是这类容器 / 容器没运行）。
+    /// 有值时页面只显示它 —— 那张空列表没有意义。
+    pub blocked: Option<DeployFailure>,
+    /// 最近一次操作的失败。
+    pub error: Option<DeployFailure>,
+    /// 读到了没有（区分"还没读"和"读到了，确实一条记录都没有"）。
+    pub loaded: bool,
+    /// 已部署列表。
+    pub entries: Vec<DeployEntry>,
+    /// 正在跑的那一次部署（`None` = 空闲）。
+    pub progress: Option<DeployProgress>,
+    /// 正在看哪个应用的日志（`None` = 浮层没开）。
+    ///
+    /// 纯数据（应用名 + 文本 + 忙不忙），所以能住在这里；
+    /// 它是个**只读浮层**，里面一个输入框都没有 —— 和 `LogsState` 同一个理由。
+    pub logs: Option<DeployLogs>,
+    /// 等待二次确认的删除（要删哪个应用；`None` = 没在确认）。
+    ///
+    /// ⚠️ 刻意**不用** `ConfirmAction` 那套：那个的 `execute` 是"跑一条 `wslc`
+    /// 命令然后返回字符串"，而删一条部署要做三件事 —— 停进程、删目录、
+    /// **改本地存档并重读列表**。最后那件是 `ConfirmAction` 表达不了的，
+    /// 硬塞进去只会造出一个形状不对的变体。
+    pub confirm_remove: Option<String>,
+}
+
+/// 正在看的应用日志。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployLogs {
+    /// 看的是哪个应用。
+    pub app: String,
+    /// 日志内容（`None` = 还在读）。
+    pub text: Option<String>,
+    /// 正在后台读。
+    pub busy: bool,
+}
+
+impl DeployState {
+    /// 页面刚打开、还没探测完时的状态。
+    ///
+    /// `runtime` / `signal` 来自**列表那条启发式**（镜像名 / 命令），
+    /// 这样页面立刻就能画出来；权威判定（`inspect`）回来后由
+    /// [`Self::apply_probe`] 覆盖。
+    pub fn provisional(
+        container: impl Into<String>,
+        image: impl Into<String>,
+        runtime: AppRuntime,
+        signal: DeploySignal,
+    ) -> Self {
+        Self {
+            container: container.into(),
+            image: image.into(),
+            runtime,
+            signal,
+            web_root: None,
+            ports: Vec::new(),
+            // ⚠️ **必须 false**。这里的语义只能是"**已经有一个后台任务在跑**"，
+            // 而不是"马上就要去探测"—— `load_deploy` 的第一句就是"正在跑就不叠
+            // 第二次"，先置 true 会把第一次加载自己挡掉，页面永远停在
+            // 「正在读取…」。（这个坑 v0.8 在 `DbState::provisional` 上真的踩过，
+            // 见那边的注释 —— 这里照抄那条教训。）
+            busy: false,
+            blocked: None,
+            error: None,
+            loaded: false,
+            entries: Vec::new(),
+            progress: None,
+            logs: None,
+            confirm_remove: None,
+        }
+    }
+
+    /// 探测结果回来了：覆盖权威字段，并**重建**已部署列表。
+    pub fn apply_probe(&mut self, probe: &wslc_core::cmd::deploy::DeployProbe) {
+        self.container = probe.container.clone();
+        self.image = probe.image.clone();
+        self.runtime = probe.runtime;
+        // 权威判定来自 `inspect`（字段完整、没被截断），依据统一记成镜像名那一档
+        self.signal = DeploySignal::Image;
+        self.web_root = probe.web_root.clone();
+        self.ports = probe.ports.clone();
+        self.busy = false;
+    }
+
+    /// 用本地存档里的记录**重建**列表（每次读盘之后都走一遍）。
+    ///
+    /// 走过的行会把容器报回来的现状清掉（`probed = false`）—— 记录换了，
+    /// 上一轮的"运行中"就不再是这一行的现状了。
+    pub fn set_records(&mut self, records: &[crate::deploys::DeployRecord]) {
+        self.entries = records
+            .iter()
+            .map(|record| DeployEntry {
+                record: record.clone(),
+                runtime: AppRuntime::from_key(&record.runtime),
+                process: None,
+                files: None,
+                probed: false,
+                probe_error: None,
+            })
+            .collect();
+    }
+
+    /// 按应用名找一行的下标。
+    pub fn index_of(&self, app: &str) -> Option<usize> {
+        self.entries.iter().position(|e| e.record.app == app)
+    }
+
+    /// 记一次失败（分类 + 原文都留着）。
+    pub fn fail(&mut self, error: impl std::fmt::Display) {
+        self.error = Some(DeployFailure::from_text(error.to_string()));
+    }
+
+    /// 清掉上一次的错误（每次动作开始前调）。
+    pub fn clear_error(&mut self) {
+        self.error = None;
+    }
+
+    /// 这一页能不能真的干活。
+    pub fn usable(&self) -> bool {
+        self.blocked.is_none()
+    }
 }
 
 /// 拉取镜像的实时进度。
@@ -2961,6 +3305,23 @@ pub struct AppState {
     ///
     /// `None` = `LOCALAPPDATA` 没设置（备份功能整体不可用，界面上给一句说明）。
     pub backup_dir: Option<PathBuf>,
+    /// 「部署管理」页的状态；没在那一页时为 `None`。
+    ///
+    /// 一次只服务**一个**容器（页面就是"针对某个容器"的），所以这里是
+    /// `Option<DeployState>` 而不是 `HashMap`：切到另一个容器的部署页时整体替换
+    /// —— 和 [`AppState::db`] 同一个取舍。
+    pub deploy: Option<DeployState>,
+    /// 部署记录的**本地存档**（`deployments.json`，v0.9）。
+    ///
+    /// 它记的是"我们部署过什么"；**"现在跑没跑"绝不从这里读**，
+    /// 一律问容器（见 `crate::deploys` 的模块注释）。
+    /// 启动时读一次，部署 / 删除时改 + 写盘。
+    pub deploy_store: crate::deploys::DeployStore,
+    /// 部署存档**读不出来**的原因（`None` = 一切正常）。
+    ///
+    /// ⚠️ 这个会被部署页当成提示条显示出来。别让它变成第二个
+    /// `db_credentials_error`（那个至今没人读）。
+    pub deploy_store_error: Option<String>,
 }
 
 impl AppState {
@@ -2986,6 +3347,44 @@ impl AppState {
             .save(&path)
             .err()
             .map(|e| format!("写凭据存档失败：{e}"))
+    }
+
+    /// 部署记录存档落在哪里（没设 `LOCALAPPDATA` 时是 `None`）。
+    pub fn deploy_store_path(&self) -> Option<PathBuf> {
+        crate::prefs::app_dir().map(crate::deploys::store_path)
+    }
+
+    /// 把部署存档写回磁盘（部署成功 / 删除之后调）。
+    ///
+    /// 返回语义和 [`Self::save_db_credentials`] 一样：`Some(说明)` = 没写成。
+    /// 失败**不 panic**：最坏是"重启后这条记录要重新部署一次才能回来"，
+    /// 而文件其实已经在容器里了 —— 不值得为它崩掉界面。
+    pub fn save_deploy_store(&self) -> Option<String> {
+        let Some(path) = self.deploy_store_path() else {
+            return Some("LOCALAPPDATA 未设置，部署记录存不了盘".to_owned());
+        };
+        self.deploy_store
+            .save(&path)
+            .err()
+            .map(|e| format!("写部署存档失败：{e}"))
+    }
+
+    /// 把某个容器的部署记录灌进当前页面状态（进页面 / 存盘后都走一遍）。
+    ///
+    /// 把"读存档 → 换算成视图行"这一步收在一处：调用点有三四个，
+    /// 散着写迟早漏掉一次（表现是"刚部署完列表里没有它"）。
+    pub fn refresh_deploy_entries(&mut self, container: &str) {
+        let records: Vec<crate::deploys::DeployRecord> = self
+            .deploy_store
+            .for_container(container)
+            .into_iter()
+            .cloned()
+            .collect();
+        if let Some(deploy) = self.deploy.as_mut() {
+            if deploy.container == container {
+                deploy.set_records(&records);
+            }
+        }
     }
 
     /// 某个容器的备份目录（`<数据目录>/backups/<容器>`）。
@@ -3014,6 +3413,10 @@ impl AppState {
     }
     /// 新建初始状态。
     pub fn new(wslc: Wslc, wsl: Wsl) -> Self {
+        // 只读一次盘，然后把两半分别放进结构体 —— 对比上面 `db_credentials`
+        // 那两行（各调一次 `db_credentials_at_startup()`，白读一遍）。
+        let (deploy_store, deploy_store_error) = deploy_store_at_startup();
+        let data_dir = crate::prefs::app_dir();
         Self {
             wslc,
             wsl,
@@ -3045,7 +3448,10 @@ impl AppState {
             // 不 panic —— 账号可以在建库时重新录入）
             db_credentials: db_credentials_at_startup().0,
             db_credentials_error: db_credentials_at_startup().1,
-            backup_dir: crate::prefs::app_dir(),
+            backup_dir: data_dir,
+            deploy: None,
+            deploy_store,
+            deploy_store_error,
         }
     }
 
@@ -4488,6 +4894,195 @@ mod tests {
         assert_eq!(Page::Database.label(), "数据库管理");
         // 连接卡上有输入框 → 进这一页必须有 window
         assert!(Page::Database.needs_window_to_enter());
+    }
+
+    #[test]
+    fn deploy_page_is_not_in_the_sidebar_and_does_not_need_a_window() {
+        // 「部署管理」和「数据库管理」都服务**某一个**容器，只能从容器列表行上的
+        // 按钮进，所以**不在** `Page::ALL` 里。
+        assert!(!Page::ALL.contains(&Page::Deploy));
+        // 和 `Containers` 同组，侧边栏里不会多出一个组标题
+        assert_eq!(Page::Deploy.group(), "容器");
+        assert_eq!(Page::Deploy.label(), "部署管理");
+        // ⚠️ **不需要 window** —— 这一页一个输入框都没有。
+        // 「添加部署」那五个框是点按钮那一刻才建的（`open_deploy_dialog` 有
+        // window），页面本身进来就能画。这和 v0.6.3 的「拉取镜像」是同一个形状。
+        //
+        // 写成 `true` 不是"更保险"：`set_page` 里会给它一个**永远走不到**的分支。
+        assert!(
+            !Page::Deploy.needs_window_to_enter(),
+            "部署页没有常驻输入框 —— 表单在弹窗里，是点的时候建的"
+        );
+    }
+
+    #[test]
+    fn a_freshly_opened_deploy_page_can_be_loaded() {
+        // ⚠️ 和 `a_freshly_opened_db_page_can_be_loaded` 是同一条教训：
+        // `provisional` 里把 `busy` 置 true 会让 `load_deploy` 的第一句守卫
+        // 把**第一次**加载挡掉，页面永远停在「正在读取…」。
+        // v0.8 在数据库页上真的踩过一次，这里把它钉死。
+        let state = DeployState::provisional(
+            "nginx",
+            "docker.1panel.live/library/nginx:latest",
+            AppRuntime::Nginx,
+            DeploySignal::Image,
+        );
+        assert!(
+            !state.busy,
+            "新建的状态不能是 busy：`load_deploy` 会因为这一条直接返回"
+        );
+        assert!(!state.loaded);
+        // 列表此时是空的（存档还没读进来），但页面已经能画了
+        assert!(state.entries.is_empty());
+        assert!(state.progress.is_none());
+    }
+
+    /// 造一行"已部署列表"（测试用）。
+    fn deploy_entry(app: &str, runtime_key: &str) -> DeployEntry {
+        DeployEntry {
+            record: crate::deploys::DeployRecord {
+                app: app.to_owned(),
+                runtime: runtime_key.to_owned(),
+                source: format!(r"E:\build\{app}"),
+                target: format!("/opt/{app}"),
+                command: format!("./{app}"),
+                artifact: app.to_owned(),
+                port: 8080,
+            },
+            runtime: AppRuntime::from_key(runtime_key),
+            process: None,
+            files: None,
+            probed: false,
+            probe_error: None,
+        }
+    }
+
+    #[test]
+    fn deploy_entries_resolve_the_runtime_key_from_the_archive() {
+        let mut state = DeployState::provisional(
+            "nginx",
+            "nginx:latest",
+            AppRuntime::Nginx,
+            DeploySignal::Image,
+        );
+        let records = vec![
+            deploy_entry("site", "nginx").record,
+            deploy_entry("api", "go").record,
+        ];
+        state.set_records(&records);
+
+        assert_eq!(state.entries.len(), 2);
+        // 运行时从存档里的**稳定键**还原（不是从显示名，也不是靠猜）
+        assert_eq!(state.entries[0].runtime, Some(AppRuntime::Nginx));
+        assert_eq!(state.entries[1].runtime, Some(AppRuntime::Go));
+        // `set_records` 只填记录 —— 现状要问容器，所以这时**还没问过**
+        assert!(state.entries.iter().all(|e| !e.probed));
+        assert!(state.entries.iter().all(|e| e.files.is_none()));
+
+        assert_eq!(state.index_of("api"), Some(1));
+        assert_eq!(state.index_of("nope"), None);
+    }
+
+    #[test]
+    fn an_unreadable_runtime_key_is_reported_not_guessed() {
+        // 存档被手改坏（或者更新过的版本写了别的键）时，**不猜默认值**
+        //（猜错会把文件铺到别的地方），而是如实说"认不出来"。
+        let mut state = DeployState::provisional(
+            "nginx",
+            "nginx:latest",
+            AppRuntime::Nginx,
+            DeploySignal::Image,
+        );
+        state.set_records(&[deploy_entry("weird", "rust").record]);
+
+        assert_eq!(state.entries.len(), 1, "认不出来也要留在列表里，不能悄悄藏起来");
+        assert_eq!(state.entries[0].runtime, None);
+        assert_eq!(state.entries[0].status_label(), "类型认不出来");
+        assert!(!state.entries[0].is_process());
+    }
+
+    #[test]
+    fn deploy_status_labels_tell_the_three_shapes_apart() {
+        // 还没问过容器
+        let mut entry = deploy_entry("api", "go");
+        assert_eq!(entry.status_label(), "读取中…");
+
+        // 问过了：进程跑着
+        entry.probed = true;
+        entry.process = Some(ProcessStatus::Running);
+        entry.files = Some(4);
+        assert_eq!(entry.status_label(), "运行中");
+        assert!(entry.is_process());
+
+        // 进程停了，但目标目录里还有东西 → 「已停止」
+        entry.process = Some(ProcessStatus::Stopped);
+        assert_eq!(entry.status_label(), "已停止");
+
+        // 进程停了、目标目录也没了 → 「目标不存在」
+        // （容器被删掉重建之后就会是这一种，见 `crate::deploys` 的说明）
+        entry.files = None;
+        assert_eq!(entry.status_label(), "目标不存在");
+
+        // 内容形态（nginx）没有属于我们的进程，看文件在不在
+        let mut content = deploy_entry("site", "nginx");
+        content.probed = true;
+        content.files = Some(12);
+        assert_eq!(content.status_label(), "已部署");
+        assert!(!content.is_process(), "nginx 是内容形态，没有启动/停止");
+
+        content.files = Some(0);
+        assert_eq!(content.status_label(), "目标目录是空的");
+
+        content.files = None;
+        assert_eq!(content.status_label(), "目标不存在");
+    }
+
+    #[test]
+    fn deploy_state_takes_the_authoritative_runtime_from_the_probe() {
+        // 列表那条启发式先给一个（可能是按命令猜的），inspect 回来后覆盖
+        let mut state = DeployState::provisional(
+            "web",
+            "my-company/web:1",
+            AppRuntime::Node,
+            DeploySignal::Command,
+        );
+        let probe = wslc_core::cmd::deploy::DeployProbe {
+            container: "web".to_owned(),
+            image: "docker.1panel.live/library/nginx:latest".to_owned(),
+            runtime: AppRuntime::Nginx,
+            web_root: Some("/usr/share/nginx/html".to_owned()),
+            ports: vec![(
+                "80/tcp".to_owned(),
+                vec![("127.0.0.1".to_owned(), "80".to_owned())],
+            )],
+        };
+        state.apply_probe(&probe);
+
+        assert_eq!(state.runtime, AppRuntime::Nginx);
+        assert_eq!(state.image, "docker.1panel.live/library/nginx:latest");
+        // 权威判定来自 inspect（字段完整、没被截断）→ 依据记成镜像名那一档
+        assert_eq!(state.signal, DeploySignal::Image);
+        // Web 根是从挂载点推出来的（内容形态的默认目标目录用它）
+        assert_eq!(state.web_root.as_deref(), Some("/usr/share/nginx/html"));
+        assert!(probe.publishes(80));
+        assert!(!state.busy, "探测回来必须把忙清掉，否则按钮永远是「读取中…」");
+    }
+
+    #[test]
+    fn deploy_failure_always_gives_a_next_step() {
+        // 实测抓下来的原文（容器没运行）
+        let failure = DeployFailure::from_text(
+            "容器\"x\"未运行。\n错误代码： WSLC_E_CONTAINER_NOT_RUNNING".to_owned(),
+        );
+        assert_eq!(failure.kind, DeployErrorKind::ContainerNotRunning);
+        assert!(
+            failure.summary().contains("启动"),
+            "提示条要说清下一步：{}",
+            failure.summary()
+        );
+        // 分类认不出来时不能空着 —— 给原文第一行
+        let other = DeployFailure::from_text("没法归类的一句话\n第二行".to_owned());
+        assert_eq!(other.summary(), "没法归类的一句话");
     }
 
     #[test]

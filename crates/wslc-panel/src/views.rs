@@ -27,6 +27,9 @@ use wslc_core::model::install as install_model;
 // MySQL 容器的识别是**纯逻辑**（镜像名 / 命令 / 3306 端口），
 // 所以列表行每帧都能白拿这个判断 —— 见 `container_row_actions`。
 use wslc_core::model::mysql as mysql_model;
+// 「部署应用」的识别也是纯逻辑（镜像名 / 命令），同一个理由 ——
+// 列表行每帧都要判断"这一行该不该画「部署管理」按钮"。
+use wslc_core::model::deploy as deploy_model;
 use wslc_core::model::{
     ContainerListItem, ContainerState, ContainerSummary, Distro, DistroState, GrantKind,
 };
@@ -50,14 +53,15 @@ use crate::app::{
 // 列宽定义与配置项预设值都是纯数据，住在不依赖 GPUI 的 `wslc-panel-core` 里
 // —— 这样它们的单测不必链接 GPUI（见那个 crate 的顶层说明）。
 use crate::columns::{
-    ALL_COLUMNS, BACKUP_COLUMNS, DB_COLUMNS, DB_USER_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS,
-    NETWORK_COLUMNS, VOLUME_COLUMNS,
+    ALL_COLUMNS, BACKUP_COLUMNS, DB_COLUMNS, DB_USER_COLUMNS, DEPLOY_COLUMNS, DISTRO_COLUMNS,
+    IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS,
 };
 use crate::presets::presets_for;
 use crate::state::{
-    AppState, DbFailure, DbState, DbTab, DistroAction, ImmediateAction, InstallOutcome,
-    InstallProgress, InstallSourceKind, LogsState, OnlineListSource, Page, PendingAction,
-    PromptKind, PullProgress, SettingsTab, WslConfState, format_bytes,
+    AppState, DbFailure, DbState, DbTab, DeployEntry, DeployLogs, DeployState, DistroAction,
+    ImmediateAction, InstallOutcome, InstallProgress, InstallSourceKind, LogsState,
+    OnlineListSource, Page, PendingAction, PromptKind, PullProgress, SettingsTab, WslConfState,
+    format_bytes,
 };
 use crate::theme;
 
@@ -501,6 +505,9 @@ pub fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
         // 「数据库管理」要 `&Shell`（连接卡那三个输入框住在 `Shell` 里）
         // **和** `cx`（渲染时要读输入框的值）—— 和「添加实例」同一类页面。
         Page::Database => database(shell, cx, entity),
+        // 「部署管理」也要 `&Shell` + `cx`：「添加部署」弹窗那五格输入框
+        // 住在 `Shell` 里（页面本身没有输入框）。
+        Page::Deploy => deploy_page(shell, cx, entity),
         Page::AppSettings => app_settings(shell, entity),
         Page::About => about(state, entity),
     }
@@ -914,6 +921,38 @@ fn container_row_actions(item: &ContainerListItem, entity: &Entity<Shell>) -> An
                 "数据库",
                 move |shell, window, cx| {
                     shell.open_database_page(target.clone(), image.clone(), window, cx)
+                },
+                entity,
+            ));
+        }
+
+        // 「部署管理」（v0.9）：认得出是 nginx / Java / Node.js / Go 的容器才有。
+        //
+        // 判定同样是**纯字符串**（镜像名 / 启动命令，见 `container_app_kind`）
+        // —— 渲染每帧都跑，绝不能在这里起进程。认不出来就什么都不画。
+        //
+        // ⚠️ 它和「数据库」会**同时**出现在一个既像 MySQL 又像这几类的容器上
+        // （比如一个镜像名认不出来、命令里同时有 `mysqld` 和 `node` 的怪东西）。
+        // 那两个按钮各自进去都会给出权威判定并说明"看起来不是" —— 这个代价
+        //（多一个按钮）比"漏掉一个"小，和 v0.7 接受 3306 误判是同一条取舍。
+        if let Some(candidate) = deploy_model::container_app_kind(item) {
+            let target = name.to_owned();
+            let image = item.image.clone();
+            let runtime = candidate.runtime;
+            let signal = candidate.signal;
+            actions.push(overlay_button(
+                &format!("deploy-{name}"),
+                // 运行时名也不进按钮文案（那一行已经挤了 6 个按钮）——
+                // 页面顶上写着"Nginx · 按镜像名判断"。
+                "部署管理",
+                move |shell, _, cx| {
+                    shell.open_deploy_page(
+                        target.clone(),
+                        image.clone(),
+                        runtime,
+                        signal,
+                        cx,
+                    )
                 },
                 entity,
             ));
@@ -2037,9 +2076,11 @@ pub fn db_backup_progress(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
 
 /// 某个库的**备份列表**浮层（v0.8）。
 ///
-/// 列表是 **Windows 侧**目录扫出来的（`AppState::rescan_backups`）；
-/// 容器内那份 `/tmp` 备份"还在不在"要到**恢复那一刻**才知道 ——
-/// 所以这里不画"可用 / 不可用"，恢复失败时再给准确的解释。
+/// 列表是 **Windows 侧**目录扫出来的（`AppState::rescan_backups`）——
+/// 这也正是**恢复的输入**：点「恢复」时会把这份文件 cp 进容器再重定向进
+/// `mysql`（v0.8.2 起不再依赖容器内 `/tmp` 里那份旧的，所以容器重建过、
+/// `/tmp` 被清过都照样能恢复）。因此这里不需要（也无法）预先画
+/// "容器里那份还在不在"—— 只认列表里这个文件在不在。
 pub fn db_backup_dialog_overlay(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
     let Some(database) = db.backup_dialog.as_ref() else {
         return div().into_any_element();
@@ -2138,9 +2179,10 @@ pub fn db_backup_dialog_overlay(db: &DbState, entity: &Entity<Shell>) -> AnyElem
                             .text_xs()
                             .text_color(theme::text_dim())
                             .child(
-                                "列表是 Windows 侧的存档（容器删了它们还在）。\
-                                 恢复**覆盖**这个库现有的全部数据；\
-                                 恢复读的是容器里 /tmp 下的那份 —— 容器重建过它可能已经没了。",
+                                "列表是 Windows 侧的存档（容器删了它们还在），\
+                                 也是**恢复的输入**：恢复时会把这份文件送进容器再导入，\
+                                 所以容器重建过也照样能恢复。\
+                                 恢复**覆盖**这个库现有的全部数据。",
                             ),
                     ),
             )
@@ -2161,6 +2203,947 @@ pub fn db_backup_dialog_overlay(db: &DbState, entity: &Entity<Shell>) -> AnyElem
             .child(h_flex().w_full().justify_end().child(close)),
     )
     .into_any_element()
+}
+
+// ---------------------------------------------------------------------------
+// ②c 容器里的应用部署管理（nginx / Java / Node.js / Go，v0.9）
+// ---------------------------------------------------------------------------
+
+/// 「部署管理」页。
+///
+/// # 它为什么不在侧边栏
+///
+/// 和「数据库管理」同一个取舍：它服务**一个**容器（`AppState::deploy` 里记着是
+/// 哪个），只能从容器列表行上的「部署管理」按钮进，所以顶部有「← 返回容器」。
+///
+/// # 三种形态（和 `database` 一一对应）
+///
+/// 1. **探测就失败**（不是这几类容器 / 容器没运行）：只画那张说明卡片。
+///    这时候再摆一张空表只会干扰判断；
+/// 2. **正常**：页头 + 「添加部署」+ 已部署列表；
+/// 3. **还没读到数据**：表格的位置放一句"正在读取…"。
+///
+/// # 和数据库页最大的不同
+///
+/// 这一页的数据有**两个来源**，界面要如实区分：
+/// 「部署过什么」来自**本地面板**的存档（所以容器停着也看得到），
+/// 「现在跑没跑 / 目录里还有没有」**问容器**（那是事实）。
+/// 所以每一行的状态列可能是"读取中…"——那不是说没有，是说还没问回来。
+pub fn deploy_page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
+    let Some(deploy) = shell.state.deploy.as_ref() else {
+        // 理论上来不到（只可能从容器行上的按钮进，那里已经建好状态了），
+        // 但真到了这里就说一句人话，别画一片空白。
+        return empty_state("还没有选中容器 —— 请到「容器」页点某一行的「部署管理」")
+            .into_any_element();
+    };
+
+    let header = deploy_header(deploy, entity);
+
+    if let Some(blocked) = deploy.blocked.as_ref() {
+        return v_flex()
+            .w_full()
+            .gap_3()
+            .child(header)
+            .child(deploy_blocked_card(deploy, blocked))
+            .into_any_element();
+    }
+
+    let body: AnyElement = if deploy.loaded {
+        deploy_table(deploy, entity)
+    } else {
+        deploy_loading(deploy.busy)
+    };
+
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(header)
+        // 存档读坏了要说出来 —— 不然用户会以为"我部署过的东西全没了"。
+        // ⚠️ `AppState::deploy_store_error` 存在的唯一目的就是这一行；
+        // 对比 `db_credentials_error`：那个算出来了却全仓库没人读。
+        .children(
+            shell
+                .state
+                .deploy_store_error
+                .as_ref()
+                .map(|error| deploy_error_banner(&format!("部署存档读不出来：{error}"))),
+        )
+        .children(
+            deploy
+                .error
+                .as_ref()
+                .map(|failure| deploy_failure_banner(failure)),
+        )
+        .child(body)
+        .into_any_element()
+}
+
+/// 页头：容器 / 镜像 / 运行时 + 依据 + 「← 返回容器」「重新读取」「添加部署…」。
+fn deploy_header(deploy: &DeployState, entity: &Entity<Shell>) -> AnyElement {
+    let back = {
+        let entity = entity.clone();
+        Button::new("deploy-back")
+            .label("← 返回容器")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.close_deploy_page(cx));
+            })
+    };
+
+    // 读取期间把按钮**换掉**（项目里不用 `.disabled()`）：置灰的按钮会让人
+    // 反复去点，而"读取中…"说清了现在在等什么。
+    let reload: AnyElement = if deploy.busy {
+        div()
+            .text_sm()
+            .text_color(theme::text_muted())
+            .child("读取中…")
+            .into_any_element()
+    } else {
+        let entity = entity.clone();
+        Button::new("deploy-reload")
+            .label("重新读取")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.load_deploy(cx));
+            })
+            .into_any_element()
+    };
+
+    // 「添加部署…」——弹出一次性的表单（`InputState::new` 要 `&mut Window`，
+    // 所以只能在点击这一刻建）。
+    let add: AnyElement = if deploy.progress.is_some() {
+        let label = deploy
+            .progress
+            .as_ref()
+            .map(|progress| progress.phase.label())
+            .unwrap_or("正在…");
+        div()
+            .text_sm()
+            .text_color(theme::text_muted())
+            .child(label)
+            .into_any_element()
+    } else {
+        let entity = entity.clone();
+        Button::new("deploy-add")
+            .label("添加部署…")
+            .small()
+            .primary()
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |shell, cx| shell.open_deploy_dialog(None, window, cx));
+            })
+            .into_any_element()
+    };
+
+    // nginx 的「重载」放在页头而不是行内：它作用于**容器里那个 nginx 进程**，
+    // 不属于任何一条部署（清单里可能有多个站点，重载一次全生效）。
+    let reload_nginx: AnyElement = if deploy.runtime == wslc_core::model::AppRuntime::Nginx {
+        let entity = entity.clone();
+        Button::new("deploy-reload-nginx")
+            .label("重载 nginx")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.reload_nginx_in_container(cx));
+            })
+            .into_any_element()
+    } else {
+        div().into_any_element()
+    };
+
+    h_flex()
+        .w_full()
+        .justify_between()
+        .items_center()
+        .child(
+            v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_semibold()
+                        .child(format!("容器 {}", deploy.container)),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child(format!(
+                            "{} · {} · {}",
+                            deploy.runtime.label(),
+                            deploy.image,
+                            deploy.signal.label(),
+                        )),
+                ),
+        )
+        .child(
+            h_flex()
+                .gap_2()
+                .child(back)
+                .child(reload_nginx)
+                .child(reload)
+                .child(add),
+        )
+        .into_any_element()
+}
+
+/// 探测就失败时的说明卡（不是这几类容器 / 容器没运行）。
+fn deploy_blocked_card(deploy: &DeployState, failure: &crate::state::DeployFailure) -> AnyElement {
+    let note = if failure.kind == wslc_core::model::DeployErrorKind::ContainerNotRunning {
+        "这一页的每一个动作都要进容器里执行（打包 → 传文件 → 起进程），\
+         所以容器得先跑起来。「启动」就在容器列表那一行上。"
+    } else {
+        "「部署应用」服务的是 nginx / Java / Node.js / Go 这几类容器 —— \
+         面板按**镜像引用、环境变量、启动命令**三样认人，一个线索都没有时不会去猜。\
+         想自己进去看，用「容器」页那一行的「终端」。"
+    };
+
+    v_flex()
+        .w_full()
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .bg(theme::danger_soft())
+        .border_1()
+        .border_color(theme::danger_edge())
+        .child(
+            div()
+                .text_sm()
+                .font_semibold()
+                .text_color(theme::danger())
+                .child(format!("这个容器现在部署不了（{}）", failure.kind.label())),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_color(theme::text())
+                .child(crate::util::strip_md(&failure.summary())),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child(note),
+        )
+        .child(log_text(Some(&failure.detail), "deploy-blocked-detail"))
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child(format!("刚才是在读容器 {} 的时候失败的。", deploy.container)),
+        )
+        .into_any_element()
+}
+
+/// 上一次失败：一句"该怎么办" +（可滚动的）原文。
+fn deploy_failure_banner(failure: &crate::state::DeployFailure) -> AnyElement {
+    v_flex()
+        .w_full()
+        .gap_2()
+        .p_3()
+        .rounded_lg()
+        .bg(theme::danger_soft())
+        .border_1()
+        .border_color(theme::danger_edge())
+        .child(
+            div()
+                .text_sm()
+                .font_semibold()
+                .text_color(theme::danger())
+                .child(crate::util::strip_md(&failure.summary())),
+        )
+        .child(log_text(Some(&failure.detail), "deploy-error-detail"))
+        .into_any_element()
+}
+
+/// 存档读坏了的提示条（一行字，不折叠）。
+fn deploy_error_banner(text: &str) -> AnyElement {
+    div()
+        .w_full()
+        .p_3()
+        .rounded_lg()
+        .bg(theme::danger_soft())
+        .border_1()
+        .border_color(theme::danger_edge())
+        .child(
+            div()
+                .text_sm()
+                .text_color(theme::danger())
+                .child(text.to_owned()),
+        )
+        .into_any_element()
+}
+
+/// 「正在读取…」占位（和 `db_loading` 同一形状）。
+fn deploy_loading(busy: bool) -> AnyElement {
+    div()
+        .w_full()
+        .p_6()
+        .rounded_lg()
+        .bg(theme::bg_card())
+        .border_1()
+        .border_color(theme::border())
+        .child(
+            div()
+                .text_sm()
+                .text_color(theme::text_muted())
+                .child(if busy {
+                    "正在读取…（先看容器认不认得出，再问每一条现在跑没跑）"
+                } else {
+                    "还没读到数据 —— 点右上角「重新读取」"
+                }),
+        )
+        .into_any_element()
+}
+
+/// 已部署列表。
+fn deploy_table(deploy: &DeployState, entity: &Entity<Shell>) -> AnyElement {
+    let rows: Vec<AnyElement> = deploy
+        .entries
+        .iter()
+        .map(|entry| {
+            table_row(
+                DEPLOY_COLUMNS,
+                vec![
+                    cell_text(entry.record.app.clone()),
+                    cell_text(
+                        entry
+                            .runtime
+                            .map(|runtime| runtime.kind().label())
+                            .unwrap_or("—"),
+                    ),
+                    // 目标路径是这一行最要紧的一格（部署铺到了哪儿、
+                    // 删除会删掉什么），而且容器路径经常很长 ——
+                    // 截断了也要能悬停看全文。
+                    cell_muted_full(entry.record.app.clone(), entry.record.target.clone()),
+                    deploy_status_cell(entry, deploy),
+                    deploy_port_cell(entry, deploy),
+                    deploy_row_actions(entry, deploy, entity),
+                ],
+            )
+            .into_any_element()
+        })
+        .collect();
+
+    let body: AnyElement = if deploy.entries.is_empty() {
+        v_flex()
+            .w_full()
+            .gap_2()
+            .p_6()
+            .items_center()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme::text_muted())
+                    .child("这个容器上还没有部署过任何应用"),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child(deploy.runtime.note()),
+            )
+            .into_any_element()
+    } else {
+        v_flex().w_full().children(rows).into_any_element()
+    };
+
+    v_flex()
+        .w_full()
+        .gap_2()
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child(format!(
+                    "共 {} 条部署。「部署过什么」来自面板自己的存档（容器停着也看得到）；\
+                     「现在跑没跑」是**问容器**得来的。",
+                    deploy.entries.len()
+                )),
+        )
+        .child(
+            v_flex()
+                .w_full()
+                .rounded_lg()
+                .bg(theme::bg_card())
+                .border_1()
+                .border_color(theme::border())
+                .overflow_hidden()
+                .child(table_header(DEPLOY_COLUMNS))
+                .child(body),
+        )
+        .into_any_element()
+}
+
+/// 状态那一格。
+///
+/// 「读不到」和「目标不存在」是**两件事**，所以分开画：前者是"问容器的时候
+/// 出错了"（可能是容器刚停、网络抖动），后者是"真的没有了"。
+/// 把前者显示成后者会让人以为文件丢了。
+fn deploy_status_cell(entry: &DeployEntry, deploy: &DeployState) -> AnyElement {
+    if let Some(error) = entry.probe_error.as_ref() {
+        // 用 `cell_muted_full` 承载 tooltip：它拿组件库的 `Button` 当壳，
+        // 所以截断的文字能悬停看全文（`AGENTS.md` §7.5）。
+        return cell_muted_full(
+            format!("deploy-status-{}-{}", deploy.container, entry.record.app),
+            format!("读不到状态（{}）", crate::util::strip_md(error)),
+        );
+    }
+    let mut extra = String::new();
+    if entry.probed {
+        match entry.files {
+            Some(count) => extra = format!(" · {count} 个文件"),
+            None => extra = " · 目标目录不在".to_owned(),
+        }
+    }
+    let label = entry.status_label();
+    div()
+        .text_sm()
+        .text_color(if entry.process == Some(wslc_core::model::ProcessStatus::Running) {
+            theme::text()
+        } else {
+            theme::text_muted()
+        })
+        .child(format!("{label}{extra}"))
+        .into_any_element()
+}
+
+/// 端口那一格：只**报告**已经发布出去的映射。
+///
+/// ⚠️ 已存在的容器改不了端口发布（`-p` 只在 `run` / `create` 时给），
+/// 所以这里绝不画一个点了没用的「发布」按钮 —— 而是把下一步说清楚。
+fn deploy_port_cell(entry: &DeployEntry, deploy: &DeployState) -> AnyElement {
+    let port = entry.record.port;
+    if port == 0 {
+        return cell_text("—");
+    }
+    let published = deploy
+        .ports
+        .iter()
+        .any(|(key, bindings)| key.starts_with(&format!("{port}/")) && !bindings.is_empty());
+    if published {
+        cell_text(format!("{port}（已发布）"))
+    } else {
+        cell_muted_full(
+            format!("deploy-port-{}-{}", deploy.container, entry.record.app),
+            format!(
+                "{port}（没发布到主机 —— 端口只能在建容器时给，已建好的容器改不了，\
+                 外部访问不了）"
+            ),
+        )
+    }
+}
+
+/// 行内操作。
+///
+/// 按形态分岔 —— 这不是"多给一个入口"，而是**两类东西的动作本来就不同**：
+/// 内容形态（nginx）没有属于我们的进程，画「启动 / 停止」只会点了报错。
+/// 只画**当前有意义**的那几个（停止时画「启动」，运行时画「停止」）。
+fn deploy_row_actions(
+    entry: &DeployEntry,
+    deploy: &DeployState,
+    entity: &Entity<Shell>,
+) -> AnyElement {
+    let app = entry.record.app.clone();
+    let running = entry.process == Some(wslc_core::model::ProcessStatus::Running);
+    let busy = deploy.progress.as_ref().is_some_and(|p| p.app == app);
+    let mut actions: Vec<AnyElement> = Vec::new();
+
+    if busy {
+        // 这一条正在跑一个动作 —— 把按钮换掉而不是留着（`.disabled()` 全项目不用）
+        let label = deploy
+            .progress
+            .as_ref()
+            .map(|p| p.phase.label())
+            .unwrap_or("正在…");
+        return div()
+            .text_xs()
+            .text_color(theme::text_muted())
+            .child(label)
+            .into_any_element();
+    }
+
+    // 类型认不出来：**不猜**该用哪套动作（见 `DeployEntry::runtime` 的说明），
+    // 只给「删除记录」并说明为什么别的按钮没有。
+    if entry.runtime.is_none() {
+        actions.push(
+            deploy_danger_button(
+                &format!("deploy-forget-{app}"),
+                "删除记录",
+                {
+                    let app = app.clone();
+                    move |shell, cx| shell.forget_deployment_record(app.clone(), cx)
+                },
+                entity,
+            ),
+        );
+        actions.push(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child("存档里的类型认不出来，只能删掉这条记录")
+                .into_any_element(),
+        );
+        return h_flex()
+            .gap_2()
+            .flex_wrap()
+            .children(actions)
+            .into_any_element();
+    }
+
+    let is_process = entry.is_process();
+
+    // 启动 / 停止（只有进程形态有）
+    if is_process {
+        if running {
+            actions.push(
+                immediate_button(
+                    &format!("deploy-stop-{app}"),
+                    "停止",
+                    ImmediateAction::StopDeployment(app.clone()),
+                    entity,
+                )
+                .into_any_element(),
+            );
+        } else {
+            actions.push(
+                immediate_button(
+                    &format!("deploy-start-{app}"),
+                    "启动",
+                    ImmediateAction::StartDeployment(app.clone()),
+                    entity,
+                )
+                .into_any_element(),
+            );
+        }
+    } else {
+        // 内容形态：铺进去就生效，这里给的是"我改完本地文件想再传一次"
+        actions.push(
+            overlay_button(
+                &format!("deploy-redeploy-{app}"),
+                "重新上传",
+                {
+                    let app = app.clone();
+                    move |shell, window, cx| {
+                        shell.open_deploy_dialog(Some(app.clone()), window, cx)
+                    }
+                },
+                entity,
+            ),
+        );
+    }
+
+    // 日志（只有进程形态有 —— 内容形态的产物是文件，没有我们起的进程）
+    if is_process {
+        actions.push(
+            overlay_button(
+                &format!("deploy-logs-{app}"),
+                "日志",
+                {
+                    let app = app.clone();
+                    move |shell, _, cx| shell.open_deploy_logs(app.clone(), cx)
+                },
+                entity,
+            ),
+        );
+    }
+
+    // 进程形态才需要"重新部署"（内容形态上面那个就是它）
+    if is_process {
+        actions.push(
+            overlay_button(
+                &format!("deploy-redeploy-{app}"),
+                "重新部署",
+                {
+                    let app = app.clone();
+                    move |shell, window, cx| {
+                        shell.open_deploy_dialog(Some(app.clone()), window, cx)
+                    }
+                },
+                entity,
+            ),
+        );
+    }
+
+    actions.push(
+        deploy_danger_button(
+            &format!("deploy-remove-{app}"),
+            "删除",
+            {
+                let app = app.clone();
+                move |shell, cx| shell.request_remove_deployment(app.clone(), cx)
+            },
+            entity,
+        ),
+    );
+
+    h_flex()
+        .gap_2()
+        .flex_wrap()
+        .children(actions)
+        .into_any_element()
+}
+
+/// 部署页的红色按钮：**直接**调一个 `Shell` 方法，不走 `PendingAction`。
+///
+/// 为什么不复用 [`danger_button`]：那一个把动作交给 `ConfirmAction::execute`，
+/// 而它的形状是"跑一条 `wslc` 命令 → 返回字符串"（同步、单个子进程）。
+/// 删一条部署要做三件事 —— 停进程、清空目标目录、**改本地存档并重读列表** ——
+/// 最后那件它表达不了。所以删除确认是部署页自己的浮层
+///（[`deploy_remove_confirm_overlay`]），按钮直接把动作交给 `Shell`。
+fn deploy_danger_button(
+    id: &str,
+    label: &'static str,
+    run: impl Fn(&mut Shell, &mut Context<Shell>) + 'static,
+    entity: &Entity<Shell>,
+) -> AnyElement {
+    let entity = entity.clone();
+    Button::new(SharedString::from(id.to_owned()))
+        .label(label)
+        .small()
+        .danger()
+        .on_click(move |_, _, cx| {
+            entity.update(cx, |shell, cx| run(shell, cx));
+        })
+        .into_any_element()
+}
+
+/// 「添加部署 / 重新部署」弹窗。
+///
+/// # 为什么是弹窗而不是页面上的表单
+///
+/// 五个输入框，而 `InputState::new` 要 `&mut Window` —— 只能懒创建
+/// （渲染时建会每帧重建输入框，**字都打不进去**，见 `AGENTS.md` §7.5）。
+/// 和「拉取镜像」「新建数据库」同一条。
+///
+/// # 表单里的说明文字都是**必须的**
+///
+/// - 「目标目录会被清空」：部署是"先清空再铺"，用户有权在点之前知道；
+/// - 「启动命令会原样交给 /bin/sh -c」：它**不做**引号转义（刻意的，
+///   见 `model::deploy::start_script`），不说清楚用户会以为它是参数。
+pub fn deploy_dialog_overlay(
+    shell: &Shell,
+    entity: &Entity<Shell>,
+    cx: &App,
+) -> AnyElement {
+    let Some(form) = shell.deploy_form.as_ref() else {
+        return div().into_any_element();
+    };
+    let Some(deploy) = shell.state.deploy.as_ref() else {
+        return div().into_any_element();
+    };
+    let runtime = deploy.runtime;
+    let re_deploy = form.editing.is_some();
+
+    let card = v_flex()
+        .w(px(560.0))
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .bg(theme::bg_card())
+        .border_1()
+        .border_color(theme::border())
+        .child(
+            v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .text_lg()
+                        .font_semibold()
+                        .child(if re_deploy {
+                            format!(
+                                "重新部署 {}",
+                                form.editing.clone().unwrap_or_default()
+                            )
+                        } else {
+                            format!("添加部署 · {}", runtime.label())
+                        }),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child(format!("目标容器 {}", deploy.container)),
+                ),
+        );
+
+    // 重新部署时**不给**应用名的输入框，只把名字写出来 ——
+    // 和「数据库管理」的「改密码 / 授权」锁定用户名 / 主机是同一个手法
+    //（改了名字就是另一个部署了，那应该走「添加部署」）。
+    let card = if re_deploy {
+        card.child(kv_block(
+            "应用名",
+            form.editing.clone().unwrap_or_default(),
+        ))
+    } else {
+        card.child(form_field("deploy-app", "应用名", &form.app, cx, true))
+    };
+
+    let card = card
+        .child(
+            h_flex()
+                .w_full()
+                .gap_2()
+                .items_end()
+                .child(form_field(
+                    "deploy-source",
+                    "本地来源",
+                    &form.source,
+                    cx,
+                    false,
+                ))
+                .child({
+                    let entity = entity.clone();
+                    Button::new("deploy-browse")
+                        .label("浏览…")
+                        .small()
+                        .on_click(move |_, window, cx| {
+                            entity.update(cx, |shell, cx| {
+                                shell.browse_deploy_source(window, cx)
+                            });
+                        })
+                }),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child(format!(
+                    "{} 部署的是一个**{}**。",
+                    runtime.label(),
+                    match runtime.source_kind() {
+                        deploy_model::SourceKind::Directory => "目录（只打目录的**内容**）",
+                        deploy_model::SourceKind::File => "文件",
+                    }
+                )),
+        )
+        .child(form_field(
+            "deploy-target",
+            "容器内目标目录",
+            &form.target,
+            cx,
+            true,
+        ))
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::danger())
+                .child(
+                    "⚠️ 部署会**先清空目标目录**再铺 —— 那个目录里原有的东西会没。\
+                     所以目标目录只允许填在 /opt、/srv、/app、/var/www、\
+                     /usr/share/nginx 这些地方，不能是系统目录。",
+                ),
+        );
+
+    // 进程形态才有「启动命令」这一格；内容形态（nginx）铺完就生效。
+    let card = if runtime.kind() == wslc_core::model::DeployKind::Process {
+        card.child(form_field(
+            "deploy-command",
+            "启动命令",
+            &form.command,
+            cx,
+            true,
+        ))
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child(
+                    "这一行会**原样**交给容器里的 `/bin/sh -c`（不做转义）—— \
+                     所以可以写管道、`&&`、环境变量。日志落在目标目录的 app.log。",
+                ),
+        )
+    } else {
+        card.child(
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child(
+                    "内容形态没有「启动命令」—— nginx 每个请求都从磁盘读，铺完就生效。",
+                ),
+        )
+    };
+
+    let card = card
+        .child(form_field("deploy-port", "端口（信息性）", &form.port, cx, true))
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child(
+                    "端口只用来**提示有没有发布到主机**：已建好的容器改不了端口发布\
+                     （`-p` 只能在建容器时给）。",
+                ),
+        )
+        .child(
+            h_flex()
+                .w_full()
+                .justify_end()
+                .gap_2()
+                .child({
+                    let entity = entity.clone();
+                    Button::new("deploy-cancel")
+                        .label("取消")
+                        .small()
+                        .on_click(move |_, _, cx| {
+                            entity.update(cx, |shell, cx| shell.close_deploy_dialog(cx));
+                        })
+                })
+                .child({
+                    let entity = entity.clone();
+                    Button::new("deploy-submit")
+                        .label(if re_deploy { "重新部署" } else { "部署" })
+                        .small()
+                        .primary()
+                        .on_click(move |_, window, cx| {
+                            entity.update(cx, |shell, cx| shell.submit_deploy(window, cx));
+                        })
+                }),
+        );
+
+    modal_scrim("deploy-dialog-scrim", card).into_any_element()
+}
+
+/// 应用日志浮层（只读：一个输入框都没有，所以状态是纯数据）。
+pub fn deploy_logs_overlay(logs: &DeployLogs, entity: &Entity<Shell>) -> AnyElement {
+    let body: AnyElement = if logs.busy {
+        div()
+            .text_sm()
+            .text_color(theme::text_muted())
+            .child("正在读取…")
+            .into_any_element()
+    } else {
+        log_text(logs.text.as_deref(), "deploy-logs-text")
+    };
+
+    let card = v_flex()
+        .w(px(680.0))
+        .max_h(px(520.0))
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .bg(theme::bg_card())
+        .border_1()
+        .border_color(theme::border())
+        .child(
+            v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .text_lg()
+                        .font_semibold()
+                        .child(format!("日志 · {}", logs.app)),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child(
+                            "是这个应用**自己**的输出（启动时把它重定向到了目标目录的 \
+                             app.log）—— 不是容器主进程的日志，那个在「日志」按钮里。",
+                        ),
+                ),
+        )
+        .child(body)
+        .child(h_flex().w_full().justify_end().child({
+            let entity = entity.clone();
+            Button::new("deploy-logs-close")
+                .label("关闭")
+                .small()
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |shell, cx| shell.close_deploy_logs(cx));
+                })
+        }));
+
+    modal_scrim("deploy-logs-scrim", card).into_any_element()
+}
+
+/// 删除二次确认。
+///
+/// ⚠️ 必须把**完整路径**摆出来：目标是卷挂载点时会删掉卷里的数据
+///（本机那个 nginx 容器的 Web 根就挂在 `/dev/sdc` 上），这一步不可撤销。
+pub fn deploy_remove_confirm_overlay(
+    app: &str,
+    deploy: Option<&DeployState>,
+    entity: &Entity<Shell>,
+) -> AnyElement {
+    let container = deploy.map(|d| d.container.clone()).unwrap_or_default();
+    let target = deploy
+        .and_then(|d| d.index_of(app).map(|i| d.entries[i].record.target.clone()))
+        .unwrap_or_else(|| "（找不到目标目录）".to_owned());
+    let is_process = deploy
+        .and_then(|d| d.index_of(app).map(|i| d.entries[i].is_process()))
+        .unwrap_or(false);
+
+    let card = v_flex()
+        .w(px(520.0))
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .bg(theme::bg_card())
+        .border_1()
+        .border_color(theme::danger_edge())
+        .child(
+            div()
+                .text_lg()
+                .font_semibold()
+                .text_color(theme::danger())
+                .child(format!("删除部署「{app}」？")),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_color(theme::text())
+                .child(if is_process {
+                    "面板会：① 停掉这个应用的进程；② **清空**容器里的目标目录；\
+                     ③ 删掉本地的那条记录。"
+                } else {
+                    "面板会：**清空**容器里的目标目录（内容形态没有我们起的进程），\
+                     然后删掉本地的那条记录。"
+                }),
+        )
+        .child(kv_block("容器", container))
+        .child(kv_block("目标目录", target))
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::danger())
+                .child(
+                    "⚠️ 这一步不可撤销。如果那个目录挂在卷上（比如 nginx 的站点目录），\
+                     被清掉的是**卷里的数据**。",
+                ),
+        )
+        .child(
+            h_flex()
+                .w_full()
+                .justify_end()
+                .gap_2()
+                .child({
+                    let entity = entity.clone();
+                    Button::new("deploy-remove-cancel")
+                        .label("取消")
+                        .small()
+                        .on_click(move |_, _, cx| {
+                            entity.update(cx, |shell, cx| {
+                                shell.cancel_remove_deployment(cx)
+                            });
+                        })
+                })
+                .child({
+                    let entity = entity.clone();
+                    let app = app.to_owned();
+                    Button::new("deploy-remove-confirm")
+                        .label("确认删除")
+                        .small()
+                        .danger()
+                        .on_click(move |_, _, cx| {
+                            let app = app.clone();
+                            entity.update(cx, |shell, cx| {
+                                shell.confirm_remove_deployment(app, cx)
+                            });
+                        })
+                }),
+        );
+
+    modal_scrim("deploy-remove-scrim", card).into_any_element()
 }
 
 // ---------------------------------------------------------------------------

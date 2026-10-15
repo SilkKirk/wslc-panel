@@ -243,17 +243,23 @@ pub fn run_console_sql(
 // 备份 / 恢复（v0.8）
 // ---------------------------------------------------------------------------
 //
-// 实测（wslc 3.0.3.0 / mysql 26.7.0，`docs/PLAN-v0.8.md` 记录全过程）：
+// 实测（wslc 3.0.3.0 / mysql 26.7.0）：
 //
 // - **备份**：容器内 `sh -c 'mkdir -p <目录> && mysqldump … > <文件>'` 可行
 //   （3.7 MB 的 `mysql` 系统库一次成功）；stdout 直接落**容器里**的文件
 //   （sh 的重定向做的），所以 Windows 侧没有"大输出撑爆内存"的问题；
-// - **拉回 Windows**：`wslc container cp <容器>:<路径> <本地>` **可用**
-//   （3.7 MB 完整拉回）；⚠️ "本地→容器"方向实测是**坏的**
-//   （`ERROR_PATH_NOT_FOUND`，连根目录都写不进）—— 那是 wslc 的 bug，
-//   不是我们用法的问题；
+// - **拉回 Windows**：`wslc container cp <容器>:<路径> <本地目录>` **可用**
+//   （3.7 MB 完整拉回）；
+// - **送进容器**：`wslc container cp <本地文件> <容器>:<已存在的目录>/`
+//   **可用**（v0.8.2 才测对 —— ⚠️ 目标是**目录**，写成文件名会报
+//   `ERROR_PATH_NOT_FOUND`。我 v0.8.0 只试了后一种写法就误判成"这条路是坏的"，
+//   完整矩阵在 `model::mysql::restore_container_path` 的文档注释里）；
 // - **恢复**：容器内 `sh -c 'mysql … < <文件>'` 可行（dump 带
 //   `CREATE DATABASE`，实测恢复后表数 / 行数与 dump 前一致）。
+//
+// 恢复**以 Windows 侧存档为准**：dump 从本地 cp 进
+// [`logic::CONTAINER_RESTORE_DIR`] 再重定向。这样"容器重建过 / `/tmp` 被清过"
+// 都不再是障碍（v0.8.1 及以前只认容器内那份，那个限制现在没有理由存在）。
 
 /// 一次备份的落点（两个都要）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -364,12 +370,10 @@ pub fn backup_database(
 
 /// 恢复一个数据库（**覆盖**同名库的数据 —— 调用方必须先让用户确认过）。
 ///
-/// # 前提（界面上要说清）
+/// # 前提
 ///
-/// dump 文件必须在**容器里**的 [`logic::CONTAINER_BACKUP_DIR`] 下。
-/// "本地→容器"的拷贝方向实测不可用（见 [`backup_database`]），所以恢复
-/// **只认本容器内**的备份 —— [`container_backup_exists`] 会在恢复前替
-/// 用户问一句。
+/// `container_dump_path` 必须是**容器里真实存在**的文件。调用方一般先用
+/// [`push_dump_to_container`] 把 Windows 侧存档送进去，拿到路径再调这里。
 pub fn restore_database(
     wslc: &Wslc,
     container_name: &str,
@@ -407,31 +411,65 @@ pub fn restore_database(
     }
 }
 
-/// 检查容器里的备份文件还在不在（恢复前调，不在就给明确的一句话）。
+/// 把 **Windows 侧**的 dump 送进容器，返回它在容器里的绝对路径。
 ///
-/// # 「不在」是**答案**，不是错误
+/// # 三步（顺序不能换）
 ///
-/// `ls` 对不存在的文件退出码非零，而 `Wslc::run_checked` 会把它转成
-/// `Error::NonZeroExit` —— 直接 `?` 抛出去的话，调用方那句精心写的
-/// 「容器里找不到这份备份（…容器重建过的话 /tmp 里的备份就没了…）」
-/// **永远不会出现**，用户看到的是一句 `ls: cannot access ...` 的原文。
-/// 所以这里把非零退出码翻成 `Ok(false)`：真正该报错的只有
-/// "容器没在跑 / 找不到 wslc / 超时"这几类。
+/// ① `wslc exec <容器> /bin/sh -c 'mkdir -p <目录>'` —— 目标目录**必须先存在**：
+///    `cp` 的目录目标不存在时报 `ERROR_PATH_NOT_FOUND`（实测）；
+/// ② `wslc container cp <本地 dump> <容器>:<目录>/` —— ⚠️ 目标要写成**目录**
+///    （带尾斜杠），写成文件名会报同一个错（这是 v0.8.0 误判"这条路是坏的"
+///    的原因，完整矩阵在 [`logic::restore_container_path`] 的文档注释里）；
+/// ③ 文件名**保持本地那个**（cp 的语义是把源文件放进目标目录），
+///    所以路径由 [`logic::restore_container_path`] 算得出来。
 ///
-/// ⚠️ 这条是**推的**（没实机跑过"文件缺失"那一次），但 `NonZeroExit` 的
-/// 语义是明摆着的：`run_checked` 只看退出码。
-pub fn container_backup_exists(
+/// # 为什么恢复要重新送一份（而不是用容器里剩下的）
+///
+/// 容器内 `/tmp` 那份会随容器重建而消失（实测踩到过）。备份列表上的每一条
+/// 都有 Windows 侧的文件，送一份进去是**确定能成功**的那条路。
+pub fn push_dump_to_container(
     wslc: &Wslc,
     container_name: &str,
-    container_path: &str,
-) -> Result<bool> {
-    match wslc.run_checked(&["exec", container_name, "ls", container_path]) {
-        Ok(out) => Ok(!out.stdout.trim().is_empty()),
-        // 文件不在 —— `ls` 的退出码非零就是"没有"这个答案
-        Err(Error::NonZeroExit { .. }) => Ok(false),
-        // 容器没在跑、可执行文件找不到、超时……这些才是真的错误
-        Err(e) => Err(e),
+    windows_dump: &std::path::Path,
+) -> Result<String> {
+    let Some(file_name) = windows_dump.file_name().and_then(|n| n.to_str()) else {
+        return Err(Error::InvalidArgument(format!(
+            "备份文件名读不出来：{}",
+            windows_dump.display()
+        )));
+    };
+    // 文件名要进容器内的路径（`restore_database` 的 sh 脚本），
+    // 这里先按同一套白名单拦一次 —— 用户手动往备份目录里塞过奇怪名字的话，
+    // 报错要在这里、而不是在容器里变成一条被拆开的 shell 命令。
+    if file_name.is_empty()
+        || !file_name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err(Error::InvalidArgument(format!(
+            "备份文件名里有不安全字符：{file_name}"
+        )));
     }
+
+    // ① 目标目录必须先存在
+    let mkdir = format!("mkdir -p {}", logic::CONTAINER_RESTORE_DIR);
+    wslc.run_checked(&["exec", container_name, "/bin/sh", "-c", mkdir.as_str()])?;
+
+    // ② 源文件放进那个目录（目标写成**目录**，带尾斜杠）
+    let target_dir = format!("{}:{}/", container_name, logic::CONTAINER_RESTORE_DIR);
+    let local = windows_dump.to_string_lossy();
+    wslc.run_checked(&["container", "cp", local.as_ref(), target_dir.as_str()])
+        .map_err(|e| {
+            // cp 的错误里没有密码（没带 -e），不用脱敏；但把"从哪来、到哪去"
+            // 说清楚 —— 这一步失败最常见的原因是文件被手动删了
+            Error::Install(format!(
+                "把备份送进容器失败（{} → {}/）：{e}",
+                windows_dump.display(),
+                logic::CONTAINER_RESTORE_DIR
+            ))
+        })?;
+
+    Ok(logic::restore_container_path(file_name))
 }
 
 #[cfg(test)]
@@ -609,6 +647,45 @@ mod tests {
         let dir = std::env::temp_dir();
         let paths = backup_paths(&dir, "mysql", "shop", 0).unwrap();
         match backup_database(&wslc, "mysql", "mysql", &creds(), "shop", &paths) {
+            Err(Error::ExecutableNotFound { .. }) => {}
+            other => panic!("不应出现其它结果：{other:?}"),
+        }
+    }
+
+    #[test]
+    fn pushing_a_dump_rejects_unsafe_file_names_first() {
+        // 文件名会进容器内的路径（`sh -c 'mysql < <路径>'`），所以白名单
+        // 必须在**起进程之前**把关。用户手动往备份目录里塞一个怪名字时，
+        // 报错要落在这里，而不是在容器里变成一条被拆开的 shell 命令。
+        let wslc = Wslc::with_program("definitely-not-a-real-binary");
+        for bad in [
+            r"C:\backups\my dump.sql",  // 空格
+            r"C:\backups\a;rm -rf.sql", // 分号
+            r"C:\backups\中文库.sql",    // 非 ASCII
+            // ⚠️ 别写 `r"C:\backups\"` —— `Path::file_name()` 会**忽略尾部分隔符**
+            // 返回 `Some("backups")`（`components()` 的行为），那条会走到
+            // 后半段而不是这里。真正"没有文件名"的是盘根 / `..` 这种。
+            r"C:\", // 盘根：file_name() == None
+        ] {
+            match push_dump_to_container(&wslc, "mysql", std::path::Path::new(bad)) {
+                Err(Error::InvalidArgument(_)) => {}
+                other => panic!("{bad} 应被拒：{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn pushing_a_dump_starts_with_mkdir_and_fails_cleanly_on_a_bogus_binary() {
+        // 端到端：第一步是 `mkdir -p`（目标目录必须先存在），
+        // 所以可执行文件不存在时第一刀就断 → ExecutableNotFound。
+        // 这条同时钉住"顺序是从 mkdir 开始"这件事 —— 少了它，
+        // 目标目录不存在会让第②步报一句引擎的 `ERROR_PATH_NOT_FOUND`。
+        let wslc = Wslc::with_program("definitely-not-a-real-binary");
+        match push_dump_to_container(
+            &wslc,
+            "mysql",
+            std::path::Path::new(r"C:\backups\shop-20261015-035901.sql"),
+        ) {
             Err(Error::ExecutableNotFound { .. }) => {}
             other => panic!("不应出现其它结果：{other:?}"),
         }
