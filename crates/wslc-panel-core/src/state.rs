@@ -1342,28 +1342,52 @@ pub struct Toast {
     pub text: String,
     /// 类型（决定颜色）。
     pub kind: ToastKind,
+    /// 什么时候弹出来的 —— 用来算"该不该自己消失"（见 [`Toast::lifetime`]）。
+    ///
+    /// 时间戳放在这里（而不是 `AppState` 上另开一个字段）是因为提示条是
+    /// **单条**的（`toast: Option<Toast>`）：换了新的，时间戳自然跟着新的走，
+    /// 不需要额外的簿记，也不会出现"新提示被旧计时器收掉"。
+    pub shown_at: std::time::Instant,
 }
 
 impl Toast {
     /// 成功提示。
     pub fn success(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            kind: ToastKind::Success,
-        }
+        Self::new(text, ToastKind::Success)
     }
     /// 失败提示。
     pub fn error(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            kind: ToastKind::Error,
-        }
+        Self::new(text, ToastKind::Error)
     }
     /// 普通提示。
     pub fn info(text: impl Into<String>) -> Self {
+        Self::new(text, ToastKind::Info)
+    }
+
+    fn new(text: impl Into<String>, kind: ToastKind) -> Self {
         Self {
             text: text.into(),
-            kind: ToastKind::Info,
+            kind,
+            shown_at: std::time::Instant::now(),
+        }
+    }
+
+    /// 这条提示**自己收掉**要等多久。
+    ///
+    /// 分两档：
+    /// - 成功 / 一般信息 **4 秒** —— 一眼扫完就行；
+    /// - **报错 8 秒** —— 报错文本更长，而且用户往往要照着它去做点别的
+    ///   （去改个密码、去看日志），给双倍时间。
+    ///
+    /// # 为什么要自动收
+    ///
+    /// 实机反馈："这个下面弹出的提示信息过几秒自动关闭不要手动点，很多这种
+    /// 提示信息都需要手动点很麻烦"。手动「关闭」按钮**留着**（想立刻清掉时
+    /// 仍然有用），但它不再是一条必经操作。
+    pub fn lifetime(&self) -> std::time::Duration {
+        match self.kind {
+            ToastKind::Error => std::time::Duration::from_secs(8),
+            ToastKind::Info | ToastKind::Success => std::time::Duration::from_secs(4),
         }
     }
 }
@@ -1559,7 +1583,13 @@ impl ExecState {
 // 容器里的数据库管理（MySQL / MariaDB）
 // ---------------------------------------------------------------------------
 
-/// 「数据库管理」页的三个 tab。
+/// 「数据库管理」页的 tab。
+///
+/// ⚠️ **没有「SQL 控制台」这一项**（v0.9.2 去掉的）。实机反馈：
+/// "上面不需要导入 sql 和 sql 控制台，都是在具体数据库 database 操作的" ——
+/// SQL 是**针对某个库**的事，所以它现在挂在数据库列表每行的「SQL」按钮上、
+/// 以一个浮层出现（`Shell::open_db_console_for` + `DbState.sql_database`），
+/// 而不是一个"先切 tab、再想连哪个库"的入口。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DbTab {
     /// 数据库列表 + 新建 / 删除。
@@ -1567,20 +1597,17 @@ pub enum DbTab {
     Databases,
     /// MySQL 用户列表 + 新建 / 改密码 / 授权 / 删除。
     Users,
-    /// SQL 控制台。
-    Sql,
 }
 
 impl DbTab {
     /// 全部 tab（决定界面上的顺序）。
-    pub const ALL: [DbTab; 3] = [Self::Databases, Self::Users, Self::Sql];
+    pub const ALL: [DbTab; 2] = [Self::Databases, Self::Users];
 
     /// 标签。
     pub fn label(self) -> &'static str {
         match self {
             Self::Databases => "数据库",
             Self::Users => "用户",
-            Self::Sql => "SQL 控制台",
         }
     }
 }
@@ -3638,6 +3665,24 @@ impl AppState {
         self.toast = Some(toast);
     }
 
+    /// 提示条到点了吗？到点就收掉，返回"这次真的收掉了没有"。
+    ///
+    /// 由界面层那个 500ms 的小循环调（`panel-core` 里没有执行器、起不了定时器
+    /// —— 见 `Shell::start_toast_reaper` 的注释）。
+    ///
+    /// 返回值的用处：**只有真收掉了才需要重绘**。每半秒无脑 notify 一次
+    /// 会让界面一直重绘（GPUI 下这不只是浪费 —— 每一帧都要跑布局 + 光栅化）。
+    pub fn clear_expired_toast(&mut self) -> bool {
+        let expired = self
+            .toast
+            .as_ref()
+            .is_some_and(|t| t.shown_at.elapsed() >= t.lifetime());
+        if expired {
+            self.toast = None;
+        }
+        expired
+    }
+
     /// 记录一次**容器域**危险操作的确认请求。
     ///
     /// 保留这个名字（而不是改成 `request_container_confirm`）是为了让
@@ -5324,5 +5369,48 @@ mod tests {
         let text = format!("{state:?}");
         assert!(!text.contains("s3cret-pw"), "{text}");
         assert!(text.contains("***"), "{text}");
+    }
+
+    #[test]
+    fn toasts_expire_on_their_own() {
+        // 报错给双倍时间（文本更长、用户往往要照着它做事）
+        assert_eq!(
+            Toast::error("boom").lifetime(),
+            std::time::Duration::from_secs(8)
+        );
+        assert_eq!(
+            Toast::info("hi").lifetime(),
+            std::time::Duration::from_secs(4)
+        );
+        assert_eq!(
+            Toast::success("ok").lifetime(),
+            std::time::Duration::from_secs(4)
+        );
+        // 刚弹出来的**不能**被收掉（否则提示会一闪而过）
+        assert!(!Toast::success("ok").lifetime().is_zero(), "4 秒不能是 0");
+    }
+
+    #[test]
+    fn expired_toasts_get_cleared_and_the_rest_survive() {
+        // 和这个模块里其它 AppState 测试同一个造法（`AppState::new` 会读一次
+        // 偏好 / 存档，那几条测试早就这么干了）
+        let mut state = AppState::new(wslc_core::Wslc::new(), wslc_core::Wsl::new());
+        // 没有提示时什么都不做（也不该报"清掉了"）
+        assert!(!state.clear_expired_toast());
+
+        // 刚弹的：留着重绘信号应该是 **false**（每半秒无脑重绘会把界面拖住）
+        state.notify(Toast::info("hi"));
+        assert!(!state.clear_expired_toast());
+        assert!(state.toast.is_some(), "刚弹的提示不该被收掉");
+
+        // 把它"变老"到超过自己的寿命，就该被收掉、并且报告 true
+        if let Some(t) = state.toast.as_mut() {
+            t.shown_at = std::time::Instant::now()
+                - (t.lifetime() + std::time::Duration::from_millis(1));
+        }
+        assert!(state.clear_expired_toast(), "过期的提示应当被收掉并报告 true");
+        assert!(state.toast.is_none());
+        // 已经空了：再来一次不该报 true
+        assert!(!state.clear_expired_toast());
     }
 }

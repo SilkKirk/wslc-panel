@@ -1127,25 +1127,38 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
 /// 而它只存在内存里：不写进 `prefs.json`、不进日志（`MysqlCreds` 的 `Debug`
 /// 是手写脱敏的）、也不进错误消息（出口是 `cmd::mysql::sanitize`）。
 pub fn database(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
+    // 分发（`page()`）为了统一签名给每个页面都传 `cx`（那边有注释说明为什么）。
+    // v0.9.2 起这一页的输入框**全在浮层里**（连接卡 → 「基础信息」、
+    // 控制台 → 每行的「SQL」），正文一个都不用 —— 所以这里显式绑一下消警告，
+    // 而不是把参数删掉：删了就得为这一页破例改分发，下一个人还得再改回来。
+    let _ = cx;
+
     let Some(db) = shell.state.db.as_ref() else {
         // 理论上来不到（只可能从容器行上的按钮进，那里已经建好状态了），
         // 但真到了这里就说一句人话，别画一片空白。
         return empty_state("还没有选中容器 —— 请到「容器」页点某一行的「数据库」")
             .into_any_element();
     };
-    let Some(form) = shell.db_form.as_ref() else {
+    // 表单没建好就没法渲染（输入框是懒创建的）。
+    //
+    // 这里**不再绑一个 `form`**：连接卡搬进浮层、控制台也搬进浮层之后，
+    // 页面正文一个输入框都不用（`form` 只在 `db_info_overlay` /
+    // `db_console_overlay` 里用），绑了就是一个 unused 警告。
+    if shell.db_form.is_none() {
         return empty_state("连接表单还没建好 —— 请重新从容器列表进入这一页").into_any_element();
-    };
+    }
 
+    // 页头（含「基础信息」按钮）。
     let header = db_header(db, entity);
-    let connecting = db_connection_card(db, form, cx);
 
+    // ⚠️ 连接卡**不再常驻页面**：实机反馈"不用进来就在上面占用空间"。
+    // 它现在在 `db_info_overlay` 里（点页头的「基础信息」打开），
+    // 所以这里一个 `connecting` 都不画 —— 两处都画就等于同一份信息两个入口。
     if let Some(blocked) = db.blocked.as_ref() {
         return v_flex()
             .w_full()
             .gap_3()
             .child(header)
-            .child(connecting)
             .child(db_blocked_card(blocked))
             .into_any_element();
     }
@@ -1158,7 +1171,6 @@ pub fn database(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
             // 明明成功、列表里那两列却永远是 `—`（实机截图抓到的）。
             DbTab::Databases => db_databases_card(db, &shell.state.db_credentials, entity),
             DbTab::Users => db_users_card(db, entity),
-            DbTab::Sql => db_console_card(db, form, entity, cx),
         }
     } else {
         db_loading(db.busy)
@@ -1176,7 +1188,6 @@ pub fn database(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
         .w_full()
         .gap_3()
         .child(header)
-        .child(connecting)
         .children(db.error.as_ref().map(db_error_banner))
         .children(creds_warning)
         .child(db_tabs(db.tab, entity))
@@ -1184,7 +1195,153 @@ pub fn database(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
         .into_any_element()
 }
 
-/// 页头：容器 / 镜像 / 家族 / 客户端 + 「← 返回容器」「重新读取」。
+/// 「基础信息」浮层：连接卡（用户名 / 密码 + 那两段说明）。
+///
+/// # 为什么从页面上搬进浮层
+///
+/// 原来连接卡常驻页面顶部（`AGENTS.md` §5 的"同一动作只给一个入口"当时是
+/// 按"它描述这一页现在连的是谁、扫一眼就该知道"来定的）。实机反馈
+/// **"不用进来就在上面占用空间"** —— 一页里最有价值的是那两张表，
+/// 而占掉顶部 ~250px 的是一份**很少改**的连接信息。
+///
+/// 取舍：现在要"确认自己在用哪个账号"得点一下按钮。为了不让这一步变成
+/// 盲区，页头的按钮就写着「基础信息」，而**连接失败时**页面上的错误条
+/// 与「重新读取」仍然直接把注意力引到它上面。
+pub fn db_info_overlay(
+    db: &DbState,
+    form: &DbPageForm,
+    entity: &Entity<Shell>,
+    cx: &App,
+) -> AnyElement {
+    let close = {
+        let entity = entity.clone();
+        Button::new("db-info-close")
+            .label("关闭")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.close_db_info(cx));
+            })
+    };
+
+    modal_scrim(
+        "db-info",
+        v_flex()
+            .id("db-info-card")
+            .w(px(680.))
+            .max_h(px(560.))
+            .gap_4()
+            .p_5()
+            .rounded_lg()
+            .bg(theme::bg_card())
+            .border_1()
+            .border_color(theme::border())
+            .overflow_y_scroll()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_bold()
+                            .text_color(theme::text())
+                            .child("基础信息"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_dim())
+                            .child(format!(
+                                "容器 {} · {} · {} · 客户端 {}",
+                                db.container,
+                                db.family.label(),
+                                db.image,
+                                db.client_version
+                                    .as_deref()
+                                    .unwrap_or(db.client.as_str()),
+                            )),
+                    ),
+            )
+            // 连接卡本体照旧用它自己那份渲染（表单 + 说明都在里面）
+            .child(db_connection_card(db, form, cx))
+            .child(h_flex().w_full().justify_end().child(close)),
+    )
+    .into_any_element()
+}
+
+/// SQL 控制台浮层（**针对某个库**）。
+///
+/// # 为什么控制台不是 tab
+///
+/// 实机反馈："上面不需要导入 sql 和 sql 控制台，都是在具体数据库 database
+/// 操作的"。SQL 本来就是"对哪个库说话"的事 —— 一个不带库的控制台入口，
+/// 用户进去还得先想 `USE` 哪一条（不指定库时 `SELECT * FROM t` 直接报
+/// `No database selected`，实测过）。
+///
+/// 所以入口只有一处：数据库列表那一行的「SQL」按钮（`open_db_console_for`，
+/// 它顺手把这个库的账号写进连接卡）。
+pub fn db_console_overlay(
+    db: &DbState,
+    form: &DbPageForm,
+    entity: &Entity<Shell>,
+    cx: &App,
+) -> AnyElement {
+    let close = {
+        let entity = entity.clone();
+        Button::new("db-console-close")
+            .label("关闭")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.close_db_console(cx));
+            })
+    };
+
+    // 标题里带上库名：浮层是盖在列表上的，底下那行看不见了 ——
+    // "我现在在对哪个库执行"必须写在脸上（`db_console_card` 里那行
+    // 「当前库」是第二道保险）。
+    let title = match db.sql_database.as_deref() {
+        Some(name) => format!("SQL 控制台 · {name}"),
+        None => "SQL 控制台".to_owned(),
+    };
+
+    modal_scrim(
+        "db-console",
+        v_flex()
+            .w(px(940.))
+            .max_h(px(640.))
+            .gap_4()
+            .p_5()
+            .rounded_lg()
+            .bg(theme::bg_card())
+            .border_1()
+            .border_color(theme::border())
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_bold()
+                            .text_color(theme::text())
+                            .child(title),
+                    )
+                    .child(close),
+            )
+            // 控制台本体（输入框 + 输出）—— 输出可能很长，`db_console_card`
+            // 里的输出区自己就是滚动的（`log_text`，带 id）。
+            .child(
+                v_flex()
+                    .id("db-console-body")
+                    .max_h(px(520.))
+                    .overflow_y_scroll()
+                    .child(db_console_card(db, form, entity, cx)),
+            ),
+    )
+    .into_any_element()
+}
+
+/// 页头：容器 / 镜像 / 家族 / 客户端 + 「← 返回容器」「基础信息」「重新读取」。
 fn db_header(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
     let back = {
         let entity = entity.clone();
@@ -1193,6 +1350,19 @@ fn db_header(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
             .small()
             .on_click(move |_, _, cx| {
                 entity.update(cx, |shell, cx| shell.close_database_page(cx));
+            })
+    };
+
+    // 连接卡（用户名 / 密码 + 说明）现在住在这个按钮后面 —— 它以前常驻页面顶部，
+    // 实机反馈"不用进来就在上面占用空间"。按钮文案就叫「基础信息」，
+    // 和浮层标题一致，用户点下去就知道会看到什么。
+    let info = {
+        let entity = entity.clone();
+        Button::new("db-info")
+            .label("基础信息")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.open_db_info(cx));
             })
     };
 
@@ -1247,8 +1417,11 @@ fn db_header(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
 
 /// 连接卡：用户名 / 密码 + 一句说明。
 ///
-/// 它挂在**页面**上而不是弹窗里：它描述的是"这一页现在连的是谁"，
-/// 用户扫一眼就该知道，而不必点开一个弹窗去确认。
+/// ⚠️ 它**现在住在一个浮层里**（`db_info_overlay`，点页头的「基础信息」打开），
+/// 不再常驻页面顶部 —— 实机反馈"不用进来就在上面占用空间"。原先这里的注释
+/// 写的是"挂在**页面**上而不是弹窗里：用户扫一眼就该知道这一页连的是谁"，
+/// 那条取舍被这条反馈推翻了：那一页最有价值的是两张表，而顶部 ~250px 花在
+/// 一份很少改的连接信息上。
 fn db_connection_card(db: &DbState, form: &DbPageForm, cx: &App) -> AnyElement {
     let mut body = v_flex()
         .w_full()
@@ -1451,19 +1624,9 @@ fn db_databases_card(
             })
     };
 
-    // 「导入 SQL…」和「新建数据库…」并排：都是**库级**动作（不针对某一行），
-    // 所以放页头而不是塞进每一行 —— 行内已经有「备份 / SQL / 删除」三个了。
-    let import_sql = {
-        let entity = entity.clone();
-        Button::new("db-import-sql")
-            .label("导入 SQL…")
-            .small()
-            .on_click(move |_, window, cx| {
-                entity.update(cx, |shell, cx| {
-                    shell.open_db_dialog(DbDialogKind::ImportSql, window, cx)
-                });
-            })
-    };
+    // ⚠️ 页头**没有**「导入 SQL」按钮（v0.9.2 拿掉的）：导入是"往**某个库**灌
+    // 数据"的事，入口在每一行的「导入备份」上。实机反馈：
+    // "数据库列表那里要一个导入备份，点击导入这个库的数据，上面不需要导入 sql"。
 
     // ⚠️ **系统库不显示**（用户要求）。它们仍然真实存在、也仍然能被 SQL 控制台
     // 访问 —— 只是不该混在"我的库"里（`sys` / `performance_schema` 还占着
@@ -1513,6 +1676,23 @@ fn db_databases_card(
                 },
                 entity,
             );
+            // 「导入备份」：把这个库的数据从一个本地 `.sql` 灌进去。
+            // 目标库**就是这一行**（写进 kind 里），弹窗里没有可改的库名。
+            let import_button = overlay_button(
+                &format!("db-import-{}", entry.name),
+                "导入备份",
+                {
+                    let name = entry.name.clone();
+                    move |shell, window, cx| {
+                        shell.open_db_dialog(
+                            DbDialogKind::ImportSql { database: name.clone() },
+                            window,
+                            cx,
+                        )
+                    }
+                },
+                entity,
+            );
             table_row(
                 DB_COLUMNS,
                 vec![
@@ -1532,6 +1712,7 @@ fn db_databases_card(
                     h_flex()
                         .gap_2()
                         .child(backup_button)
+                        .child(import_button)
                         .child(sql_button)
                         .child(
                             danger_button(
@@ -2016,7 +2197,16 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
             ));
             fields.push(grant_kind_row(dialog.grant, entity));
         }
-        DbDialogKind::ImportSql => {
+        DbDialogKind::ImportSql { database } => {
+            // 目标库**写死**（就是数据库列表上被点的那一行）：不给输入框，
+            // 也就没有"填错库"这件事。要导到别的库，去点那一行的按钮。
+            fields.push(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child(format!("导入到：{database}"))
+                    .into_any_element(),
+            );
             // 文件那一格 + 「选择文件…」按钮并排：路径可以直接粘（用户常从
             // 别处拷过来），也可以点按钮挑 —— 两条路都通。
             let pick = {
@@ -2044,39 +2234,6 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
                         false,
                     )))
                     .child(pick)
-                    .into_any_element(),
-            );
-            fields.push(form_field(
-                "db-import-db",
-                "导入到哪个库（留空 = 由文件里的语句决定）",
-                &dialog.import_db,
-                cx,
-                false,
-            ));
-            // 能选哪些库：把当前读到的**非系统库**列出来，省得用户回去抄名字。
-            // 用文字而不是下拉框：`Select` 放进模态是本仓库**没有实机验证过**
-            // 的组合（`AGENTS.md` §7.5），而这个弹窗没有非用下拉框不可的理由。
-            let names: Vec<String> = shell
-                .state
-                .db
-                .as_ref()
-                .map(|db| {
-                    db.databases
-                        .iter()
-                        .filter(|e| !e.is_system())
-                        .map(|e| e.name.clone())
-                        .collect()
-                })
-                .unwrap_or_default();
-            fields.push(
-                div()
-                    .text_xs()
-                    .text_color(theme::text_dim())
-                    .child(if names.is_empty() {
-                        "当前没有可选的库（列表还没读出来）。".to_owned()
-                    } else {
-                        format!("可选的库：{}", names.join("、"))
-                    })
                     .into_any_element(),
             );
             fields.push(
