@@ -1735,7 +1735,13 @@ mod tests {
         for flag in ["--single-transaction", "--quick", "--set-gtid-purged=OFF"] {
             assert!(args.contains(&flag.to_owned()), "缺 {flag}：{args:?}");
         }
-        // 密码不进 argv（和 exec 同一条纪律）
+        // ⚠️ `-e <sql>` 的尾巴必须被**掐掉**：dump 是命令不是 SQL，
+        // 留着它会变成 `mysqldump … -e ""` 而 mysqldump 不认 `-e`。
+        // 这是 `client_args` 和这里之间的一条**隐式契约**
+        //（那边永远以 `-e`, `<sql>` 收尾），所以钉一条断言 ——
+        // 改 `client_args` 的尾巴时这里是唯一会响的地方。
+        assert!(!args.contains(&"-e".to_owned()), "没掐掉 -e：{args:?}");
+        // 参数里绝不能出现密码（和 exec 同一条纪律）
         assert!(!args.iter().any(|a| a.contains("pw")), "{args:?}");
         // 非法库名在本地就拦下，不起进程
         assert!(mysqldump_args("mysqldump", &creds, "shop; drop").is_err());

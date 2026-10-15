@@ -408,14 +408,30 @@ pub fn restore_database(
 }
 
 /// 检查容器里的备份文件还在不在（恢复前调，不在就给明确的一句话）。
+///
+/// # 「不在」是**答案**，不是错误
+///
+/// `ls` 对不存在的文件退出码非零，而 `Wslc::run_checked` 会把它转成
+/// `Error::NonZeroExit` —— 直接 `?` 抛出去的话，调用方那句精心写的
+/// 「容器里找不到这份备份（…容器重建过的话 /tmp 里的备份就没了…）」
+/// **永远不会出现**，用户看到的是一句 `ls: cannot access ...` 的原文。
+/// 所以这里把非零退出码翻成 `Ok(false)`：真正该报错的只有
+/// "容器没在跑 / 找不到 wslc / 超时"这几类。
+///
+/// ⚠️ 这条是**推的**（没实机跑过"文件缺失"那一次），但 `NonZeroExit` 的
+/// 语义是明摆着的：`run_checked` 只看退出码。
 pub fn container_backup_exists(
     wslc: &Wslc,
     container_name: &str,
     container_path: &str,
 ) -> Result<bool> {
-    let out = wslc.run_checked(&["exec", container_name, "ls", container_path])?;
-    // `ls` 对存在的文件输出文件名；不存在时退出码非零（走 Err）
-    Ok(!out.stdout.trim().is_empty())
+    match wslc.run_checked(&["exec", container_name, "ls", container_path]) {
+        Ok(out) => Ok(!out.stdout.trim().is_empty()),
+        // 文件不在 —— `ls` 的退出码非零就是"没有"这个答案
+        Err(Error::NonZeroExit { .. }) => Ok(false),
+        // 容器没在跑、可执行文件找不到、超时……这些才是真的错误
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(test)]

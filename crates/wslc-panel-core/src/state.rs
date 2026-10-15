@@ -1726,8 +1726,16 @@ impl DbState {
             client_version: None,
             creds: MysqlCreds::root(""),
             cred_note: None,
-            // 马上就要去探测 —— 一开始就是"忙"，页面上的按钮才会是「读取中…」
-            busy: true,
+            // ⚠️ **必须 false**。这里一开始写的是 `true`（想着"马上就要去探测，
+            // 先算忙"），结果 `Shell::load_db` 的第一句就是"正在跑就不叠第二次"
+            // —— 于是**第一次**加载被自己挡掉了，页面永远停在「正在读取…」，
+            // 页头按钮永远是「读取中…」，实机（v0.8.0）就是这样。
+            //
+            // 「忙」的语义只能是"**已经有一个后台任务在跑**"：新建出来的状态
+            // 没有任务在跑，忙不忙要由真正起任务的那个函数（`load_db`）来置。
+            // 页面在 `load_db` 置位**之前**不会渲染一帧（同一个事件回调里），
+            // 所以不需要靠这个标志来撑住"读取中"的样子。
+            busy: false,
             blocked: None,
             error: None,
             databases: Vec::new(),
@@ -4480,6 +4488,29 @@ mod tests {
         assert_eq!(Page::Database.label(), "数据库管理");
         // 连接卡上有输入框 → 进这一页必须有 window
         assert!(Page::Database.needs_window_to_enter());
+    }
+
+    #[test]
+    fn a_freshly_opened_db_page_can_be_loaded() {
+        // ⚠️ 实机踩过（v0.8.0）：`provisional` 里一开始把 `busy` 置成了 `true`
+        // （想法是"马上就要去探测，先算忙"），而 `Shell::load_db` 的第一句是
+        // "正在跑就不叠第二次" —— **第一次**加载就被自己挡掉了，页面永远停在
+        // 「正在读取…」，页头按钮永远是「读取中…」，整个数据库管理页没法用。
+        //
+        // CI 拦不住这个：类型全对、`core` 全绿，只有实机点一下才看得见。
+        // 所以这条断言把"新建出来的状态必须是**可加载**的"钉死在这里。
+        //
+        // 「忙」的语义只能是"已经有一个后台任务在跑" —— 置位的责任在
+        // 真正起任务的那个函数（`load_db` 进去就置 true），不在构造函数里。
+        let state = DbState::provisional("mysql", "mysql:8", MysqlFamily::Mysql);
+        assert!(
+            !state.busy,
+            "新建的状态不能是 busy：`load_db` 会因为这一条直接返回，页面卡在「正在读取…」"
+        );
+        // 但**没读过**这件事要保留 —— 界面靠它区分"还没读"和"读到空的"
+        assert!(!state.loaded);
+        // 兜底家族给的客户端名（权威判定由 apply_probe 覆盖）
+        assert_eq!(state.client, "mysql");
     }
 
     #[test]
