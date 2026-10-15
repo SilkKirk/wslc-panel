@@ -1000,16 +1000,52 @@ pub fn mysqldump_args(bin: &str, creds: &MysqlCreds, database: &str) -> Result<V
     Ok(args)
 }
 
-/// 恢复用的容器内脚本（**纯函数**）。
+/// 把一段文本包成 shell 里的**单引号字面量**（纯函数）。
 ///
-/// 恢复走容器内的重定向：`/bin/sh -c "mysql -uroot < /tmp/…"`（实测 wslc
-/// 3.0.3.0 可行）。**不**走 stdin 是因为**我们**的 `Wslc::build_command`
-/// 把 stdin 写死成 null —— 不是 wslc 不支持：`wslc exec --help` 里明确有
-/// `-i/--interactive`（原文"附加到 Stdin 并保持其打开状态"）。
-/// 换成 stdin 那条路要先给 `cli.rs` 加"stdin 来自文件"，而目录目标的
-/// `wslc container cp` 已经够用（见 [`restore_container_path`]）。
-pub fn restore_script(bin: &str, dump_path: &str) -> String {
-    format!("exec {bin} < {dump_path}")
+/// # 为什么需要它
+///
+/// 容器内那一步是**一条 `sh -c` 脚本**（`mysql < 文件` 要用 shell 的重定向
+/// —— `wslc exec` 的 stdin 被我们的封装写死成 null，见 [`load_script`]）。
+/// 所以路径和库名都会**过一次 shell**。而这是**用户选的文件**：
+/// `shop backup (1).sql`、`订单数据.sql` 都很正常，实测 `container cp`
+/// 对这种名字没问题 —— 那就必须原样送进 shell，不能被它拆开
+///（不包引号时 `mysql < /tmp/shop backup.sql` 会被拆成两个参数）。
+///
+/// # 为什么遇到 `'` 直接拒
+///
+/// 单引号里没法转义单引号（`'\''` 那种拼法可读性太差，而且这是一条
+/// 要出现在错误消息里的命令）。所以宁可**报一句人话**，也不拼出一条
+/// 会被拆开的命令 —— 文件名带单引号的用户几乎没有，让他改个名就行。
+pub fn sh_quote(value: &str) -> Result<String> {
+    if value.contains('\'') || value.contains('\n') || value.contains('\r') {
+        return Err(Error::InvalidArgument(format!(
+            "路径 / 名字里不能有单引号或换行：{value}"
+        )));
+    }
+    Ok(format!("'{value}'"))
+}
+
+/// 把一份 `.sql` 文件喂给 `mysql` 的容器内脚本（**纯函数**）。
+///
+/// 恢复（面板自己的备份）和导入（用户挑的文件）**走的是同一条路** ——
+/// 都是"容器里有个 .sql，让 mysql 读它"。区别只有 `database`：
+///
+/// - `None`：**由文件自己的语句决定**。`mysqldump --databases` 出来的 dump
+///   自带 `CREATE DATABASE` / `USE`，恢复就走这条；
+/// - `Some(db)`：`mysql -D <db>`，往指定的库里灌。用户的 dump 若没有
+///   `CREATE DATABASE` / `USE`（`mysqldump <db> > f.sql` 就是这种），
+///   不给库名 mysql 会报 **"No database selected"**（实测过这条报错）。
+///
+/// 为什么不用 stdin：我们的 `Wslc::build_command` 把 stdin 写死成 null ——
+/// 不是 wslc 不支持（`wslc exec --help` 有 `-i/--interactive`），是封装没做
+/// "stdin 来自文件"。要走那条路得先给 `cli.rs` 加一个同族方法。
+pub fn load_script(bin: &str, sql_path: &str, database: Option<&str>) -> Result<String> {
+    let path = sh_quote(sql_path)?;
+    match database {
+        // `-D` 的值也过一次 shell，所以同样要引起来（库名可能带空格 / 中文）
+        Some(db) => Ok(format!("exec {bin} -D {} < {path}", sh_quote(db)?)),
+        None => Ok(format!("exec {bin} < {path}")),
+    }
 }
 
 /// 备份文件在**容器里**的目录（备份时 dump 落在这里）。
@@ -1020,7 +1056,7 @@ pub fn restore_script(bin: &str, dump_path: &str) -> String {
 /// [`CONTAINER_RESTORE_DIR`]。
 pub const CONTAINER_BACKUP_DIR: &str = "/tmp/wslc-backups";
 
-/// 恢复时把 Windows 侧 dump **送进容器**的落脚目录。
+/// 要**送进容器**的 `.sql` 落脚的目录（恢复和导入共用）。
 ///
 /// # 为什么恢复要重新送一份进去（v0.8.2 改的）
 ///
@@ -1030,9 +1066,13 @@ pub const CONTAINER_BACKUP_DIR: &str = "/tmp/wslc-backups";
 /// 这个限制根本不需要存在 —— 备份列表上的每一条都有 Windows 侧的文件，
 /// 恢复时把它 cp 进这个目录再重定向即可。
 ///
-/// 用**独立目录**而不是 [`CONTAINER_BACKUP_DIR`]：这里放的是"待恢复的导入件"，
-/// 和"刚导出的备份"混在一起会让 `/tmp` 里两份同名文件互相覆盖
-///（同名文件在这个目录里语义完全不同：一个是源、一个是刚生成的目标）。
+/// 导入（用户挑的本地 `.sql`）走的是**同一个目录、同一条路**：
+/// `mkdir -p` → `container cp` 进来 → `mysql < 它`。所以这里叫
+/// `RESTORE` 是历史名字，实际语义是"**待导入的件**"。
+///
+/// 用**独立目录**而不是 [`CONTAINER_BACKUP_DIR`]：那里放"刚导出的备份"，
+/// 混在一起会让两份同名文件互相覆盖（同名文件在这两个目录里语义相反：
+/// 一个是源、一个是刚生成的目标）。
 pub const CONTAINER_RESTORE_DIR: &str = "/tmp/wslc-restore";
 
 /// dump 被送进容器后的**绝对路径**（纯函数）。
@@ -1794,11 +1834,45 @@ mod tests {
     }
 
     #[test]
-    fn restore_script_is_a_container_side_redirect() {
+    fn load_script_quotes_the_path_and_optionally_picks_a_database() {
+        // 恢复（面板自己的备份）：不带库名 —— 让 dump 里的 CREATE DATABASE 说话
         assert_eq!(
-            restore_script("mysql", "/tmp/wslc-backups/x.sql"),
-            "exec mysql < /tmp/wslc-backups/x.sql"
+            load_script("mysql", "/tmp/wslc-restore/x.sql", None).unwrap(),
+            "exec mysql < '/tmp/wslc-restore/x.sql'"
         );
+        // 导入到指定库
+        assert_eq!(
+            load_script("mysql", "/tmp/wslc-restore/x.sql", Some("djxm")).unwrap(),
+            "exec mysql -D 'djxm' < '/tmp/wslc-restore/x.sql'"
+        );
+        // ⚠️ 文件名是**用户选的**：空格 / 括号 / 中文都必须原样进去 ——
+        // 不包引号的话 `mysql < /tmp/shop backup (1).sql` 会被 shell 拆开。
+        assert_eq!(
+            load_script("mysql", "/tmp/wslc-restore/shop backup (1).sql", None).unwrap(),
+            "exec mysql < '/tmp/wslc-restore/shop backup (1).sql'"
+        );
+        assert_eq!(
+            load_script("mysql", "/tmp/wslc-restore/订单.sql", Some("我的库")).unwrap(),
+            "exec mysql -D '我的库' < '/tmp/wslc-restore/订单.sql'"
+        );
+        // `;` `$` 这些在**单引号里**是字面量，不需要拒
+        assert_eq!(
+            load_script("mysql", "/tmp/a;b$c.sql", None).unwrap(),
+            "exec mysql < '/tmp/a;b$c.sql'"
+        );
+        // 只有真正没法安全表达的两个字符被拒
+        assert!(load_script("mysql", "/tmp/a'b.sql", None).is_err());
+        assert!(load_script("mysql", "/tmp/a\nb.sql", None).is_err());
+        assert!(load_script("mysql", "/tmp/x.sql", Some("a'b")).is_err());
+    }
+
+    #[test]
+    fn sh_quote_rejects_only_what_it_cannot_express() {
+        assert_eq!(sh_quote("abc").unwrap(), "'abc'");
+        assert_eq!(sh_quote("a b").unwrap(), "'a b'");
+        for bad in ["it's", "line\nbreak", "carriage\rreturn"] {
+            assert!(sh_quote(bad).is_err(), "{bad} 应被拒");
+        }
     }
 
     #[test]
@@ -1810,9 +1884,10 @@ mod tests {
             "/tmp/wslc-restore/djxm-20261015-035901.sql"
         );
         assert_ne!(CONTAINER_RESTORE_DIR, CONTAINER_BACKUP_DIR);
-        // 路径里只有 `/` 和合法文件名字符 —— `restore_database` 的白名单
-        //（字母数字 + `/-_.`）必须放行它，否则恢复会在本地就被拒
+        // 面板生成的路径必须能过 `sh_quote`（它只拒单引号 / 换行）——
+        // 过不了的话恢复会在本地就被拒，而那是没人会料到的
         let path = restore_container_path("djxm-20261015-035901.sql");
+        assert!(sh_quote(&path).is_ok(), "面板自己生成的路径过不了 sh_quote：{path}");
         assert!(
             path.chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.')),

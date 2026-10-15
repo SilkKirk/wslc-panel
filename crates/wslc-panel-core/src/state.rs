@@ -843,7 +843,8 @@ impl PendingAction {
                 }
                 let container_path =
                     cmd::mysql::push_dump_to_container(wslc, container, windows_path)?;
-                cmd::mysql::restore_database(wslc, container, client, creds, &container_path)?;
+                // `None` = 由 dump 自己的语句决定往哪灌（备份是 `--databases` 出来的）
+                cmd::mysql::load_sql_file(wslc, container, client, creds, &container_path, None)?;
                 Ok(format!("已恢复数据库：{database}（现有数据已被备份覆盖）"))
             }
         }
@@ -1688,6 +1689,12 @@ pub struct DbState {
     pub sql_output: Option<String>,
     /// SQL 控制台跑过没有（区分"还没跑过"和"跑完了没有输出"）。
     pub sql_ran: bool,
+    /// SQL 控制台**针对哪个库**（`None` = 不指定，靠语句自己 `USE`）。
+    ///
+    /// 由数据库列表行上的「SQL」按钮设置（那一行是哪个库就是哪个），
+    /// 也可以由控制台里的「不指定」按钮清掉。执行时作为 `mysql -D <库>` 传下去
+    /// —— 不指定的话 `SELECT * FROM t` 会报 "No database selected"（实测过）。
+    pub sql_database: Option<String>,
     // ⚠️ 这里**不该**再挂一份账号存档的克隆。v0.8 挂过（`credentials`），
     // 而它从来没被同步过 —— 构造函数给的是空的，渲染却读它，于是
     // "建库同时建用户"明明成功（SQL 成功、`db-credentials.json` 也写了）、
@@ -1705,6 +1712,25 @@ pub struct DbState {
     pub backups: Vec<BackupEntry>,
     /// 备份列表浮层开没开（开的对象是哪个库；`None` = 关着）。
     pub backup_dialog: Option<String>,
+    /// 正在**导入**的 `.sql`（`None` = 空闲）。
+    ///
+    /// 和备份一样是长任务（大 dump 要几分钟），所以状态放这里、界面把它显示成
+    /// 一个进度浮层 —— "点下去到有结果之间界面上必须有变化"（`AGENTS.md` §7.1）。
+    pub import: Option<ImportState>,
+}
+
+/// 一次导入的状态（跑着的那一个）。
+///
+/// 「导入」= 用户挑一个本地 `.sql` → 送进容器 → `mysql` 读它。
+/// 和**恢复**走的是同一条路（`cmd::mysql::load_sql_file`），区别只在
+/// `database`：恢复是 `None`（dump 自带 `CREATE DATABASE`），
+/// 导入多半要指定库（用户的 dump 常常没有 `USE`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportState {
+    /// 文件名（显示用；完整路径太长，弹窗里已经看过一遍了）。
+    pub file_name: String,
+    /// 往哪个库导（`None` = 由文件里的语句决定）。
+    pub database: Option<String>,
 }
 
 /// 一次备份的状态（跑着的那一个）。
@@ -1804,9 +1830,11 @@ impl DbState {
             last_sql: String::new(),
             sql_output: None,
             sql_ran: false,
+            sql_database: None,
             backup: None,
             backups: Vec::new(),
             backup_dialog: None,
+            import: None,
         }
     }
 

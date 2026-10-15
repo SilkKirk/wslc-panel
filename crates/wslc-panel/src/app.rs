@@ -65,8 +65,8 @@ use wslc_core::{Wsl, Wslc};
 use crate::state::{
     self, AppState, BackupState, ConfirmAction, DbFailure, DbState, DbTab, DeployFailure,
     DeployLogs, DeployPhase, DeployProgress, DeployState, DistroAction, ExecState, ExportProgress,
-    ImmediateAction, InstallOutcome, InstallProgress, InstallSourceKind, LogsState, MirrorChoice,
-    MirrorProbeResult, Page, PendingAction, PromptKind, Toast, ToastKind, exec_argv,
+    ImmediateAction, ImportState, InstallOutcome, InstallProgress, InstallSourceKind, LogsState,
+    MirrorChoice, MirrorProbeResult, Page, PendingAction, PromptKind, Toast, ToastKind, exec_argv,
 };
 use crate::theme;
 // `split_list` / `refresh_label` 是纯函数，住在不依赖 GPUI 的 `wslc-panel-core` 里
@@ -623,6 +623,12 @@ pub(crate) enum DbDialogKind {
         /// 目标主机。
         host: String,
     },
+    /// **导入一份 `.sql`**（用户从本机挑的文件）。
+    ///
+    /// 和「恢复」的区别只在**输入从哪来**：恢复的输入是面板自己的备份
+    /// （dump 自带 `CREATE DATABASE`，所以不用选库）；导入是任意 `.sql`，
+    /// 多半要指定往哪个库灌（用户的 dump 常常没有 `USE`）。
+    ImportSql,
 }
 
 impl DbDialogKind {
@@ -633,6 +639,7 @@ impl DbDialogKind {
             Self::NewUser => "新建 MySQL 用户",
             Self::AlterPassword { .. } => "修改密码",
             Self::Grant { .. } => "授权",
+            Self::ImportSql => "导入 SQL 文件",
         }
     }
 
@@ -643,7 +650,17 @@ impl DbDialogKind {
             Self::NewUser => "创建",
             Self::AlterPassword { .. } => "改密码",
             Self::Grant { .. } => "授权",
+            Self::ImportSql => "开始导入",
         }
+    }
+
+    /// 这个动作**不是**一条 SQL —— 它有自己的提交路径。
+    ///
+    /// 分开的理由：其余四种都是"拼一条 SQL 然后执行"，而导入是"把一个文件
+    /// 送进容器再让 mysql 读它"。`submit_db_dialog` 是按 SQL 拼装的，
+    /// 硬塞进去只会让那个函数里多一层和 SQL 无关的分支。
+    pub(crate) fn is_import(&self) -> bool {
+        matches!(self, Self::ImportSql)
     }
 }
 
@@ -674,6 +691,14 @@ pub(crate) struct DbDialog {
     /// （仅新建数据库）**同时创建用户** —— v0.8 的主路径：建库的人几乎总是
     /// 需要一个连它的账号，单独再走一遍「新建用户」纯属多余。
     pub(crate) create_user: bool,
+    /// （仅导入）本机那份 `.sql` 的路径。
+    pub(crate) import_path: Entity<InputState>,
+    /// （仅导入）往哪个库灌（留空 = 由文件里的语句决定）。
+    ///
+    /// ⚠️ 不复用 `grant_db`：那个的 placeholder 是"留空 = 先不授权"，
+    /// 而这里的语义完全不同（"留空 = 由文件决定"）。placeholder 是建输入框时
+    /// 定下的，改不了 —— 共用会让用户读到一句错的提示。
+    pub(crate) import_db: Entity<InputState>,
 }
 
 /// 这次连数据库要用哪个账号。
@@ -3060,6 +3085,11 @@ impl Shell {
         let host = cx.new(|cx| InputState::new(window, cx).placeholder("%（任意主机）"));
         let password = cx.new(|cx| InputState::new(window, cx).placeholder("密码"));
         let grant_db = cx.new(|cx| InputState::new(window, cx).placeholder("留空 = 先不授权"));
+        let import_path = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(r"点右边的「选择文件…」，或直接粘一个路径")
+        });
+        let import_db =
+            cx.new(|cx| InputState::new(window, cx).placeholder("留空 = 由文件里的语句决定"));
 
         // 预填：把行上带过来的用户名 / 主机填好（改密码 / 授权那两种）
         if let DbDialogKind::AlterPassword { user: u, host: h }
@@ -3087,6 +3117,8 @@ impl Shell {
             DbDialogKind::NewUser => &user,
             DbDialogKind::AlterPassword { .. } => &password,
             DbDialogKind::Grant { .. } => &grant_db,
+            // 导入：最该填的是**文件**（库名可以留空）
+            DbDialogKind::ImportSql => &import_path,
         };
         let handle = first.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
@@ -3102,7 +3134,234 @@ impl Shell {
             grant_db,
             grant: GrantKind::All,
             create_user,
+            import_path,
+            import_db,
         });
+        cx.notify();
+    }
+
+    /// 「导入 SQL」弹窗里点「选择文件…」。
+    ///
+    /// 复用面板唯一那个选择器（`cmd::picker` 起独立进程弹 Windows 原生对话框，
+    /// 理由见 `AGENTS.md` §7.4）：`sql` 作为扩展名过滤，`AfterPick::Nothing`
+    /// —— 选完只填输入框，导入要等用户点「开始导入」。
+    pub fn pick_import_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(input) = self.db_dialog.as_ref().map(|d| d.import_path.clone()) else {
+            return;
+        };
+        self.spawn_picker(
+            &input,
+            false,
+            "SQL 文件",
+            &["sql"],
+            "选择要导入的 SQL 文件",
+            AfterPick::Nothing,
+            window,
+            cx,
+        );
+    }
+
+    /// 开始导入一份 `.sql`（长任务；状态在 `AppState::db.import`）。
+    ///
+    /// # 校验都在**起进程之前**，而且失败**不关弹窗**
+    ///
+    /// 用户就在那一格上（`AGENTS.md` §7.5 的"空值等于没填"同理）：
+    /// - 文件必须真的在（选了之后被删 / 手打的路径写错，都要当场说）；
+    /// - 目标库名要过白名单（它会被拼进 `mysql -D …`）。
+    pub fn start_db_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 先把要用的取成 owned（下面要改 self，不能再借着 db_dialog）
+        let (path_text, database_text) = {
+            let Some(dialog) = self.db_dialog.as_ref() else {
+                return;
+            };
+            (
+                dialog.import_path.read(cx).value().trim().to_owned(),
+                dialog.import_db.read(cx).value().trim().to_owned(),
+            )
+        };
+
+        if path_text.is_empty() {
+            self.state.notify(Toast::error("先选一个 .sql 文件"));
+            cx.notify();
+            return;
+        }
+        let path = std::path::PathBuf::from(&path_text);
+        if !path.is_file() {
+            self.state
+                .notify(Toast::error(format!("找不到这个文件：{path_text}")));
+            cx.notify();
+            return;
+        }
+        let database = (!database_text.is_empty()).then_some(database_text);
+        if let Some(db_name) = database.as_deref() {
+            // 库名要进 `mysql -D …`（过一次 shell，`load_script` 会引起来），
+            // 但先把"这个名字根本不是合法标识符"的情况拦在本地
+            if let Err(e) = mysql_model::validate_ident("库名", db_name) {
+                self.state.notify(Toast::error(e.to_string()));
+                cx.notify();
+                return;
+            }
+        }
+
+        let Some(db) = self.state.db.as_ref() else {
+            return;
+        };
+        if db.busy || db.import.is_some() || db.backup.is_some() {
+            // 有别的长任务在跑：让它先结束（按钮那边也会换成"…中"）
+            return;
+        }
+        let container = db.container.clone();
+        let bin = db.client.clone();
+        let (user, password) = self.read_db_form(cx);
+        let creds = MysqlCreds {
+            user,
+            password,
+            host: None,
+            port: None,
+        };
+
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("(名字读不出来)")
+            .to_owned();
+        if let Some(db) = self.state.db.as_mut() {
+            db.import = Some(ImportState {
+                file_name: file_name.clone(),
+                database: database.clone(),
+            });
+        }
+        self.db_dialog = None;
+        self.state.notify(Toast::info(format!(
+            "正在导入 {file_name}{}…",
+            database
+                .as_deref()
+                .map(|d| format!("到 {d}"))
+                .unwrap_or_default()
+        )));
+        cx.notify();
+
+        let wslc = self.state.wslc.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = {
+                let wslc = wslc.clone();
+                let container = container.clone();
+                let bin = bin.clone();
+                let creds = creds.clone();
+                let path = path.clone();
+                let database = database.clone();
+                cx.background_executor()
+                    .spawn(async move {
+                        // ① 送进容器（目录目标 + 先 mkdir，实测见 cmd::mysql）
+                        let container_path =
+                            wslc_core::cmd::mysql::push_dump_to_container(
+                                &wslc, &container, &path,
+                            )?;
+                        // ② 让容器里的 mysql 读它
+                        wslc_core::cmd::mysql::load_sql_file(
+                            &wslc,
+                            &container,
+                            &bin,
+                            &creds,
+                            &container_path,
+                            database.as_deref(),
+                        )
+                    })
+                    .await
+            };
+
+            let _ = this.update_in(cx, |shell, _window, cx| {
+                if let Some(db) = shell.state.db.as_mut() {
+                    if db.container == container {
+                        db.import = None;
+                    }
+                }
+                match &result {
+                    Ok(()) => {
+                        shell.state.notify(Toast::success(format!(
+                            "已导入 {file_name}{}",
+                            database
+                                .as_deref()
+                                .map(|d| format!("到 {d}"))
+                                .unwrap_or_default()
+                        )));
+                        // 表数 / 占用会变，重读一次让列表反映出来
+                        shell.reload_db_lists(cx);
+                    }
+                    Err(e) => {
+                        let failure = DbFailure::from_text(e.to_string());
+                        shell
+                            .state
+                            .notify(Toast::error(format!("导入失败：{}", failure.summary())));
+                        // 原文留在页面上（toast 只给一句"该怎么办"）
+                        if let Some(db) = shell.state.db.as_mut() {
+                            if db.container == container {
+                                db.fail(e.to_string());
+                            }
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 从数据库列表某一行开 SQL 控制台：**用这个库 + 这一行的账号**。
+    ///
+    /// 做法是把那一行的用户名 / 密码**写进连接卡**（而不是藏一份"控制台专用
+    /// 凭据"）—— 连接卡本来就是"这次连数据库用哪个账号"的唯一入口，
+    /// 写进去用户能看见自己在用谁、也能随时改。库名则记在 `sql_database` 上，
+    /// 执行时作为 `mysql -D <库>` 传下去。
+    ///
+    /// 那一行没有账号记录（不是面板建的库）时**只设库名**，账号保持用户当前
+    /// 填的那个 —— 不猜、不编（凭据只对面板建的库有）。
+    pub fn open_db_console_for(
+        &mut self,
+        database: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(db) = self.state.db.as_ref() else {
+            return;
+        };
+        let container = db.container.clone();
+        let credential = self
+            .state
+            .db_credentials
+            .get(&container, &database)
+            .cloned();
+
+        if let (Some(cred), Some(form)) = (credential.as_ref(), self.db_form.as_ref()) {
+            form.user
+                .update(cx, |state, cx| state.set_value(cred.user.clone(), window, cx));
+            form.password.update(cx, |state, cx| {
+                state.set_value(cred.password.clone(), window, cx)
+            });
+        }
+        if let Some(db) = self.state.db.as_mut() {
+            db.sql_database = Some(database.clone());
+            db.tab = DbTab::Sql;
+            db.clear_error();
+        }
+        let toast = match credential {
+            Some(cred) => Toast::info(format!(
+                "控制台已指向 {database}，账号用 {}（来自面板记的账号）",
+                cred.user
+            )),
+            None => Toast::info(format!(
+                "控制台已指向 {database}（这个库不是面板建的，账号仍用连接卡上那个）"
+            )),
+        };
+        self.state.notify(toast);
+        cx.notify();
+    }
+
+    /// 把控制台的"当前库"清掉（回到不指定 —— 由语句自己 `USE`）。
+    pub fn clear_sql_database(&mut self, cx: &mut Context<Self>) {
+        if let Some(db) = self.state.db.as_mut() {
+            db.sql_database = None;
+        }
         cx.notify();
     }
 
@@ -3216,6 +3475,10 @@ impl Shell {
                                 .map(|sql| Some((sql, dialog.kind.title(), None)))
                         }
                     }
+                    // 导入**不是**一条 SQL（它是"把文件送进容器让 mysql 读它"），
+                    // 所以确认按钮那边直接调 `start_db_import`，走不到这里。
+                    // 这一臂只是为了让 match 完备。
+                    DbDialogKind::ImportSql => Ok(None),
                 }
             })();
 
@@ -3274,6 +3537,10 @@ impl Shell {
         }
         let container = db.container.clone();
         let bin = db.client.clone();
+        // 控制台**针对哪个库**：从数据库列表行上的「SQL」按钮进来时是那一行，
+        // 否则是 `None`（由语句自己 `USE`）。不指定时 `SELECT * FROM t`
+        // 会报 "No database selected"（实测过）。
+        let database = db.sql_database.clone();
         let (user, password) = self.read_db_form(cx);
         let creds = MysqlCreds {
             user,
@@ -3298,10 +3565,18 @@ impl Shell {
                 let bin = bin.clone();
                 let creds = creds.clone();
                 let sql = sql.clone();
+                let database = database.clone();
                 cx.background_executor()
                     .spawn(async move {
-                        run_console_sql(&wslc, &target, &bin, &creds, &sql, None)
-                            .map_err(|e| e.to_string())
+                        run_console_sql(
+                            &wslc,
+                            &target,
+                            &bin,
+                            &creds,
+                            &sql,
+                            database.as_deref(),
+                        )
+                        .map_err(|e| e.to_string())
                     })
                     .await
             };
@@ -3324,9 +3599,19 @@ impl Shell {
                         }
                         Err(message) => {
                             // SQL 报错**不算**页面级错误：它就发生在控制台里，
-                            // 显示在控制台下面比顶到页头更贴合上下文
-                            db.sql_output = None;
-                            db.fail(message);
+                            // 显示在控制台下面比顶到页头更贴合上下文。
+                            //
+                            // ⚠️ 这里必须把原文放进 `sql_output`：只置
+                            // `sql_ran = true` 而让 `sql_output` 是 `None` 的话，
+                            // 渲染那边（`db.sql_ran || db.sql_output.is_some()`）
+                            // 会走到 `log_text(None)` —— 也就是显示
+                            // **"正在加载…"**，而真正的报错被顶到页头去了。
+                            // 实机截图抓到的就是这个（`show database` 拼错那次：
+                            // 控制台底下写着"正在加载…"）。
+                            db.sql_output = Some(message);
+                            // 页面级那条留给"读列表 / 连接"这类失败，
+                            // 清了它免得同一条错误在屏幕上出现两遍。
+                            db.clear_error();
                         }
                     }
                 }
@@ -4645,7 +4930,9 @@ impl Shell {
             // 已经有一个在跑 —— 按钮那边也换成了「备份中…」
             return;
         }
-        if db.busy {
+        if db.busy || db.import.is_some() {
+            // 读列表 / 导入没结束时不开新的长任务（进度浮层也挡着点击，
+            // 这一条是防"从别的路径调进来"）
             return;
         }
         let Some(backup_dir) = self.state.backup_dir.clone() else {
@@ -7081,6 +7368,11 @@ impl Render for Shell {
             Some(db) => views::db_backup_dialog_overlay(db, &entity),
             None => div().into_any_element(),
         };
+        // 导入进度（跑着才有内容）。
+        let db_import_progress: AnyElement = match &state.db {
+            Some(db) => views::db_import_progress(db, &entity),
+            None => div().into_any_element(),
+        };
 
         // 部署页（v0.9）的三个浮层：
         // - 「添加部署 / 重新部署」要 `cx`（读那五格输入框的值）；
@@ -7246,6 +7538,7 @@ impl Render for Shell {
             // 备份进度要盖住它打开时所处的一切；备份列表在进度之后
             //（进度跑完自动关，那时列表还在）。
             .child(db_backup_progress)
+            .child(db_import_progress)
             .child(db_backup_dialog)
     }
 }

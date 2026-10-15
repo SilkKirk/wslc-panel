@@ -1409,8 +1409,9 @@ fn db_tabs(current: DbTab, entity: &Entity<Shell>) -> AnyElement {
 
 /// 库名那一格：名字 + （系统库时）一个「系统」标记。
 ///
-/// 系统库**不隐藏**（它们真实存在，`sys` / `performance_schema` 偶尔真要去看），
-/// 但得让用户一眼看出"这不是我建的、删了会出事"。
+/// 系统库现在**不出现在列表里**（[`db_databases_card`] 里过滤掉了），
+/// 所以这个标记实际只在别处（比如将来"显示系统库"的开关）还有用 ——
+/// 留着是因为"这一行是不是系统库"这件事本身仍然要能一眼看出来。
 fn db_name_cell(entry: &wslc_core::model::DbEntry) -> AnyElement {
     h_flex()
         .gap_2()
@@ -1450,9 +1451,34 @@ fn db_databases_card(
             })
     };
 
-    let rows: Vec<AnyElement> = db
-        .databases
+    // 「导入 SQL…」和「新建数据库…」并排：都是**库级**动作（不针对某一行），
+    // 所以放页头而不是塞进每一行 —— 行内已经有「备份 / SQL / 删除」三个了。
+    let import_sql = {
+        let entity = entity.clone();
+        Button::new("db-import-sql")
+            .label("导入 SQL…")
+            .small()
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |shell, cx| {
+                    shell.open_db_dialog(DbDialogKind::ImportSql, window, cx)
+                });
+            })
+    };
+
+    // ⚠️ **系统库不显示**（用户要求）。它们仍然真实存在、也仍然能被 SQL 控制台
+    // 访问 —— 只是不该混在"我的库"里（`sys` / `performance_schema` 还占着
+    // 表数和占用那两列，看着像自己的数据）。数量在下面那行里报出来，
+    // 免得用户以为读漏了。
+    let visible: Vec<&wslc_core::model::DbEntry> =
+        db.databases.iter().filter(|e| !e.is_system()).collect();
+    let hidden_system = db.databases.len() - visible.len();
+
+    let rows: Vec<AnyElement> = visible
         .iter()
+        // `.copied()` 把 `&&DbEntry` 变回 `&DbEntry`：`iter()` 给的是双重引用，
+        // 而 `db_name_cell(entry)` 要的是 `&DbEntry` —— 函数参数不做自动解引用
+        // （方法调用才会），少这一步就是 E0308。
+        .copied()
         .map(|entry| {
             let action = PendingAction::DropDatabase {
                 container: db.container.clone(),
@@ -1470,6 +1496,19 @@ fn db_databases_card(
                     let name = entry.name.clone();
                     move |shell, window, cx| {
                         shell.open_db_backup_dialog(name.clone(), window, cx)
+                    }
+                },
+                entity,
+            );
+            // 「SQL」：开控制台并**用这一行的库 + 这一行的账号**（面板建的库
+            // 才有账号记录，别的库沿用连接卡上那个）。
+            let sql_button = overlay_button(
+                &format!("db-sql-{}", entry.name),
+                "SQL",
+                {
+                    let name = entry.name.clone();
+                    move |shell, window, cx| {
+                        shell.open_db_console_for(name.clone(), window, cx)
                     }
                 },
                 entity,
@@ -1493,6 +1532,7 @@ fn db_databases_card(
                     h_flex()
                         .gap_2()
                         .child(backup_button)
+                        .child(sql_button)
                         .child(
                             danger_button(
                                 &format!("db-drop-{}", entry.name),
@@ -1509,6 +1549,15 @@ fn db_databases_card(
         })
         .collect();
 
+    let count_text = if hidden_system > 0 {
+        format!(
+            "共 {} 个数据库（另有 {hidden_system} 个系统库未显示）",
+            visible.len()
+        )
+    } else {
+        format!("共 {} 个数据库", visible.len())
+    };
+
     v_flex()
         .w_full()
         .gap_3()
@@ -1517,15 +1566,12 @@ fn db_databases_card(
                 .w_full()
                 .justify_between()
                 .items_center()
-                .child(new_database)
+                .child(h_flex().gap_2().child(new_database).child(import_sql))
                 .child(
                     div()
                         .text_sm()
                         .text_color(theme::text_muted())
-                        .child(format!(
-                            "共 {} 个数据库（含系统库）",
-                            db.databases.len()
-                        )),
+                        .child(count_text),
                 ),
         )
         .child(
@@ -1764,6 +1810,46 @@ fn db_console_card(
             .into_any_element()
     };
 
+    // 这一条是**这次执行会落在哪个库**。从数据库列表行上的「SQL」按钮进来时
+    // 就是那一行；不指定的话 `SELECT * FROM t` 会报 "No database selected"
+    // （实测过），所以这件事必须显式画出来，而不是让用户从报错里猜。
+    let target_db: AnyElement = match db.sql_database.as_deref() {
+        Some(name) => {
+            let clear = {
+                let entity = entity.clone();
+                Button::new("db-sql-clear-db")
+                    .label("改为不指定")
+                    .small()
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |shell, cx| shell.clear_sql_database(cx));
+                    })
+            };
+            h_flex()
+                .w_full()
+                .gap_2()
+                .items_center()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child("当前库"),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text())
+                        .child(name.to_owned()),
+                )
+                .child(clear)
+                .into_any_element()
+        }
+        None => div()
+            .text_xs()
+            .text_color(theme::text_dim())
+            .child("当前库：不指定（语句里要自己 USE <库>）")
+            .into_any_element(),
+    };
+
     v_flex()
         .w_full()
         .gap_3()
@@ -1776,6 +1862,7 @@ fn db_console_card(
                 .bg(theme::bg_card())
                 .border_1()
                 .border_color(theme::border())
+                .child(target_db)
                 .child(form_field(
                     "db-sql",
                     "语句（原样执行，面板不改写、也不解析）",
@@ -1929,6 +2016,80 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
             ));
             fields.push(grant_kind_row(dialog.grant, entity));
         }
+        DbDialogKind::ImportSql => {
+            // 文件那一格 + 「选择文件…」按钮并排：路径可以直接粘（用户常从
+            // 别处拷过来），也可以点按钮挑 —— 两条路都通。
+            let pick = {
+                let entity = entity.clone();
+                Button::new("db-import-pick")
+                    .label("选择文件…")
+                    .small()
+                    .on_click(move |_, window, cx| {
+                        entity.update(cx, |shell, cx| shell.pick_import_file(window, cx));
+                    })
+            };
+            fields.push(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    // ⚠️ 用 `items_center` 而不是 `items_end`：后者在本仓库
+                    // 没有先例（`items_center` 到处都是），而本机**没有 Rust
+                    // 工具链**、只能靠 CI 验证 —— 不值得为一点对齐赌一轮 15 分钟。
+                    .items_center()
+                    .child(div().flex_1().child(form_field(
+                        "db-import-path",
+                        "本机的 .sql 文件",
+                        &dialog.import_path,
+                        cx,
+                        false,
+                    )))
+                    .child(pick)
+                    .into_any_element(),
+            );
+            fields.push(form_field(
+                "db-import-db",
+                "导入到哪个库（留空 = 由文件里的语句决定）",
+                &dialog.import_db,
+                cx,
+                false,
+            ));
+            // 能选哪些库：把当前读到的**非系统库**列出来，省得用户回去抄名字。
+            // 用文字而不是下拉框：`Select` 放进模态是本仓库**没有实机验证过**
+            // 的组合（`AGENTS.md` §7.5），而这个弹窗没有非用下拉框不可的理由。
+            let names: Vec<String> = shell
+                .state
+                .db
+                .as_ref()
+                .map(|db| {
+                    db.databases
+                        .iter()
+                        .filter(|e| !e.is_system())
+                        .map(|e| e.name.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            fields.push(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child(if names.is_empty() {
+                        "当前没有可选的库（列表还没读出来）。".to_owned()
+                    } else {
+                        format!("可选的库：{}", names.join("、"))
+                    })
+                    .into_any_element(),
+            );
+            fields.push(
+                div()
+                    .text_xs()
+                    .text_color(theme::danger())
+                    .child(
+                        "文件里的语句会被原样执行 —— 它可能建表、改数据，\
+                         甚至删掉同名的表。导入前请确认这份文件是你想要的那份。",
+                    )
+                    .into_any_element(),
+            );
+        }
     }
 
     // 用户名 / 主机在"改密码 / 授权"里是**锁定**的：那样画出来才看得出
@@ -1955,12 +2116,21 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
     };
     let confirm = {
         let entity = entity.clone();
+        // 导入不是一条 SQL（它是"送个文件进去让 mysql 读"），走自己的提交路径；
+        // 其余四种都是"拼一条 SQL 然后执行"。
+        let is_import = kind.is_import();
         Button::new("db-dialog-confirm")
             .label(kind.confirm_label())
             .small()
             .primary()
             .on_click(move |_, window, cx| {
-                entity.update(cx, |shell, cx| shell.submit_db_dialog(window, cx));
+                entity.update(cx, |shell, cx| {
+                    if is_import {
+                        shell.start_db_import(window, cx);
+                    } else {
+                        shell.submit_db_dialog(window, cx);
+                    }
+                });
             })
     };
 
@@ -2118,6 +2288,65 @@ pub fn db_backup_progress(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
 /// `mysql`（v0.8.2 起不再依赖容器内 `/tmp` 里那份旧的，所以容器重建过、
 /// `/tmp` 被清过都照样能恢复）。因此这里不需要（也无法）预先画
 /// "容器里那份还在不在"—— 只认列表里这个文件在不在。
+/// 导入进度浮层（导入跑着的时候盖在页面上）。
+///
+/// 没在导入时返回空。和备份那个一样：**没有实时百分比**（`container cp` 和
+/// `mysql` 都不吐进度），但"点下去之后界面上有变化"这条必须有
+/// （`AGENTS.md` §7.1）—— 所以起码要显示"在导哪个文件、进哪个库"。
+pub fn db_import_progress(db: &DbState, _entity: &Entity<Shell>) -> AnyElement {
+    let Some(state) = db.import.as_ref() else {
+        return div().into_any_element();
+    };
+
+    let target = state
+        .database
+        .as_deref()
+        .map(|d| format!("导入到 {d}"))
+        .unwrap_or_else(|| "导入到文件里指定的库".to_owned());
+
+    modal_scrim(
+        "db-import-progress",
+        v_flex()
+            .w(px(560.))
+            .gap_4()
+            .p_5()
+            .rounded_lg()
+            .bg(theme::bg_card())
+            .border_1()
+            .border_color(theme::border())
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_bold()
+                            .text_color(theme::text())
+                            .child(format!("正在导入 {}", state.file_name)),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_dim())
+                            .child(target),
+                    ),
+            )
+            .child(
+                div().text_sm().text_color(theme::text_muted()).child(
+                    "先把文件送进容器，再让容器里的 mysql 读它。\
+                     大文件会慢一些 —— 完成后这里会自动关掉，列表也会重读一次。",
+                ),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_end()
+                    .child(div().text_sm().text_color(theme::text_muted()).child("导入中…")),
+            ),
+    )
+    .into_any_element()
+}
+
 pub fn db_backup_dialog_overlay(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
     let Some(database) = db.backup_dialog.as_ref() else {
         return div().into_any_element();

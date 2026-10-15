@@ -368,31 +368,34 @@ pub fn backup_database(
     Ok(paths.clone())
 }
 
-/// 恢复一个数据库（**覆盖**同名库的数据 —— 调用方必须先让用户确认过）。
+/// 把容器里的一份 `.sql` 喂给 `mysql`（**覆盖**同名库的数据 —— 恢复走这条，
+/// 导入也走这条；调用方必须先让用户确认过）。
 ///
 /// # 前提
 ///
-/// `container_dump_path` 必须是**容器里真实存在**的文件。调用方一般先用
-/// [`push_dump_to_container`] 把 Windows 侧存档送进去，拿到路径再调这里。
-pub fn restore_database(
+/// `container_sql_path` 必须是**容器里真实存在**的文件。调用方一般先用
+/// [`push_dump_to_container`] 把本地那份送进去，拿到路径再调这里。
+///
+/// # 参数
+///
+/// `database`：
+/// - `None` —— 由文件里的语句决定（`mysqldump --databases` 出来的 dump
+///   自带 `CREATE DATABASE` / `USE`，**恢复**就是这条）；
+/// - `Some(db)` —— `mysql -D <db>`，往指定库里灌（**导入**用户自己的 dump
+///   多半要它：`mysqldump <db> > f.sql` 那种没有 USE，不给库名 mysql 会报
+///   "No database selected"）。
+pub fn load_sql_file(
     wslc: &Wslc,
     container_name: &str,
     client_bin: &str,
     creds: &MysqlCreds,
-    container_dump_path: &str,
+    container_sql_path: &str,
+    database: Option<&str>,
 ) -> Result<()> {
-    // 路径由面板生成（不是用户输入），但仍然防一手：sh 脚本里出现引号 /
-    // 分号 / 空格都会被拆 —— 生成处已保证，这里再拦一次。
-    if !container_dump_path
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.'))
-    {
-        return Err(Error::InvalidArgument(format!(
-            "备份路径不安全：{container_dump_path}"
-        )));
-    }
-
-    let script = logic::restore_script(client_bin, container_dump_path);
+    // 脚本是 `sh -c` 一行，路径和库名都会**过一次 shell**：
+    // `load_script` 负责把它们包成单引号字面量（`'` 那种没法安全表达的
+    // 直接拒掉，而不是拼出一条会被拆开的命令）。
+    let script = logic::load_script(client_bin, container_sql_path, database)?;
     let args = [
         "exec",
         "-e",
@@ -423,10 +426,18 @@ pub fn restore_database(
 /// ③ 文件名**保持本地那个**（cp 的语义是把源文件放进目标目录），
 ///    所以路径由 [`logic::restore_container_path`] 算得出来。
 ///
-/// # 为什么恢复要重新送一份（而不是用容器里剩下的）
+/// # 为什么恢复 / 导入都要重新送一份（而不是用容器里剩下的）
 ///
 /// 容器内 `/tmp` 那份会随容器重建而消失（实测踩到过）。备份列表上的每一条
 /// 都有 Windows 侧的文件，送一份进去是**确定能成功**的那条路。
+///
+/// # 文件名：用户选的那些也要能进来
+///
+/// 这一步进来的不只是面板生成的 `<库名>-<时间>.sql`，还有**用户自己挑的**
+/// 导入文件（`shop backup (1).sql`、`订单数据.sql` 都很常见）。实测
+/// `container cp` 对这类名字没问题（它是 argv，不过 shell），而后面
+/// `mysql < 它` 那一步过 shell —— 所以这里只按 [`logic::sh_quote`] 的
+/// 口径拦（单引号 / 换行），**不再要求 ASCII 白名单**。
 pub fn push_dump_to_container(
     wslc: &Wslc,
     container_name: &str,
@@ -438,18 +449,12 @@ pub fn push_dump_to_container(
             windows_dump.display()
         )));
     };
-    // 文件名要进容器内的路径（`restore_database` 的 sh 脚本），
-    // 这里先按同一套白名单拦一次 —— 用户手动往备份目录里塞过奇怪名字的话，
-    // 报错要在这里、而不是在容器里变成一条被拆开的 shell 命令。
-    if file_name.is_empty()
-        || !file_name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-    {
-        return Err(Error::InvalidArgument(format!(
-            "备份文件名里有不安全字符：{file_name}"
-        )));
+    if file_name.is_empty() {
+        return Err(Error::InvalidArgument("文件名是空的".to_owned()));
     }
+    // 让这一步就报出"这个名字过不了 shell"，而不是留到容器里变成
+    // 一条被拆开的命令（错误消息也更好懂）
+    logic::sh_quote(file_name)?;
 
     // ① 目标目录必须先存在
     let mkdir = format!("mkdir -p {}", logic::CONTAINER_RESTORE_DIR);
@@ -463,7 +468,7 @@ pub fn push_dump_to_container(
             // cp 的错误里没有密码（没带 -e），不用脱敏；但把"从哪来、到哪去"
             // 说清楚 —— 这一步失败最常见的原因是文件被手动删了
             Error::Install(format!(
-                "把备份送进容器失败（{} → {}/）：{e}",
+                "把 .sql 送进容器失败（{} → {}/）：{e}",
                 windows_dump.display(),
                 logic::CONTAINER_RESTORE_DIR
             ))
@@ -627,17 +632,36 @@ mod tests {
     }
 
     #[test]
-    fn restore_rejects_unsafe_paths_before_spawning() {
+    fn load_sql_file_rejects_only_what_the_shell_cannot_express() {
         let wslc = Wslc::with_program("definitely-not-a-real-binary");
-        // 面板生成的路径只有字母数字 / `/-_.` —— 带空格或分号的一律拒掉
-        assert!(matches!(
-            restore_database(&wslc, "mysql", "mysql", &creds(), "/tmp/a b.sql"),
-            Err(Error::InvalidArgument(_))
-        ));
-        assert!(matches!(
-            restore_database(&wslc, "mysql", "mysql", &creds(), "/tmp/a;rm.sql"),
-            Err(Error::InvalidArgument(_))
-        ));
+        // 没法安全表达的（单引号 / 换行）→ 起进程**之前**就报参数错
+        for bad in ["/tmp/a'b.sql", "/tmp/a\nb.sql"] {
+            assert!(
+                matches!(
+                    load_sql_file(&wslc, "mysql", "mysql", &creds(), bad, None),
+                    Err(Error::InvalidArgument(_))
+                ),
+                "{bad:?} 应被拒"
+            );
+            assert!(
+                matches!(
+                    load_sql_file(&wslc, "mysql", "mysql", &creds(), "/tmp/x.sql", Some(bad)),
+                    Err(Error::InvalidArgument(_))
+                ),
+                "库名 {bad:?} 应被拒"
+            );
+        }
+        // ⚠️ 空格 / 分号 / 中文**不是**问题：它们会被包进单引号里，
+        // 所以这两条应当走到"起进程"那一步（可执行文件不存在 → 另一个错）。
+        for ok in ["/tmp/a b.sql", "/tmp/a;b.sql", "/tmp/订单.sql"] {
+            assert!(
+                matches!(
+                    load_sql_file(&wslc, "mysql", "mysql", &creds(), ok, None),
+                    Err(Error::ExecutableNotFound { .. })
+                ),
+                "{ok:?} 不该在参数校验就被拒"
+            );
+        }
     }
 
     #[test]
@@ -654,14 +678,14 @@ mod tests {
 
     #[test]
     fn pushing_a_dump_rejects_unsafe_file_names_first() {
-        // 文件名会进容器内的路径（`sh -c 'mysql < <路径>'`），所以白名单
-        // 必须在**起进程之前**把关。用户手动往备份目录里塞一个怪名字时，
-        // 报错要落在这里，而不是在容器里变成一条被拆开的 shell 命令。
+        // 文件名会进容器内的路径（`sh -c 'mysql < <路径>'`），所以
+        // "过不了 shell"的名字必须在**起进程之前**被拦下。
+        // ⚠️ 但**只有**单引号 / 换行过不了 —— 用户挑的导入文件叫
+        // `shop backup (1).sql` / `订单数据.sql` 都很正常，实测
+        // `container cp` 对这些名字没问题，所以不能再按 ASCII 白名单拒。
         let wslc = Wslc::with_program("definitely-not-a-real-binary");
         for bad in [
-            r"C:\backups\my dump.sql",  // 空格
-            r"C:\backups\a;rm -rf.sql", // 分号
-            r"C:\backups\中文库.sql",    // 非 ASCII
+            r"C:\backups\it's.sql",     // 单引号
             // ⚠️ 别写 `r"C:\backups\"` —— `Path::file_name()` 会**忽略尾部分隔符**
             // 返回 `Some("backups")`（`components()` 的行为），那条会走到
             // 后半段而不是这里。真正"没有文件名"的是盘根 / `..` 这种。
@@ -670,6 +694,17 @@ mod tests {
             match push_dump_to_container(&wslc, "mysql", std::path::Path::new(bad)) {
                 Err(Error::InvalidArgument(_)) => {}
                 other => panic!("{bad} 应被拒：{other:?}"),
+            }
+        }
+        // 这些名字要能过校验（走到起进程那一步 → 可执行文件不存在）
+        for ok in [
+            r"C:\backups\my dump.sql",
+            r"C:\backups\shop backup (1).sql",
+            r"C:\backups\订单数据.sql",
+        ] {
+            match push_dump_to_container(&wslc, "mysql", std::path::Path::new(ok)) {
+                Err(Error::ExecutableNotFound { .. }) => {}
+                other => panic!("{ok} 不该在参数校验就被拒：{other:?}"),
             }
         }
     }
