@@ -216,10 +216,26 @@ Invoke-RestMethod -Headers $H -Uri "$api/commits/<sha>/check-runs"
 (Invoke-RestMethod -Headers $H -Uri "$api/git/tags/<tag-object-sha>").object.sha
 ```
 
-⚠️ **用 REST API 建标签不会触发 `release.yml`**：`POST /git/refs` 只发 `create`
-事件，而那个 workflow 监听的是 `push: tags`（`release.yml` 顶部就写着这件事）。
-所以要么 `git push origin vX.Y.Z`，要么走 `release.yml` 的
-`workflow_dispatch` + `release_tag=vX.Y.Z` —— 那条路径就是为"git push 不通"留的。
+⚠️ **用 REST API 建标签**（`POST /git/tags` + `POST /git/refs`）**会**触发
+`release.yml` —— **实测（v0.9.2）**：建完标签 3 秒内自己起了一个
+`event=push`、`head_sha` = 被打标签那个提交的 run（`38714331577`），
+Release 与两个资产都是它建出来的。
+（这里早先写的是"只发 `create` 事件、不会触发"—— 那条**是错的**，实测推翻。）
+
+后果是**同一个标签上会并行跑两个 run**：push 那个 + 你手动
+`workflow_dispatch` 那个（`38714331433`，晚 1 秒启动）。后者 `gh release view`
+时 Release 还没出现，接着 `gh release create` 就撞
+`422 ... Release.tag_name already exists` 而**把 job 跑红** ——
+**发布本身是好的，红叉是假的**。
+（`release.yml` 里已经补了"创建失败 → 退到覆盖资产"的兜底，见那段注释。）
+
+**所以正确姿势是**：
+
+1. 建完标签**先等一分钟**，看 `GET /actions/workflows/release.yml/runs`
+   有没有自己起一个 `push` 事件的 run；
+2. **有就别再 dispatch** —— 等它跑完即可；
+3. 只有确实一个 run 都没起时，才走 `workflow_dispatch` +
+   `release_tag=vX.Y.Z` 那条为"git push 不通"留的路径。
 
 ⚠️ Release 的说明是**固定模板**（`release.yml` 里那段 `$notes`），**没有 changelog**。
 想让下载页显示"本版变化"，得在发布之后 `PATCH /repos/{o}/{r}/releases/{id}` 把正文补上
@@ -499,10 +515,8 @@ PATCH /git/refs/heads/X  { sha: <新 commit>, force: true }
 ```
 
 标签同理：`POST /git/tags` 建 tag 对象 → `POST /git/refs` 建 `refs/tags/vX.Y.Z`。
-⚠️ **但这样建的标签不会触发 `release.yml`** —— `POST /git/refs` 只发 `create`
-事件，而那个 workflow 监听的是 `push: tags`。所以要么趁网络好时
-`git push origin vX.Y.Z`，要么走 `release.yml` 的 `workflow_dispatch` +
-`release_tag`（见 §4）。
+⚠️ **这样建的标签会触发 `release.yml`**（本节早先写"不会"，**实测推翻**，
+细节与正确姿势见 §4 的那一段）。
 
 ⚠️ **用 API 建的提交和本地提交 sha 不一样**（作者/提交时间不同）——
 对 sha 时认**远端**那个，别拿本地的比。

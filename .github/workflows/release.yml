@@ -175,6 +175,19 @@ jobs:
             Write-Output "创建 Release $env:TAG"
             # 先传裸 exe（GitHub 会把它作为主要下载项），再传 zip。
             gh release create "$env:TAG" "$env:EXE" "$env:ZIP" --title "$env:TAG" --notes-file NOTES.md
+            if ($LASTEXITCODE -ne 0) {
+              # ⚠️ 竞态（v0.9.2 实测踩到，跑红过一次）：用 API 建标签时 GitHub
+              # **会**同时起一个 `push: tags` 的 run（见 AGENTS §4 的更正），
+              # 于是同一个标签上并行跑两个 run —— push 那个先建出 Release，
+              # 而我们上面 `gh release view` 查的时候它还没出现，走到这里就必然
+              # 撞 `422 ... Release.tag_name already exists`，整个 job 变红
+              # （发布其实是成功的，红叉是假的）。
+              # 所以创建失败**不能直接放弃**：退到幂等那条路，把资产覆盖上去。
+              Write-Output "创建失败（多半是并行的 push run 已经建好了）→ 退到覆盖资产 + 更新说明"
+              gh release upload "$env:TAG" "$env:EXE" "$env:ZIP" --clobber
+              if ($LASTEXITCODE -ne 0) { throw "上传资产失败" }
+              gh release edit "$env:TAG" --title "$env:TAG" --notes-file NOTES.md
+            }
           }
           if ($LASTEXITCODE -ne 0) { throw "发布失败" }
           Write-Output "完成：$env:TAG"
