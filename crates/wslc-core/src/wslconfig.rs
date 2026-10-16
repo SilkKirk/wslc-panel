@@ -212,6 +212,63 @@ pub fn sparse_vhd(text: &str) -> bool {
     false
 }
 
+/// `.wslconfig` 里 `[wsl2] processors` 配了几个核。
+///
+/// # 为什么要读它
+///
+/// `wslc stats` 的 `CPUPerc` 和 `docker stats` 是**同一条公式** —— 这不是推测：
+/// WSL 源码 `src/windows/wslc/tasks/ContainerTasks.cpp` 里那行注释自己写着
+/// "Formula matches Docker CLI"，算的是
+/// `cpuDelta / systemDelta * onlineCPUs * 100`。
+///
+/// 于是有两条后果：
+///
+/// 1. **100% ≈ 1 个核**（多核机器上单个容器可以到 200%、400%），
+///    所以"各容器之和"想变成整机占用率就必须除以核数；
+/// 2. 那个 `onlineCPUs` 是**虚拟机**拿到的核数，而用户可以在
+///    `[wsl2] processors` 里把它限制住 —— 拿整机核数（本机 32）去除一个
+///    只拿到 4 核的虚拟机，算出来的占用率会**偏小 8 倍**。
+///
+/// 所以：配了就用它，没配（或写 `default`）返回 `None`，由调用方退回整机核数
+/// —— 那正是 WSL 的默认行为。
+///
+/// 只认 `[wsl2]` 段（和 [`sparse_vhd`] 只认 `[experimental]` 同一条规矩）；
+/// 值解析不成正整数就一律当没配：宁可退回默认值，也不要拿一个瞎猜的数当分母。
+pub fn processors(text: &str) -> Option<u32> {
+    let mut in_wsl2 = false;
+
+    for raw in text.lines() {
+        let line = trim_line(raw);
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        // 节头的判据与 `check` / `sparse_vhd` 保持一致（**两边括号都要有**）：
+        // 三个解析器对"什么算节头"给出不同答案，是日后最难查的一类不一致。
+        if line.starts_with('[') && line.ends_with(']') {
+            let section = line.trim_start_matches('[').trim_end_matches(']').trim();
+            in_wsl2 = section.eq_ignore_ascii_case("wsl2");
+            continue;
+        }
+        if !in_wsl2 {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if !key.trim().eq_ignore_ascii_case("processors") {
+            continue;
+        }
+        let value = value.trim();
+        // `default` = 用内置默认值（也就是全部逻辑核）—— 那正好是 `None` 的语义。
+        if value.eq_ignore_ascii_case("default") {
+            return None;
+        }
+        return value.parse::<u32>().ok().filter(|count| *count > 0);
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,5 +444,38 @@ autoMemoryReclaim=gradual
 
         // BOM 出现在别处（非行首）时不当成空白剥掉 —— 它在中途是普通字符
         assert!(!sparse_vhd("[experimental]\nsparseVhd=tr\u{feff}ue\n"));
+    }
+
+    #[test]
+    fn processors_reads_only_the_wsl2_section() {
+        // 真机那份**没配** processors → None（调用方退回整机核数）
+        assert_eq!(processors(REAL), None);
+
+        assert_eq!(processors("[wsl2]\nprocessors=4\n"), Some(4));
+        // 大小写与空格
+        assert_eq!(processors("[WSL2]\nProcessors = 8\n"), Some(8));
+        assert_eq!(processors("[Wsl2]\nprocessors=6\nmemory=8GB\n"), Some(6));
+        // 别的段里的同名键不算（和 `sparse_vhd` 只认 [experimental] 同一条规矩）
+        assert_eq!(processors("[experimental]\nprocessors=4\n"), None);
+        assert_eq!(processors("[interop]\nprocessors=4\n"), None);
+    }
+
+    #[test]
+    fn processors_treats_default_and_junk_as_unset() {
+        // `default` = 用内置默认值（全部逻辑核）—— 正是 None 的语义
+        assert_eq!(processors("[wsl2]\nprocessors=default\n"), None);
+        assert_eq!(processors("[wsl2]\nprocessors=DEFAULT\n"), None);
+        // 注释掉的等于没写
+        assert_eq!(processors("[wsl2]\n# processors=4\n"), None);
+        assert_eq!(processors("[wsl2]\n; processors=4\n"), None);
+        // ⚠️ 解析不出来的值一律当没配：这是一个**分母**，
+        // 拿一个瞎猜的数去除，算出来的占用率会离谱地偏大或偏小。
+        assert_eq!(processors("[wsl2]\nprocessors=abc\n"), None);
+        assert_eq!(processors("[wsl2]\nprocessors=0\n"), None);
+        assert_eq!(processors("[wsl2]\nprocessors=-2\n"), None);
+        assert_eq!(processors("[wsl2]\nprocessors=\n"), None);
+        // 节头写坏了（缺右括号）不算节 —— 和 `check` 的判据一致
+        assert_eq!(processors("[wsl2\nprocessors=4\n"), None);
+        assert_eq!(processors(""), None);
     }
 }

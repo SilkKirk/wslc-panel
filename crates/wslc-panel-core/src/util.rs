@@ -98,41 +98,6 @@ pub fn load_level(percent: f64) -> LoadLevel {
     }
 }
 
-/// 把运行中的容器按 **CPU 占用从高到低**排（基本信息页的"现在谁在吃资源"）。
-///
-/// # 为什么是 CPU 而不是内存
-///
-/// 内存占用高的容器常常是"本来就该占那么多"（数据库的 buffer pool 是按配额配的），
-/// 而 CPU 高通常意味着它**此刻**在忙 —— 一眼扫过去想知道的是后者。
-///
-/// # 拿不到数据的排最后
-///
-/// `stats` 里没有这一项（`wslc stats` 失败、或容器刚起来还没进统计）时，
-/// 它**不是**"占用 0"，而是"我们不知道" —— 排到最后，别混在真·空闲的那一堆里。
-///
-/// ⚠️ `nan%` 和"没有这一项"**归为同一类**（都是 `None`）：`parse_percent` 会把
-/// `nan` 解析成 `NaN`，而 `NaN` 与任何数比较都是 false —— 不先滤掉它的话，
-/// 排序结果就取决于"它先跟谁比"，一个 NaN 有可能稳稳占住榜首。
-/// 两个都是"读不到"时保持原有顺序：`sort_by` 是稳定排序，不引入第二个键。
-pub fn sort_running_by_cpu(items: &mut [ContainerSummary]) {
-    // `is_finite()` 同时滤掉 NaN 与 ±inf —— 这两种都不是"占用多少"，
-    // 而是"这个数不可信"，按没有数据处理。
-    let load = |c: &ContainerSummary| {
-        c.stats
-            .as_ref()
-            .and_then(|s| s.cpu_percent())
-            .filter(|value| value.is_finite())
-    };
-
-    items.sort_by(|a, b| match (load(a), load(b)) {
-        // 降序：`b` 在前。两侧都可信时才走到这里，不用再担心 NaN。
-        (Some(x), Some(y)) => y.partial_cmp(&x).unwrap_or(std::cmp::Ordering::Equal),
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => std::cmp::Ordering::Equal,
-    });
-}
-
 /// 去掉文案里的 `**粗体**` 与 `` `代码` `` 标记。
 ///
 /// # 为什么需要它
@@ -164,10 +129,9 @@ mod tests {
     // `wslc-panel` **排除**掉（`cargo test --workspace --exclude wslc-panel`），
     // 写在那个 crate 里的断言根本不会被执行。
     use super::{
-        LoadLevel, human_secs, load_level, ports_summary, refresh_label, sort_running_by_cpu,
-        split_list, strip_md,
+        LoadLevel, human_secs, load_level, ports_summary, refresh_label, split_list, strip_md,
     };
-    use wslc_core::model::{ContainerListItem, ContainerStats, ContainerSummary};
+    use wslc_core::model::{ContainerListItem, ContainerSummary};
 
     /// 只有 `Ports` 一个字段有意义的样本。
     fn summary_with_ports(ports: &str) -> ContainerSummary {
@@ -178,28 +142,6 @@ mod tests {
             },
             stats: None,
         }
-    }
-
-    /// `cpu_perc` 是 `wslc stats` 那种带百分号的字符串（`"1.50%"`）。
-    ///
-    /// 传 `None` 表示**快照里根本没有这一项**（`wslc stats` 那一轮失败、
-    /// 或者容器刚起来还没进统计）。
-    fn summary_with_cpu(cpu: Option<f64>) -> ContainerSummary {
-        ContainerSummary {
-            item: ContainerListItem::default(),
-            stats: cpu.map(|value| ContainerStats {
-                cpu_perc: format!("{value:.2}%"),
-                ..Default::default()
-            }),
-        }
-    }
-
-    /// 排序后的 CPU 占用，方便直接断言顺序。
-    fn cpu_order(items: &[ContainerSummary]) -> Vec<Option<f64>> {
-        items
-            .iter()
-            .map(|c| c.stats.as_ref().and_then(|s| s.cpu_percent()))
-            .collect()
     }
 
     #[test]
@@ -327,67 +269,5 @@ mod tests {
         assert_eq!(load_level(f64::NAN), LoadLevel::Low);
         // 负数（理论上不会出现）同样按轻载处理，不进警告区
         assert_eq!(load_level(-1.0), LoadLevel::Low);
-    }
-
-    #[test]
-    fn sort_running_by_cpu_puts_the_busiest_first() {
-        let mut items = vec![
-            summary_with_cpu(Some(1.5)),
-            summary_with_cpu(None),
-            summary_with_cpu(Some(42.0)),
-            summary_with_cpu(Some(0.0)),
-        ];
-        sort_running_by_cpu(&mut items);
-
-        // 42 → 1.5 → 0 → "没有数据"。0 是**真的空闲**，
-        // 必须排在"读不到"前面（两者在界面上长得一样：一条空条）。
-        assert_eq!(
-            cpu_order(&items),
-            vec![Some(42.0), Some(1.5), Some(0.0), None]
-        );
-    }
-
-    #[test]
-    fn sort_running_by_cpu_keeps_the_original_order_on_ties_and_no_data() {
-        // 一条 stats 都没有（`wslc stats` 那一轮失败）时不该把列表搅乱 ——
-        // 稳定排序 + 全判平手 = 原样返回，用户看到的就是 `wslc` 给的顺序。
-        let mut items = vec![
-            summary_with_cpu(None),
-            summary_with_cpu(None),
-            summary_with_cpu(None),
-        ];
-        sort_running_by_cpu(&mut items);
-        assert_eq!(cpu_order(&items), vec![None, None, None]);
-
-        // 两个真的一样高时同理（这里用名字区分，确认没有互相换位）。
-        let named = |name: &str, cpu: f64| ContainerSummary {
-            item: ContainerListItem {
-                names: name.to_owned(),
-                ..Default::default()
-            },
-            stats: Some(ContainerStats {
-                cpu_perc: format!("{cpu:.2}%"),
-                ..Default::default()
-            }),
-        };
-        let mut ties = vec![named("first", 5.0), named("second", 5.0)];
-        sort_running_by_cpu(&mut ties);
-        let names: Vec<&str> = ties.iter().map(|c| c.item.names.as_str()).collect();
-        assert_eq!(names, vec!["first", "second"]);
-    }
-
-    #[test]
-    fn sort_running_by_cpu_does_not_let_nan_win() {
-        // `nan%` 和真·高占用混在一起时，NaN 不能抢到第一位 ——
-        // 它和"没有这一项"归为同一类（都是"读不到"），一律排到最后。
-        let mut items = vec![summary_with_cpu(Some(f64::NAN)), summary_with_cpu(Some(7.0))];
-        sort_running_by_cpu(&mut items);
-
-        let order = cpu_order(&items);
-        assert_eq!(order[0], Some(7.0), "能比较的那个必须排到前面");
-        assert!(
-            order[1].expect("NaN 也解析得回来").is_nan(),
-            "NaN 要留在最后：{order:?}"
-        );
     }
 }

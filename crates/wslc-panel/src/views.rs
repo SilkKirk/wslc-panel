@@ -19,6 +19,14 @@ use gpui_kit::component::select::Select;
 // 走的是组件的 popover 层（`deferred` + `POPUP_PRIORITY`），所以**不会被表格的
 // `overflow_hidden` 裁掉** —— 那是这一类弹出能用的前提（见 `AGENTS.md` §7.5）。
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+// 基本信息页那四只圆环（v0.9.17）。
+//
+// 为什么用它而不是自己拿 `div` 拼：圆环要画弧（`canvas` + `PathBuilder`），
+// 那条路本仓库一次都没走过；组件库里现成有 `ProgressCircle`（已核对 0.7.1 的
+// 源码：`progress/progress_circle.rs`），直接用它就不必去赌没验证过的 API。
+// ⚠️ 它的大小只能用 `Sizable::with_size()` 设，别用 Styled 的 `.size()`
+// —— 见 `views::gauge` 里那段说明。
+use gpui_kit::component::progress::ProgressCircle;
 // 注意：这里**不导入** `Disableable` —— 全项目不再使用 `.disabled()`：
 // gpui-component 的禁用态文字几乎看不清，改用"守卫 + 文案"表达不可用状态。
 use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
@@ -60,20 +68,20 @@ use crate::app::{
 // 列宽定义与配置项预设值都是纯数据，住在不依赖 GPUI 的 `wslc-panel-core` 里
 // —— 这样它们的单测不必链接 GPUI（见那个 crate 的顶层说明）。
 use crate::columns::{
-    ALL_COLUMNS, BACKUP_COLUMNS, DASHBOARD_CONTAINER_COLUMNS, DB_COLUMNS, DB_USER_COLUMNS,
-    DEPLOY_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS,
+    ALL_COLUMNS, BACKUP_COLUMNS, DB_COLUMNS, DB_USER_COLUMNS, DEPLOY_COLUMNS, DISTRO_COLUMNS,
+    IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS,
 };
 use crate::presets::presets_for;
 use crate::state::{
-    AppState, DbFailure, DbState, DbTab, DeployEntry, DeployLogs, DeployState, DistroAction,
-    ImmediateAction, InstallOutcome, InstallProgress, InstallSourceKind, LogsState,
+    AppState, DashboardStats, DbFailure, DbState, DbTab, DeployEntry, DeployLogs, DeployState,
+    DistroAction, ImmediateAction, InstallOutcome, InstallProgress, InstallSourceKind, LogsState,
     OnlineListSource, Page, PendingAction, PromptKind, PullProgress, SettingsTab, WslConfState,
     format_bytes,
 };
 use crate::theme;
-// 基本信息页那三个纯逻辑：用量分档（决定进度条颜色）与按 CPU 排序。
-// 它们在 `wslc-panel-core` 里（带单测），因为这个文件里的断言 CI 不会跑。
-use crate::util::{LoadLevel, load_level, sort_running_by_cpu};
+// 基本信息页那排圆环用的纯逻辑：用量分档（≥60% 黄、≥85% 红）。
+// 它在 `wslc-panel-core` 里（带单测），因为这个文件里的断言 CI 不会跑。
+use crate::util::{LoadLevel, load_level};
 
 // ---------------------------------------------------------------------------
 // 通用小组件
@@ -502,7 +510,8 @@ fn overlay_button(
 pub fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
     let state = &shell.state;
     match state.page {
-        Page::Dashboard => dashboard(state, entity).into_any_element(),
+        // 基本信息页只读快照（不起进程、不需要输入框），所以不用 entity。
+        Page::Dashboard => dashboard(state).into_any_element(),
         // 这几个直接返回 `AnyElement`，不再多套一层转换。
         Page::Instances => instances(state, entity),
         Page::AddInstance => add_instance(shell, cx, entity),
@@ -527,33 +536,38 @@ pub fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
 // ① 基本信息 / 总览
 // ---------------------------------------------------------------------------
 
-/// 基本信息页：**这台机器上的 WSL 环境** + 一眼看完的实时占用。
+/// 基本信息页：**这台机器上的 WSL 环境** + 一排总览圆环。
 ///
-/// # 这一页只回答两个问题
+/// # 这一页回答什么
 ///
-/// 1. **这套 WSL 是什么版本**（`wslc info` 的 Client 那几项）—— 报问题时第一步要抄的；
-/// 2. **此刻谁在吃资源**（`wslc stats` 的 CPU / 内存 / 网络）。
+/// 1. **这套 WSL 是什么版本**（`wslc info`）—— 报问题时第一步要抄的；
+/// 2. **容器这一摊现在占了多少**（CPU / 内存 / 存储 / 数量）—— 四只圆环。
 ///
-/// # 为什么去掉了「服务器」「活动会话」「存储」三张卡（v0.9.16）
+/// # 为什么是一排圆环而不是一张每容器的表（v0.9.17）
 ///
-/// 它们有个共同点：**全是面板自己的实现细节，而且几乎不变**。
+/// v0.9.16 这里还是一张"运行中容器（实时）"的表，每行一个容器的
+/// CPU / 内存 / 网络 / 进程数。实机反馈是**不需要看到每个容器** ——
+/// 想知道的是"总共占了多少"，而且要 1Panel 那种一眼的总览。
 ///
-/// - 「服务器」只有"会话管理器版本 / 活动会话数 / 当前会话"三行 ——
-///   后两行在单用户场景里恒等于 1 和"面板自己起的那个会话"；
-/// - 「活动会话」是把上面那两行摊开成一张表，唯一的动作是「终止会话」，
-///   而把面板自己正在用的那个会话终止掉，只会连带停掉所有容器；
-/// - 「存储」把 `settings.yaml` 的解析结果与 VHD 路径原样摆出来，
-///   路径长到必须换行（`kv_block`），看过一次就不会看第二次。
+/// 于是：表整个去掉（要看单个容器去「容器」页），换成四只环。
+/// 这也顺手解掉了一个老问题：那一列 `docker.1panel.live/library...`
+/// 之类的长镜像名在窄表里必然被截断，而环不需要那么宽。
 ///
-/// 三张卡合起来占掉整页三分之一的高度，信息密度却最低。现在留下的两块
-/// **每一项都会跟着刷新变**。
-pub fn dashboard(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
+/// # 四个环的口径
+///
+/// 数字全部来自 [`DashboardStats`]（**纯算术**，这一页自己不起任何进程），
+/// 每一环下面那行小字就是口径本身，卡片底部还有一句总说明 ——
+/// 口径写清楚是刻意的：`wslc stats` 的 CPU% 是 **100% ≈ 1 个核**，
+/// 不折算的话 32 核机器上那几个小数会把人看糊涂。
+pub fn dashboard(state: &AppState) -> impl IntoElement {
+    let stats = state.snapshot.dashboard_stats();
+
     v_flex()
         .w_full()
         .gap_4()
         .child(environment_card(state))
+        .child(status_card(&stats))
         .child(overview_tiles(state))
-        .child(running_containers_section(state, entity))
 }
 
 // ---------------------------------------------------------------------------
@@ -562,7 +576,7 @@ pub fn dashboard(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
 
 /// 运行环境：`wslc info` 里**排障真正要用到**的那三项。
 ///
-/// 横着排三格而不是竖着列三行：这一页的高度要留给下面那张实时表，
+/// 横着排三格而不是竖着列三行：这一页的高度要留给下面那排圆环，
 /// 而三项都很短（版本号），铺满一行正好。
 ///
 /// 刻意**不显示** `Direct3D` / `DXCore`：它们是给 GPU 直通 / 计算负载看的，
@@ -619,233 +633,233 @@ fn env_cell(label: &'static str, value: String) -> impl IntoElement {
         )
 }
 
-/// 顶部那排数字：容器 / 镜像 / 网络 / 卷。
+/// 圆环的**传参**直径。
 ///
-/// 这排数字只回答"我这儿有多少东西"；想看清单一页一个。
-/// 它们刻意**不可点** —— 侧边栏已经给了这些页面的入口，
-/// 再摆一份只会让人犹豫"该点哪个"（`AGENTS.md` §5）。
-fn overview_tiles(state: &AppState) -> impl IntoElement {
-    let snap = &state.snapshot;
-    let running = snap.all.iter().filter(|c| c.is_running()).count();
+/// ⚠️ `ProgressCircle` 实际画出来的是这个数的 **0.75 倍**
+/// （组件库 `Size::Size(s) => this.size(s * 0.75)`）—— 写 170，屏幕上量到的是
+/// 127.5px。这个数没在实机上校过，是照 1Panel 那排环的比例估的：
+/// `AGENTS.md` §8 那条"实机看一眼"照旧成立（尤其是窗口窄到 880px 时）。
+const GAUGE_DIAMETER: f32 = 170.0;
 
-    h_flex()
-        .w_full()
-        .gap_3()
-        .child(stat_tile(
-            "运行中容器",
-            running.to_string(),
-            theme::success(),
-        ))
-        .child(stat_tile("全部容器", snap.all.len().to_string(), theme::text()))
-        .child(stat_tile("镜像", snap.images.len().to_string(), theme::text()))
-        .child(stat_tile("网络", snap.networks.len().to_string(), theme::text()))
-        .child(stat_tile("卷", snap.volumes.len().to_string(), theme::text()))
+/// 一个圆环：环里是"大数字 + 标签"，环下面一行小字写口径。
+///
+/// `value` 是 0–100 的百分比；`None` 表示**这一项读不到** —— 那时候环画成空的、
+/// 大数字写 `—`。不能把"读不到"画成 0%：两者在环上长得一模一样，
+/// 而"占用 0"和"没读到"对用户是两件事。
+fn gauge(
+    id: &'static str,
+    value: Option<f64>,
+    color: Rgba,
+    big: String,
+    label: &'static str,
+    caption: String,
+) -> AnyElement {
+    // `Hsla` 要显式标注：`Rgba -> Hsla` 是 `From` 实现出来的，
+    // 而参数类型是 `impl Into<Hsla>`，`rgba.into()` 在那儿推不出目标类型
+    // （theme.rs 里那几行也是这么写的）。
+    let color: Hsla = color.into();
+
+    v_flex()
+        .flex_1()
+        .min_w_0()
+        .items_center()
+        .gap_2()
+        .child(
+            ProgressCircle::new(id)
+                // `.value()` 自己会 clamp 到 0–100，这里先夹一次是为了
+                // 让"读不到"和"超出"在代码里就是同一个 0。
+                .value(value.unwrap_or(0.0).clamp(0.0, 100.0) as f32)
+                .color(color)
+                // ⚠️ 必须用 `.with_size()`（`Sizable`），**不能**用 Styled 的
+                // `.size()`：组件库 render 里是先 `refine_style`（应用 Styled）
+                // 再按 `Size` 覆盖尺寸的，`.size()` 会被它盖掉。
+                .with_size(px(GAUGE_DIAMETER))
+                .child(
+                    v_flex()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_lg()
+                                .font_bold()
+                                .text_color(theme::text())
+                                .child(big),
+                        )
+                        .child(div().text_xs().text_color(theme::text_dim()).child(label)),
+                ),
+        )
+        .child(
+            div()
+                .w_full()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .overflow_hidden()
+                .truncate()
+                .child(caption),
+        )
+        .into_any_element()
 }
 
-/// 运行中容器（实时）：CPU / 内存 / 网络，**CPU 高的排最上面**。
+/// 用量 → 环的颜色。
 ///
-/// # 数据从哪来
-///
-/// 全部来自快照里的 `wslc stats`，跟着那次刷新一起更新（默认 3 秒一次）——
-/// 这一页自己**不起任何进程**，所以它不会成为"界面卡住"的来源（`AGENTS.md` §7.1）。
-///
-/// # 为什么按 CPU 排而不是按名字
-///
-/// 这张表要回答的是"现在谁在吃资源"。按名字排的话，那个占了 90% CPU 的容器
-/// 可能排在第 5 行 —— 而它往往是唯一一行需要看的。排序是纯逻辑，
-/// 在 [`crate::util::sort_running_by_cpu`] 里（带单测）。
-///
-/// # 这一块里为什么一个按钮都没有
-///
-/// 容器名本身就是入口（点开详情），和「容器」页完全一致。
-/// 这里再摆一份「停止 / 重启」就是同一个动作的第二个入口（`AGENTS.md` §5）。
-fn running_containers_section(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
-    // 复制一份再排：`snapshot.running` 的顺序是 `wslc` 给的，
-    // 不该在渲染里被就地改掉（同一个快照还会被别的页面读）。
-    let mut running = state.snapshot.running.clone();
-    sort_running_by_cpu(&mut running);
+/// 阈值判定（≥60% 黄、≥85% 红）在 `wslc-panel-core` 里带单测 ——
+/// 这个文件里的断言 CI 不会跑。拿不到值时按"轻载"上色（不吓人）。
+fn gauge_color(percent: Option<f64>) -> Rgba {
+    match load_level(percent.unwrap_or(0.0)) {
+        LoadLevel::Low => theme::primary(),
+        LoadLevel::Medium => theme::warning(),
+        LoadLevel::High => theme::danger(),
+    }
+}
 
-    let note = div()
-        .text_xs()
-        .text_color(theme::text_dim())
-        .child(format!(
-            "{} 个正在运行 · 按 CPU 占用从高到低排",
-            running.len()
-        ));
+/// 环里那个大数字：百分比两位小数；读不到就是破折号。
+fn gauge_big(percent: Option<f64>) -> String {
+    match percent {
+        Some(value) => format!("{value:.2} %"),
+        None => "—".to_owned(),
+    }
+}
 
-    let table: AnyElement = if running.is_empty() {
+/// 「状态」卡：四只圆环 —— 容器 CPU / 容器内存 / 会话盘 / 容器数量。
+///
+/// 顺序照 1Panel（CPU → 内存 → 磁盘 → 数量），把"最要紧的那几个"排在左边。
+fn status_card(stats: &DashboardStats) -> AnyElement {
+    let cpu_percent = stats.cpu_whole_machine_percent();
+    let mem_percent = stats.mem_percent();
+    let disk_percent = stats.disk.as_ref().map(|disk| disk.used_percent());
+    let has_running = stats.running > 0;
+
+    // 数量那一环：全部为 0 时没有"比例"可言，`None` 让环空着。
+    let count_percent = (stats.total > 0)
+        .then(|| stats.running as f64 / stats.total as f64 * 100.0);
+
+    // CPU 环：拿不到核数时**照样报原始合计**（那一行小字会说明"拿不到核数"），
+    // 但绝不把它当"整机占用率"—— 多核机器上 400% 是四个核跑满。
+    let cpu_big = match (cpu_percent, has_running) {
+        (Some(percent), _) => gauge_big(Some(percent)),
+        (None, true) => format!("{:.2} %", stats.cpu_percent),
+        (None, false) => gauge_big(None),
+    };
+    let cpu_caption = match (stats.cpu_cores, has_running) {
+        (Some(cores), true) => format!("{:.2} / {cores} 核", stats.cpu_cores_used()),
+        (None, true) => "各容器之和（拿不到核数）".to_owned(),
+        _ => "没有正在运行的容器".to_owned(),
+    };
+
+    let mem_caption = match (has_running, stats.mem_limit) {
+        (true, Some(limit)) => {
+            format!("{} / {}", format_bytes(stats.mem_used), format_bytes(limit))
+        }
+        _ => "没有正在运行的容器".to_owned(),
+    };
+
+    let disk_caption = match stats.disk {
+        Some(disk) => format!(
+            "{} / {}",
+            format_bytes(disk.used()),
+            format_bytes(disk.total)
+        ),
+        None => "拿不到会话盘容量".to_owned(),
+    };
+
+    let (count_big, count_caption) = if stats.total > 0 {
+        (
+            format!("{} / {}", stats.running, stats.total),
+            "运行中 / 全部".to_owned(),
+        )
+    } else {
+        ("0 / 0".to_owned(), "还没有容器".to_owned())
+    };
+
+    // 底部那句总口径。**刻意写在这里而不是每一环里**：四条小字已经
+    // 各说各的数字了，再各自加一句"这是什么"会把环淹掉。
+    let cores_note = match stats.cpu_cores {
+        Some(cores) => format!("CPU 合计 ÷ {cores} 核"),
+        None => "CPU 是各容器之和（未折算）".to_owned(),
+    };
+    let vhd_note = match stats.vhd_bytes {
+        Some(bytes) => format!("；当前会话的 VHD 占 {}", format_bytes(bytes)),
+        None => String::new(),
+    };
+    let note = format!(
+        "口径：CPU 与内存只算容器（{cores_note}，内存分母是 WSL 的内存上限）；\
+         存储是会话盘（镜像与容器可写层都在它上面）{vhd_note}。"
+    );
+
+    card(
+        "状态",
         v_flex()
             .w_full()
-            .items_center()
-            .gap_1()
-            .py_8()
+            .gap_4()
             .child(
-                div()
-                    .text_sm()
-                    .text_color(theme::text_muted())
-                    .child("没有正在运行的容器"),
+                h_flex()
+                    .w_full()
+                    .gap_3()
+                    .items_start()
+                    .child(gauge(
+                        "gauge-container-cpu",
+                        cpu_percent,
+                        gauge_color(cpu_percent),
+                        cpu_big,
+                        "CPU",
+                        cpu_caption,
+                    ))
+                    .child(gauge(
+                        "gauge-container-memory",
+                        mem_percent,
+                        gauge_color(mem_percent),
+                        gauge_big(mem_percent),
+                        "内存",
+                        mem_caption,
+                    ))
+                    .child(gauge(
+                        "gauge-session-disk",
+                        disk_percent,
+                        gauge_color(disk_percent),
+                        gauge_big(disk_percent),
+                        "存储",
+                        disk_caption,
+                    ))
+                    .child(gauge(
+                        "gauge-container-count",
+                        count_percent,
+                        // 数量不是"用量"，别让它在 85% 时变红 ——
+                        // 「4 个容器全在跑」是好事，不是告警。
+                        theme::success(),
+                        count_big,
+                        "容器",
+                        count_caption,
+                    )),
             )
             .child(
                 div()
                     .text_xs()
                     .text_color(theme::text_dim())
-                    .child("到「容器」页点某一行的「启动」；跑起来之后这里会显示它的 CPU / 内存 / 网络。"),
-            )
-            .into_any_element()
-    } else {
-        let rows: Vec<AnyElement> = running
-            .iter()
-            .map(|item| dashboard_container_row(item, entity))
-            .collect();
-
-        // 形状和「容器」/「部署管理」页的表一致：圆角框 + 表头 + 行。
-        // 底色用 `theme::bg()`（比卡片暗一档）—— 嵌在卡片里时一眼看得出这是**数据**。
-        v_flex()
-            .w_full()
-            .rounded_md()
-            .bg(theme::bg())
-            .border_1()
-            .border_color(theme::border())
-            .overflow_hidden()
-            .child(table_header(DASHBOARD_CONTAINER_COLUMNS))
-            .child(v_flex().w_full().children(rows))
-            .into_any_element()
-    };
-
-    card(
-        "运行中容器（实时）",
-        v_flex().w_full().gap_2().child(note).child(table),
+                    .child(note),
+            ),
     )
     .into_any_element()
 }
 
-/// 「运行中容器」里的一行。
+/// 底部那排数字：镜像 / 网络 / 卷 / WSL 实例。
 ///
-/// `stats` 为 `None` 时每一格都写 `—`：那表示"这一轮没读到统计"
-/// （`wslc stats` 失败、或者容器刚起来还没进统计），**不是**"占用 0" ——
-/// 画成 `0.00%` 会让人以为它闲着。
-fn dashboard_container_row(item: &ContainerSummary, entity: &Entity<Shell>) -> AnyElement {
-    let name = item.name().to_owned();
-    let stats = item.stats.as_ref();
-
-    table_row(
-        DASHBOARD_CONTAINER_COLUMNS,
-        vec![
-            container_name_link(&name, entity),
-            // 截断了也能悬停看全文（长镜像引用很常见），键用容器名 —— 当帧唯一。
-            cell_muted_full(name, item.item.image.clone()),
-            // ⚠️ 两个进尺的单位不一样：`cpu_percent()` 给的是**百分比**，
-            // 而 `mem_ratio()` 给的是 **0–1 的比例** —— 在这里就换算成百分比，
-            // 别让 `meter_cell` 去猜"这个数是哪一种"。
-            meter_cell(
-                stats.map(|s| s.cpu_perc.clone()),
-                stats.and_then(|s| s.cpu_percent()),
-            ),
-            meter_cell(
-                stats.map(|s| s.mem_usage.clone()),
-                stats.and_then(|s| s.mem_ratio()).map(|ratio| ratio * 100.0),
-            ),
-            cell_muted(stat_text(stats.map(|s| s.net_io.clone()))),
-            cell_muted(stat_text(stats.map(|s| s.pids.to_string()))),
-        ],
-    )
-    .into_any_element()
-}
-
-/// 统计里的一格文字；读不到（或读到空串）就写 `—`。
-///
-/// 空串看起来像"界面坏了"（和 [`crate::util::ports_summary`] 那条同一个理由）。
-fn stat_text(text: Option<String>) -> String {
-    match text {
-        Some(value) if !value.trim().is_empty() => value,
-        _ => "—".to_owned(),
-    }
-}
-
-/// 进度条的宽度（像素）。
-///
-/// 定宽而不是 `w_full`：它和后面的数字共处一格（宽度由 `flex_grow` 分配），
-/// 让条去抢宽度会把数字挤到换行。52px 在 `100.00%` 这种最长文本下也放得下。
-const METER_WIDTH: f32 = 52.0;
-
-/// 一段细进度条（`ratio` 是 0.0–1.0）。
-///
-/// # 为什么是两段 `flex_grow` 而不是 `relative(...)`
-///
-/// `relative(0.5)` 那种写法要用 gpui 的 `DefiniteLength` 构造器，而
-/// **本仓库至今没有用过它**（全仓库搜不到）。本机没有 Rust 工具链
-/// （`AGENTS.md` §1），"猜一个没验证过的 API"的代价是整轮 CI 白跑；
-/// 两段 flex 只用 `flex_grow` / `flex_basis`，`table_row` 里已经在用。
-///
-/// `overflow_hidden` 是必需的：填充段自己的角是方的，靠外面那层裁出圆角。
-fn meter(ratio: f64, color: Rgba) -> impl IntoElement {
-    // ⚠️ `f64::clamp` 遇到 NaN 会**原样返回 NaN**（它内部就是两次比较），
-    // 所以先判有限性再夹 —— 否则 NaN 会一路传进布局。
-    let filled = if ratio.is_finite() {
-        ratio.clamp(0.0, 1.0) as f32
-    } else {
-        0.0
-    };
+/// 容器的数量**不在这里** —— 它已经是上面那一环了，摆两遍只会让人
+/// 犹豫该看哪个（`AGENTS.md` §5 同一条道理）。这一排回答的是"我这儿
+/// 有多少东西"，想看清单一页一个，所以刻意**不可点**。
+fn overview_tiles(state: &AppState) -> impl IntoElement {
+    let snap = &state.snapshot;
 
     h_flex()
-        .flex_none()
-        .w(px(METER_WIDTH))
-        .h(px(6.))
-        .rounded_md()
-        .overflow_hidden()
-        // 轨道用 `border()` 而不是 `dim_soft()`：这条表是嵌在**卡片**里的、
-        // 本身又铺了一层 `theme::bg()`，`dim_soft()` 和它几乎同色（深色下
-        // 0x181d24 对 0x0d1117）—— 空条看不出来的话，"占用 5%" 和"读不到"
-        // 在界面上就分不清了。
-        .bg(theme::border())
-        .child(
-            div()
-                .h_full()
-                .flex_grow(filled)
-                .flex_basis(px(0.))
-                .bg(color),
-        )
-        .child(div().h_full().flex_grow(1.0 - filled).flex_basis(px(0.)))
-}
-
-/// 带进度条的一格（CPU / 内存）。
-///
-/// `percent`（0–100）为 `None` 时**只画数字、不画条**：画一条空条会让人以为
-/// "占用是 0"，而真实情况是"这一项读不到"（例如 `MemUsage` 的上限是 `0B`）。
-fn meter_cell(label: Option<String>, percent: Option<f64>) -> AnyElement {
-    // 阈值判定在 `wslc-panel-core`（带单测），这里只把档位映射成颜色。
-    let color = match load_level(percent.unwrap_or(0.0)) {
-        LoadLevel::Low => theme::primary(),
-        LoadLevel::Medium => theme::warning(),
-        LoadLevel::High => theme::danger(),
-    };
-
-    let mut row = h_flex().w_full().gap_2().items_center();
-
-    // 条只在真有比例时画（见函数说明）。这里用 `if let` 而不是
-    // `.children(percent.map(…))`：后者要求 `Option<impl IntoElement>` 满足
-    // `IntoIterator<Item: IntoElement>`，是本仓库没用过的一种组合 ——
-    // 没必要为省两行去赌一个没验证过的写法（`AGENTS.md` §1）。
-    if let Some(value) = percent {
-        row = row.child(meter(value / 100.0, color));
-    }
-
-    row
-        .child(
-            // ⚠️ `flex_1` + `min_w_0` 是**省略号的前提**：这一格是 `h_flex` 的
-            // 一个 flex 项，不加的话它的宽度按内容算（`shrink-to-fit`），
-            // 超出部分只会被外层单元格 `overflow_hidden` **裁掉**（没有 `…`）。
-            // `cell_muted` 那种直接放进块级单元格的写法不需要这两句。
-            div()
-                .flex_1()
-                .min_w_0()
-                .text_xs()
-                .text_color(theme::text_muted())
-                .overflow_hidden()
-                .truncate()
-                .child(stat_text(label)),
-        )
-        .into_any_element()
+        .w_full()
+        .gap_3()
+        .child(stat_tile(
+            "WSL 实例",
+            snap.distros.len().to_string(),
+            theme::text(),
+        ))
+        .child(stat_tile("镜像", snap.images.len().to_string(), theme::text()))
+        .child(stat_tile("网络", snap.networks.len().to_string(), theme::text()))
+        .child(stat_tile("卷", snap.volumes.len().to_string(), theme::text()))
 }
 
 // ---------------------------------------------------------------------------
