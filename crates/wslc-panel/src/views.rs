@@ -60,8 +60,8 @@ use crate::app::{
 // 列宽定义与配置项预设值都是纯数据，住在不依赖 GPUI 的 `wslc-panel-core` 里
 // —— 这样它们的单测不必链接 GPUI（见那个 crate 的顶层说明）。
 use crate::columns::{
-    ALL_COLUMNS, BACKUP_COLUMNS, DB_COLUMNS, DB_USER_COLUMNS, DEPLOY_COLUMNS, DISTRO_COLUMNS,
-    IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS,
+    ALL_COLUMNS, BACKUP_COLUMNS, DASHBOARD_CONTAINER_COLUMNS, DB_COLUMNS, DB_USER_COLUMNS,
+    DEPLOY_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS,
 };
 use crate::presets::presets_for;
 use crate::state::{
@@ -71,6 +71,9 @@ use crate::state::{
     format_bytes,
 };
 use crate::theme;
+// 基本信息页那三个纯逻辑：用量分档（决定进度条颜色）与按 CPU 排序。
+// 它们在 `wslc-panel-core` 里（带单测），因为这个文件里的断言 CI 不会跑。
+use crate::util::{LoadLevel, load_level, sort_running_by_cpu};
 
 // ---------------------------------------------------------------------------
 // 通用小组件
@@ -524,306 +527,326 @@ pub fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
 // ① 基本信息 / 总览
 // ---------------------------------------------------------------------------
 
-/// 总览页：`wslc info` + 统计 + 会话。
+/// 基本信息页：**这台机器上的 WSL 环境** + 一眼看完的实时占用。
+///
+/// # 这一页只回答两个问题
+///
+/// 1. **这套 WSL 是什么版本**（`wslc info` 的 Client 那几项）—— 报问题时第一步要抄的；
+/// 2. **此刻谁在吃资源**（`wslc stats` 的 CPU / 内存 / 网络）。
+///
+/// # 为什么去掉了「服务器」「活动会话」「存储」三张卡（v0.9.16）
+///
+/// 它们有个共同点：**全是面板自己的实现细节，而且几乎不变**。
+///
+/// - 「服务器」只有"会话管理器版本 / 活动会话数 / 当前会话"三行 ——
+///   后两行在单用户场景里恒等于 1 和"面板自己起的那个会话"；
+/// - 「活动会话」是把上面那两行摊开成一张表，唯一的动作是「终止会话」，
+///   而把面板自己正在用的那个会话终止掉，只会连带停掉所有容器；
+/// - 「存储」把 `settings.yaml` 的解析结果与 VHD 路径原样摆出来，
+///   路径长到必须换行（`kv_block`），看过一次就不会看第二次。
+///
+/// 三张卡合起来占掉整页三分之一的高度，信息密度却最低。现在留下的两块
+/// **每一项都会跟着刷新变**。
 pub fn dashboard(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
-    let snap = &state.snapshot;
-
-    let running = snap.all.iter().filter(|c| c.is_running()).count();
-    let total = snap.all.len();
-
-    let client = snap
-        .info
-        .as_ref()
-        .map(|i| i.client.clone())
-        .unwrap_or_default();
-    let server = snap
-        .info
-        .as_ref()
-        .map(|i| i.server.clone())
-        .unwrap_or_default();
-
-    // 存储那几行**不**直接展示 settings.yaml 里的原始值：
-    // 出厂状态所有键都是注释（`# storagePath: default`），读到的是"未设置"，
-    // 直接摆出来就变成"（默认：%LOCALAPPDATA%）"这种等于没说的东西。
-    // 真实落盘位置由 `snap.storage` 提供，见 `storage_rows`。
-
-    let session_rows: Vec<AnyElement> = if snap.sessions.is_empty() {
-        vec![empty_state("没有活动的 wslc 会话").into_any_element()]
-    } else {
-        snap.sessions
-            .iter()
-            .map(|s| {
-                h_flex()
-                    .w_full()
-                    .gap_3()
-                    .py_1()
-                    .items_center()
-                    .child(badge(
-                        format!("#{}", s.id),
-                        theme::primary(),
-                        theme::primary_soft(),
-                    ))
-                    .child(cell_text(s.display()))
-                    .child(cell_muted(format!("创建者 PID {}", s.creator_pid)))
-                    // 把按钮推到右边：这一行本身很短，按钮紧跟在 PID 后面
-                    // 看起来会像"PID 的附属物"。
-                    .child(div().flex_1())
-                    .child(
-                        // 终止会话会把它里面**正在运行**的容器一起停掉，
-                        // 所以走二次确认（确认框里写清了这一点）。
-                        danger_button(
-                            &format!("session-terminate-{}", s.id),
-                            "终止",
-                            PendingAction::TerminateSession {
-                                id: s.id,
-                                name: s.display(),
-                            },
-                            entity,
-                        )
-                        .into_any_element(),
-                    )
-                    .into_any_element()
-            })
-            .collect()
-    };
-
     v_flex()
         .w_full()
         .gap_4()
-        .child(
-            h_flex()
-                .w_full()
-                .gap_3()
-                .child(stat_tile(
-                    "运行中容器",
-                    running.to_string(),
-                    theme::success(),
-                ))
-                .child(stat_tile("全部容器", total.to_string(), theme::text()))
-                .child(stat_tile(
-                    "镜像",
-                    snap.images.len().to_string(),
-                    theme::text(),
-                ))
-                .child(stat_tile(
-                    "网络",
-                    snap.networks.len().to_string(),
-                    theme::text(),
-                ))
-                .child(stat_tile(
-                    "卷",
-                    snap.volumes.len().to_string(),
-                    theme::text(),
-                )),
-        )
-        .child(
-            h_flex()
-                .w_full()
-                .gap_4()
-                .items_start()
-                .child(
-                    v_flex().flex_1().min_w_0().gap_4().child(card(
-                        "客户端",
-                        v_flex()
-                            .w_full()
-                            .gap_2()
-                            .child(kv("WSL 版本", client.version.clone()))
-                            .child(kv("内核版本", client.kernel_version.clone()))
-                            .child(kv("Windows", client.windows_version.clone()))
-                            .child(kv("Direct3D", client.direct3d_version.clone()))
-                            .child(kv("DXCore", client.dxcore_version.clone())),
-                    )),
-                )
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap_4()
-                        .child(card(
-                            "服务器",
-                            v_flex()
-                                .w_full()
-                                .gap_2()
-                                .child(kv("会话管理器", server.session_manager_version.clone()))
-                                .child(kv("活动会话数", snap.sessions.len().to_string()))
-                                .child(kv("当前会话", state.session_label())),
-                        ))
-                        .child(card(
-                            "活动会话",
-                            v_flex().w_full().gap_1().children(session_rows),
-                        )),
-                ),
-        )
-        // 「存储」放**整行**而不是挤在左半边：里面全是长路径，
-        // 窄列会被 `truncate()` 截成 "C:\...\wslc-cli-76..."，等于没显示。
-        .child(card(
-            "存储",
-            v_flex()
-                .w_full()
-                .gap_2()
-                .child(kv("配置文件", client.settings_file.clone()))
-                .children(storage_rows(state, entity)),
-        ))
-        // `wslc` 没有 `system df`，磁盘占用是我们在 Windows 侧自己算的。
-        .child(disk_usage_card(state))
+        .child(environment_card(state))
+        .child(overview_tiles(state))
+        .child(running_containers_section(state, entity))
 }
+
 // ---------------------------------------------------------------------------
-// 存储与磁盘占用（概览页用）
+// 基本信息页的三块
 // ---------------------------------------------------------------------------
 
-// `format_bytes` 现在住在 `state.rs` —— 确认弹窗的文案也要用它，
-// 而那里不该反过来依赖渲染层。
-
-/// "存储"卡片里 `storagePath` 那几行。
+/// 运行环境：`wslc info` 里**排障真正要用到**的那三项。
 ///
-/// 关键点：出厂状态下 `settings.yaml` 里所有键都是注释，
-/// 读到的永远是"未设置"。所以这里显示的是**展开后的真实路径**，
-/// 而不是"（默认：%LOCALAPPDATA%）"这种等于没说的字符串。
+/// 横着排三格而不是竖着列三行：这一页的高度要留给下面那张实时表，
+/// 而三项都很短（版本号），铺满一行正好。
 ///
-/// 用 [`kv_block`] 而不是 [`kv`]：路径很长，`kv` 的值带
-/// `overflow_hidden().truncate()`，会截成 `C:\...\wslc-cli-76...`。
-fn storage_rows(state: &AppState, entity: &Entity<Shell>) -> Vec<AnyElement> {
-    let Some(storage) = state.snapshot.storage.as_ref() else {
-        return vec![kv("storagePath", "无法确定（LOCALAPPDATA 未设置）").into_any_element()];
-    };
-
-    let configured_text = match &storage.configured {
-        Some(value) => format!("{value}（来自 settings.yaml）"),
-        None => format!(
-            "未设置 → 用内置默认值 {}",
-            wslc_core::storage::DEFAULT_PLACEHOLDER
-        ),
-    };
-
-    let vhd_text = match (&storage.vhd, storage.vhd_bytes) {
-        (Some(path), Some(bytes)) => {
-            format!("{}（{}）", path.display(), format_bytes(bytes))
-        }
-        (Some(path), None) => format!("{}（尚未创建）", path.display()),
-        (None, _) => "（没有活动会话，无法定位 VHD）".to_owned(),
-    };
-
-    vec![
-        kv("storagePath", configured_text).into_any_element(),
-        kv_block(
-            "实际目录（storagePath 展开后）",
-            storage.base.display().to_string(),
-        )
-        .into_any_element(),
-        kv_block("会话磁盘（VHD）", vhd_text).into_any_element(),
-        reveal_storage_button(entity),
-    ]
-}
-
-/// "打开所在文件夹"按钮。
-///
-/// 注意这是**只读**操作 —— v0.2 不允许改 `storagePath`：
-/// 改了不会迁移已有容器/镜像，还会新建一个空会话，风险太大。
-fn reveal_storage_button(entity: &Entity<Shell>) -> AnyElement {
-    let entity = entity.clone();
-    h_flex()
-        .w_full()
-        .justify_end()
-        .child(
-            Button::new("reveal-storage")
-                .label("打开所在文件夹")
-                .small()
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |shell, cx| shell.reveal_storage(cx));
-                }),
-        )
-        .into_any_element()
-}
-
-/// 概览页的「磁盘占用」卡片。
-///
-/// 每一项都**如实标注来源与局限**。`wslc` 没有 `system df`：
-/// 会话磁盘是文件系统实测的，镜像合计来自 `wslc images` 的 `Size`，
-/// 而容器可写层与卷和镜像挤在同一个 VHD 里，Windows 侧分不出来 ——
-/// 那就写"无法单独统计"，不编数字。
-fn disk_usage_card(state: &AppState) -> AnyElement {
-    let snap = &state.snapshot;
-
-    let Some(storage) = snap.storage.as_ref() else {
+/// 刻意**不显示** `Direct3D` / `DXCore`：它们是给 GPU 直通 / 计算负载看的，
+/// 和"容器跑不跑得起来"没关系 —— 以前它们和版本号并排摆着，
+/// 用户得自己判断哪个重要。
+fn environment_card(state: &AppState) -> AnyElement {
+    let Some(info) = state.snapshot.info.as_ref() else {
+        // 首屏（或 `wslc info` 失败）时给一句话，而不是三个空框。
+        // 失败原因由 `app.rs` 的 `error_banner` 统一说，这里只解释这块为什么空着。
         return card(
-            "磁盘占用",
-            v_flex()
-                .w_full()
-                .gap_2()
-                .child(empty_state("无法确定存储位置（LOCALAPPDATA 未设置）")),
+            "运行环境",
+            div()
+                .text_sm()
+                .text_color(theme::text_dim())
+                .child("还没读到 wslc 的环境信息。"),
         )
         .into_any_element();
     };
 
-    // `wslc images` 的 Size 是**每个镜像含共享层的总大小**，
-    // 直接相加会重复计算共享层，所以文案里要说明。
-    let image_total: f64 = snap.images.iter().filter_map(|i| i.size_bytes()).sum();
-
-    let mut rows: Vec<AnyElement> = vec![
-        kv(
-            "会话磁盘",
-            match storage.vhd_bytes {
-                Some(bytes) => format_bytes(bytes),
-                None => "尚未创建".to_owned(),
-            },
-        )
-        .into_any_element(),
-    ];
-
-    if storage.has_other_sessions() {
-        rows.push(
-            kv(
-                "其他会话",
-                format!(
-                    "{}（共 {} 个会话）",
-                    format_bytes(storage.other_sessions_bytes()),
-                    storage.sessions_count
-                ),
-            )
-            .into_any_element(),
-        );
-    }
-
-    rows.push(
-        kv(
-            "镜像合计",
-            format!(
-                "{}（{} 个镜像，含共享层重复计算）",
-                format_bytes(image_total.max(0.0) as u64),
-                snap.images.len()
-            ),
-        )
-        .into_any_element(),
-    );
-
-    // 刻意**不显示**"容器可写层"和"卷"两项。
-    //
-    // `wslc` 没有 `system df`，这两项和镜像挤在同一个 VHD 里，
-    // Windows 侧根本分不出来。写一行"无法单独统计"只是占地方、
-    // 让人以为面板缺功能 —— 不如不显示，把"为什么没有"写在
-    // docs/SPIKE.md 里。
-
-    if let Some(volume) = storage.volume {
-        rows.push(
-            kv(
-                "所在盘",
-                format!(
-                    "已用 {} / {}（剩余 {}，{:.1}%）",
-                    format_bytes(volume.used()),
-                    format_bytes(volume.total),
-                    format_bytes(volume.free),
-                    volume.used_percent()
-                ),
-            )
-            .into_any_element(),
-        );
-    }
-
-    card("磁盘占用", v_flex().w_full().gap_2().children(rows)).into_any_element()
+    card(
+        "运行环境",
+        h_flex()
+            .w_full()
+            .gap_4()
+            .items_start()
+            .child(env_cell("WSL 版本", info.client.version.clone()))
+            .child(env_cell("内核版本", info.client.kernel_version.clone()))
+            .child(env_cell("Windows", info.client.windows_version.clone())),
+    )
+    .into_any_element()
 }
 
-// 这里曾经还有一张"刷新"卡片（上次耗时 / 自动刷新档位）。
-// 刷新属于实现细节：耗时写日志，间隔在"设置"页里改，概览页不再展示。
+/// 「运行环境」里的一格：小标签 + 值。
+///
+/// 值比正文大一档（`text_lg` + 半粗）：这三项是**要抄下来贴给别人**的
+/// （报问题的第一步就是报 WSL / 内核版本），大一点好读。
+///
+/// 仍然加 `truncate`：Windows 版本在别的机器上可能是
+/// `10.0.26100.1742 (Win11 24H2)` 这种带括号的，不指望它一定放得下。
+fn env_cell(label: &'static str, value: String) -> impl IntoElement {
+    v_flex()
+        .flex_1()
+        .min_w_0()
+        .gap_1()
+        .child(div().text_xs().text_color(theme::text_dim()).child(label))
+        .child(
+            div()
+                .text_lg()
+                .font_semibold()
+                .text_color(theme::text())
+                .overflow_hidden()
+                .truncate()
+                .child(value),
+        )
+}
+
+/// 顶部那排数字：容器 / 镜像 / 网络 / 卷。
+///
+/// 这排数字只回答"我这儿有多少东西"；想看清单一页一个。
+/// 它们刻意**不可点** —— 侧边栏已经给了这些页面的入口，
+/// 再摆一份只会让人犹豫"该点哪个"（`AGENTS.md` §5）。
+fn overview_tiles(state: &AppState) -> impl IntoElement {
+    let snap = &state.snapshot;
+    let running = snap.all.iter().filter(|c| c.is_running()).count();
+
+    h_flex()
+        .w_full()
+        .gap_3()
+        .child(stat_tile(
+            "运行中容器",
+            running.to_string(),
+            theme::success(),
+        ))
+        .child(stat_tile("全部容器", snap.all.len().to_string(), theme::text()))
+        .child(stat_tile("镜像", snap.images.len().to_string(), theme::text()))
+        .child(stat_tile("网络", snap.networks.len().to_string(), theme::text()))
+        .child(stat_tile("卷", snap.volumes.len().to_string(), theme::text()))
+}
+
+/// 运行中容器（实时）：CPU / 内存 / 网络，**CPU 高的排最上面**。
+///
+/// # 数据从哪来
+///
+/// 全部来自快照里的 `wslc stats`，跟着那次刷新一起更新（默认 3 秒一次）——
+/// 这一页自己**不起任何进程**，所以它不会成为"界面卡住"的来源（`AGENTS.md` §7.1）。
+///
+/// # 为什么按 CPU 排而不是按名字
+///
+/// 这张表要回答的是"现在谁在吃资源"。按名字排的话，那个占了 90% CPU 的容器
+/// 可能排在第 5 行 —— 而它往往是唯一一行需要看的。排序是纯逻辑，
+/// 在 [`crate::util::sort_running_by_cpu`] 里（带单测）。
+///
+/// # 这一块里为什么一个按钮都没有
+///
+/// 容器名本身就是入口（点开详情），和「容器」页完全一致。
+/// 这里再摆一份「停止 / 重启」就是同一个动作的第二个入口（`AGENTS.md` §5）。
+fn running_containers_section(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+    // 复制一份再排：`snapshot.running` 的顺序是 `wslc` 给的，
+    // 不该在渲染里被就地改掉（同一个快照还会被别的页面读）。
+    let mut running = state.snapshot.running.clone();
+    sort_running_by_cpu(&mut running);
+
+    let note = div()
+        .text_xs()
+        .text_color(theme::text_dim())
+        .child(format!(
+            "{} 个正在运行 · 按 CPU 占用从高到低排",
+            running.len()
+        ));
+
+    let table: AnyElement = if running.is_empty() {
+        v_flex()
+            .w_full()
+            .items_center()
+            .gap_1()
+            .py_8()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme::text_muted())
+                    .child("没有正在运行的容器"),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child("到「容器」页点某一行的「启动」；跑起来之后这里会显示它的 CPU / 内存 / 网络。"),
+            )
+            .into_any_element()
+    } else {
+        let rows: Vec<AnyElement> = running
+            .iter()
+            .map(|item| dashboard_container_row(item, entity))
+            .collect();
+
+        // 形状和「容器」/「部署管理」页的表一致：圆角框 + 表头 + 行。
+        // 底色用 `theme::bg()`（比卡片暗一档）—— 嵌在卡片里时一眼看得出这是**数据**。
+        v_flex()
+            .w_full()
+            .rounded_md()
+            .bg(theme::bg())
+            .border_1()
+            .border_color(theme::border())
+            .overflow_hidden()
+            .child(table_header(DASHBOARD_CONTAINER_COLUMNS))
+            .child(v_flex().w_full().children(rows))
+            .into_any_element()
+    };
+
+    card(
+        "运行中容器（实时）",
+        v_flex().w_full().gap_2().child(note).child(table),
+    )
+    .into_any_element()
+}
+
+/// 「运行中容器」里的一行。
+///
+/// `stats` 为 `None` 时每一格都写 `—`：那表示"这一轮没读到统计"
+/// （`wslc stats` 失败、或者容器刚起来还没进统计），**不是**"占用 0" ——
+/// 画成 `0.00%` 会让人以为它闲着。
+fn dashboard_container_row(item: &ContainerSummary, entity: &Entity<Shell>) -> AnyElement {
+    let name = item.name().to_owned();
+    let stats = item.stats.as_ref();
+
+    table_row(
+        DASHBOARD_CONTAINER_COLUMNS,
+        vec![
+            container_name_link(&name, entity),
+            // 截断了也能悬停看全文（长镜像引用很常见），键用容器名 —— 当帧唯一。
+            cell_muted_full(name, item.item.image.clone()),
+            // ⚠️ 两个进尺的单位不一样：`cpu_percent()` 给的是**百分比**，
+            // 而 `mem_ratio()` 给的是 **0–1 的比例** —— 在这里就换算成百分比，
+            // 别让 `meter_cell` 去猜"这个数是哪一种"。
+            meter_cell(
+                stats.map(|s| s.cpu_perc.clone()),
+                stats.and_then(|s| s.cpu_percent()),
+            ),
+            meter_cell(
+                stats.map(|s| s.mem_usage.clone()),
+                stats.and_then(|s| s.mem_ratio()).map(|ratio| ratio * 100.0),
+            ),
+            cell_muted(stat_text(stats.map(|s| s.net_io.clone()))),
+            cell_muted(stat_text(stats.map(|s| s.pids.to_string()))),
+        ],
+    )
+    .into_any_element()
+}
+
+/// 统计里的一格文字；读不到（或读到空串）就写 `—`。
+///
+/// 空串看起来像"界面坏了"（和 [`crate::util::ports_summary`] 那条同一个理由）。
+fn stat_text(text: Option<String>) -> String {
+    match text {
+        Some(value) if !value.trim().is_empty() => value,
+        _ => "—".to_owned(),
+    }
+}
+
+/// 进度条的宽度（像素）。
+///
+/// 定宽而不是 `w_full`：它和后面的数字共处一格（宽度由 `flex_grow` 分配），
+/// 让条去抢宽度会把数字挤到换行。52px 在 `100.00%` 这种最长文本下也放得下。
+const METER_WIDTH: f32 = 52.0;
+
+/// 一段细进度条（`ratio` 是 0.0–1.0）。
+///
+/// # 为什么是两段 `flex_grow` 而不是 `relative(...)`
+///
+/// `relative(0.5)` 那种写法要用 gpui 的 `DefiniteLength` 构造器，而
+/// **本仓库至今没有用过它**（全仓库搜不到）。本机没有 Rust 工具链
+/// （`AGENTS.md` §1），"猜一个没验证过的 API"的代价是整轮 CI 白跑；
+/// 两段 flex 只用 `flex_grow` / `flex_basis`，`table_row` 里已经在用。
+///
+/// `overflow_hidden` 是必需的：填充段自己的角是方的，靠外面那层裁出圆角。
+fn meter(ratio: f64, color: Rgba) -> impl IntoElement {
+    // ⚠️ `f64::clamp` 遇到 NaN 会**原样返回 NaN**（它内部就是两次比较），
+    // 所以先判有限性再夹 —— 否则 NaN 会一路传进布局。
+    let filled = if ratio.is_finite() {
+        ratio.clamp(0.0, 1.0) as f32
+    } else {
+        0.0
+    };
+
+    h_flex()
+        .flex_none()
+        .w(px(METER_WIDTH))
+        .h(px(6.))
+        .rounded_md()
+        .overflow_hidden()
+        // 轨道用 `border()` 而不是 `dim_soft()`：这条表是嵌在**卡片**里的、
+        // 本身又铺了一层 `theme::bg()`，`dim_soft()` 和它几乎同色（深色下
+        // 0x181d24 对 0x0d1117）—— 空条看不出来的话，"占用 5%" 和"读不到"
+        // 在界面上就分不清了。
+        .bg(theme::border())
+        .child(
+            div()
+                .h_full()
+                .flex_grow(filled)
+                .flex_basis(px(0.))
+                .bg(color),
+        )
+        .child(div().h_full().flex_grow(1.0 - filled).flex_basis(px(0.)))
+}
+
+/// 带进度条的一格（CPU / 内存）。
+///
+/// `percent`（0–100）为 `None` 时**只画数字、不画条**：画一条空条会让人以为
+/// "占用是 0"，而真实情况是"这一项读不到"（例如 `MemUsage` 的上限是 `0B`）。
+fn meter_cell(label: Option<String>, percent: Option<f64>) -> AnyElement {
+    // 阈值判定在 `wslc-panel-core`（带单测），这里只把档位映射成颜色。
+    let color = match load_level(percent.unwrap_or(0.0)) {
+        LoadLevel::Low => theme::primary(),
+        LoadLevel::Medium => theme::warning(),
+        LoadLevel::High => theme::danger(),
+    };
+
+    let mut row = h_flex().w_full().gap_2().items_center();
+
+    // 条只在真有比例时画（见函数说明）。这里用 `if let` 而不是
+    // `.children(percent.map(…))`：后者要求 `Option<impl IntoElement>` 满足
+    // `IntoIterator<Item: IntoElement>`，是本仓库没用过的一种组合 ——
+    // 没必要为省两行去赌一个没验证过的写法（`AGENTS.md` §1）。
+    if let Some(value) = percent {
+        row = row.child(meter(value / 100.0, color));
+    }
+
+    row
+        .child(
+            // ⚠️ `flex_1` + `min_w_0` 是**省略号的前提**：这一格是 `h_flex` 的
+            // 一个 flex 项，不加的话它的宽度按内容算（`shrink-to-fit`），
+            // 超出部分只会被外层单元格 `overflow_hidden` **裁掉**（没有 `…`）。
+            // `cell_muted` 那种直接放进块级单元格的写法不需要这两句。
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .overflow_hidden()
+                .truncate()
+                .child(stat_text(label)),
+        )
+        .into_any_element()
+}
 
 // ---------------------------------------------------------------------------
 // ② 全部 container

@@ -29,10 +29,9 @@ pub use wslc_core::model::install::OnlineListSource;
 use wslc_core::model::{
     AppRuntime, ContainerSummary, DbEntry, DbUser, DeployErrorKind, DeploySignal, Distro,
     ImageListItem, MysqlCreds, MysqlErrorKind, MysqlFamily, NetworkListItem, ProcessStatus,
-    RootCredHint, Session, SqlMode, SystemInfo, VolumeListItem, WslStatus,
+    RootCredHint, SqlMode, SystemInfo, VolumeListItem, WslStatus,
 };
 use wslc_core::settings::SettingsDoc;
-use wslc_core::storage::StorageInfo;
 use wslc_core::wslconfig::MisplacedKey;
 use wslc_core::{Result, Wsl, Wslc, cmd, registry};
 
@@ -350,12 +349,26 @@ impl InstallSourceKind {
 ///
 /// **每个区段独立记录错误**：某个命令失败不会让整页空白，
 /// 用户仍然能看到其余可用信息（这是运维工具的基本要求）。
+///
+/// # ⚠️ 这里**只剩界面真的会读**的字段（v0.9.16 清过一轮）
+///
+/// 原先还有 `sessions`（`wslc system session list`）和 `storage`
+/// （会话存储位置与占用）：它们唯一的消费者是「基本信息」页上的
+/// 「活动会话」与「存储」两张卡。那两张卡去掉之后，这两个字段就变成了
+/// **采了没人看**的东西 —— 而且代价不只是内存：`sessions` 每轮要多起一个
+/// `wslc.exe` 子进程（默认 3 秒一次），`storage` 要读一次 `settings.yaml`
+/// 再遍历 `sessions` 目录。所以一起删掉，而不是留着"以后可能用得上"。
+///
+/// 顺带一提：活动会话本身**没有丢** —— `wslc info` 的 `Server.Sessions`
+/// 里就有同一份数据（见 [`AppState::session_label`]），
+/// 之前那条 `system session list` 是重复采集。
+///
+/// `wslc_core::storage` 那个模块还在（带单测，见 `docs/SPIKE.md`），
+/// 只是**当前没有任何界面消费它** —— 想要磁盘/存储信息的话从那里取。
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     /// `wslc info`
     pub info: Option<SystemInfo>,
-    /// `wslc system session list`
-    pub sessions: Vec<Session>,
     /// 运行中容器（列表 + 实时统计）
     pub running: Vec<ContainerSummary>,
     /// 全部容器
@@ -370,10 +383,6 @@ pub struct Snapshot {
     ///
     /// 已合并注册表信息（安装位置）与磁盘虚拟大小。
     pub distros: Vec<Distro>,
-    /// 会话存储的位置与占用（自行计算，`wslc` 不提供）。
-    ///
-    /// 解析不出来时为 `None`（例如 `LOCALAPPDATA` 没定义）。
-    pub storage: Option<StorageInfo>,
     /// `%USERPROFILE%\.wslconfig` 的读取与静态检查结果。
     ///
     /// **在采集里读、不在渲染里读**：渲染每帧都可能发生，读文件不该在那儿做。
@@ -426,7 +435,7 @@ impl Snapshot {
 /// 阻塞式采集一次完整快照。
 ///
 /// 调用方必须在**后台线程/执行器**上调用（见 `app::Shell::refresh`）：
-/// 内部会串行跑 7 条 `wslc` 命令 + 1 条 `wsl` 命令 + 1 条 `reg` 命令。
+/// 内部会串行跑 6 条 `wslc` 命令 + 1 条 `wsl` 命令 + 1 条 `reg` 命令。
 ///
 /// # 为什么 `--status` 不在这里
 ///
@@ -441,10 +450,10 @@ pub fn load_snapshot(wslc: &Wslc, wsl: &Wsl) -> Snapshot {
         Err(e) => snap.errors.push(format!("wslc info：{e}")),
     }
 
-    match cmd::system::sessions(wslc) {
-        Ok(s) => snap.sessions = s,
-        Err(e) => snap.errors.push(format!("会话列表：{e}")),
-    }
+    // ⚠️ 这里**曾经**还会跑一条 `wslc system session list` 并把结果放进
+    // `Snapshot::sessions`。v0.9.16 去掉了：活动会话只被「基本信息」页那张
+    // 被删掉的卡消费，而同一份数据 `wslc info` 的 `Server.Sessions` 里已经有了
+    // —— 也就是说那是一个**每 3 秒白起的子进程**。
 
     match cmd::container::running_summaries(wslc) {
         Ok(v) => snap.running = v,
@@ -484,12 +493,10 @@ pub fn load_snapshot(wslc: &Wslc, wsl: &Wsl) -> Snapshot {
         Err(e) => snap.errors.push(format!("WSL 实例列表：{e}")),
     }
 
-    // 存储占用：`storagePath` 来自 settings.yaml，会话名来自 `wslc info`。
-    // 这一步纯文件系统，不会失败到需要报错 —— 拿不到就是 None。
-    let configured = settings_storage_path(snap.info.as_ref());
-    // `Session` 的字段是 `id` / `creator_pid` / `display_name`（中文表头解析来的）
-    let session = snap.sessions.first().map(|s| s.display_name.clone());
-    snap.storage = wslc_core::storage::inspect(configured.as_deref(), session.as_deref());
+    // ⚠️ 这里**曾经**还会算一份「会话存储位置与占用」（读 `settings.yaml` 的
+    // `session.storagePath`、再遍历 `sessions` 目录统计 VHD 字节数）。
+    // v0.9.16 去掉了，理由和上面那条一样：唯一消费它的「存储」卡已经不在界面上。
+    // 想要这份数据的话，`wslc_core::storage` 那个模块原样还在（带单测）。
 
     // `.wslconfig`：纯文件读取（几毫秒），没有进程开销，所以每轮都读。
     snap.wslconfig = load_wslconfig();
@@ -538,22 +545,6 @@ fn load_wslconfig() -> WslConfigInfo {
 /// 通常应该**保留旧值**（一次瞬时失败不该让界面变成空白）。
 pub fn load_distro_status(wsl: &Wsl) -> Result<WslStatus> {
     cmd::distro::status(wsl)
-}
-
-/// 只为了拿 `session.storagePath` 这一个值而读一次 `settings.yaml`。
-///
-/// 这里刻意**不复用** `Shell` 里那份 `SettingsDoc`：
-/// 采集是在后台执行器上跑的，不该依赖 UI 侧的状态；而且 settings.yaml
-/// 只有几百字节，读一次不到 1ms。
-fn settings_storage_path(info: Option<&SystemInfo>) -> Option<String> {
-    let path = info
-        .map(|i| i.client.settings_file.clone())
-        .filter(|p| !p.trim().is_empty())
-        .map(PathBuf::from)
-        .or_else(default_settings_path)?;
-
-    let doc = SettingsDoc::load(&path).ok()?;
-    doc.values().storage_path
 }
 
 /// 默认的 `settings.yaml` 路径（`wslc info` 拿不到时的兜底）。
@@ -616,19 +607,6 @@ pub enum PendingAction {
     RemoveVolume(String),
     /// 清理所有**没有被任何容器使用**的卷。
     PruneVolumes,
-    /// 终止一个 wslc 会话。
-    ///
-    /// 会话是 `wslc` 的运行单元：每个会话有自己的 `storage.vhdx`
-    /// （镜像 / 容器 / 卷都在里面，见 `wslc_core::storage` 的说明）。
-    /// 所以终止它会**连带停掉这个会话里正在运行的容器** —— 这也是它
-    /// 需要二次确认的原因。数据不会因此被删（终止的是运行状态，不是文件）。
-    TerminateSession {
-        /// 会话 ID，对应 `wslc system session terminate <id>`。
-        id: u32,
-        /// 显示名（`wslc-cli-76434` 这种），只用于文案 —— 只给一个数字
-        /// 用户没法确认自己点的是哪一个。
-        name: String,
-    },
     /// 删除一个**数据库**（数据库管理页）。
     ///
     /// 为什么要带凭据：`PendingAction::execute` 只拿到 `&Wslc`，
@@ -692,7 +670,6 @@ impl PendingAction {
             PendingAction::RemoveNetwork(_) => "删除网络",
             PendingAction::RemoveVolume(_) => "删除卷",
             PendingAction::PruneVolumes => "清理未使用的卷",
-            PendingAction::TerminateSession { .. } => "终止会话",
             PendingAction::DropDatabase { .. } => "删除数据库",
             PendingAction::DropUser { .. } => "删除 MySQL 用户",
             PendingAction::RestoreDatabase { .. } => "恢复备份",
@@ -732,10 +709,6 @@ impl PendingAction {
                  正在被使用的卷不受影响；一个都没有时什么也不会发生。"
                     .to_owned()
             }
-            PendingAction::TerminateSession { id, name } => format!(
-                "将终止会话 {name}（#{id}）。这个会话里**正在运行**的容器会一起停下。\
-                 镜像 / 容器 / 卷都在这个会话的 storage.vhdx 里，终止会话不删它们。"
-            ),
             PendingAction::DropDatabase { database, .. } => format!(
                 "将执行 `DROP DATABASE {database}` —— 这个库里**所有表和数据**都没了。\
                  此操作不可撤销，面板里也没有回收站。\
@@ -766,7 +739,6 @@ impl PendingAction {
             PendingAction::RemoveNetwork(_) => "删除网络",
             PendingAction::RemoveVolume(_) => "删除卷",
             PendingAction::PruneVolumes => "清理",
-            PendingAction::TerminateSession { .. } => "终止会话",
             PendingAction::DropDatabase { .. } => "删除数据库",
             PendingAction::DropUser { .. } => "删除用户",
             PendingAction::RestoreDatabase { .. } => "恢复",
@@ -846,10 +818,6 @@ impl PendingAction {
                 } else {
                     out
                 })
-            }
-            PendingAction::TerminateSession { id, name } => {
-                cmd::system::terminate_session(wslc, *id)?;
-                Ok(format!("已终止会话：{name}"))
             }
             // 数据库管理页的两条危险动作：走容器里的 mysql 客户端执行 DDL。
             // `run_sql` 内部已经把错误脱敏（`cmd::mysql::sanitize`），
@@ -4799,32 +4767,12 @@ mod tests {
             PendingAction::RemoveNetwork("net".into()),
             PendingAction::RemoveVolume("vol".into()),
             PendingAction::PruneVolumes,
-            PendingAction::TerminateSession {
-                id: 1,
-                name: "wslc-cli-76434".into(),
-            },
         ];
         for action in actions {
             assert!(!action.title().is_empty());
             assert!(!action.body().is_empty());
             assert!(!action.confirm_label().is_empty());
         }
-    }
-
-    #[test]
-    fn terminate_session_body_names_which_session() {
-        // 界面上同时可能有好几个会话。只写"将终止会话"用户没法确认
-        // 自己点的是哪一个 —— 名字和编号都要在。
-        let action = PendingAction::TerminateSession {
-            id: 7,
-            name: "wslc-cli-76434".into(),
-        };
-        let body = action.body();
-        assert!(body.contains("wslc-cli-76434"), "{body}");
-        assert!(body.contains("#7"), "{body}");
-        // 还得说清"运行中的容器会停"以及"数据不会被删"这两件事
-        assert!(body.contains("容器"), "{body}");
-        assert!(body.contains("storage.vhdx"), "{body}");
     }
 
     #[test]
