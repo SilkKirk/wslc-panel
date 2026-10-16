@@ -180,30 +180,6 @@ pub const DEPLOY_COLUMNS: &[(&str, f32)] = &[
     ("操作", 330.0),
 ];
 
-/// 「基本信息」页 → **运行中容器（实时）** 表的列。
-///
-/// # 这一张表和「容器」页那张不是一回事
-///
-/// 「容器」页是**清单**：要状态、端口、操作按钮，回答"有哪些容器、各自怎么样"。
-/// 这里只回答**一个**问题 —— "此刻谁在吃资源"：所以只要名称 / 镜像 / CPU / 内存 /
-/// 网络 / 进程数，而且 **CPU 高的排在最上面**（排序见
-/// [`crate::util::sort_running_by_cpu`]）。
-///
-/// # 宽度
-///
-/// 6 列挤在一行里，所以每一格都给得比别处窄：CPU / 内存那两格要放下
-/// 52px 的进度条 + 数字（`views::meter` + 文本），其余是纯文字。
-/// 权重加起来 1130，在 1016px 的内容宽度下 CPU 那格约 133px ——
-/// 刚好够"52 + 8 + `100.00%`"。
-pub const DASHBOARD_CONTAINER_COLUMNS: &[(&str, f32)] = &[
-    ("名称", 200.0),
-    ("镜像", 240.0),
-    ("CPU", 170.0),
-    ("内存", 250.0),
-    ("网络 I/O", 190.0),
-    ("进程数", 80.0),
-];
-
 /// 把"权重"换算成**比例**（加起来正好 1），交给 `flex_grow` 分配实际宽度。
 ///
 /// 全是 0 / 负数（不该发生，但别 panic）时退回等分。
@@ -228,8 +204,8 @@ pub fn column_fractions(columns: &[(&str, f32)]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ALL_COLUMNS, BACKUP_COLUMNS, DASHBOARD_CONTAINER_COLUMNS, DB_COLUMNS, DB_USER_COLUMNS,
-        DEPLOY_COLUMNS, DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS,
+        ALL_COLUMNS, BACKUP_COLUMNS, DB_COLUMNS, DB_USER_COLUMNS, DEPLOY_COLUMNS,
+        DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS,
     };
 
     /// 汇总所有表格的列定义，方便逐个检查。
@@ -244,7 +220,6 @@ mod tests {
             DB_USER_COLUMNS,
             BACKUP_COLUMNS,
             DEPLOY_COLUMNS,
-            DASHBOARD_CONTAINER_COLUMNS,
         ]
     }
 
@@ -271,9 +246,11 @@ mod tests {
         // 最后一个是 v0.8 的备份列表（4 列），倒数第二个是 v0.9 的部署列表（6 列）。
         //
         // 顺序必须和 `all_column_sets()` 一致 —— 加表格时两处一起改。
-        // 末尾那个 6 列是「基本信息」页的运行中容器表。
+        //
+        // （v0.9.17 起「基本信息」页不再有表格：那张"运行中容器（实时）"
+        //   换成了四只圆环，所以这里又回到 9 组。）
         let counts: Vec<usize> = all_column_sets().iter().map(|c| c.len()).collect();
-        assert_eq!(counts, vec![6, 5, 6, 5, 7, 8, 5, 4, 6, 6]);
+        assert_eq!(counts, vec![6, 5, 6, 5, 7, 8, 5, 4, 6]);
     }
 
     #[test]
@@ -284,16 +261,6 @@ mod tests {
             DISTRO_COLUMNS.len(),
             7,
             "distro_row 里的 cell 数量必须与之同步"
-        );
-    }
-
-    #[test]
-    fn dashboard_row_cells_match_the_column_count() {
-        // 同理：`views::dashboard` 里那一行的 cell 数量必须和这里对齐。
-        assert_eq!(
-            DASHBOARD_CONTAINER_COLUMNS.len(),
-            6,
-            "基本信息页运行中容器表的 cell 数量必须与之同步"
         );
     }
 

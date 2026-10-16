@@ -29,9 +29,12 @@ pub use wslc_core::model::install::OnlineListSource;
 use wslc_core::model::{
     AppRuntime, ContainerSummary, DbEntry, DbUser, DeployErrorKind, DeploySignal, Distro,
     ImageListItem, MysqlCreds, MysqlErrorKind, MysqlFamily, NetworkListItem, ProcessStatus,
-    RootCredHint, SqlMode, SystemInfo, VolumeListItem, WslStatus,
+    RootCredHint, SqlMode, SystemInfo, VolumeListItem, WslStatus, parse_size,
 };
 use wslc_core::settings::SettingsDoc;
+// 会话存储的位置与占用：基本信息页「存储」那一环要的是它算出来的盘容量
+// （模板里那份 `StorageInfo` 自己带着 `VolumeSpace`）。
+use wslc_core::storage::{StorageInfo, VolumeSpace};
 use wslc_core::wslconfig::MisplacedKey;
 use wslc_core::{Result, Wsl, Wslc, cmd, registry};
 
@@ -350,21 +353,16 @@ impl InstallSourceKind {
 /// **每个区段独立记录错误**：某个命令失败不会让整页空白，
 /// 用户仍然能看到其余可用信息（这是运维工具的基本要求）。
 ///
-/// # ⚠️ 这里**只剩界面真的会读**的字段（v0.9.16 清过一轮）
+/// # ⚠️ 这里只放**界面真的会读**的字段
 ///
-/// 原先还有 `sessions`（`wslc system session list`）和 `storage`
-/// （会话存储位置与占用）：它们唯一的消费者是「基本信息」页上的
-/// 「活动会话」与「存储」两张卡。那两张卡去掉之后，这两个字段就变成了
-/// **采了没人看**的东西 —— 而且代价不只是内存：`sessions` 每轮要多起一个
-/// `wslc.exe` 子进程（默认 3 秒一次），`storage` 要读一次 `settings.yaml`
-/// 再遍历 `sessions` 目录。所以一起删掉，而不是留着"以后可能用得上"。
+/// v0.9.16 清过一轮：`sessions`（`wslc system session list`）被删掉了 ——
+/// 它唯一的消费者是「基本信息」页那张「活动会话」卡，而**同一份数据
+/// `wslc info` 的 `Server.Sessions` 里已经有了**（见 [`AppState::session_label`]），
+/// 也就是说那是个每 3 秒白起的 `wslc.exe` 子进程。
 ///
-/// 顺带一提：活动会话本身**没有丢** —— `wslc info` 的 `Server.Sessions`
-/// 里就有同一份数据（见 [`AppState::session_label`]），
-/// 之前那条 `system session list` 是重复采集。
-///
-/// `wslc_core::storage` 那个模块还在（带单测，见 `docs/SPIKE.md`），
-/// 只是**当前没有任何界面消费它** —— 想要磁盘/存储信息的话从那里取。
+/// `storage` **留下来了**：它当时也差点被删（唯一读者是那张「存储」卡），
+/// 但同一轮里基本信息页改成了一排圆环，其中「存储」那一环要的正是
+/// "会话盘已用多少" —— 现在它是 [`Snapshot::storage`] 的读者。
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     /// `wslc info`
@@ -383,6 +381,19 @@ pub struct Snapshot {
     ///
     /// 已合并注册表信息（安装位置）与磁盘虚拟大小。
     pub distros: Vec<Distro>,
+    /// 会话存储的位置与占用（自行计算，`wslc` 不提供）。
+    ///
+    /// 解析不出来时为 `None`（例如 `LOCALAPPDATA` 没定义）。
+    pub storage: Option<StorageInfo>,
+    /// WSL 虚拟机拿到几个 CPU 核。
+    ///
+    /// **在采集里读、不在渲染里读**：来自 `.wslconfig` 的 `[wsl2] processors`，
+    /// 没配就退回 Windows 的 `NUMBER_OF_PROCESSORS` —— 读环境变量是 IO，
+    /// 每帧都读不合适（和 `wslconfig` 那条同一个理由）。
+    ///
+    /// 它只用来把 `wslc stats` 的 CPU%（**100% ≈ 1 个核**）折算成整机占用率，
+    /// 见 [`Snapshot::dashboard_stats`]。
+    pub wsl_cpu_cores: Option<u32>,
     /// `%USERPROFILE%\.wslconfig` 的读取与静态检查结果。
     ///
     /// **在采集里读、不在渲染里读**：渲染每帧都可能发生，读文件不该在那儿做。
@@ -429,6 +440,115 @@ impl Snapshot {
             || !self.images.is_empty()
             || !self.networks.is_empty()
             || !self.distros.is_empty()
+    }
+
+    /// 基本信息页那一排圆环要的数字。
+    ///
+    /// **纯算术**（只读快照里的字段），所以渲染每帧算都行 —— 但它是纯逻辑，
+    /// 断言必须留在能跑的地方：这个 crate 的测试 CI 会跑到，`views.rs` 的不会。
+    ///
+    /// # 口径（界面上每一环下面那行小字就是照这里写的）
+    ///
+    /// - **CPU**：各运行中容器的 `CPUPerc` **之和**。`wslc stats` 用的是
+    ///   Docker 那条公式（WSL 源码里核过，见
+    ///   [`wslc_core::wslconfig::processors`] 的说明），**100% ≈ 1 个核** ——
+    ///   所以想变成"整机占用率"要除以核数，除以几由 `wsl_cpu_cores` 决定。
+    ///   ⚠️ 只算容器：发行版自身、面板自己、Windows 上的其它进程都不在里面，
+    ///   它**不是** Task Manager 里那个 CPU 占用。
+    /// - **内存**：各容器的 `MemUsage` 分子之和 / 分母（分母是 WSL 的内存上限，
+    ///   各容器报的是同一个数，所以取任意一个都行）。
+    /// - **磁盘**：会话存储所在的那个卷（`wslc_core::storage` 自己查的）——
+    ///   镜像、容器可写层、卷都落在它上面。
+    pub fn dashboard_stats(&self) -> DashboardStats {
+        let mut cpu_percent = 0.0f64;
+        let mut mem_used = 0u64;
+        let mut mem_limit: Option<u64> = None;
+
+        for container in &self.running {
+            // 没有 stats 的（`wslc stats` 那一轮漏了它）按"不计入"处理：
+            // 把缺失当成 0 会让合计看起来比真实占用小，那不是"少算一点"，
+            // 是**编了一个数**。
+            let Some(stats) = container.stats.as_ref() else {
+                continue;
+            };
+
+            if let Some(percent) = stats.cpu_percent().filter(|value| value.is_finite()) {
+                cpu_percent += percent;
+            }
+
+            if let Some((used, limit)) = stats.mem_usage_parts() {
+                if let Some(bytes) = parse_size(used) {
+                    mem_used = mem_used.saturating_add(bytes.max(0.0) as u64);
+                }
+                // 上限取"任一个报出来的"：同一个虚拟机里的容器报的是同一个数。
+                // 上限是 `0B`（这是 `wslc` 在容器刚起来时的样子）就当没有。
+                if mem_limit.is_none() {
+                    mem_limit = parse_size(limit).filter(|bytes| *bytes > 0.0).map(|b| b as u64);
+                }
+            }
+        }
+
+        DashboardStats {
+            running: self.running.len(),
+            total: self.all.len(),
+            cpu_percent,
+            cpu_cores: self.wsl_cpu_cores,
+            mem_used,
+            mem_limit,
+            disk: self.storage.as_ref().and_then(|storage| storage.volume),
+            vhd_bytes: self.storage.as_ref().and_then(|storage| storage.vhd_bytes),
+        }
+    }
+}
+
+/// 「基本信息」页那四个圆环的数字。
+///
+/// 由 [`Snapshot::dashboard_stats`] 算出来 —— 单独一个类型而不是一堆散字段，
+/// 是为了让"这一排圆环读了哪些东西"一眼能看全：它们全部来自快照，**不发起
+/// 任何采集**。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct DashboardStats {
+    /// 运行中的容器数。
+    pub running: usize,
+    /// 全部容器数（含已停止）。
+    pub total: usize,
+    /// 各运行中容器的 CPU% 之和（**100% ≈ 1 个核**）。
+    pub cpu_percent: f64,
+    /// 折算整机占用率要除的核数；拿不到时 `None`（那就只报原始合计）。
+    pub cpu_cores: Option<u32>,
+    /// 各运行中容器的内存占用之和（字节）。
+    pub mem_used: u64,
+    /// WSL 的内存上限（字节）；一个容器都没在跑时报不出来，为 `None`。
+    pub mem_limit: Option<u64>,
+    /// 会话存储所在卷的容量；拿不到时为 `None`。
+    pub disk: Option<VolumeSpace>,
+    /// 当前会话 VHD 的实际占用；文件还没建出来时为 `None`。
+    pub vhd_bytes: Option<u64>,
+}
+
+impl DashboardStats {
+    /// 容器这一摊折算成"整机占用率"（0.0–100.0）。
+    ///
+    /// 拿不到核数时返回 `None` —— 那时候**不能**拿原始合计当百分比用：
+    /// 多核机器上 400% 的合计是四个核跑满，画成 400% 的环只会误导。
+    pub fn cpu_whole_machine_percent(&self) -> Option<f64> {
+        let cores = self.cpu_cores.filter(|cores| *cores > 0)?;
+        let percent = self.cpu_percent / f64::from(cores);
+        percent.is_finite().then(|| percent.clamp(0.0, 100.0))
+    }
+
+    /// 容器占用折算成"用了几个核"（环下面那行小字：`0.22 / 32 核`）。
+    pub fn cpu_cores_used(&self) -> f64 {
+        self.cpu_percent / 100.0
+    }
+
+    /// 容器内存占 WSL 上限的百分比（0.0–100.0）。
+    ///
+    /// 上限读不到（一个容器都没在跑）时返回 `None`。
+    pub fn mem_percent(&self) -> Option<f64> {
+        let limit = self.mem_limit.filter(|limit| *limit > 0)?;
+        let percent = self.mem_used as f64 / limit as f64 * 100.0;
+        percent.is_finite().then(|| percent.clamp(0.0, 100.0))
     }
 }
 
@@ -493,16 +613,50 @@ pub fn load_snapshot(wslc: &Wslc, wsl: &Wsl) -> Snapshot {
         Err(e) => snap.errors.push(format!("WSL 实例列表：{e}")),
     }
 
-    // ⚠️ 这里**曾经**还会算一份「会话存储位置与占用」（读 `settings.yaml` 的
-    // `session.storagePath`、再遍历 `sessions` 目录统计 VHD 字节数）。
-    // v0.9.16 去掉了，理由和上面那条一样：唯一消费它的「存储」卡已经不在界面上。
-    // 想要这份数据的话，`wslc_core::storage` 那个模块原样还在（带单测）。
+    // 会话存储位置与占用：`storagePath` 来自 `settings.yaml`，
+    // 会话名来自 `wslc info`。这一步纯文件系统 + 一次卷容量查询，
+    // 不会失败到需要报错 —— 拿不到就是 `None`（界面上那一环显示 `—`）。
+    //
+    // ⚠️ 会话名从 `snap.info` 里取，**不用**那条 `wslc system session list`：
+    // 两份数据是一样的（见 `Snapshot` 上面那段），而后者要多起一个进程。
+    let configured = settings_storage_path(snap.info.as_ref());
+    let session = snap
+        .info
+        .as_ref()
+        .and_then(|info| info.server.sessions.first())
+        .map(|session| session.name.clone());
+    snap.storage = wslc_core::storage::inspect(configured.as_deref(), session.as_deref());
 
     // `.wslconfig`：纯文件读取（几毫秒），没有进程开销，所以每轮都读。
     snap.wslconfig = load_wslconfig();
 
+    // CPU 核数：`.wslconfig` 的 `[wsl2] processors`，没配就退回机器核数。
+    // 读它只为一件事 —— 把 `wslc stats` 的 CPU%（100% ≈ 1 个核）折算成
+    // 整机占用率时不至于差好几倍，见 `Snapshot::dashboard_stats`。
+    snap.wsl_cpu_cores = wsl_cpu_cores(snap.wslconfig.text.as_deref());
+
     snap.elapsed_ms = started.elapsed().as_millis();
     snap
+}
+
+/// WSL 虚拟机拿到几个 CPU 核。
+///
+/// 优先 `.wslconfig` 的 `[wsl2] processors`（用户限过核数就得按它算），
+/// 没有就退回 Windows 的 `NUMBER_OF_PROCESSORS` —— 那正是 WSL 不限核时的行为。
+///
+/// 两个都拿不到时返回 `None`：界面上那时候**不报百分比**，只报原始合计
+/// （见 [`DashboardStats::cpu_whole_machine_percent`]）。
+fn wsl_cpu_cores(config: Option<&str>) -> Option<u32> {
+    config
+        .and_then(wslc_core::wslconfig::processors)
+        .or_else(|| {
+            std::env::var("NUMBER_OF_PROCESSORS")
+                .ok()?
+                .trim()
+                .parse::<u32>()
+                .ok()
+                .filter(|count| *count > 0)
+        })
 }
 
 /// 读 `%USERPROFILE%\.wslconfig` 并做静态检查。
@@ -545,6 +699,22 @@ fn load_wslconfig() -> WslConfigInfo {
 /// 通常应该**保留旧值**（一次瞬时失败不该让界面变成空白）。
 pub fn load_distro_status(wsl: &Wsl) -> Result<WslStatus> {
     cmd::distro::status(wsl)
+}
+
+/// 只为了拿 `session.storagePath` 这一个值而读一次 `settings.yaml`。
+///
+/// 这里刻意**不复用** `Shell` 里那份 `SettingsDoc`：
+/// 采集是在后台执行器上跑的，不该依赖 UI 侧的状态；而且 settings.yaml
+/// 只有几百字节，读一次不到 1ms。
+fn settings_storage_path(info: Option<&SystemInfo>) -> Option<String> {
+    let path = info
+        .map(|i| i.client.settings_file.clone())
+        .filter(|p| !p.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(default_settings_path)?;
+
+    let doc = SettingsDoc::load(&path).ok()?;
+    doc.values().storage_path
 }
 
 /// 默认的 `settings.yaml` 路径（`wslc info` 拿不到时的兜底）。
@@ -4713,6 +4883,150 @@ mod tests {
         let snap = Snapshot::default();
         assert!(!snap.has_data());
         assert!(snap.errors.is_empty());
+        // 空快照的圆环：全是 0 / None —— 界面上那一排会画成"没有数据"，
+        // **不是** 0% 满环。
+        let stats = snap.dashboard_stats();
+        assert_eq!(stats.running, 0);
+        assert_eq!(stats.total, 0);
+        assert_eq!(stats.cpu_percent, 0.0);
+        assert_eq!(stats.cpu_cores, None);
+        assert_eq!(stats.mem_limit, None);
+        assert_eq!(stats.cpu_whole_machine_percent(), None);
+        assert_eq!(stats.mem_percent(), None);
+        assert!(stats.disk.is_none());
+    }
+
+    /// 一个只有 CPU / 内存指标有意义的样本（字段形状照 `wslc stats` 真机输出）。
+    fn summary_with_stats(cpu: &str, mem: &str) -> ContainerSummary {
+        ContainerSummary {
+            item: wslc_core::model::ContainerListItem::default(),
+            stats: Some(wslc_core::model::ContainerStats {
+                cpu_perc: cpu.to_owned(),
+                mem_usage: mem.to_owned(),
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn dashboard_stats_sums_the_real_machine_numbers() {
+        // 真机那一组（`wslc stats` 实测）：redis 0.13% / mysql 0.56%，
+        // 内存 27.45MiB + 514.1MiB，上限都是同一个虚拟机的 15.48GiB。
+        let mut snap = Snapshot {
+            running: vec![
+                summary_with_stats("0.13%", "27.45MiB / 15.48GiB"),
+                summary_with_stats("0.56%", "514.1MiB / 15.48GiB"),
+            ],
+            // 全部容器比运行中的多两个（已停止的）
+            all: vec![
+                summary_with_stats("0.13%", "27.45MiB / 15.48GiB"),
+                summary_with_stats("0.56%", "514.1MiB / 15.48GiB"),
+                summary_with_stats("0.00%", "3.9MiB / 15.48GiB"),
+                summary_with_stats("0.00%", "35.36MiB / 15.48GiB"),
+            ],
+            wsl_cpu_cores: Some(32),
+            ..Default::default()
+        };
+        // 会话盘：1000 字节里用了 600（VHD 占 120）
+        let mut storage = wslc_core::storage::layout(None, PathBuf::from(r"C:\x"), None);
+        storage.volume = Some(VolumeSpace {
+            total: 1000,
+            free: 400,
+        });
+        storage.vhd_bytes = Some(120);
+        snap.storage = Some(storage);
+
+        let stats = snap.dashboard_stats();
+        assert_eq!(stats.running, 2);
+        assert_eq!(stats.total, 4);
+        assert!((stats.cpu_percent - 0.69).abs() < 1e-9, "{}", stats.cpu_percent);
+        // 内存是**字节**：MiB 是 1024 进制
+        let mib = 1024.0 * 1024.0;
+        assert_eq!(
+            stats.mem_used,
+            (27.45 * mib) as u64 + (514.1 * mib) as u64
+        );
+        // 上限取容器报的那个（同一个虚拟机，各容器一致）
+        assert_eq!(stats.mem_limit, Some((15.48 * 1024.0 * mib) as u64));
+
+        // ⚠️ 这条是这一整块存在的理由：CPU 合计 **不是**整机占用率。
+        // `wslc stats` 用的是 Docker 那条公式，100% ≈ 1 个核 ——
+        // 0.69% ÷ 32 核 ≈ 0.022%，而不是 0.69%。
+        let whole = stats.cpu_whole_machine_percent().expect("给了核数就该算得出来");
+        assert!((whole - 0.69 / 32.0).abs() < 1e-9, "{whole}");
+        // 环下面那行小字（`0.0069 / 32 核`）
+        assert!((stats.cpu_cores_used() - 0.0069).abs() < 1e-9);
+
+        // 内存那一环：用了多少 / 上限
+        let mem_percent = stats.mem_percent().expect("有上限就该算得出来");
+        assert!((mem_percent - (541.55 / (15.48 * 1024.0) * 100.0)).abs() < 1e-6);
+
+        // 存储那一环（已用 = 总量 - 可用）
+        let disk = stats.disk.expect("给了 storage 就该有盘");
+        assert_eq!(disk.used(), 600);
+        assert!((disk.used_percent() - 60.0).abs() < 1e-9);
+        assert_eq!(stats.vhd_bytes, Some(120));
+    }
+
+    #[test]
+    fn dashboard_stats_without_cores_reports_no_percentage() {
+        // 拿不到核数（`.wslconfig` 没写、环境变量也没读到）时**不能**把
+        // 原始合计当百分比：多核机器上 400% 是四个核跑满，画成 400% 的环
+        // 只会误导。这时候宁可只给原始合计。
+        let snap = Snapshot {
+            running: vec![summary_with_stats("400.00%", "1MiB / 2MiB")],
+            wsl_cpu_cores: None,
+            ..Default::default()
+        };
+        let stats = snap.dashboard_stats();
+        assert_eq!(stats.cpu_percent, 400.0);
+        assert_eq!(stats.cpu_whole_machine_percent(), None);
+        // 核数写 0（不该发生）也当拿不到，别去算除零
+        let zero = Snapshot {
+            running: vec![summary_with_stats("10.00%", "")],
+            wsl_cpu_cores: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(zero.dashboard_stats().cpu_whole_machine_percent(), None);
+    }
+
+    #[test]
+    fn dashboard_stats_skips_containers_without_stats_and_nan() {
+        // "这一轮没读到统计"和"占用 0"是两件事：前者**不计入**合计
+        // （把它当 0 会让合计数看起来比真实占用小 —— 那是编数字）。
+        let mut snap = Snapshot {
+            running: vec![
+                summary_with_stats("1.00%", "1MiB / 4MiB"),
+                // 没有 stats：只有列表项
+                ContainerSummary {
+                    item: wslc_core::model::ContainerListItem::default(),
+                    stats: None,
+                },
+                // `parse_percent` 对 `nan%` 会给回 NaN —— 不能让它污染合计
+                summary_with_stats("nan%", "1MiB / 4MiB"),
+            ],
+            wsl_cpu_cores: Some(4),
+            ..Default::default()
+        };
+        snap.all = snap.running.clone();
+
+        let stats = snap.dashboard_stats();
+        assert_eq!(stats.running, 3, "运行中数的是**列表**，不是有 stats 的那几个");
+        assert_eq!(stats.cpu_percent, 1.0, "NaN 与缺失都不该进合计");
+        assert_eq!(stats.mem_used, (1.0 * 1024.0 * 1024.0) as u64 * 2);
+    }
+
+    #[test]
+    fn dashboard_stats_without_a_memory_limit_has_no_percentage() {
+        // 上限是 `0B`（`wslc` 在容器刚起来时会这么报）→ 当没有，别去除零
+        let snap = Snapshot {
+            running: vec![summary_with_stats("1.00%", "0B / 0B")],
+            wsl_cpu_cores: Some(4),
+            ..Default::default()
+        };
+        let stats = snap.dashboard_stats();
+        assert_eq!(stats.mem_limit, None);
+        assert_eq!(stats.mem_percent(), None);
     }
 
     #[test]
