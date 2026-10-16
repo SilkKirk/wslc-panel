@@ -4460,7 +4460,7 @@ impl Shell {
         // 不再整目录清空（见 `model::deploy::removals_script`：v0.9.8 那个
         // `find -delete` 把 `eclipse-temurin` 的 JDK 删掉过一次）。
         // 读一次本地目录名是微秒级，不用丢后台。
-        let members = match deploy_cmd::member_names(&source_path, source_kind) {
+        let member_names = match deploy_cmd::member_names(&source_path, source_kind) {
             Ok(names) => names,
             Err(e) => {
                 self.state
@@ -4480,7 +4480,7 @@ impl Shell {
             artifact: artifact.clone(),
             port: values.port.unwrap_or_else(|| runtime.default_port()),
             // 存档留一份：下次「重新部署 / 删除」靠它收拾"上一次有、这一次没有"的旧文件
-            members,
+            members: member_names,
         };
         let app = values.app.clone();
         let target = values.target.clone();
@@ -4490,12 +4490,15 @@ impl Shell {
         // 目标目录是**我们自己铺的**吗？
         //
         // 「重新部署」显然算（`editing` 就是那条记录）；另外同一个目录可能被
-        // **另一个应用名**用过（面板存档里有记录）—— 那也是我们铺的，清空重铺没问题。
+        // **另一个应用名**用过（面板存档里有记录）—— 那也是我们铺的。
         //
-        // 两样都不是时，`prepare_target` 会**拒绝清空一个非空目录**：那里面可能是
-        // 镜像自己要用的文件 —— 实测那次把应用（名字就叫 `java`）部署到默认的
-        // `/opt/java`，而 `eclipse-temurin` 的 JDK 正是 `/opt/java/openjdk`，
-        // 清空它等于把容器里的 `java` 删掉，应用从此起不来。
+        // 它**只决定"要不要提醒一句"**，不决定拦不拦（v0.9.11 起）：不是我们铺的
+        // 目录如果非空，`prepare_target` 返回 `true`，部署照常进行，最后给用户
+        // 说一句"那里面本来有别的东西，面板没动它们"。
+        //
+        // ⚠️ 别再把它当成安全闸 —— 安全由 `model::deploy::removals_script` 的
+        // **逐名删除**保证（v0.9.10 之前是整目录 `find -delete`，那才需要拦）。
+        // 判断失手（比如记录被删掉）只是少说一句话，不会删错东西。
         let ours_target = editing.is_some()
             || self
                 .state
@@ -4528,7 +4531,7 @@ impl Shell {
                 // 成员名要借给后台闭包用，而后台闭包是 `async move` ——
                 // 直接借 `record.members` 会把整个 `record` 移进去，
                 // 后面（写存档那段）就用不了了。先克隆一份。
-                let members = record.members.clone();
+                let member_names = record.members.clone();
                 cx.background_executor()
                     .spawn(async move {
                         if stop_first {
@@ -4536,19 +4539,21 @@ impl Shell {
                             let _ = deploy_cmd::stop(&wslc, &container, &target);
                         }
                         // 准备目录 —— 它顺带把"容器没在运行"报出来
-                        //（`cp` 在那种情况下**静默成功**，见 `cmd::deploy`），
-                        // 以及"这个目录不是我们铺的、而且非空"时**拒绝动手**
-                        //（`ours_target`，见上面那段注释）。
+                        //（`cp` 在那种情况下**静默成功**，见 `cmd::deploy`）。
                         //
-                        // ⚠️ 删的**只有 `members` 里那些名字**（外加
-                        // app.log / app.pid），所以哪怕 `ours_target` 判断失手，
-                        // 目录里别人的东西（比如镜像自带的 JDK）也不会被删。
-                        deploy_cmd::prepare_target(
+                        // 返回的 `foreign` = 这个目录里本来就有**不是我们铺的**东西
+                        //（比如镜像自带的 JDK）—— ⚠️ **不阻断部署**，只在下面对着
+                        // 用户说一句（v0.9.11 起；早先是直接拒绝，实测那次拒绝挡住的是
+                        // 用户自己的正常部署，见 `cmd::deploy::prepare_target`）。
+                        //
+                        // ⚠️ 删的**只有 `member_names` 里那些名字**（外加
+                        // app.log / app.pid），所以目录里别人的东西不会被删。
+                        let foreign = deploy_cmd::prepare_target(
                             &wslc,
                             &container,
                             &target,
                             ours_target,
-                            &members,
+                            &member_names,
                         )
                         .map_err(|e| e.to_string())?;
                         let members = deploy_cmd::copy_sources(
@@ -4566,31 +4571,35 @@ impl Shell {
                             deploy_cmd::chmod_exec(&wslc, &container, path)
                                 .map_err(|e| e.to_string())?;
                         }
-                        Ok::<(), String>(())
+                        Ok::<bool, String>(foreign)
                     })
                     .await
             };
-            if let Err(message) = uploaded {
-                let _ = this.update_in(cx, |shell, _window, cx| {
-                    // ⚠️ 后台这几秒里用户完全可能切到别的容器的部署页，
-                    // 而 `AppState::deploy` **只有一个槽**（换容器即整体替换）——
-                    // 不判的话会把 A 的错误横幅挂到 B 的页面上、还会把 B 的
-                    // "正在…"清掉（那会让 B 的按钮提前复活）。
-                    // 存档与列表那些调用是**按容器**的，不受影响。
-                    if shell.deploy_page_is(&container) {
-                        shell.set_deploy_progress(None, cx);
-                        if let Some(deploy) = shell.state.deploy.as_mut() {
-                            deploy.fail(message.clone());
+            // 目录里本来有别的东西（不是我们铺的）—— 部署照常继续，最后说一句
+            let foreign_target = match uploaded {
+                Ok(foreign) => foreign,
+                Err(message) => {
+                    let _ = this.update_in(cx, |shell, _window, cx| {
+                        // ⚠️ 后台这几秒里用户完全可能切到别的容器的部署页，
+                        // 而 `AppState::deploy` **只有一个槽**（换容器即整体替换）——
+                        // 不判的话会把 A 的错误横幅挂到 B 的页面上、还会把 B 的
+                        // "正在…"清掉（那会让 B 的按钮提前复活）。
+                        // 存档与列表那些调用是**按容器**的，不受影响。
+                        if shell.deploy_page_is(&container) {
+                            shell.set_deploy_progress(None, cx);
+                            if let Some(deploy) = shell.state.deploy.as_mut() {
+                                deploy.fail(message.clone());
+                            }
                         }
-                    }
-                    shell
-                        .state
-                        .notify(Toast::error(format!("部署失败：{message}")));
-                    // 铺到一半失败也要重问现状 —— 界面上不能留着一个假的"运行中"
-                    shell.refresh_deploy_status(cx);
-                });
-                return;
-            }
+                        shell
+                            .state
+                            .notify(Toast::error(format!("部署失败：{message}")));
+                        // 铺到一半失败也要重问现状 —— 界面上不能留着一个假的"运行中"
+                        shell.refresh_deploy_status(cx);
+                    });
+                    return;
+                }
+            };
 
             // ---- ⑥ 启动（只有进程形态要）----
             if process_shape {
@@ -4643,6 +4652,16 @@ impl Shell {
                             shell.state.notify(Toast::error(error));
                         }
                         shell.state.refresh_deploy_entries(&container);
+                        // 目录里本来有别的东西时说一句（**不是**失败 —— 部署是成功的）。
+                        // 说清"面板没动它们"，否则用户看到目录里多出来的 `openjdk/`
+                        // 会以为是我们塞的、或者以为我们删过什么。
+                        if foreign_target {
+                            shell
+                                .state
+                                .notify(Toast::info(deploy_model::target_not_empty_hint(
+                                    &target,
+                                )));
+                        }
                         shell
                             .state
                             .notify(Toast::info(format!("已部署 {app} → {target}")));

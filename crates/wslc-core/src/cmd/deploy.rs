@@ -133,21 +133,25 @@ pub fn member_names(source: &Path, kind: SourceKind) -> Result<Vec<String>> {
         .collect())
 }
 
-/// 准备好目标目录：建出来，然后删掉**我们自己铺的那些名字**（不碰别人的文件）。
+/// 准备好目标目录：建出来，然后删掉**我们自己铺的那些名字**（[`deploy::removals_script`]）。
+///
+/// 返回 `true` = 目标目录里本来就有**不是我们铺的**东西。面板**没有**动它们
+/// （逐名删除），只是值得跟用户说一句（[`deploy::target_not_empty_hint`]）。
 ///
 /// `ours` = 这个目录是**本面板之前铺的**（本地存档里有记录）：
 ///
-/// - `true`：按 `members` 收拾一遍再铺 —— 「重新部署」要的是"结果目录等于源目录"；
-/// - `false`：**只允许它不存在或为空**。非空就返回一句人话的错误，
-///   **一个字节都不清**。⚠️ 这一条是 v0.9.9 加的真实事故补丁：目标目录
-///   很可能是**镜像自己要用的地方** —— 实测把应用（名字就叫 `java`）部署到
-///   默认的 `/opt/java`，而 `eclipse-temurin:8-jre-alpine` 的 JDK 正是
-///   `/opt/java/openjdk`。白名单（[`deploy::safe_target`]）挡不住这种事：
-///   它只知道"`/opt` 底下允许"。
+/// - `true`：什么都不说；
+/// - `false`：目录非空时脚本打一个哨兵，我们把它转成一句**提醒** ——
+///   ⚠️ **不是**错误、**不阻断部署**。
 ///
-/// ⚠️ 真正保证"不删别人的东西"的是 [`deploy::removals_script`] 的**逐名删除**
-/// （v0.9.10 起不再 `find -delete`）—— 所以 `ours` 判断失手也不会损坏数据，
-/// 它只是替用户拦一下"你可能选错目录了"。
+/// # 为什么不再是"拒绝部署"（v0.9.11 改）
+///
+/// v0.9.9 那层拒绝的初衷是保护**镜像自己要用的文件**（实测把应用部署到
+/// `/opt/java`，而 `eclipse-temurin` 的 JDK 正好在 `/opt/java/openjdk`）。
+/// 但 v0.9.10 起删除已经变成[逐名删除](deploy::removals_script)，那件事由它保证
+/// —— 硬拦已经没有安全上的理由，只剩下"挡住用户自己的正常部署"这一个效果。
+/// 实测：删掉旧记录 + 重建容器之后重新部署 `/opt/java`（安全的一次）被直接拒绝，
+/// 用户只能来问为什么。所以现在**干完再说一句**。
 ///
 /// ⚠️ 这个判断必须和动手删在**同一条脚本**里（不能先由界面查一次再删）：
 /// 两次 `exec` 之间目标目录可能被别的东西写进去，而且多一次往返。
@@ -164,18 +168,13 @@ pub fn prepare_target(
     target: &str,
     ours: bool,
     members: &[String],
-) -> Result<()> {
+) -> Result<bool> {
     let out = run_script(
         wslc,
         container,
         &deploy::prepare_target_script(target, ours, members),
     )?;
-    if out.contains(deploy::TARGET_NOT_EMPTY) {
-        // 哨兵走的是 stdout（脚本特意 `exit 0`），所以由我们转成一句人话 ——
-        // 原样露给用户只会是一串 `__WSLC_…__`
-        return Err(Error::InvalidArgument(deploy::target_not_empty_hint(target)));
-    }
-    Ok(())
+    Ok(out.contains(deploy::TARGET_NOT_EMPTY))
 }
 
 /// 列出目录来源的**顶层条目**（给 `deploy::copy_members` 用）。
