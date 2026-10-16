@@ -1026,40 +1026,41 @@ fn container_more_menu(item: &ContainerListItem, entity: &Entity<Shell>) -> AnyE
         .label("更多")
         .small()
         .dropdown_menu(move |mut menu, _window, _cx| {
+            // ⚠️ 每一次都从**捕获进来的** `entity` / `name` 克隆一份，绑定名不要
+            // 叫 `entity`（CI 实测报过 E0382）：内层 `move` 闭包会把那个新绑定
+            // 搬走，而"遮蔽"只在同一个块里生效 —— 下一句再写
+            // `let entity = entity.clone()` 克隆的就是**已经被搬走的那个**。
             if running {
-                let entity = entity.clone();
-                let target = name.clone();
+                let shell_entity = entity.clone();
+                let app = name.clone();
                 menu = menu.item(PopupMenuItem::new("终端").on_click(move |_, _, cx| {
-                    entity.update(cx, |shell, cx| {
-                        shell.run_immediate(
-                            ImmediateAction::OpenContainerShell(target.clone()),
-                            cx,
-                        );
+                    shell_entity.update(cx, |shell, cx| {
+                        shell.run_immediate(ImmediateAction::OpenContainerShell(app.clone()), cx);
                     });
                 }));
 
-                let entity = entity.clone();
-                let target = name.clone();
+                let shell_entity = entity.clone();
+                let app = name.clone();
                 menu = menu.item(PopupMenuItem::new("重启").on_click(move |_, _, cx| {
-                    entity.update(cx, |shell, cx| {
-                        shell.run_immediate(ImmediateAction::RestartContainer(target.clone()), cx);
+                    shell_entity.update(cx, |shell, cx| {
+                        shell.run_immediate(ImmediateAction::RestartContainer(app.clone()), cx);
                     });
                 }));
             }
 
-            let entity = entity.clone();
-            let target = name.clone();
+            let shell_entity = entity.clone();
+            let app = name.clone();
             menu = menu.item(PopupMenuItem::new("日志").on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.open_logs(target.clone(), cx));
+                shell_entity.update(cx, |shell, cx| shell.open_logs(app.clone(), cx));
             }));
 
             // 分隔线 + 「删除」：不可撤销的那个单独放在最后
-            let entity = entity.clone();
-            let target = name.clone();
+            let shell_entity = entity.clone();
+            let app = name.clone();
             menu.item(PopupMenuItem::separator())
                 .item(PopupMenuItem::new("删除").on_click(move |_, _, cx| {
-                    entity.update(cx, |shell, cx| {
-                        shell.request(PendingAction::RemoveContainer(target.clone()), cx);
+                    shell_entity.update(cx, |shell, cx| {
+                        shell.request(PendingAction::RemoveContainer(app.clone()), cx);
                     });
                 }))
         })
