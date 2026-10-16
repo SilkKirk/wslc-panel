@@ -586,6 +586,22 @@ pub fn load_settings(info: Option<&SystemInfo>) -> std::result::Result<SettingsD
 pub enum PendingAction {
     /// 停止容器。
     StopContainer(String),
+    /// **停止所有正在运行的容器**（「容器」页工具栏上那颗「停止全部」）。
+    ///
+    /// 为什么不是 `StopAllContainers(Vec<String>)`：那样带走的是一份
+    /// **点按钮那一刻**的快照，而用户从确认框弹出来到点「全部停止」之间
+    /// 可能又起了别的容器。执行时现查 `list_running` 拿到的才是"现在正在跑的"，
+    /// 这和 [`PendingAction::PruneContainers`] 是一致的 —— 那个也是执行时
+    /// 才去问 `wslc`，不带着名单走。
+    ///
+    /// `running` **只用于文案**：确认框一开就盖住了工具栏上那行"N 个在运行"，
+    /// 影响面得在正文里再写一遍（和 `DistroAction::Unregister` 带 `vhdx_bytes`
+    /// 是同一条理由：代价要在点之前说清）。它**不参与任何判断** ——
+    /// 真要停哪些以 `execute` 当场查到的那份为准，两者不一致时以执行结果为准。
+    StopAllContainers {
+        /// 请求时快照里正在运行的容器数，仅供确认文案。
+        running: usize,
+    },
     /// 强制终止容器。
     KillContainer(String),
     /// 删除容器。
@@ -668,6 +684,7 @@ impl PendingAction {
     pub fn title(&self) -> &'static str {
         match self {
             PendingAction::StopContainer(_) => "停止容器",
+            PendingAction::StopAllContainers { .. } => "停止所有容器",
             PendingAction::KillContainer(_) => "强制终止容器",
             PendingAction::RemoveContainer(_) => "删除容器",
             PendingAction::PruneContainers => "清理已停止的容器",
@@ -688,6 +705,10 @@ impl PendingAction {
             PendingAction::StopContainer(name) => {
                 format!("将向容器 {name} 发送停止信号。容器内的未保存数据会丢失。")
             }
+            PendingAction::StopAllContainers { running } => format!(
+                "将向**所有正在运行的容器**（{running} 个）发送停止信号。\
+                 这些容器里未保存的数据会丢失；已经停着的容器不受影响。"
+            ),
             PendingAction::KillContainer(name) => {
                 format!("将立即杀死容器 {name}（SIGKILL），不做优雅退出。")
             }
@@ -738,6 +759,7 @@ impl PendingAction {
     pub fn confirm_label(&self) -> &'static str {
         match self {
             PendingAction::StopContainer(_) => "停止",
+            PendingAction::StopAllContainers { .. } => "全部停止",
             PendingAction::KillContainer(_) => "强制终止",
             PendingAction::RemoveContainer(_) | PendingAction::PruneContainers => "删除",
             PendingAction::RemoveImage(_) => "删除镜像",
@@ -757,6 +779,37 @@ impl PendingAction {
             PendingAction::StopContainer(name) => {
                 let done = cmd::container::stop(wslc, std::slice::from_ref(name))?;
                 Ok(format!("已停止：{}", done.join("、")))
+            }
+            // 名单现查，不用界面上那份快照（理由写在枚举上那段注释里）。
+            //
+            // 一个都没在跑时**不能**照样调 `stop`：`cmd::container::stop` 收到空名单
+            // 会返回 `InvalidArgument`（`run_names` 里那道检查），于是"确认框开着
+            // 的时候容器已经被别的操作停掉了"会变成一条报错 —— 那不是错误，
+            // 是用户想要的结果已经达成了。
+            //
+            // 一条命令停多个，而不是在这里自己循环。实测（本机 WSL 3.0.3.0）：
+            //
+            // - `wslc stop nginx redis` → 两行 stdout（名字，顺序与传入一致）、退出码 0
+            //   —— 正好是 `run_names` 收集的那份，所以摘要里的名字是准的；
+            // - 停一个**已经停着**的容器 → 退出码 0（没有"它没在跑"这种报错）；
+            // - 只有"名字不存在"才失败，而且是**逐个**报错、把整个名单走完再以 1 退出
+            //   （`wslc container stop no-such-a no-such-b` → 两条
+            //   `WSLC_E_CONTAINER_NOT_FOUND`）。
+            //
+            // 也就是说"列表和执行之间容器自己退了"不会变成失败；真会失败的只剩
+            // "那一瞬间它被删掉了"这种很窄的竞态 —— 那种情况下其余容器照样停了，
+            // 错误信息里带着是哪个名字。拆成 N 条命令换不来什么，只多 N 次进程开销。
+            PendingAction::StopAllContainers { .. } => {
+                let running = cmd::container::list_running(wslc)?;
+                if running.is_empty() {
+                    return Ok("没有正在运行的容器".to_owned());
+                }
+                let names: Vec<String> = running
+                    .iter()
+                    .map(|c| c.display_name().to_owned())
+                    .collect();
+                let done = cmd::container::stop(wslc, &names)?;
+                Ok(stopped_all_message(&done))
             }
             PendingAction::KillContainer(name) => {
                 let done = cmd::container::kill(wslc, std::slice::from_ref(name))?;
@@ -853,6 +906,36 @@ impl PendingAction {
 
 // 自动刷新间隔不再是界面上的档位开关，而是 `prefs.rs` 里的持久化偏好。
 // 界面只负责在"设置"页里改它。
+
+/// 「停止全部」的结果摘要（成功提示条上那一行）。
+///
+/// 单独一个纯函数是为了**能测**：这句话只出现在提示条上，写错了的表现是
+/// "用户不知道刚才到底停掉了哪个/几个"，而这类缺陷在 CI 里除了编译之外
+/// 没有任何信号（`AGENTS.md` §8）。
+///
+/// 名字超过 [`STOP_ALL_NAMES_IN_SUMMARY`] 个就截断：提示条不是日志，
+/// 二十个容器名会把整条撑成好几行，把后面真正的错误信息挤出去。
+fn stopped_all_message(done: &[String]) -> String {
+    if done.is_empty() {
+        // `wslc stop` 一行都没打印。正常不该发生（它会把停掉的容器名打出来），
+        // 但报"已停止 0 个容器"读起来像成功了却什么都没发生 —— 如实说。
+        return "停止命令已执行，但 wslc 没有报告任何容器".to_owned();
+    }
+    let shown = done
+        .iter()
+        .take(STOP_ALL_NAMES_IN_SUMMARY)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("、");
+    if done.len() > STOP_ALL_NAMES_IN_SUMMARY {
+        format!("已停止 {} 个容器：{shown} 等", done.len())
+    } else {
+        format!("已停止 {} 个容器：{shown}", done.len())
+    }
+}
+
+/// 摘要里最多列几个容器名（余下的用"等"带过）。
+const STOP_ALL_NAMES_IN_SUMMARY: usize = 5;
 
 /// 字节 → 人类可读（1024 进制）。
 ///
@@ -4701,6 +4784,7 @@ mod tests {
     fn danger_actions_all_have_copy() {
         let actions = [
             PendingAction::StopContainer("a".into()),
+            PendingAction::StopAllContainers { running: 3 },
             PendingAction::KillContainer("a".into()),
             PendingAction::RemoveContainer("a".into()),
             PendingAction::PruneContainers,
@@ -4734,6 +4818,46 @@ mod tests {
         // 还得说清"运行中的容器会停"以及"数据不会被删"这两件事
         assert!(body.contains("容器"), "{body}");
         assert!(body.contains("storage.vhdx"), "{body}");
+    }
+
+    #[test]
+    fn stop_all_body_names_the_blast_radius() {
+        // 确认框一开就盖住了工具栏上那行"N 个在运行"，所以**影响面必须写进正文**
+        // —— 这是"停一个"和"停全部"在文案上唯一的区别，也是这个字段存在的理由。
+        let action = PendingAction::StopAllContainers { running: 4 };
+        assert_eq!(action.title(), "停止所有容器");
+        assert_eq!(action.confirm_label(), "全部停止");
+
+        let body = action.body();
+        assert!(body.contains('4'), "{body}");
+        assert!(body.contains("正在运行的容器"), "{body}");
+        // 停止 = 丢未保存数据，这句不能省（单容器那条也有同样的说明）
+        assert!(body.contains("未保存的数据"), "{body}");
+        // 还得说清"已经停着的不受影响"，否则用户会以为已退出的那些也要被动
+        assert!(body.contains("不受影响"), "{body}");
+    }
+
+    #[test]
+    fn stop_all_summary_lists_names_and_truncates() {
+        assert_eq!(stopped_all_message(&["web".to_owned()]), "已停止 1 个容器：web");
+
+        // 5 个是上限：正好 5 个不加"等"，第 6 个开始截断
+        let five: Vec<String> = (0..5).map(|i| format!("c{i}")).collect();
+        assert_eq!(
+            stopped_all_message(&five),
+            "已停止 5 个容器：c0、c1、c2、c3、c4"
+        );
+        let six: Vec<String> = (0..6).map(|i| format!("c{i}")).collect();
+        let msg = stopped_all_message(&six);
+        assert!(msg.starts_with("已停止 6 个容器："), "{msg}");
+        assert!(!msg.contains("c5"), "第 6 个名字不该出现在摘要里：{msg}");
+        assert!(msg.ends_with('等'), "{msg}");
+
+        // 一行都没打印时**不能**说"已停止 0 个容器"——那读起来像"成功了，但什么也没发生"
+        let none: Vec<String> = Vec::new();
+        let empty = stopped_all_message(&none);
+        assert!(!empty.contains('0'), "{empty}");
+        assert!(empty.contains("没有报告"), "{empty}");
     }
 
     #[test]
