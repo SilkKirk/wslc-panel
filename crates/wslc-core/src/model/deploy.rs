@@ -640,18 +640,29 @@ pub const NO_LOG: &str = "__WSLC_NO_LOG__";
 /// （部署到 `/opt/java` 把镜像自带的 JDK 删了）。
 pub const TARGET_NOT_EMPTY: &str = "__WSLC_TARGET_NOT_EMPTY__";
 
-/// 目标目录非空、且不是我们铺的时的说明（给用户看的那一句）。
+/// 目标目录非空、且不是我们铺的时的**提醒**（给用户看的那一句）。
 ///
-/// ⚠️ **第一行要能独立成立**：提示条（toast）只取第一行并截断到 120 字符，
-/// 详情弹窗才显示全文 —— 和 `DbFailure::summary` 那条约定一样。
+/// ⚠️ 这是一句**提醒**，不是错误：面板**照常部署**（只替换自己铺的那些名字，
+/// 见 [`removals_script`]），只是告诉用户"这个目录里本来有别的东西，我没动它们"。
+///
+/// # 为什么从"拦"改成"提醒"（v0.9.11 改）
+///
+/// v0.9.9 是**拒绝部署**的（`exit 0` + 哨兵）。当时它还是数据安全的最后一道防线
+/// —— 再往前一版是整目录 `find -delete` 清空。而 v0.9.10 改成逐名删除之后，
+/// **它拦的已经不是危险了**：`/opt/java` 里那个 `openjdk/` 根本不在删除列表里。
+///
+/// 代价实测：用户删掉旧记录、重建容器之后重新部署，目标目录被预填成 `/opt/java`
+/// —— 面板直接拒绝，而那次部署**本来是安全的**，`java` 也不会丢。
+/// 挡住的只是用户自己。所以现在：**干完再说一句**。
+///
+/// ⚠️ **第一行要能独立成立**：提示条（toast）只取第一行并截断到 120 字符。
 pub fn target_not_empty_hint(target: &str) -> String {
     format!(
-        "目标目录 {target} 里已经有东西，而它不是面板铺的 —— 面板不会清空它。\n\
-         ⚠️ 那里面很可能是**镜像自己要用的文件**：实测把应用部署到 `/opt/java` 时，\
-         `eclipse-temurin` 镜像的 JDK 正好在 `/opt/java/openjdk`，清空它等于把容器里的 \
-         `java` 删掉，应用从此起不来（`nohup: failed to run command 'java'`）。\n\
-         换个目录（比如 `/opt/<你的应用名>`、`/app/...`），\
-         或者先用「终端」把那个目录清空再回来部署。"
+        "目标目录 {target} 里本来就有别的东西（不是面板铺的）—— 面板只替换自己那几个文件，\
+         没动它们。\n\
+         那里面可能是**镜像自己要用的文件**：实测 `eclipse-temurin` 的 JDK 就在 \
+         `/opt/java/openjdk`（面板不会删它）。想把目录清干净，用「终端」自己来；\
+         或者换个目标目录（比如 `/opt/<你的应用名>`、`/app/...`）。"
     )
 }
 
@@ -722,19 +733,18 @@ fn is_safe_member(name: &str) -> bool {
 ///
 /// 所以只删**里面的名字**、不碰目录本身（[`removals_script`]）。
 ///
-/// # `ours`：第一次往这个目录铺时，非空就先拒绝（v0.9.9 加，保留）
+/// # `ours`：只决定"要不要提醒一句"，**不决定拦不拦**（v0.9.11 改）
 ///
 /// | `ours` | 行为 |
 /// |---|---|
-/// | `true`（本地存档里有这个目录的记录） | 直接按 [`removals_script`] 收拾 + 铺 |
-/// | `false`（第一次往这个目录铺） | **只允许它不存在或为空**；否则 echo [`TARGET_NOT_EMPTY`] 并什么都不做 |
+/// | `true`（本地存档里有这个目录的记录） | 直接按 [`removals_script`] 收拾 + 铺，什么都不说 |
+/// | `false`（第一次往这个目录铺） | 目录非空就先 echo [`TARGET_NOT_EMPTY`]（**提醒**），然后**照常铺** |
 ///
-/// ⚠️ 这一层**不是**数据安全的最后一道防线 —— 真正保证"不删别人的东西"的是
-/// [`removals_script`] 的逐名删除。它只是替用户拦一下"你可能选错目录了"
-/// （比如第一次就想往 `/opt/java` 铺）。所以 `ours` 判断失手也不会损坏数据。
-///
-/// 调用方（`cmd::deploy::prepare_target`）看到哨兵就转成一句人话
-/// （[`target_not_empty_hint`]），**不是**当成"清空成功"。
+/// ⚠️ v0.9.9 那种"非空就拒绝"已经去掉了：逐名删除之后它拦的**不是危险**，
+/// 而是用户自己的正常部署（实测：删掉旧记录 + 重建容器之后重新部署
+/// `/opt/java` 被硬拦，而那次部署本来完全安全）。理由写在
+/// [`target_not_empty_hint`] 那段。**哨兵后面没有 `exit`** —— 它只是给调用方
+/// 一个"要不要说一句"的信号，脚本一定往下走。
 ///
 /// ⚠️ 这一步必须在 `cp` **之前**跑，两条理由：
 ///
@@ -744,21 +754,24 @@ fn is_safe_member(name: &str) -> bool {
 ///    `ERROR_PATH_NOT_FOUND`），它不会替我们建。
 pub fn prepare_target_script(target: &str, ours: bool, members: &[String]) -> String {
     let target_q = shell_quote(target);
-    let guard = if ours {
+    let notice = if ours {
         String::new()
     } else {
         // `ls -A` 认隐藏文件（`.hidden` 也要算"已经有东西"），
         // 目录不存在时它自己报错但我们不看退出码（`2>/dev/null`）——
-        // 那种情况本来就该放行。
-        // ⚠️ 这里**退出码是 0**：调用方要读到哨兵才能给出自己的那句话，
-        // 非零退出码会让 `run_script` 先把它变成一个"参数 + stderr"的原始错误。
+        // 那种情况本来就没什么可提醒的。
+        //
+        // ⚠️ **不要加 `exit`**：这一句只是"要不要说一句"的信号，脚本必须往下走
+        // （v0.9.9 那里是 `exit 0`，等于拒绝部署 —— 见上面那段为什么改掉）。
+        // 也**不要**用非零退出码表达"目录非空"：那会被 `run_script` 变成
+        // "参数 + stderr" 的原始错误，调用方既读不到哨兵、又拿到一句看不懂的失败。
         format!(
             "if test -d {target_q} && test -n \"$(ls -A {target_q} 2>/dev/null)\"; then \
-             echo {TARGET_NOT_EMPTY}; exit 0; fi; "
+             echo {TARGET_NOT_EMPTY}; fi; "
         )
     };
     let removals = removals_script(target, members);
-    format!("{guard}mkdir -p {target_q} && {removals}")
+    format!("{notice}mkdir -p {target_q} && {removals}")
 }
 
 /// `chmod +x <路径>`。
@@ -1573,26 +1586,30 @@ mod tests {
         assert!(script.contains("'/opt/app/app.pid'"), "{script}");
     }
 
-    /// ⚠️ 回归钉（v0.9.8 的**真实事故**）：不是我们铺的目录，**一个字节都不清**。
+    /// ⚠️ 回归钉（v0.9.11）：**第一次往非空目录铺时不再拒绝**。
     ///
-    /// 实测那次：应用名就叫 `java`，默认目标目录是 `/opt/java`，而
-    /// `eclipse-temurin:8-jre-alpine` 的 JDK 正好在 `/opt/java/openjdk` ——
-    /// 清空它等于把容器里的 `java` 删掉，应用从此起不来。
+    /// v0.9.9 是拒绝的（`exit 0` + 哨兵）。逐名删除（v0.9.10）之后那层拒绝
+    /// 拦的已经不是危险，而是用户自己的正常部署 —— 实测：删掉旧记录 + 重建容器
+    /// 之后重新部署 `/opt/java`（那次完全安全）被直接拒绝，用户只能来问为什么。
     #[test]
-    fn prepare_target_refuses_a_foreign_non_empty_directory() {
-        let script = prepare_target_script("/opt/java", false, &[]);
-        // 先探测"目录在、而且非空"，是就打哨兵、**什么都不做**
+    fn prepare_target_warns_but_still_proceeds_on_a_foreign_directory() {
+        let members = vec!["ruoyi-admin.jar".to_owned()];
+        let script = prepare_target_script("/opt/java", false, &members);
+        // 目录非空会打哨兵 —— 调用方拿它去**说一句**（不是拿去报错）
         assert!(script.contains(TARGET_NOT_EMPTY), "{script}");
         assert!(script.contains("ls -A"), "{script}");
+        // ⚠️ 哨兵**不许**带 `exit`：带了就是"拒绝部署"（v0.9.9 的行为，已废）
+        assert!(!script.contains("exit"), "{script}");
+        // 而且照样建目录、照样删我们自己的名字（= 照样往下走）
+        assert!(script.contains("mkdir -p '/opt/java'"), "{script}");
+        assert!(script.contains("'/opt/java/ruoyi-admin.jar'"), "{script}");
+        // 哨兵排在动手之前（读起来是"先看一眼，再动手"）
         assert!(
             script.find(TARGET_NOT_EMPTY).unwrap() < script.find("rm -rf").unwrap(),
-            "哨兵必须在动手删**之前**（否则照删不误）：{script}"
+            "{script}"
         );
-        // ⚠️ 这里退出码必须是 **0**：非零退出码会被 `run_script` 先转成一条
-        // "参数 + stderr" 的原始错误，调用方就读不到哨兵、给不出自己的那句话了
-        assert!(script.contains("exit 0"), "{script}");
-        // `ours = true` 时没有这段守卫（自己铺的目录才允许清空重铺）
-        assert!(!prepare_target_script("/opt/java", true, &[]).contains("ls -A"));
+        // `ours = true` 时连那一句都不说（我们自己铺的目录，没什么好提醒的）
+        assert!(!prepare_target_script("/opt/java", true, &members).contains("ls -A"));
     }
 
     #[test]
