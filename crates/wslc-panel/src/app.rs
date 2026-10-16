@@ -64,10 +64,10 @@ use wslc_core::{Wsl, Wslc};
 
 use crate::state::{
     self, AppState, BackupState, ConfirmAction, DbFailure, DbState, DbTab, DeployFailure,
-    DeployLogs, DeployPhase, DeployProgress, DeployState, DistroAction, ExecState, ExportProgress,
-    ImmediateAction, ImportState, InstallOutcome, InstallProgress, InstallSourceKind, LogsState,
-    MirrorChoice, MirrorProbeResult, Page, PendingAction, PromptKind, Toast, ToastKind,
-    create_command, exec_argv,
+    DeployLogs, DeployPhase, DeployProgress, DeployState, DetailInspect, DistroAction, ExecState,
+    ExportProgress, ImmediateAction, ImportState, InstallOutcome, InstallProgress,
+    InstallSourceKind, LogsState, MirrorChoice, MirrorProbeResult, Page, PendingAction, PromptKind,
+    Toast, ToastKind, create_command, exec_argv,
 };
 use crate::theme;
 // `split_list` / `refresh_label` 是纯函数，住在不依赖 GPUI 的 `wslc-panel-core` 里
@@ -2623,14 +2623,63 @@ impl Shell {
     ///
     /// ⚠️ 别把列表行已有的动作（启动 / 重启 / 停止 / 日志 / 删除）再搬进来 ——
     /// 同一件事两个入口，用户还得判断点哪个。见 `container_detail_overlay`。
+    ///
+    /// # 打开时顺手拉一次 `wslc inspect`
+    ///
+    /// 详情里要显示的**挂载 / 启动命令 / 环境变量**，列表那一份数据里
+    /// 一样都没有（挂载只有卷名、命令被截断到 20 字符、环境变量完全没有），
+    /// 见 [`DetailInspect`]。inspect 是一次几百毫秒的子进程，所以照
+    /// `AGENTS.md` §7.1 走后台，先画"正在读取…"。
     pub fn open_detail(&mut self, name: String, cx: &mut Context<Self>) {
-        self.detail = Some(name);
+        self.detail = Some(name.clone());
+        self.state.detail_inspect = Some(DetailInspect::loading(name.clone()));
         cx.notify();
+        self.load_detail_inspect(name, cx);
+    }
+
+    /// 后台拉一次详情用的 `inspect`。
+    ///
+    /// 它**不是**"详情自己的数据源"：端口 / CPU / 内存 / PID 仍然来自列表快照
+    /// （那些值每轮刷新都在动），inspect 只补三样静态信息。
+    fn load_detail_inspect(&mut self, name: String, cx: &mut Context<Self>) {
+        let wslc = self.state.wslc.clone();
+        cx.spawn(async move |this, cx| {
+            let result = {
+                let wslc = wslc.clone();
+                let container = name.clone();
+                cx.background_executor()
+                    .spawn(async move {
+                        wslc_core::cmd::container::inspect(&wslc, &container, false)
+                            .map_err(|e| e.to_string())
+                    })
+                    .await
+            };
+            let _ = this.update(cx, |shell, cx| {
+                // 用户可能点了 A、没等回来又点 B，或者干脆关掉了详情 ——
+                // 这时候**不能**把 A 的数据写进去（会画到 B 的详情里）。
+                if shell.detail.as_deref() != Some(name.as_str()) {
+                    return;
+                }
+                if let Some(detail) = shell.state.detail_inspect.as_mut() {
+                    if detail.container == name {
+                        match result {
+                            Ok(inspect) => detail.inspect = Some(inspect),
+                            Err(error) => detail.error = Some(error),
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// 关闭容器详情弹窗。
     pub fn close_detail(&mut self, cx: &mut Context<Self>) {
         self.detail = None;
+        // 那份 inspect 跟着一起扔：留着的话下次打开**别的**容器会先闪一下旧数据
+        //（写回时的名字比对能挡住"写错对象"，但挡不住"先把旧的画出来"）。
+        self.state.detail_inspect = None;
         cx.notify();
     }
 

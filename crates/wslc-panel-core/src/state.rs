@@ -3300,6 +3300,44 @@ impl RegistryState {
     }
 }
 
+/// 容器详情里那一份 `wslc inspect`。
+///
+/// # 为什么详情要单独拉一次 inspect
+///
+/// 详情里要显示的三样东西**列表那一份数据里没有**：
+///
+/// | 要显示的 | 列表（`wslc list -a`）有什么 | `inspect` 有什么 |
+/// |---|---|---|
+/// | 挂载 | `Mounts` 只有卷名（`mysqldata`），`Labels.V1.Volumes` 实测**是空的** | `Mounts[]` 的 `Source` + `Destination` |
+/// | 启动命令 | `Command` 被 wslc **截断到 20 字符**（`"docker-entrypoint.s…"`） | `Config.Entrypoint` + `Config.Cmd` 全量 |
+/// | 环境变量 | 完全没有 | `Config.Env` 全量 |
+///
+/// 而 `inspect` 是一次几百毫秒的子进程（`AGENTS.md` §7.1：不许放界面线程），
+/// 所以**打开详情时在后台拉一次**，拉回来之前界面显示"正在读取…"。
+///
+/// `container` 用来防串台：用户可能点了 A、没等回来又点 B。
+/// 写回之前比一次名字，不一致就丢掉 —— 否则 A 的挂载会画在 B 的详情里。
+#[derive(Debug, Clone)]
+pub struct DetailInspect {
+    /// 这份数据属于哪个容器。
+    pub container: String,
+    /// 拉回来的结果；`None` = 还在读（或读失败了，看 `error`）。
+    pub inspect: Option<wslc_core::model::ContainerInspect>,
+    /// 读失败的原因（人话，界面上原样显示）。
+    pub error: Option<String>,
+}
+
+impl DetailInspect {
+    /// 开始读某个容器的详情。
+    pub fn loading(container: impl Into<String>) -> Self {
+        Self {
+            container: container.into(),
+            inspect: None,
+            error: None,
+        }
+    }
+}
+
 /// 应用的完整状态。///
 /// 这是 `app::Shell` 里唯一的字段，所有页面都是它的只读视图。
 ///
@@ -3389,6 +3427,11 @@ pub struct AppState {
     /// 命令文本本身在 `Shell::exec_input` 里（那是 GPUI 类型），
     /// 这里只放"跑过什么、结果是什么"。
     pub exec: Option<ExecState>,
+    /// 容器详情里那一份 `wslc inspect`；详情关着时为 `None`。
+    ///
+    /// 打开详情时**后台拉一次**（那几样信息只有 inspect 有，见 [`DetailInspect`]）。
+    /// 同样全是纯数据，所以住在这儿而不是 `Shell`。
+    pub detail_inspect: Option<DetailInspect>,
     /// 在线可安装发行版的清单状态。
     pub online: OnlineDistroState,
     /// 「在线发行版（镜像源）」那一块的状态（动态清单 + 探测结果 + 选中的那个）。
@@ -3552,6 +3595,8 @@ impl AppState {
             installing: None,
             logs: None,
             exec: None,
+            // 详情没打开 —— 打开时才去拉 inspect（见 `DetailInspect`）
+            detail_inspect: None,
             online: OnlineDistroState::new(),
             mirrors: MirrorState::new(),
             registry: RegistryState::new(),
