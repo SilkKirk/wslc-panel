@@ -690,6 +690,27 @@ impl ContainerInspect {
         self.string_array(&["Config", "Entrypoint"])
     }
 
+    /// 启动命令的可读形式：`entrypoint… + cmd…`。
+    ///
+    /// # 为什么把两段接起来显示
+    ///
+    /// Docker / WSL 把启动命令拆成 `Entrypoint` 与 `Cmd` **两段**，运行时接起来执行。
+    /// 只显示一段会误导 —— 实测那个 `eclipse-temurin:8-jre-alpine` 就是
+    /// **只有 entrypoint、没有 cmd**（它的 entrypoint 末行是 `exec "$@"`，
+    /// 于是不带参数时什么都不做、容器 1.1 ms 就正常退出）；只看 entrypoint
+    /// 会读成"这镜像有命令、能跑"（`docs/PLAN-v0.9.md` §11 那次事故）。
+    ///
+    /// 两段都空时返回 `None`（界面显示 `—`）。
+    pub fn command_line(&self) -> Option<String> {
+        let mut parts = self.entrypoint();
+        parts.extend(self.cmd());
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" "))
+        }
+    }
+
     /// 工作目录。
     pub fn working_dir(&self) -> Option<&str> {
         self.str_at(&["Config", "WorkingDir"])
@@ -828,6 +849,38 @@ impl ContainerInspect {
             .unwrap_or_default()
     }
 
+    /// 挂载的可读摘要（`卷名/宿主路径 → 容器内路径`），**一条一行**。
+    ///
+    /// 用换行而不是 `; `：界面那边用 `kv_block` 画，长路径换行显示不会被截断。
+    /// 没有挂载时返回 `None`（界面显示 `—`）。
+    ///
+    /// ⚠️ **这才是挂载的权威来源**。列表那一份（[`ContainerListItem::mounts`]）
+    /// 走的是 `Labels` 里的 `com.microsoft.wsl.container.metadata` → `V1.Volumes`，
+    /// 而实测（本机 WSL 3.0.3.0，2026-10）那个数组**是空的**：
+    ///
+    /// ```text
+    /// mysql 容器：list.Mounts = "mysqldata"（只有卷名、没有容器内路径）
+    ///             Labels 里的 V1.Volumes = []
+    ///             inspect.Mounts = [{Type: volume, Name: mysqldata,
+    ///                                Destination: /var/lib/mysql}]
+    /// ```
+    ///
+    /// 所以详情里那一行**必须**用 inspect 的数据：只靠列表 / labels 的话，
+    /// 挂了卷的容器也会显示成 `—`（v0.9.7 实机反馈："点开容器详情看不到挂载"）。
+    pub fn mounts_summary(&self) -> Option<String> {
+        let mounts = self.mounts();
+        if mounts.is_empty() {
+            return None;
+        }
+        Some(
+            mounts
+                .iter()
+                .map(ContainerMount::summary)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    }
+
     fn string_array(&self, path: &[&str]) -> Vec<String> {
         self.get(path)
             .and_then(Value::as_array)
@@ -853,6 +906,20 @@ pub struct ContainerMount {
     pub source: String,
     /// 容器内路径。
     pub destination: String,
+}
+
+impl ContainerMount {
+    /// `卷名 → /容器内路径`（源拿不到时就只给路径）。
+    ///
+    /// 形制和列表那份 [`WslVolumeSpec::summary`] 保持一致（`A → B`）——
+    /// 同一个界面里两种写法会让人以为它们不是一回事。
+    pub fn summary(&self) -> String {
+        if self.source.is_empty() {
+            self.destination.clone()
+        } else {
+            format!("{} → {}", self.source, self.destination)
+        }
+    }
 }
 
 /// 从镜像引用推一个**看得懂**的容器名（表单里"容器名"留空时用）。
@@ -1203,6 +1270,71 @@ mod tests {
     #[test]
     fn inspect_from_empty_array_is_none() {
         assert!(ContainerInspect::from_array(vec![]).is_none());
+    }
+
+    /// 启动命令 = `Entrypoint` + `Cmd` **接起来**（运行时就是这么执行的）。
+    #[test]
+    fn command_line_joins_entrypoint_and_cmd() {
+        let both = ContainerInspect::new(serde_json::json!({
+            "Config": { "Entrypoint": ["docker-entrypoint.sh"], "Cmd": ["mysqld"] }
+        }));
+        assert_eq!(
+            both.command_line().as_deref(),
+            Some("docker-entrypoint.sh mysqld")
+        );
+
+        // 只有 entrypoint（那个 temurin 镜像的形状）：**原样给出来** ——
+        // 不补个 `—`、也不假装它还有 cmd。这一条正是 §11 那次事故的教训：
+        // 只读 entrypoint 的人会以为"这镜像有命令、能跑"。
+        let only_entry = ContainerInspect::new(serde_json::json!({
+            "Config": { "Entrypoint": ["/__cacert_entrypoint.sh"], "Cmd": [] }
+        }));
+        assert_eq!(
+            only_entry.command_line().as_deref(),
+            Some("/__cacert_entrypoint.sh")
+        );
+
+        // 两段都空 / 整个 Config 都没有 → `None`（界面显示 `—`）
+        let empty = ContainerInspect::new(serde_json::json!({
+            "Config": { "Entrypoint": [], "Cmd": [] }
+        }));
+        assert_eq!(empty.command_line(), None);
+        assert_eq!(
+            ContainerInspect::new(serde_json::json!({})).command_line(),
+            None
+        );
+    }
+
+    /// 挂载摘要读的是 **`inspect` 的 `Mounts`**（权威），不是 list / labels。
+    ///
+    /// 实测（本机 WSL 3.0.3.0）：挂了 `mysqldata` 的 mysql 容器，`list.Mounts`
+    /// 只有卷名、`Labels` 里的 `V1.Volumes` 是 **空数组** —— 所以只靠列表那边，
+    /// 详情里的「挂载」永远是 `—`（用户就是这么报上来的）。
+    #[test]
+    fn inspect_mounts_summary_uses_the_authoritative_mounts_array() {
+        let insp = ContainerInspect::new(serde_json::json!({
+            "Mounts": [
+                { "Type": "volume", "Name": "mysqldata", "Source": "mysqldata",
+                  "Destination": "/var/lib/mysql" },
+                { "Type": "bind", "Source": "E:\\code", "Destination": "/etc/nginx/conf.d" },
+                { "Type": "volume", "Destination": "/no-source" }
+            ]
+        }));
+        assert_eq!(
+            insp.mounts_summary().as_deref(),
+            Some("mysqldata → /var/lib/mysql\nE:\\code → /etc/nginx/conf.d\n/no-source")
+        );
+        assert_eq!(insp.mount_count(), 3);
+
+        // 没挂载 / 没这个字段 → `None`（界面显示 `—`）
+        assert_eq!(
+            ContainerInspect::new(serde_json::json!({ "Mounts": [] })).mounts_summary(),
+            None
+        );
+        assert_eq!(
+            ContainerInspect::new(serde_json::json!({})).mounts_summary(),
+            None
+        );
     }
 
     /// 短 ID 截断**不能**假设 ID 是 ASCII。

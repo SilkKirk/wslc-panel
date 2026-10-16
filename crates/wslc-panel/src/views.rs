@@ -7050,18 +7050,69 @@ pub fn container_detail_overlay(
         }
     };
 
+    // -- inspect 那一份（挂载 / 启动命令 / 环境变量**只有它有**）----------------
+    //
+    // ⚠️ 这三样在列表那一份数据里都没有：`list` 的 `Command` 被 wslc **截到 20 字符**
+    //（`"docker-entrypoint.s…"`）、挂载只有卷名（`mysqldata`，没有容器内路径），
+    // 环境变量则完全没有。所以打开详情时后台拉一次 inspect
+    //（`Shell::open_detail` → `DetailInspect`）。
+    let detail = state
+        .detail_inspect
+        .as_ref()
+        .filter(|d| d.container == name);
+    let inspect = detail.and_then(|d| d.inspect.as_ref());
+    let inspect_error = detail.and_then(|d| d.error.as_deref());
+
+    // 一项"只有 inspect 才知道"的信息。**三种状态分开画**，别都塌成 `—`：
+    //   还没拉回来 → "正在读取…"（塌成 `—` 的话用户会以为这容器就没有）
+    //   拉失败     → 把原因说出来（inspect 失败多半是容器刚被删掉）
+    //   拉到了但空 → `—`（这才真的是"没有"）
+    let inspect_field = |label: &'static str, value: Option<String>| -> AnyElement {
+        if let Some(text) = value {
+            return kv_block(label, text).into_any_element();
+        }
+        if inspect.is_some() {
+            return kv(label, "—").into_any_element();
+        }
+        match inspect_error {
+            Some(error) => kv_block(label, format!("读不到：{error}")).into_any_element(),
+            None => kv(label, "正在读取…").into_any_element(),
+        }
+    };
+
+    // 启动命令：`Entrypoint` + `Cmd` 接起来 —— 运行时就是这么拼的。
+    // 只有 `Entrypoint` 的镜像（`-jre-alpine` 那类）在这里一眼看得出来。
+    let command_line = inspect.and_then(|i| i.command_line());
+    // 挂载：**优先 inspect**（列表 / labels 那条路实测是空的，
+    // 见 `ContainerInspect::mounts_summary` 的表格）；拿不到才回落到旧的摘要。
+    let mounts = inspect
+        .and_then(|i| i.mounts_summary())
+        .or_else(|| item.mounts_summary());
+    // 环境变量：一行一条（`kv_block` 换行显示，卡片自己有 `overflow_y_scroll`）。
+    //
+    // ⚠️ 值**原样显示**，包括 `MYSQL_ROOT_PASSWORD=…` 这类：和「数据库管理」页
+    // 把密码画在列表里一致，也和 Docker Desktop 的 inspect 一致 —— 这是用户
+    // 自己机器上的屏幕，来查 env 的人要的就是值本身。
+    // 要改成"密码类键打码、点一下才显示"的话，只改这一处的取值即可。
+    let env = inspect
+        .map(|i| i.env())
+        .filter(|lines| !lines.is_empty())
+        .map(|lines| lines.join("\n"));
+
     let mut rows: Vec<AnyElement> = vec![
         kv("ID", item.id().to_owned()).into_any_element(),
         kv("镜像", item.image.clone()).into_any_element(),
         kv("状态", item.status.clone()).into_any_element(),
-        kv("运行时长", item.running_for.clone()).into_any_element(),
+        // ⚠️ 这一格是 `RunningFor`，实测是**创建至今**（三个容器都对得上 `CreatedAt`），
+        // 不是运行时长 —— 真正的 uptime 就在上一行 `Status` 里（`Up 2 hours`）。
+        // 原先标成「运行时长」，于是"状态 Up 2 hours"和"运行时长 45 hours ago"
+        // 并排出现、看着自相矛盾（v0.9.7 实机反馈）。
+        kv("已创建", item.running_for.clone()).into_any_element(),
         kv_block("端口", ports_text).into_any_element(),
+        inspect_field("挂载", mounts),
+        inspect_field("启动命令", command_line),
+        inspect_field("环境变量", env),
     ];
-
-    rows.push(match item.mounts_summary() {
-        Some(mounts) => kv_block("挂载", mounts).into_any_element(),
-        None => kv("挂载", "—").into_any_element(),
-    });
 
     if let Some(stats) = summary.stats.as_ref() {
         rows.push(kv("CPU", stats.cpu_perc.clone()).into_any_element());

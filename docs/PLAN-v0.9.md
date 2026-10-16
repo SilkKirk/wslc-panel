@@ -1031,4 +1031,87 @@ let db_console: AnyElement = match &state.db { … views::db_console_overlay(…
   ——「点按钮 → 进度浮层 → 列表多一行 → 点恢复」这条界面路径没人走过。
   恢复那一步尤其要小心：它是**覆盖**操作。
 
+---
+
+## 14. 容器详情看不见挂载 / 启动命令 / 环境变量（v0.9.7 实机反馈）
+
+### 14.1 现象
+
+点容器名打开详情，只有 ID / 镜像 / 状态 / 运行时长 / 端口 / CPU / 内存 /
+网络 I/O / PID。其中 `挂载` 是 `—`（而那个 mysql 容器明明挂着 `mysqldata`），
+**启动命令和环境变量两行根本没有**。另外"状态 Up 2 hours"和
+"运行时长 45 hours ago"并排出现，看着自相矛盾。
+
+### 14.2 根因一：这三样信息**列表那一份数据里就没有**
+
+| 详情要显示的 | `wslc list -a` 给的 | `wslc inspect` 给的 |
+|---|---|---|
+| 挂载 | `Mounts` = `mysqldata`（**只有卷名**）；`Labels` 里 `V1.Volumes` 实测是 **`[]`** | `Mounts[]` = `{Type: volume, Name: mysqldata, Destination: /var/lib/mysql}` |
+| 启动命令 | `Command` 被 wslc **截断到 20 字符**（`"docker-entrypoint.s…"`） | `Config.Entrypoint` + `Config.Cmd` 全量 |
+| 环境变量 | 没有这个字段 | `Config.Env` 全量 |
+
+而详情弹窗**只读列表快照**（`state.snapshot`）。所以：
+
+- `挂载` 走的是 `ContainerListItem::mounts_summary()`（解析 `Labels` 里的
+  `com.microsoft.wsl.container.metadata` → `V1.Volumes`），而那个数组在本机
+  **恒为空** —— 也就是说那一行**从来都是 `—`**，不是这个容器特殊；
+- 启动命令 / 环境变量**压根没有渲染代码**，不是"读失败"。
+
+### 14.3 根因二：「运行时长」那一格其实是 `RunningFor` = 创建至今
+
+三个容器都对得上 `CreatedAt`：mysql 创建于 `2026-10-14 16:56 +0800` →
+`RunningFor` = "45 hours ago"；eclipse-temurin 创建于 `2026-10-15 18:42` →
+"19 hours ago"。真正的 uptime 在**上一行** `Status` 里（`Up 2 hours`）。
+wslc 的 `RunningFor` 和 `docker ps` 同义（按 `Created` 算），所以标签写
+「运行时长」是错的。
+
+### 14.4 改法
+
+1. `Shell::open_detail` 打开详情时**后台拉一次 `wslc inspect`**
+   （§7.1：几百毫秒的子进程不能放界面线程），结果放 `AppState::detail_inspect`。
+   写回之前比一次容器名 —— 用户点了 A 又点 B、或者已经关掉详情时，
+   A 的数据**不能**画到 B 的详情里（否则挂载会串台）；
+2. 新增两行：`启动命令`（`Entrypoint` + `Cmd` 接起来，和运行时一致）、
+   `环境变量`（一行一条）；`挂载` 改成**优先 inspect**、拿不到才回落到旧摘要；
+3. 三种状态**分开画**：还没拉回来 → `正在读取…`；拉失败 → `读不到：<原因>`；
+   拉到了但空 → `—`。全塌成一个 `—` 的话，"还没读完"看起来就是"没有"；
+4. 「运行时长」改成「已创建」（值本来就是创建至今）；
+5. `ContainerInspect::command_line()` / `mounts_summary()` 是**纯函数**，
+   各带单测（`core` job 里真跑）。
+
+⚠️ 环境变量的值**原样显示**（包括 `MYSQL_ROOT_PASSWORD=…`）：和「数据库管理」页
+把密码画在列表里、以及 Docker Desktop 的 inspect 一致 —— 这是用户自己机器上的
+屏幕，来查 env 的人要的就是值本身。想改成"密码类键打码、点一下才显示"的话，
+只改 `container_detail_overlay` 里那一处取值。
+
+### 14.5 实测（本机 WSL 3.0.3.0，2026-10-16）
+
+```text
+$ wslc list -a --format json      （mysql 那条）
+  CreatedAt   : 2026-10-14 16:56:17 +0800 GMT+8
+  RunningFor  : 45 hours ago        ← 创建至今，不是 uptime
+  Status      : Up 2 hours          ← 真正的 uptime
+  Mounts      : 'mysqldata'         ← 只有卷名
+  LocalVolumes: 1
+  Labels      : com.microsoft.wsl.container.metadata={"V1":{…,"Volumes":[]}}  ← 空的
+  Command     : '"docker-entrypoint.s…"'   ← 截断到 20 字符
+
+$ wslc inspect mysql
+  Config.Cmd        : ["mysqld"]
+  Config.Entrypoint : ["docker-entrypoint.sh"]
+  Config.Env        : ["MYSQL_ROOT_PASSWORD=…", "PATH=…", "GOSU_VERSION=1.19", …]
+  Mounts            : [{Type: volume, Name: mysqldata, Destination: /var/lib/mysql}]
+```
+
+### 14.6 这一版**没做**的
+
+- 「工作目录」/「运行用户」没加：`inspect` 里都有（`Config.WorkingDir` /
+  `Config.User`，各加一行即可），这次只做用户点名的那三样；
+- `ContainerListItem::mounts_summary()`（labels 那条路）**留着当兜底**，但实测
+  在本机恒空。哪天确认它在别的 WSL 版本上也没数据，可以直接删掉；
+- 详情里的 inspect **只在打开时拉一次**：容器被 启动 / 停止 之后这里不重新拉
+  （状态、CPU 那些行来自列表快照，会自己刷新；`Entrypoint` / `Env` 本来也不会变）；
+- ⚠️ 仍需**本机点一遍**（§8）：那三行画出来什么样、`正在读取…`会不会一闪而过、
+  环境变量多的容器滚动条正不正常。
+
 
