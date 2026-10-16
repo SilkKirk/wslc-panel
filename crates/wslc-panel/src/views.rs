@@ -2542,11 +2542,70 @@ pub fn db_import_progress(db: &DbState, _entity: &Entity<Shell>) -> AnyElement {
     .into_any_element()
 }
 
-pub fn db_backup_dialog_overlay(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
+pub fn db_backup_dialog_overlay(
+    db: &DbState,
+    form: &DbPageForm,
+    entity: &Entity<Shell>,
+    cx: &App,
+) -> AnyElement {
     let Some(database) = db.backup_dialog.as_ref() else {
         return div().into_any_element();
     };
     let database = database.clone();
+
+    // 「立即备份」——**这个浮层唯一的创建入口**。
+    //
+    // ⚠️ 它曾经不存在：`Shell::start_db_backup` 从 v0.8 写出来就**没有任何调用点**
+    // （全仓库只此一份定义），而列表行上那个「备份」按钮打开的是**本浮层**，
+    // 浮层里只有恢复 / 打开位置 / 删除。于是"备份"这个功能整个是死的：
+    // 弹窗永远写着"还没有备份"，而且永远不会有第一份 —— 实机报过来就是这个
+    // （"怎么没有一个按钮点击后可以把这个库直接整个备份导出来"）。
+    // 入口只此一处：行上的「备份」是进这个浮层，创建在这里（同一动作不给两个入口）。
+    let start: AnyElement = if db.backup.is_some() {
+        // 跑着的时候把按钮换成这一句（项目里不用 `.disabled()`）
+        div()
+            .text_sm()
+            .text_color(theme::text_muted())
+            .child("备份中…")
+            .into_any_element()
+    } else {
+        overlay_button(
+            "db-backup-start",
+            "立即备份",
+            {
+                let database = database.clone();
+                move |shell, window, cx| shell.start_db_backup(database.clone(), window, cx)
+            },
+            entity,
+        )
+    };
+
+    // 备份用的是**连接卡**上的账号（`start_db_backup` → `read_db_form`），
+    // 而这张卡藏在页头的「基础信息」后面 —— 不写出来，用户拿到
+    // "备份失败：Access denied for user 'root'@'localhost'" 时无从下手
+    //（面板建的库有独立账号，root 往往不是它）。所以这里把**当前会用的账号**
+    // 显示出来：和 `open_db_console_for` 一样，卡上是什么就说什么。
+    let account: AnyElement = {
+        let user = form.user.read(cx).value().trim().to_owned();
+        let user = if user.is_empty() {
+            "root".to_owned()
+        } else {
+            user
+        };
+        let text = if form.password.read(cx).value().trim().is_empty() {
+            format!(
+                "备份用账号 {user}（密码那一格现在是空的 —— 先去页头「基础信息」\
+                 补上，否则 mysqldump 会报 Access denied）。"
+            )
+        } else {
+            format!("备份用账号 {user}（要换账号去页头「基础信息」）。")
+        };
+        div()
+            .text_xs()
+            .text_color(theme::text_dim())
+            .child(text)
+            .into_any_element()
+    };
 
     let rows: Vec<AnyElement> = db
         .backups
@@ -2629,12 +2688,20 @@ pub fn db_backup_dialog_overlay(db: &DbState, entity: &Entity<Shell>) -> AnyElem
                 v_flex()
                     .gap_1()
                     .child(
-                        div()
-                            .text_lg()
-                            .font_bold()
-                            .text_color(theme::text())
-                            .child(format!("备份 —— {database}")),
+                        h_flex()
+                            .w_full()
+                            .justify_between()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_lg()
+                                    .font_bold()
+                                    .text_color(theme::text())
+                                    .child(format!("备份 —— {database}")),
+                            )
+                            .child(start),
                     )
+                    .child(account)
                     .child(
                         div()
                             .text_xs()
@@ -2648,7 +2715,8 @@ pub fn db_backup_dialog_overlay(db: &DbState, entity: &Entity<Shell>) -> AnyElem
                     ),
             )
             .child(if rows.is_empty() {
-                empty_state("还没有备份").into_any_element()
+                empty_state("还没有备份 —— 点右上角的「立即备份」生成第一份")
+                    .into_any_element()
             } else {
                 v_flex()
                     .w_full()

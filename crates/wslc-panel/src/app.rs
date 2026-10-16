@@ -3414,6 +3414,13 @@ impl Shell {
             db.sql_database = Some(database.clone());
             db.clear_error();
         }
+        // 焦点给「语句」那一格：控制台是刚弹出来的浮层，光标不在里面的话
+        // 用户敲下去的字会落在别处（`AGENTS.md` §7.5：输入框的焦点在打开时
+        // 用 `window.focus` 给过去；`ensure_db_form` 当初把焦点给了密码那一格）。
+        if let Some(form) = self.db_form.as_ref() {
+            let handle = form.sql.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
+        }
         // 控制台是**浮层**（不是 tab）：实机反馈"上面不需要…sql 控制台，
         // 都是在具体数据库 database 操作的"。
         self.db_console_open = true;
@@ -5039,6 +5046,13 @@ impl Shell {
         if db.busy || db.import.is_some() {
             // 读列表 / 导入没结束时不开新的长任务（进度浮层也挡着点击，
             // 这一条是防"从别的路径调进来"）
+            //
+            // ⚠️ 别静默返回：点了没反应会被当成"按钮坏了"（`AGENTS.md` §7.1）。
+            // 这个分支原先一声不响 —— 而现在它是「立即备份」唯一可能的失败方式。
+            self.state.notify(Toast::info(
+                "正在读列表 / 导入中 —— 等它结束再点「立即备份」",
+            ));
+            cx.notify();
             return;
         }
         let Some(backup_dir) = self.state.backup_dir.clone() else {
@@ -5153,6 +5167,13 @@ impl Shell {
     }
 
     /// 打开某个库的备份列表（列表是 Windows 侧目录扫出来的）。
+    ///
+    /// 顺手把面板记的账号**写进连接卡**：备份用的是连接卡上的账号
+    ///（`start_db_backup` → `read_db_form`），而从列表行进来的用户根本没见过
+    /// 那张卡（它藏在页头的「基础信息」后面）。不写的话，**面板建的库**（有自己
+    /// 的账号，root 往往不对）会拿 root 去 dump，报一句 Access denied，而用户
+    /// 没地方知道该填谁 —— 浮层里那行"备份用账号 X"也因此显示了正确的值。
+    /// 理由和 `open_db_console_for` 完全一样：卡上显示什么，执行就用什么。
     pub fn open_db_backup_dialog(
         &mut self,
         database: String,
@@ -5163,13 +5184,25 @@ impl Shell {
             return;
         };
         let container = db.container.clone();
+        let credential = self
+            .state
+            .db_credentials
+            .get(&container, &database)
+            .cloned();
+
+        if let (Some(cred), Some(form)) = (credential.as_ref(), self.db_form.as_ref()) {
+            form.user
+                .update(cx, |state, cx| state.set_value(cred.user.clone(), window, cx));
+            form.password.update(cx, |state, cx| {
+                state.set_value(cred.password.clone(), window, cx)
+            });
+        }
         if let Some(db) = self.state.db.as_mut() {
             db.backup_dialog = Some(database);
         }
         // 进浮层前重扫一次（可能在文件管理器里手动删过 / 拷进来过）
         self.state.rescan_backups(&container);
         cx.notify();
-        let _ = window;
     }
 
     /// 恢复一份备份（**覆盖**该库现有数据 —— 走二次确认）。
@@ -7551,7 +7584,10 @@ impl Render for Shell {
             None => div().into_any_element(),
         };
         let db_backup_dialog: AnyElement = match &state.db {
-            Some(db) => views::db_backup_dialog_overlay(db, &entity),
+            Some(db) => match self.db_form.as_ref() {
+                Some(form) => views::db_backup_dialog_overlay(db, form, &entity, cx),
+                None => div().into_any_element(),
+            },
             None => div().into_any_element(),
         };
         // 导入进度（跑着才有内容）。
@@ -7724,6 +7760,14 @@ impl Render for Shell {
             // 「基础信息」排在动作弹窗**之后**（同时开着时它在上面 —— 但两者
             // 互斥：动作弹窗要按底下的按钮才会开，而浮层挡着那些按钮）。
             .child(db_info)
+            // ⚠️ SQL 控制台浮层**必须**挂在这儿。v0.9.2 把它从 tab 改成浮层时
+            // 只写了 `let db_console = …` 却没接进这棵树 —— 算出来的
+            // `AnyElement` 当场就被丢掉了，于是点行上的「SQL」只有一条
+            // "控制台已指向 X" 的 toast、**浮层永远不出现**（实机报过来就是这个：
+            // "这个 sql 按钮点击也没弹出控制台输入 sql 的界面来"）。
+            // 它和 `db_info` 走同一条路（都从数据库页的按钮打开，遮罩互斥），
+            // 排在这儿即可。
+            .child(db_console)
             // 备份进度要盖住它打开时所处的一切；备份列表在进度之后
             //（进度跑完自动关，那时列表还在）。
             .child(db_backup_progress)
