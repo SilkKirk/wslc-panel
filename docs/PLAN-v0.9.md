@@ -221,10 +221,16 @@ nginx 容器的情况，实测）。
 nginx 每个请求都从磁盘读，铺完就生效。
 
 Content 形态的 Web 根是**从 `Mounts` 里推**的：取 `Destination` 在
-`/usr/share/nginx` / `/usr/share/nginx/html` / `/etc/nginx` 底下、且 `Type` 是
-`volume` 或 `bind` 的那个挂载点；本机那个容器的实测值就是
-`webdata → /usr/share/nginx/html`。推不出来就回落 `/usr/share/nginx/html`
-（官方镜像的默认值），**并且把这个值填进表单让用户能改**。
+`/usr/share/nginx` 底下、且 `Type` 是 `volume` 或 `bind` 的那个挂载点；本机那个
+容器的实测值就是 `webdata → /usr/share/nginx/html`。推不出来就回落
+`/usr/share/nginx/html`（官方镜像的默认值），**并且把这个值填进表单让用户能改**。
+
+> ⚠️ **更正（v0.9.13）**：这一条早先还写着"`/etc/nginx` 底下的也算"
+>（理由是"有的镜像把 `conf.d` 单独挂出来"）。**那是错的**：`/etc/nginx/conf.d`
+> 挂的是**配置**，不是站点 —— 拿它当 Web 根会让「添加部署」把配置目录预填进
+> 「容器内目标目录」，文件铺进去没有任何效果，而源目录里若有个 `default.conf`
+> 还会把容器里同名的配置**删掉再覆盖**。现在只认 `/usr/share/nginx`，
+> 见 §19.6。
 
 ⚠️ 这一条（从 `Mounts` 推 Web 根）是**推的**：本机只有一个 nginx 容器，我验的是
 "这条路能读到那个挂载点"，没验过"各种 nginx 变体的挂载点都长这样"。所以界面上
@@ -1449,5 +1455,215 @@ exit=0                                  ← 停一个"本来就停着"的不算�
   这一版做的是"全部"这一档，**不是多选**；真要挑还得先有选择态，
   而且得决定它和搜索 / 筛选怎么交互。
 - 批量**删除**同理没做 —— 那是不可撤销的，和"停止"不是一个危险级别。
+
+---
+
+## 19. 一轮只读审查之后的修正（v0.9.13）
+
+这一轮不是新功能，是**把 v0.9 这一版交出去之后回头做的一次只读审查**：
+一行一行读实现，逐条对着文档里"当初为什么这么定"的说法核，再把**能验的
+假设拿到真机上验**（`AGENTS.md` §8 那类 CI 查不出来的东西）。
+
+> ⚠️ 这一轮**不动版本号**：`AGENTS.md` §4 的版本号是**发布**那一步的事，
+> 而这些改动还没合并到 main。下面用 v0.9.13 只是为了给这一轮起个名字。
+
+### 19.1 审查是怎么做的（以及一个临时探针容器）
+
+- **只读**读代码（`app.rs` / `views.rs` / `model::deploy` / `cmd::deploy` /
+  `deploys.rs` / `columns.rs`），逐条对着 §1 那张实测表和 §12~§18 的说法核；
+- **拿到真机上跑**：本机 `wslc 3.0.3.0` 在，四个容器都在（都是 Exited）。
+  为了验 alpine / busybox 上的那条路，临时起了**一个**探针容器
+  （`wslc run -d --pull never --name wslc-panel-review-probe
+  docker.1panel.live/library/eclipse-temurin:17-jre-alpine /bin/sh -c "tail -f /dev/null"`），
+  验完 `stop` + `remove`，**原有的四个容器状态没动**。
+
+### 19.2 「重新部署」不删上一次铺进去的名字（**最要紧的一条**）
+
+`removals_script` 的文档写着删除列表有三个来源：**这次的成员**、**存档里上一次
+的成员**（`DeployRecord::members`）、外加 `app.log` / `app.pid`。
+`deploys.rs` 的字段文档也写着"「重新部署」和「删除」靠它决定删哪些"。
+
+而 `Shell::submit_deploy` 只传了**这次的**：`prepare_target(…, &member_names)`。
+于是源目录里**改名 / 删掉**的文件永远留在目标目录里 —— 正是 §2.3 里
+"为什么先清空再铺"那段要避免的那一类（"我明明改了，页面上还是旧的"），
+而且记录随后被 `members: member_names` 覆盖，连「删除」也再收拾不到它。
+**改过目标目录的重新部署更糟**：旧目录整批文件成了孤儿。
+
+改法：新增纯函数 `wslc_panel_core::deploys::merge_members(previous, current)`
+（这次的在前、上一次剩下的跟在后面、去重），`submit_deploy` 用
+**存档里那条记录的 `members`** 当"上一次"。三条理由：
+
+1. 它必须来自**存档**，不能靠"读一眼目录"—— 面板不可能知道目录里哪些是自己
+   上次铺的；
+2. **失败时存的是并集**（`merge_members` 的结果），成功时存的是**这一次的**：
+   复制可能只做了一半，而我们已经把上一次的名字删掉了，存并集才能让之后的
+   「删除」把它们都收拾干净；反过来成功时存并集的话，那些"上一次有、这一次
+   没有"的名字会一代代累积，记录越读越假；
+3. 纯函数住在 `wslc-panel-core`（**不是 `app.rs`**）：`app.rs` 没有
+   `#[cfg(test)]`，而 CI 的测试任务**不跑 `wslc-panel`** —— 写在那儿等于没有断言。
+
+### 19.3 一个 `progress` 槽 + "按应用算的忙碌"
+
+界面上的忙碌标记是**按应用名**算的（`views::deploy_row_actions` 比
+`p.app == app`），而执行侧的守卫是**按页面**的（`deploy.progress.is_some()`）。
+两者不一致，于是 A 在跑的时候：
+
+- B 那一行**照样画着按钮**，点下去 `start_deployment` / `confirm_remove_deployment`
+  **静默 `return`** —— 一句话都不说（`AGENTS.md` §7.1：点了没反应会被当成按钮坏了）；
+- `stop_deployment` 连守卫都**没有**：它会覆盖 A 的 `progress`，而 A 的回调回来时
+  只判容器、不判应用，一句 `set_deploy_progress(None)` 就把 **B 的**「正在…」
+  清掉 —— B 的按钮提前复活、能再点一次；
+- 停止用的是 `DeployPhase::Starting`，所以那一行写着**"正在启动…"**。
+
+三处改法：补 `DeployPhase::Stopping`（"正在停止…"）；`stop_deployment` 补同一个
+守卫；守卫拦下来时统一发一句 `deploy_busy_notice`（**不静默**）；清进度统一走
+新的 `clear_deploy_progress_for(app)` —— **谁的动作谁才能清自己那一格**。
+
+### 19.4 一批界面文案没走 `strip_md`（屏幕上真的显示 `**`）
+
+`util::strip_md` 的设计意图写得很清楚（"与其在每条文案里手工删标记，
+不如在渲染处统一清掉 —— 于是它是个守卫"），但 v0.9 新加的**9 处全是裸的**：
+部署页的说明卡、"共 N 条部署"那行、弹窗里四段说明、日志浮层那句、删除确认的
+正文与警告。另外顺手查出**6 处这次之前就漏着**的（同一个渲染处规矩：
+数据库「连接」卡、备份浮层的说明、拉取弹窗的报错说明、设置页「终端」那两段、
+`image_facts_hint` 里"没有默认命令"那句）。一共补了 **15 处** `strip_md` 调用。
+
+⚠️ 顺带修了一句**本身就过期**的话：删除确认里"被清掉的是**卷里的数据**"
+—— v0.9.10 起删的只有我们自己铺过的名字，那句读起来像"整个目录被清空"。
+现在说的是"删的就是**卷里**的那几个文件，卷还在，文件不会回来"。
+
+> 教训（值得单独记）：**"渲染处统一清掉"这条守卫要真的在每个渲染处生效**。
+> 一条不过，用户看到的就是 `**静态文件**` 这种字面量 —— 而 CI 一个字都不会说。
+
+### 19.5 部署页的状态列**不参与自动刷新**
+
+`tick → refresh_quiet → refresh_inner` 只采容器 / 镜像 / 网络 / 卷 / 发行版快照，
+**不碰 `state.deploy`**。于是坐在这一页不动时：应用自己崩了、或者在「终端」里
+被 `kill` 掉了，界面会**一直显示「运行中」** —— 而页面顶上那句说明恰恰写着
+"「现在跑没跑」是**问容器**得来的"。两个地方对同一件事有两种说法。
+
+改法：`tick` 里加 `tick_deploy_status`，只在**这一页**、没有动作在跑、
+而且已经 `loaded` 时触发；**慢档**（`deploy_status_every_n_ticks = 3`，
+按 `prefs.refresh_secs`＝3 秒算约 9 秒一轮）—— 因为那里**每一条部署都是一次
+`wslc exec`**，跟着快照 3 秒一轮太重。
+
+⚠️ 慢档重探**保留旧值**（`refresh_deploy_status_quiet` 不清 `probed` / `process` /
+`files`）：不然每 9 秒整列都会闪一下「读取中…」，比"数据晚几秒"难受得多。
+另外给 `refresh_deploy_status_inner` 补了"已经在问就不叠第二次"的守卫
+（慢档轮询和动作回调完全可能撞上）。
+
+### 19.6 nginx 的 Web 根不再认 `/etc/nginx`（§4 那条更正）
+
+早先推 Web 根时会退到 `/etc/nginx` 底下的挂载点。而 `-v ./conf.d:/etc/nginx/conf.d`
+是**极常见**的挂法，那种容器的站点内容往往烤在镜像里、根本没有挂载 ——
+于是面板把**配置目录**预填成"容器内目标目录"：铺进去没有任何效果（nginx 不把
+`.html` 当配置读），而源目录里若有个 `default.conf`，`removals_script` 会先删掉
+容器里那个**同名配置**再覆盖它。现在只认 `/usr/share/nginx` 底下（且不是它自己），
+拿不到就回落 `/usr/share/nginx/html`。回归钉是
+`config_mounts_are_never_treated_as_the_web_root`。
+
+### 19.7 默认应用名从"运行时键"改成 `app`
+
+`open_deploy_dialog` 早先把 `AppRuntime::key()` 当应用名初值 → Java 容器预填出
+`java` → 默认目标目录正好是 **`/opt/java`**，即 §15 那次"把镜像自带的 JDK 删掉"
+的现场路径。逐名删除之后面板已经不会删它了，但把用户往那个路径上引没有任何好处
+（而 §15.7 给用户的自救建议恰恰是"改成 `/opt/app`"）。现在是
+`model::deploy::DEFAULT_APP_NAME = "app"`，理由写在那个常量上。
+
+### 19.8 `classify_error` 认不出 `mkdir` / `cp` 真正的报错
+
+本机实测（探针容器）三种形状的原文：
+
+```text
+mkdir -p <已存在的文件>        → mkdir: cannot create directory '/tmp/afile': File exists
+mkdir -p <穿过一个文件的路径>   → mkdir: cannot create directory '/tmp/afile': Not a directory
+container cp … /tmp/nope-dir/  → exit 1「Could not find the file …」+ ERROR_PATH_NOT_FOUND
+```
+
+这三条**一条都不命中**原来的关键词（`"not found"` 匹配不到 `not_found`
+下划线形态，`"cannot find the path"` 匹配不到 `Could not find the file`），
+全部落到 `Other` —— 而 `Other` 的 `hint()` 是 `None`：用户只拿到一句引擎原文，
+尽管 `PathNotFound` 那句"换一个目录试试"就是对的。现在它们进 `PathNotFound`
+（判据就是上面这三行原文，另有单测钉住）。
+
+### 19.9 死代码与"测的不是跑的那份"
+
+- `cmd::deploy::is_running` **没有调用方**（界面每一行问的是 `probe_state`：
+  一条脚本同时拿"跑没跑 + 目录里几个文件"）→ 删掉，并在原处留一句说明；
+- `DeployProbe::publishes` **只有测试在调**，而界面另写了一份内联判据 →
+  两边的判据合成 `model::deploy::port_is_published`（纯函数 + 单测），
+  界面和 `DeployState` 都调它。**"被测的那份没人用、在用的那份没被测"
+  是这仓库最忌讳的形状**；
+- **tar 时代的遗留**随方案一起清掉：`DeployErrorKind::BadArchive` 已经造不出来
+  （`classify_error` 里那三条 tar 关键词是死的）、`NoHostTar` **从第一天就
+  不可达**，两条 hint 还分别写着"看原文里的 tar 报错"和
+  "这台机器上没有 tar.exe" —— 而搬运早就改成 `wslc container cp` 了。
+  `MissingTool` 的 hint 里那句"部署需要 /bin/sh **和 tar**"也删了。
+
+### 19.10 容器页「操作」列的权重 330 → 440
+
+「部署管理」之后这一格最多 **7 个**按钮（终端 / 数据库 / 部署管理 / 重启 /
+停止 / 日志 / 删除，共 17 个汉字），而 330 那一版是按**"最多 5 个按钮"**估的
+（注释里就写着 5）。`columns.rs` 在 `DB_COLUMNS` 那段刚记过一次**实机被裁**的
+教训（4 个按钮 / 11 个字在 ≈273px 里被裁，最后给到 360/1390 ≈ 26%），
+还写下规矩"加按钮时顺手把这个数往上调"。按同一套口径量：17 个字 ≈ 380px，
+留余量 → 权重 ≈ 410~440，取 **440**。
+
+⚠️ 这个数**是算出来的（推的）**，`AGENTS.md` §8 那条"实机看一眼会不会挤"
+仍然成立 —— 只是 330 那一版连算都没算。
+
+### 19.11 文档与杂项
+
+- **README 的「部署管理」行**还在写"部署会**先清空目标目录**再铺"和
+  "删会把容器里的目录清空" —— v0.9.10 起就不是了。已按现在的语义重写
+  （按名字替换 + 别人东西不动 + 事后提醒 + 状态自动刷新）；
+- **`nav_id` 的注释**（`app.rs`）写着"这个 match 只覆盖 `Page::ALL` 里那 8 页"，
+  从 `AddInstance` 起就不准了（现在有 11 支）—— §10.1 里当初就点名要改，没改；
+- **`.github/workflows/release.yml` 结尾的换行**被上一次编辑吃掉了（老版本有），
+  每次改它都会带一行 `\ No newline at end of file` 噪音 → 补回；
+- `wslc-panel-core::state` 里 `AppState` 那句文档注释行尾多了个 `///`
+  （`/// 应用的完整状态。///`）→ 删掉。
+
+### 19.12 本机实测：复核了什么、**推翻了**哪两个怀疑
+
+审查里有两处我本来准备报成 bug，先在真机上验了 —— 结论是**代码没问题**，
+所以没有改（记在这里，免得下一个人再去查一遍）：
+
+1. **`count_entries_script` 用了 `find -mindepth 1 -maxdepth 1`**（GNU 扩展），
+   我怀疑 alpine 的 busybox find 不支持。实测（busybox **1.37.0** / alpine 3.24）：
+   `find --help` 里列着 `-mindepth`，`find /tmp/probe -mindepth 1 -maxdepth 1 | wc -l`
+   给 **3**（= 真实顶层条目数）、rc=0 → **可用**；
+2. **僵尸判活那套** `/proc/<pid>/stat` + `${s##*) }`：在同一镜像里复现了 §15 的
+   现场（`nohup /nonexistent-xyz &` → pid 46 是 `[nohup] Z`、PPID=1），实测
+   `kill -0 46` → **rc=0**（老脚本会说 RUNNING），新脚本给
+   **`__WSLC_STOPPED__`** → 在被测的那个 shell 上**真的生效**。
+
+顺带把搬运那条链也复核了一遍（全部与 §1 一致）：`cp --help` 里 **`-q` 真实存在**；
+目录 cp **确实多套一层**（`/tmp/probe2/site/…`）、逐个顶层条目**落平**
+（`/tmp/probe3/index.html`、`sub/x.txt`）；单文件权限 **`-rw-rw-rw-`（666）**、
+目录 777；cp 到不存在的目录 **exit 1**。整套起停判活（prepare → start → probe →
+tail → stop → remove）在 alpine 上跑通，`ours=false` 时哨兵照打、外来目录
+（合成的 `openjdk/`）**一个字节没动**。
+
+### 19.13 这一轮**没做**的 / 仍需本机点一遍
+
+- **孤儿文件只在我能算出来的时候收拾**：目标目录被改过（换过一次路径）时，
+  **旧目录**里那一批文件面板再也找不到 —— 记录里只留了新目标。要处理得存
+  "历史目标目录"，那是另一件事（记录结构要动）；
+- **`progress` 仍然是一个槽**：这一轮做到的是"A 在跑时点 B 一定有反馈、
+  也不会串台"，**不是**"两个部署能并行"。并行要管子进程池和错误汇总，
+  收益只在"一次铺好几个应用"时才明显；
+- ⚠️ **必须在本机点一遍**（`AGENTS.md` §8，CI 只证明编译过 + 纯逻辑测试过）：
+  1. 源目录**改名一个文件**后点「重新部署」→ 进容器 `ls` 看旧名字**没了**
+     （这是 19.2 的唯一判据）；
+  2. A 应用部署中，点 B 那一行的「启动 / 停止 / 删除」→ 出的是**"已经有一个
+     部署动作在跑"**，而且 A 那一行的「正在…」**不会**被清掉；
+  3. 点「停止」时那一行写的是**"正在停止…"**；
+  4. 部署页的说明文字里**不再出现** `**` 或反引号（一行一行看）；
+  5. 在这一页坐着不动 **≥9 秒** → 状态列自己更新（把容器/app 在别处停掉试）；
+     而且**不该**整列闪「读取中…」；
+  6. 容器行「操作」列 7 个按钮在 1707 逻辑宽下**没被裁**（那条 440 是算的）；
+  7. `-v ./conf.d:/etc/nginx/conf.d` 的 nginx 容器：目标目录预填应该是
+     **`/usr/share/nginx/html`**，不是那个配置目录。
 
 
