@@ -312,6 +312,33 @@ Release 与两个资产都是它建出来的。
 `image_facts_hint`）。`strip_md` 的意义是**守卫**而不是一次性修补 —— 新加文案时
 看一眼渲染处。
 
+### 界面：列表行按钮超过 4 个就收进「更多」菜单
+
+行内只留**这一类东西专属的入口**（比如「数据库」「部署管理」—— 只能从这一行进、
+不在侧边栏里）+ **最高频的状态切换**（启动 / 停止），其余（含危险动作）收进
+`Button::dropdown_menu(...)` 的下拉菜单里。
+
+```rust
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};  // 扩展 trait，必须显式导入
+Button::new(id).label("更多").small()
+    .dropdown_menu(|menu, _window, _cx| {
+        menu.item(PopupMenuItem::new("日志").on_click(move |_, _, cx| { … }))
+    })
+```
+
+- `menu::init(cx)` 已经由 `gpui_component::init` 调过（我们 `main.rs` 调的
+  `gpui_kit::init` 覆盖了它），**不用自己初始化**；
+- 菜单项点完**自动关**（`PopupMenu` 调完 handler 自己 `dismiss`），回调里别手动关；
+- 菜单走 popover 层（`deferred` + `POPUP_PRIORITY`），所以**表格的 `overflow_hidden`
+  裁不掉它** —— 这是"行里能弹菜单"的前提；
+- ⚠️ 行内少了按钮之后，**"其余动作在哪儿"的那几句文案必须跟着改**，
+  否则用户按老习惯去行内找会以为功能没了。
+
+⚠️ **v0.9.13→v0.9.14 的教训**：容器行铺到 7 个按钮时，我先把 `ALL_COLUMNS` 的操作列
+从 330 加到 440 想"装下它们" —— 实机截图里那一列**还是两行**。
+**"列太窄"有时候不是列的问题，是按钮太多。** 加第 5 个按钮之前先问一句
+"它该不该进「更多」"。细节见 `docs/PLAN-v0.9.md` §20。
+
 ### 计划文档
 
 `docs/PLAN-*.md` 是分阶段计划，`docs/SPIKE.md` 是前期技术验证，
