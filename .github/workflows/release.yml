@@ -6,10 +6,15 @@ name: Release
 #       release_tag 留空 → 只编译 + 上传 Artifact（不开 Release）
 #       release_tag 填 v0.1.0 → 编译 + 打包，并为该标签建 Release
 #
-#     为什么需要"填 release_tag"这条路径：
-#     用 GitHub REST API 创建 tag（POST /git/refs）只会触发 `create` 事件，
-#     **不会**触发 `push` 事件，所以 `on: push: tags` 不会跑。
-#     这条路径同时也是"给已存在的标签补发 Release"的入口。
+#     为什么还需要"填 release_tag"这条路径：
+#     ① 给**已经存在**的标签补发 Release / 补资产（重新出包也走它）；
+#     ② `git push` 不通、标签只能从别处建的时候。
+#     ⚠️ 但它**不是**"用 API 建标签时的必备步骤" —— 早先这里写着
+#     "用 REST API 建 tag 只会触发 create 事件、不会触发 push"，那条**是错的**：
+#     实测（v0.9.2）用 POST /git/tags + POST /git/refs 建完标签 3 秒内，
+#     GitHub 自己就起了一个 `event=push` 的 run。所以正确姿势是**先等一分钟**
+#     看有没有自己起，有就别再手动 dispatch —— 否则同一个标签上两个 run 并行，
+#     会撞出 `422 Release.tag_name already exists`（详见 AGENTS §4）。
 #
 # 产物是**单文件 exe**：GPUI 走 D3D11，不依赖 WebView2 或任何运行时。
 
