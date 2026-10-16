@@ -59,6 +59,18 @@ pub struct DeployRecord {
     /// 应用监听的端口（**信息性** —— 已存在的容器改不了端口发布，
     /// 见 `cmd::deploy` 的说明）。
     pub port: u16,
+    /// 上一次**真的铺进目标目录的名字**（文件来源是文件名，目录来源是顶层条目名）。
+    ///
+    /// 「重新部署」和「删除」靠它决定删哪些 —— 删的**只有这些**（外加
+    /// `app.log` / `app.pid`），**不再整目录清空**。见
+    /// `model::deploy::removals_script` 那段：v0.9.8 用 `find -delete` 清目录，
+    /// 把 `eclipse-temurin` 镜像自带的 JDK（正好在默认目标目录 `/opt/java`
+    /// 底下）删掉过一次，应用从此起不来。
+    ///
+    /// `#[serde(default)]`：v0.9.10 之前的存档里没有这一项，读出来是空表
+    /// （那种老记录只能删日志 / pidfile —— 比"猜它铺了什么"安全）。
+    #[serde(default)]
+    pub members: Vec<String>,
 }
 
 /// 全部记录，按 `"<容器名>/<应用名>"` 索引。
@@ -182,6 +194,7 @@ mod tests {
             command: format!("./{app}"),
             artifact: app.to_owned(),
             port: 8080,
+            members: vec![app.to_owned()],
         }
     }
 

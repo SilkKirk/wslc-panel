@@ -979,6 +979,10 @@ struct DeployAction {
     command: String,
     /// 是不是进程形态（决定要不要先停 / 能不能启动）。
     is_process: bool,
+    /// 上一次真的铺进去的名字 —— 「删除」只删这些（外加 `app.log` / `app.pid`），
+    /// **不整目录清空**（见 `model::deploy::removals_script`）。
+    /// 老存档里没有这一项时是空表：那就只删日志 / pidfile。
+    members: Vec<String>,
 }
 
 impl Shell {
@@ -2574,6 +2578,40 @@ impl Shell {
             self.state.notify(Toast::error(format!("参数有误：{e}")));
             cx.notify();
             return;
+        }
+
+        // ⚠️ 镜像**自己不带命令**（`Cmd` 是空的）、而「启动命令」也留空 ——
+        // 建出来的容器会"起来就跑完"。实测 `eclipse-temurin:8-jre-alpine`：
+        // `wslc start` 提示成功，但 `StartedAt` 与 `FinishedAt` 相隔 **1.1 ms**、
+        // 退出码 0、logs 为空（那个镜像只有 `ENTRYPOINT=/__cacert_entrypoint.sh`，
+        // 末行 `exec "$@"`，不带参数等于什么都不做）—— 界面上只看到
+        // "点了启动还是已退出"，反复点都一样（`docs/PLAN-v0.9.md` §11 / §16）。
+        //
+        // 和上面那个"预填了变量名却没填值"同一类：**空值等于没配**，在这里点破。
+        // 只有**确定**读到了"这个镜像没有 Cmd"才拦 —— 还没读到 / 读失败时放行
+        // （不能因为一次 inspect 失败就不让人建容器）。
+        //
+        // ⚠️ `spec.command` 是**拼好的 argv**（`state::create_command`）：留空时是
+        // 空表（那正是"不给命令、用镜像自己的"），所以判空用 `is_empty()`。
+        if spec.command.is_empty() {
+            let has_cmd = match self.create_dialog.as_ref().map(|dialog| &dialog.facts) {
+                Some(FactsState::Ready(facts)) => Some(facts.has_cmd),
+                _ => None,
+            };
+            if has_cmd == Some(false) {
+                self.state.notify(Toast::error(
+                    "这个镜像自己没有默认命令（只有 ENTRYPOINT）——「启动命令」留空的话，\
+                     容器起来就会立刻退出。填一条：想让它先待着等部署，填 \
+                     `tail -f /dev/null`；想直接跑应用，填你的启动命令。",
+                ));
+                // 焦点送到那一格，省得用户自己找
+                if let Some(dialog) = self.create_dialog.as_ref() {
+                    let handle = dialog.command.read(cx).focus_handle(cx);
+                    window.focus(&handle, cx);
+                }
+                cx.notify();
+                return;
+            }
         }
 
         let command = format!("wslc {}", spec.to_args().join(" "));
@@ -4273,10 +4311,11 @@ impl Shell {
     ///
     /// # 顺序（每一条都有理由）
     ///
-    /// 1. **停旧进程**（进程形态、而且是重新部署）—— 必须在清空目录**之前**。
-    ///    ⚠️ 少了这一步：pidfile 就在目标目录里，目录一清，**旧进程就再也停不掉**
+    /// 1. **停旧进程**（进程形态、而且是重新部署）—— 必须在删掉那些文件**之前**。
+    ///    ⚠️ 少了这一步：pidfile 就在目标目录里，它一被删，**旧进程就再也停不掉**
     ///    （没有 pid 了），而新的启动会再起一个 —— 端口冲突；
-    /// 2. **准备目标目录**（`mkdir -p` + 清空内容）—— 两条理由：
+    /// 2. **准备目标目录**（`mkdir -p` + 删掉**我们铺过的那些名字**，见
+    ///    `model::deploy::removals_script`）—— 两条理由：
     ///    ① `wslc container cp` 要求目标目录**已存在**（实测不存在的路径报
     ///    `ERROR_PATH_NOT_FOUND`）；② 这一步走 `exec`，它会**报出"容器没在运行"**
     ///    —— 而 `cp` 在那种情况下**静默成功**（实测 exit 0、不输出、什么都不做）；
@@ -4326,7 +4365,8 @@ impl Shell {
             cx.notify();
             return;
         }
-        // ⚠️ 安全闸：部署和删除都会**清空**目标目录，所以路径要先过关
+        // ⚠️ 安全闸：部署和删除都会在目标目录里**删东西**（只删我们自己铺的），
+        // 所以路径要先过关
         //（`/usr` 那种就是 `find /usr -mindepth 1 -delete`）。
         //
         // 用 `safe_target_with_site` 而不是 `safe_target`：nginx 形态的默认值
@@ -4414,6 +4454,22 @@ impl Shell {
         let source_kind = runtime.source_kind();
         let wslc = self.state.wslc.clone();
 
+        // 这次要铺进去的**名字**（文件来源是文件名，目录来源是顶层条目名）。
+        //
+        // `prepare_target` 靠它决定删哪些 —— 只删**我们自己铺的**那些名字，
+        // 不再整目录清空（见 `model::deploy::removals_script`：v0.9.8 那个
+        // `find -delete` 把 `eclipse-temurin` 的 JDK 删掉过一次）。
+        // 读一次本地目录名是微秒级，不用丢后台。
+        let members = match deploy_cmd::member_names(&source_path, source_kind) {
+            Ok(names) => names,
+            Err(e) => {
+                self.state
+                    .notify(Toast::error(format!("读不出要部署的文件名：{e}")));
+                cx.notify();
+                return;
+            }
+        };
+
         // 记下要写进存档的东西（弹窗马上要关，那之后就读不到了）
         let record = crate::deploys::DeployRecord {
             app: values.app.clone(),
@@ -4423,6 +4479,8 @@ impl Shell {
             command: values.command.clone(),
             artifact: artifact.clone(),
             port: values.port.unwrap_or_else(|| runtime.default_port()),
+            // 存档留一份：下次「重新部署 / 删除」靠它收拾"上一次有、这一次没有"的旧文件
+            members,
         };
         let app = values.app.clone();
         let target = values.target.clone();
@@ -4467,6 +4525,10 @@ impl Shell {
                 let target = target.clone();
                 let source = source_path.clone();
                 let chmod_path = chmod_path.clone();
+                // 成员名要借给后台闭包用，而后台闭包是 `async move` ——
+                // 直接借 `record.members` 会把整个 `record` 移进去，
+                // 后面（写存档那段）就用不了了。先克隆一份。
+                let members = record.members.clone();
                 cx.background_executor()
                     .spawn(async move {
                         if stop_first {
@@ -4475,10 +4537,20 @@ impl Shell {
                         }
                         // 准备目录 —— 它顺带把"容器没在运行"报出来
                         //（`cp` 在那种情况下**静默成功**，见 `cmd::deploy`），
-                        // 以及"这个目录不是我们铺的、而且非空"时**拒绝清空**
-                        //（`ours_target`，见上面那段注释）
-                        deploy_cmd::prepare_target(&wslc, &container, &target, ours_target)
-                            .map_err(|e| e.to_string())?;
+                        // 以及"这个目录不是我们铺的、而且非空"时**拒绝动手**
+                        //（`ours_target`，见上面那段注释）。
+                        //
+                        // ⚠️ 删的**只有 `members` 里那些名字**（外加
+                        // app.log / app.pid），所以哪怕 `ours_target` 判断失手，
+                        // 目录里别人的东西（比如镜像自带的 JDK）也不会被删。
+                        deploy_cmd::prepare_target(
+                            &wslc,
+                            &container,
+                            &target,
+                            ours_target,
+                            &members,
+                        )
+                        .map_err(|e| e.to_string())?;
                         let members = deploy_cmd::copy_sources(
                             &wslc,
                             &container,
@@ -4562,6 +4634,7 @@ impl Shell {
                                 command: record.command.clone(),
                                 artifact: record.artifact.clone(),
                                 port,
+                                members: record.members.clone(),
                             },
                         );
                         if let Some(error) = shell.state.save_deploy_store() {
@@ -4587,6 +4660,7 @@ impl Shell {
                                 command: record.command.clone(),
                                 artifact: record.artifact.clone(),
                                 port,
+                                members: record.members.clone(),
                             },
                         );
                         let _ = shell.state.save_deploy_store();
@@ -4864,7 +4938,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// 确认删除：停进程 → 清空目标目录 → 删掉本地记录。
+    /// 确认删除：停进程 → 删掉面板铺进目标目录的那些文件 → 删掉本地记录。
     pub fn confirm_remove_deployment(&mut self, app: String, cx: &mut Context<Self>) {
         let Some(action) = self.deploy_action(&app) else {
             return;
@@ -4897,8 +4971,13 @@ impl Shell {
                             // 没了就再也停不掉）
                             let _ = deploy_cmd::stop(&wslc, &container, &action.target);
                         }
-                        deploy_cmd::remove_target(&wslc, &container, &action.target)
-                            .map_err(|e| e.to_string())
+                        deploy_cmd::remove_target(
+                            &wslc,
+                            &container,
+                            &action.target,
+                            &action.members,
+                        )
+                        .map_err(|e| e.to_string())
                     })
                     .await
             };
@@ -4918,7 +4997,9 @@ impl Shell {
                         shell.state.refresh_deploy_entries(&container);
                         shell
                             .state
-                            .notify(Toast::info(format!("已删除 {app} 的部署（目标目录已清空）")));
+                            .notify(Toast::info(format!(
+                                "已删除 {app} 的部署（只删了面板铺进去的文件）"
+                            )));
                     }
                     Err(message) => {
                         if shell.deploy_page_is(&container) {
@@ -4974,6 +5055,7 @@ impl Shell {
             is_process: entry
                 .runtime
                 .is_some_and(|runtime| runtime.kind() == DeployKind::Process),
+            members: entry.record.members.clone(),
         })
     }
 

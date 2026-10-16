@@ -97,6 +97,18 @@ pub struct ImageFacts {
     pub exposed_ports: Vec<u16>,
     /// 它到底会跑什么：`Entrypoint` + `Cmd` 拼起来，给人看的一句话。
     pub command: String,
+    /// 镜像**自己有没有 `CMD`**。
+    ///
+    /// ⚠️ 这一位是 v0.9.10 加的，而且**必须有**：`command` 把
+    /// `Entrypoint + Cmd` 拼成了一句给人看的话，**信息就丢了** —— 界面因此
+    /// 分不出"这个镜像有默认命令"和"它只有 `ENTRYPOINT`、不带参数等于什么都不做"。
+    ///
+    /// 实测 `eclipse-temurin:8-jre-alpine` 就是后者：`Cmd` 是 `null`，
+    /// entrypoint 末行是 `exec "$@"` —— 于是「创建容器」里「启动命令」留空，
+    /// 容器起来 **1.1 ms** 就 `Exited (0)`；用户点「启动」看到"成功"、
+    /// 状态却还是「已退出」，反复点都一样（`docs/PLAN-v0.9.md` §11 与 §16）。
+    /// 有了这一位，`confirm_create` 就能在提交时拦住"留空 + 镜像没 CMD"这一种。
+    pub has_cmd: bool,
 }
 
 /// 解析 `wslc image inspect <ref> --format json` 的输出。
@@ -151,14 +163,18 @@ pub fn parse_image_inspect(json: &str) -> Result<ImageFacts, String> {
     exposed_ports.dedup();
 
     // `Entrypoint` 在前、`Cmd` 在后 —— 和容器实际跑的那条命令同序。
-    let mut parts: Vec<String> = Vec::new();
-    for field in ["Entrypoint", "Cmd"] {
-        parts.extend(command_parts(config.and_then(|config| config.get(field))));
-    }
+    let entry_parts = command_parts(config.and_then(|config| config.get("Entrypoint")));
+    let cmd_parts = command_parts(config.and_then(|config| config.get("Cmd")));
+    // ⚠️ `has_cmd` 必须在**拼接之前**单独取：拼成一句话之后就分不出来了
+    //（见字段的文档：temurin 那种"只有 ENTRYPOINT"的镜像就是靠这一位认出来的）
+    let has_cmd = !cmd_parts.is_empty();
+    let mut parts = entry_parts;
+    parts.extend(cmd_parts);
 
     Ok(ImageFacts {
         exposed_ports,
         command: parts.join(" "),
+        has_cmd,
     })
 }
 
@@ -373,6 +389,7 @@ mod tests {
         assert_eq!(facts.exposed_ports, vec![80]);
         // `Entrypoint` + `Cmd` 按顺序拼起来
         assert_eq!(facts.command, "/docker-entrypoint.sh nginx -g daemon off;");
+        assert!(facts.has_cmd, "nginx 的 Cmd 是 `nginx -g daemon off;`：{facts:?}");
         assert_eq!(suggest_port_mappings(&facts.exposed_ports), "8080:80");
     }
 
@@ -381,8 +398,32 @@ mod tests {
         let facts = parse_image_inspect(INSPECT_HELLO).expect("应能解析");
         assert!(facts.exposed_ports.is_empty(), "{facts:?}");
         assert_eq!(facts.command, "/hello");
+        assert!(facts.has_cmd, "hello-world 自己带 Cmd：{facts:?}");
         // 没有声明端口就**不预填**（空串），别写一个空的 `-p`
         assert_eq!(suggest_port_mappings(&facts.exposed_ports), "");
+    }
+
+    /// ⚠️ 回归钉（v0.9.10）：**只有 `ENTRYPOINT`、没有 `CMD`** 的镜像要认得出来。
+    ///
+    /// 形状就是现场那个 `eclipse-temurin:8-jre-alpine`（`Cmd` 是 `null`，
+    /// entrypoint 末行 `exec "$@"`）—— 这种镜像「启动命令」留空就会
+    /// "起来 1.1 ms 就退"，而 `command` 那一句话看着又像"它有命令"。
+    #[test]
+    fn has_cmd_is_false_when_the_image_only_has_an_entrypoint() {
+        let json = r#"{"Config":{"Cmd":null,"Entrypoint":["/__cacert_entrypoint.sh"]}}"#;
+        let facts = parse_image_inspect(json).unwrap();
+        assert_eq!(facts.command, "/__cacert_entrypoint.sh");
+        assert!(!facts.has_cmd, "没有 Cmd 就是没有：{facts:?}");
+
+        // 两边都没有（`Config` 空 / 连 Config 都没有）同样算没有
+        assert!(!parse_image_inspect(r#"{"Config":{}}"#).unwrap().has_cmd);
+        assert!(!parse_image_inspect(r#"{"Id":"x"}"#).unwrap().has_cmd);
+        // 空数组也不算（有些镜像显式给 `"Cmd": []`）
+        assert!(
+            !parse_image_inspect(r#"{"Config":{"Cmd":[]}}"#)
+                .unwrap()
+                .has_cmd
+        );
     }
 
     #[test]
@@ -403,6 +444,7 @@ mod tests {
         let facts = parse_image_inspect(json).unwrap();
         assert_eq!(facts.command, "/init nginx -g 'daemon off;'");
         assert!(facts.exposed_ports.is_empty());
+        assert!(facts.has_cmd, "单字符串形状的 Cmd 也要算有：{facts:?}");
 
         let facts = parse_image_inspect(r#"{"Config":{}}"#).unwrap();
         assert_eq!(facts.command, "");
