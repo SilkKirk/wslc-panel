@@ -1495,9 +1495,12 @@ fn db_connection_card(db: &DbState, form: &DbPageForm, cx: &App) -> AnyElement {
             .text_xs()
             .text_color(theme::text_muted())
             .child(
-                "面板靠**容器自带的** mysql / mariadb 客户端执行 SQL —— 所以容器要在运行、\
-                 镜像里得有客户端（不要求把端口发布到主机）。密码走 MYSQL_PWD 环境变量，\
-                 不进命令行；改完点右上角「重新读取」生效。",
+                // Markdown 文案 → 渲染处统一清标记（`util::strip_md`）
+                crate::util::strip_md(
+                    "面板靠**容器自带的** mysql / mariadb 客户端执行 SQL —— 所以容器要在运行、\
+                     镜像里得有客户端（不要求把端口发布到主机）。密码走 MYSQL_PWD 环境变量，\
+                     不进命令行；改完点右上角「重新读取」生效。",
+                ),
             ),
     );
 
@@ -2748,10 +2751,12 @@ pub fn db_backup_dialog_overlay(
                             .text_xs()
                             .text_color(theme::text_dim())
                             .child(
-                                "列表是 Windows 侧的存档（容器删了它们还在），\
-                                 也是**恢复的输入**：恢复时会把这份文件送进容器再导入，\
-                                 所以容器重建过也照样能恢复。\
-                                 恢复**覆盖**这个库现有的全部数据。",
+                                crate::util::strip_md(
+                                    "列表是 Windows 侧的存档（容器删了它们还在），\
+                                     也是**恢复的输入**：恢复时会把这份文件送进容器再导入，\
+                                     所以容器重建过也照样能恢复。\
+                                     恢复**覆盖**这个库现有的全部数据。",
+                                ),
                             ),
                     ),
             )
@@ -2962,11 +2967,11 @@ fn deploy_header(deploy: &DeployState, entity: &Entity<Shell>) -> AnyElement {
 /// 探测就失败时的说明卡（不是这几类容器 / 容器没运行）。
 fn deploy_blocked_card(deploy: &DeployState, failure: &crate::state::DeployFailure) -> AnyElement {
     let note = if failure.kind == wslc_core::model::DeployErrorKind::ContainerNotRunning {
-        "这一页的每一个动作都要进容器里执行（打包 → 传文件 → 起进程），\
+        "这一页的每一个动作都要进容器里执行（准备目录 → 传文件 → 起进程），\
          所以容器得先跑起来。「启动」就在容器列表那一行上。"
     } else {
         "「部署应用」服务的是 nginx / Java / Node.js / Go 这几类容器 —— \
-         面板按**镜像引用、环境变量、启动命令**三样认人，一个线索都没有时不会去猜。\
+         面板按镜像引用、环境变量、启动命令三样认人，一个线索都没有时不会去猜。\
          想自己进去看，用「容器」页那一行的「终端」。"
     };
 
@@ -3113,7 +3118,10 @@ fn deploy_table(deploy: &DeployState, entity: &Entity<Shell>) -> AnyElement {
                 div()
                     .text_xs()
                     .text_color(theme::text_dim())
-                    .child(deploy.runtime.note()),
+                    // `note()` 的文案里写着 Markdown（`**静态文件**` / 反引号），
+                    // 而这里是纯文本 → 必须过 `strip_md`（见 `util::strip_md`：
+                    // "与其在每条文案里手工删标记，不如在渲染处统一清掉"）。
+                    .child(crate::util::strip_md(deploy.runtime.note())),
             )
             .into_any_element()
     } else {
@@ -3127,11 +3135,11 @@ fn deploy_table(deploy: &DeployState, entity: &Entity<Shell>) -> AnyElement {
             div()
                 .text_xs()
                 .text_color(theme::text_dim())
-                .child(format!(
+                .child(crate::util::strip_md(&format!(
                     "共 {} 条部署。「部署过什么」来自面板自己的存档（容器停着也看得到）；\
                      「现在跑没跑」是**问容器**得来的。",
                     deploy.entries.len()
-                )),
+                ))),
         )
         .child(
             v_flex()
@@ -3189,10 +3197,10 @@ fn deploy_port_cell(entry: &DeployEntry, deploy: &DeployState) -> AnyElement {
     if port == 0 {
         return cell_text("—");
     }
-    let published = deploy
-        .ports
-        .iter()
-        .any(|(key, bindings)| key.starts_with(&format!("{port}/")) && !bindings.is_empty());
+    // 判据只有一份：`model::deploy::port_is_published`（纯函数、有单测）。
+    // 早先这里是**内联复制**的一段，而真正被测的那份（`DeployProbe::publishes`）
+    // 全仓库没有一个调用点 —— "测的不是跑的那份"（v0.9.13 改）。
+    let published = deploy_model::port_is_published(&deploy.ports, port);
     if published {
         cell_text(format!("{port}（已发布）"))
     } else {
@@ -3482,14 +3490,17 @@ pub fn deploy_dialog_overlay(
             div()
                 .text_xs()
                 .text_color(theme::text_dim())
-                .child(format!(
+                // ⚠️ 这一整块（以及下面几处说明）都要过 `strip_md`：
+                // 文案是 Markdown 风格写的，而 `div` 画的是纯文本 ——
+                // 不过一遍，屏幕上就真的显示 `**` 和反引号（v0.9.13 修）。
+                .child(crate::util::strip_md(&format!(
                     "{} 部署的是一个**{}**。",
                     runtime.label(),
                     match runtime.source_kind() {
                         deploy_model::SourceKind::Directory => "目录（只打目录的**内容**）",
                         deploy_model::SourceKind::File => "文件",
                     }
-                )),
+                ))),
         )
         .child(form_field(
             "deploy-target",
@@ -3502,12 +3513,12 @@ pub fn deploy_dialog_overlay(
             div()
                 .text_xs()
                 .text_color(theme::danger())
-                .child(
+                .child(crate::util::strip_md(
                     "「部署」会**替换掉面板上次铺进去的那几个文件**（不多删别的：\
                      镜像自带的文件、你自己放的东西都留着），所以要填一个专门放这个应用的\
                      目录。目标目录只允许填在 /opt、/srv、/app、/var/www、\
                      /usr/share/nginx 这些地方，不能是系统目录。",
-                ),
+                )),
         );
 
     // 进程形态才有「启动命令」这一格；内容形态（nginx）铺完就生效。
@@ -3523,10 +3534,10 @@ pub fn deploy_dialog_overlay(
             div()
                 .text_xs()
                 .text_color(theme::text_dim())
-                .child(
+                .child(crate::util::strip_md(
                     "这一行会**原样**交给容器里的 `/bin/sh -c`（不做转义）—— \
                      所以可以写管道、`&&`、环境变量。日志落在目标目录的 app.log。",
-                ),
+                )),
         )
     } else {
         card.child(
@@ -3545,10 +3556,10 @@ pub fn deploy_dialog_overlay(
             div()
                 .text_xs()
                 .text_color(theme::text_dim())
-                .child(
+                .child(crate::util::strip_md(
                     "端口只用来**提示有没有发布到主机**：已建好的容器改不了端口发布\
                      （`-p` 只能在建容器时给）。",
-                ),
+                )),
         )
         .child(
             h_flex()
@@ -3613,10 +3624,10 @@ pub fn deploy_logs_overlay(logs: &DeployLogs, entity: &Entity<Shell>) -> AnyElem
                     div()
                         .text_xs()
                         .text_color(theme::text_dim())
-                        .child(
+                        .child(crate::util::strip_md(
                             "是这个应用**自己**的输出（启动时把它重定向到了目标目录的 \
                              app.log）—— 不是容器主进程的日志，那个在「日志」按钮里。",
-                        ),
+                        )),
                 ),
         )
         .child(body)
@@ -3635,8 +3646,9 @@ pub fn deploy_logs_overlay(logs: &DeployLogs, entity: &Entity<Shell>) -> AnyElem
 
 /// 删除二次确认。
 ///
-/// ⚠️ 必须把**完整路径**摆出来：目标是卷挂载点时会删掉卷里的数据
-///（本机那个 nginx 容器的 Web 根就挂在 `/dev/sdc` 上），这一步不可撤销。
+/// ⚠️ 必须把**完整路径**摆出来：删的虽然只有面板自己铺过的那几个名字，
+/// 但目标可能是**卷挂载点**（本机那个 nginx 容器的 Web 根就挂在 `/dev/sdc` 上）
+/// —— 那意味着删掉的是卷里的数据，而且不可撤销。
 pub fn deploy_remove_confirm_overlay(
     app: &str,
     deploy: Option<&DeployState>,
@@ -3669,14 +3681,14 @@ pub fn deploy_remove_confirm_overlay(
             div()
                 .text_sm()
                 .text_color(theme::text())
-                .child(if is_process {
+                .child(crate::util::strip_md(if is_process {
                     "面板会：① 停掉这个应用的进程；② 删掉面板铺进目标目录的那几个文件\
                      （`app.log` / `app.pid` 与上次部署的文件，**别人的东西不动**）；\
                      ③ 删掉本地的那条记录。"
                 } else {
                     "面板会：删掉面板铺进目标目录的那几个文件（内容形态没有我们起的进程；\
                      镜像自带的文件、你自己放的东西都不动），然后删掉本地的那条记录。"
-                }),
+                })),
         )
         .child(kv_block("容器", container))
         .child(kv_block("目标目录", target))
@@ -3684,10 +3696,14 @@ pub fn deploy_remove_confirm_overlay(
             div()
                 .text_xs()
                 .text_color(theme::danger())
-                .child(
+                .child(crate::util::strip_md(
+                    // ⚠️ 别写成"被清掉的是卷里的数据"：v0.9.10 之前那句是对的
+                    //（那时确实是整目录 `find -delete`）。现在删的**只有面板自己
+                    // 铺过的那几个名字**，别人的文件一个都不碰 —— 这句要说的是
+                    // "删掉的那几个文件在**卷**上、删了就不会回来"，不是"清空目录"。
                     "⚠️ 这一步不可撤销。如果那个目录挂在卷上（比如 nginx 的站点目录），\
-                     被清掉的是**卷里的数据**。",
-                ),
+                     删掉的就是**卷里**的那几个文件 —— 卷还在，文件不会回来。",
+                )),
         )
         .child(
             h_flex()
@@ -3999,9 +4015,13 @@ fn pull_dialog_form(form: &ImageForm, state: &AppState, entity: &Entity<Shell>) 
                     .child(error.clone()),
             )
             .child(div().text_xs().text_color(theme::text_dim()).child(
-                "换一个仓库名再试；只有支持 Registry V2 的 `tags/list` 才列得出来\
-                 （私有的多半要认证）。**列不出来也能拉**：把 tag 写在仓库名后面\
-                 （`nginx:1.27`），或者直接粘完整引用。",
+                // 文案是 Markdown 风格 → 过一遍 `strip_md`（否则屏幕上真的显示
+                // `**` 和反引号）。这一处 v0.9.13 之前一直漏着。
+                crate::util::strip_md(
+                    "换一个仓库名再试；只有支持 Registry V2 的 `tags/list` 才列得出来\
+                     （私有的多半要认证）。**列不出来也能拉**：把 tag 写在仓库名后面\
+                     （`nginx:1.27`），或者直接粘完整引用。",
+                ),
             ))
             .into_any_element()
     } else if let Some(loaded) = page.loaded.as_ref() {
@@ -6404,14 +6424,18 @@ fn terminal_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                     .child(apply),
             )
             .child(div().text_xs().text_color(theme::text_dim()).child(
-                "填发行版里的路径（`/home/wt/project` 或 `~`）—— Windows 路径不认，\
-                 那是「面板所在目录」那一档的事。写错的路径 `wsl.exe` 不报错，只会落在 `/`。",
+                crate::util::strip_md(
+                    "填发行版里的路径（`/home/wt/project` 或 `~`）—— Windows 路径不认，\
+                     那是「面板所在目录」那一档的事。写错的路径 `wsl.exe` 不报错，只会落在 `/`。",
+                ),
             ));
     }
 
     body = body.child(div().text_xs().text_color(theme::text_dim()).child(
-        "容器的「打开终端」走 `wslc exec -w`，只对**绝对路径**生效：容器里没有\
-         「Linux home」这个概念，`~` 交给镜像自己的工作目录决定。改动只影响之后新开的终端。",
+        crate::util::strip_md(
+            "容器的「打开终端」走 `wslc exec -w`，只对**绝对路径**生效：容器里没有\
+             「Linux home」这个概念，`~` 交给镜像自己的工作目录决定。改动只影响之后新开的终端。",
+        ),
     ));
 
     card("终端", body).into_any_element()
@@ -6567,7 +6591,14 @@ fn image_facts_hint(dialog: &CreateDialog) -> AnyElement {
                     )
                 };
                 body = body
-                    .child(div().text_xs().text_color(theme::text_dim()).child(text));
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_dim())
+                            // 这两句里都有 Markdown（`**没有默认命令**` /
+                            // `**必须自己填**` / 反引号）→ 渲染处统一清掉
+                            .child(crate::util::strip_md(&text)),
+                    );
             }
             body.into_any_element()
         }

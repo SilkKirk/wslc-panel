@@ -883,6 +883,11 @@ pub struct Shell {
     /// 用来把 `wsl --status` 降到 30 秒一次（见 [`Shell::status_every_n_ticks`]）。
     /// 放在 `Shell` 而不是 `AppState`：这是**调度细节**，不是界面要展示的状态。
     status_tick: u32,
+    /// 已经跑过多少轮刷新（给**部署页状态**用的那一份计数）。
+    ///
+    /// 和 `status_tick` 分开：部署页那一列要问的是"每一条部署现在跑没跑"，
+    /// 一条一次 `exec` —— 跟着 3 秒一次太快（见 [`Shell::deploy_status_every_n_ticks`]）。
+    deploy_tick: u32,
     /// 「数据库管理」页的连接卡 / SQL 输入框；没进过那一页时为 `None`。
     ///
     /// `pub(crate)`：页面在 `views.rs` 里渲染。
@@ -1012,6 +1017,7 @@ impl Shell {
             refresh_again: false,
             refresh_visible: false,
             status_tick: 0,
+            deploy_tick: 0,
             db_form: None,
             db_dialog: None,
             db_info_open: false,
@@ -3962,10 +3968,34 @@ impl Shell {
     ///
     /// 一条一次 exec；每条问两件事（跑没跑 + 目录里几个文件），
     /// 合成一条脚本（`model::deploy::probe_script`）。
+    ///
+    /// 重探期间每一行会先变成「读取中…」（这一条是**动作之后**用的：
+    /// 用户刚点过，看到"在重问"是好事）。慢档轮询走
+    /// [`Shell::refresh_deploy_status_quiet`] —— 那一条**保留旧值**。
     fn refresh_deploy_status(&mut self, cx: &mut Context<Self>) {
+        self.refresh_deploy_status_inner(true, cx);
+    }
+
+    /// 慢档轮询用的那一条（[`Shell::tick_deploy_status`]）：**保留旧值**。
+    ///
+    /// 不清 `probed` / `process` / `files`，所以界面在重探期间继续显示上一次
+    /// 问到的结果；结果回来才覆盖。理由：9 秒一轮的轮询如果每轮都把整列刷成
+    /// 「读取中…」，用户看到的是**一直在闪** —— 那比"数据晚几秒"难受得多。
+    fn refresh_deploy_status_quiet(&mut self, cx: &mut Context<Self>) {
+        self.refresh_deploy_status_inner(false, cx);
+    }
+
+    /// 公共实现。`clear_first = true` → 先把每一行的现状清掉（画「读取中…」）。
+    fn refresh_deploy_status_inner(&mut self, clear_first: bool, cx: &mut Context<Self>) {
         let Some(deploy) = self.state.deploy.as_ref() else {
             return;
         };
+        // ⚠️ 已经在问就不叠第二次：慢档轮询和动作回调完全可能撞上，
+        // 而两条 `probe_state` 并发跑同一批目标只会互相覆盖结果。
+        // （`load_deploy` 也是同一条守卫，用的是同一个 `busy`。）
+        if deploy.busy {
+            return;
+        }
         let container = deploy.container.clone();
         // 要问哪些行：类型认不出来的**不问**（不知道该用哪种脚本）
         let targets: Vec<(String, DeployKind, String)> = deploy
@@ -3993,11 +4023,13 @@ impl Shell {
 
         if let Some(deploy) = self.state.deploy.as_mut() {
             deploy.busy = true;
-            for entry in deploy.entries.iter_mut() {
-                entry.probed = false;
-                entry.process = None;
-                entry.files = None;
-                entry.probe_error = None;
+            if clear_first {
+                for entry in deploy.entries.iter_mut() {
+                    entry.probed = false;
+                    entry.process = None;
+                    entry.files = None;
+                    entry.probe_error = None;
+                }
             }
         }
         cx.notify();
@@ -4093,10 +4125,12 @@ impl Shell {
             .as_ref()
             .and_then(|app| self.state.deploy_store.get(&container, app).cloned());
 
+        // ⚠️ 默认应用名**不是**运行时键（`java` → `/opt/java`，正是 §15 那次
+        // 把镜像自带 JDK 删掉的路径）。理由写在 `DEFAULT_APP_NAME` 那儿。
         let app_value = record
             .as_ref()
             .map(|r| r.app.clone())
-            .unwrap_or_else(|| runtime.key().to_owned());
+            .unwrap_or_else(|| deploy_model::DEFAULT_APP_NAME.to_owned());
         let source_value = record
             .as_ref()
             .map(|r| r.source.clone())
@@ -4330,10 +4364,9 @@ impl Shell {
         else {
             return;
         };
-        if deploy.progress.is_some() {
-            // 已经在跑一次部署 —— 按钮那边也已经是「正在…」，这里只是兜底
-            return;
-        }
+        // ⚠️ 先把旗标取出来：下面要 `&mut self` 发一条提示，
+        // `deploy` 那个不可变借用必须在那之前结束。
+        let action_running = deploy.progress.is_some();
         let runtime = deploy.runtime;
         let container = deploy.container.clone();
         let editing = form.editing.clone();
@@ -4343,6 +4376,13 @@ impl Shell {
         let Some(values) = self.read_deploy_form(cx) else {
             return;
         };
+        if action_running {
+            // 已经在跑一次部署（页头那颗按钮那时也已经换成「正在…」）——
+            // 这一条只是兜底。⚠️ 别静默 return：弹窗还开着、用户点了「部署」
+            // 却什么都不变，只会以为按钮坏了（`AGENTS.md` §7.1）。
+            self.deploy_busy_notice(cx);
+            return;
+        }
 
         // ---- 校验：不合法**不关弹窗**，把焦点送回那一格（和 v0.7 同一条） ----
         if !deploy_model::valid_app_name(&values.app) {
@@ -4365,9 +4405,10 @@ impl Shell {
             cx.notify();
             return;
         }
-        // ⚠️ 安全闸：部署和删除都会在目标目录里**删东西**（只删我们自己铺的），
-        // 所以路径要先过关
-        //（`/usr` 那种就是 `find /usr -mindepth 1 -delete`）。
+        // ⚠️ 安全闸：部署和删除都会在目标目录里**删东西**（只删我们自己铺的，
+        // 见 `model::deploy::removals_script`），所以路径要先过关 ——
+        // 目标是用户填的，填成 `/usr` 就等于往系统目录里塞文件、删的时候
+        // 还可能撞上系统文件（白名单的理由写在那条函数上）。
         //
         // 用 `safe_target_with_site` 而不是 `safe_target`：nginx 形态的默认值
         // 是**从 `inspect` 的挂载点推出来的**，用户把站点挂在白名单之外时
@@ -4470,7 +4511,27 @@ impl Shell {
             }
         };
 
-        // 记下要写进存档的东西（弹窗马上要关，那之后就读不到了）
+        // **删除列表** = 这一次要铺的 ∪ 存档里**上一次铺过的**
+        //（`crate::deploys::merge_members`，纯函数、有单测）。
+        //
+        // ⚠️ "上一次"这一半是 v0.9.13 补上的，它只能来自**存档里那条记录**
+        //（`DeployRecord::members`）—— `model::deploy::removals_script` 的文档
+        // 写着删除列表有三个来源，而早先这里只给了"这一次"的：源目录里
+        // **改名 / 删掉**的文件于是永远留在目标目录里（"我明明改了，页面上还是
+        // 旧的"正是 PLAN-v0.9 §2.3 当初要避免的那一类），记录随后又被覆盖，
+        // 连「删除」也再收拾不到它。
+        let previous_members = editing
+            .as_ref()
+            .and_then(|app| self.state.deploy_store.get(&container, app.as_str()))
+            .map(|record| record.members.clone())
+            .unwrap_or_default();
+        let removals = crate::deploys::merge_members(&previous_members, &member_names);
+
+        // 记下要写进存档的东西（弹窗马上要关，那之后就读不到了）。
+        //
+        // ⚠️ 存档里的 `members` 记的是**这一次真的铺了什么**，不是删除列表 ——
+        // 下次重新部署时"上一次"取的就是它。存删除列表的话，那些"上一次有、
+        // 这一次没有"的名字会一代代累积下去，记录越读越假。
         let record = crate::deploys::DeployRecord {
             app: values.app.clone(),
             runtime: runtime.key().to_owned(),
@@ -4479,7 +4540,6 @@ impl Shell {
             command: values.command.clone(),
             artifact: artifact.clone(),
             port: values.port.unwrap_or_else(|| runtime.default_port()),
-            // 存档留一份：下次「重新部署 / 删除」靠它收拾"上一次有、这一次没有"的旧文件
             members: member_names,
         };
         let app = values.app.clone();
@@ -4528,10 +4588,10 @@ impl Shell {
                 let target = target.clone();
                 let source = source_path.clone();
                 let chmod_path = chmod_path.clone();
-                // 成员名要借给后台闭包用，而后台闭包是 `async move` ——
-                // 直接借 `record.members` 会把整个 `record` 移进去，
-                // 后面（写存档那段）就用不了了。先克隆一份。
-                let member_names = record.members.clone();
+                // 删除列表要借给后台闭包用，而后台闭包是 `async move` ——
+                // 直接借 `removals` 会把它整个移进去，后面（失败分支写存档）
+                // 就用不了了。先克隆一份。
+                let removals = removals.clone();
                 cx.background_executor()
                     .spawn(async move {
                         if stop_first {
@@ -4546,14 +4606,15 @@ impl Shell {
                         // 用户说一句（v0.9.11 起；早先是直接拒绝，实测那次拒绝挡住的是
                         // 用户自己的正常部署，见 `cmd::deploy::prepare_target`）。
                         //
-                        // ⚠️ 删的**只有 `member_names` 里那些名字**（外加
-                        // app.log / app.pid），所以目录里别人的东西不会被删。
+                        // ⚠️ 删的**只有 `removals` 里那些名字**（这次要铺的 ∪
+                        // 上一次铺过的，外加 app.log / app.pid）——
+                        // 目录里别人的东西不会被删。
                         let foreign = deploy_cmd::prepare_target(
                             &wslc,
                             &container,
                             &target,
                             ours_target,
-                            &member_names,
+                            &removals,
                         )
                         .map_err(|e| e.to_string())?;
                         let members = deploy_cmd::copy_sources(
@@ -4586,7 +4647,7 @@ impl Shell {
                         // "正在…"清掉（那会让 B 的按钮提前复活）。
                         // 存档与列表那些调用是**按容器**的，不受影响。
                         if shell.deploy_page_is(&container) {
-                            shell.set_deploy_progress(None, cx);
+                            shell.clear_deploy_progress_for(&app, cx);
                             if let Some(deploy) = shell.state.deploy.as_mut() {
                                 deploy.fail(message.clone());
                             }
@@ -4626,7 +4687,7 @@ impl Shell {
 
             let _ = this.update_in(cx, |shell, _window, cx| {
                 if shell.deploy_page_is(&container) {
-                    shell.set_deploy_progress(None, cx);
+                    shell.clear_deploy_progress_for(&app, cx);
                 }
                 match started {
                     Ok(()) => {
@@ -4669,6 +4730,10 @@ impl Shell {
                     Err(message) => {
                         // 文件铺好了、只是没起来 —— 记录照样写，
                         // 否则用户连"停止 / 看日志"都点不到，而那正是排障要的
+                        //
+                        // ⚠️ 失败时存的是**删除列表**（这次 ∪ 上一次），不是"这一次的"：
+                        // 复制可能只做了一半，而我们已经把上一次的名字删掉了 ——
+                        // 存并集才能让之后的「删除」把这些名字都收拾干净。
                         shell.state.deploy_store.put(
                             &container,
                             crate::deploys::DeployRecord {
@@ -4679,7 +4744,7 @@ impl Shell {
                                 command: record.command.clone(),
                                 artifact: record.artifact.clone(),
                                 port,
-                                members: record.members.clone(),
+                                members: removals.clone(),
                             },
                         );
                         let _ = shell.state.save_deploy_store();
@@ -4706,6 +4771,9 @@ impl Shell {
             return;
         };
         if self.state.deploy.as_ref().is_some_and(|d| d.progress.is_some()) {
+            // ⚠️ 别静默 return：**别的行**这时照样画着按钮（忙碌是按应用名算的，
+            // 见 `views::deploy_row_actions`），用户点了必须知道为什么没反应。
+            self.deploy_busy_notice(cx);
             return;
         }
         self.set_deploy_progress(
@@ -4733,7 +4801,7 @@ impl Shell {
             };
             let _ = this.update(cx, |shell, cx| {
                 if shell.deploy_page_is(&container) {
-                    shell.set_deploy_progress(None, cx);
+                    shell.clear_deploy_progress_for(&app, cx);
                 }
                 match result {
                     Ok(()) => shell.state.notify(Toast::info(format!("已启动 {app}"))),
@@ -4761,10 +4829,19 @@ impl Shell {
         let Some(action) = self.deploy_action(&app) else {
             return;
         };
+        // ⚠️ 这条守卫是 v0.9.13 补的：早先它**没有**，于是 A 正在跑动作时点 B 的
+        // 「停止」会直接覆盖掉 A 的进度（A 的回调回来时又把 B 的「正在…」清掉，
+        // B 的按钮提前复活、能再点一次）。同 `start_deployment` 的理由。
+        if self.state.deploy.as_ref().is_some_and(|d| d.progress.is_some()) {
+            self.deploy_busy_notice(cx);
+            return;
+        }
         self.set_deploy_progress(
             Some(DeployProgress {
                 app: app.clone(),
-                phase: DeployPhase::Starting,
+                // ⚠️ 这里早先写的是 `Starting` —— 用户按的是「停止」，
+                // 那一行却写着"正在启动…"。v0.9.13 才有 `Stopping` 这一档。
+                phase: DeployPhase::Stopping,
             }),
             cx,
         );
@@ -4783,7 +4860,7 @@ impl Shell {
             };
             let _ = this.update(cx, |shell, cx| {
                 if shell.deploy_page_is(&container) {
-                    shell.set_deploy_progress(None, cx);
+                    shell.clear_deploy_progress_for(&app, cx);
                 }
                 match result {
                     Ok(()) => shell.state.notify(Toast::info(format!("已停止 {app}"))),
@@ -4963,6 +5040,12 @@ impl Shell {
             return;
         };
         if self.state.deploy.as_ref().is_some_and(|d| d.progress.is_some()) {
+            // 同 `start_deployment`：别的行的按钮还在，点了必须有一句反馈。
+            // 确认框先关掉（用户已经表达过意图了，留着它只会挡住别的操作）。
+            if let Some(deploy) = self.state.deploy.as_mut() {
+                deploy.confirm_remove = None;
+            }
+            self.deploy_busy_notice(cx);
             return;
         }
         if let Some(deploy) = self.state.deploy.as_mut() {
@@ -5003,7 +5086,7 @@ impl Shell {
 
             let _ = this.update(cx, |shell, cx| {
                 if shell.deploy_page_is(&container) {
-                    shell.set_deploy_progress(None, cx);
+                    shell.clear_deploy_progress_for(&app, cx);
                 }
                 match result {
                     Ok(()) => {
@@ -5083,6 +5166,38 @@ impl Shell {
         if let Some(deploy) = self.state.deploy.as_mut() {
             deploy.progress = progress;
         }
+        cx.notify();
+    }
+
+    /// 清掉"正在跑的那一次部署"——**只有当它还属于这个应用时**。
+    ///
+    /// # 为什么不能直接 `set_deploy_progress(None)`
+    ///
+    /// `progress` 是**一个槽**（一次只跑一个动作），而界面上的忙碌标记是
+    /// **按应用名**算的（`views::deploy_row_actions` 比的是 `p.app == app`）。
+    /// 于是 A 还在跑的时候，B 那一行照样有按钮 —— 用户点了 B（守卫会拦下来，
+    /// 见 [`Shell::deploy_busy_notice`]，但万一 B 先跑起来）时，
+    /// A 的回调回来一句无条件的 `None` 就会把 **B 的**「正在…」清掉：
+    /// B 的按钮提前复活、可以再点一次，而 B 的动作其实还在跑。
+    ///
+    /// 判应用名之后就不会串台：谁的动作，谁才能清自己那一格。
+    fn clear_deploy_progress_for(&mut self, app: &str, cx: &mut Context<Self>) {
+        if let Some(deploy) = self.state.deploy.as_mut() {
+            if deploy.progress.as_ref().is_some_and(|p| p.app == app) {
+                deploy.progress = None;
+            }
+        }
+        cx.notify();
+    }
+
+    /// 「已经有一个部署动作在跑」时统一给的那句话。
+    ///
+    /// 界面上**别的行**这时仍然画着按钮（忙碌是按应用名算的），所以点了必须有
+    /// 反馈 —— 静默 `return` 会被当成"按钮坏了"（`AGENTS.md` §7.1）。
+    fn deploy_busy_notice(&mut self, cx: &mut Context<Self>) {
+        self.state.notify(Toast::info(
+            "已经有一个部署动作在跑 —— 等它结束再点（进度显示在那一行上）",
+        ));
         cx.notify();
     }
 
@@ -5688,10 +5803,61 @@ impl Shell {
     /// 2. **静默** —— 不动顶部按钮的文案。3 秒一次的后台刷新不该让按钮
     ///    一直停在「刷新中…」上；用户想立刻刷新就自己点按钮。
     pub fn tick(&mut self, cx: &mut Context<Self>) {
+        // 部署页那一列也要自己刷新 —— 见 [`Shell::tick_deploy_status`]。
+        self.tick_deploy_status(cx);
         if self.state.busy {
             return;
         }
         self.refresh_quiet(cx);
+    }
+
+    /// 「部署管理」页的状态列**慢档**轮询（这一页不参与快照那套刷新）。
+    ///
+    /// # 为什么需要它（v0.9.13 补）
+    ///
+    /// 那一列的状态是**问容器**得来的（`probe_script`：pidfile + `/proc` 判活、
+    /// 数文件），而这套快照刷新（`refresh_quiet` → `load_snapshot`）**不碰它**。
+    /// 于是：坐着不动的时候，应用自己崩了、或者在「终端」里被 `kill` 掉了，
+    /// 界面上会**一直显示「运行中」** —— 而页面顶部那句说明恰恰写着
+    /// "「现在跑没跑」是**问容器**得来的"。这就是"两个地方对同一件事有两种说法"。
+    ///
+    /// # 为什么比快照慢一档
+    ///
+    /// 这个轮询**每一条部署一次 `wslc exec`**（8 条 = 8 个子进程），
+    /// 而快照那一套是几条命令拿全量。跟着 3 秒一轮太重，所以走
+    /// [`Self::deploy_status_every_n_ticks`]（默认约 9 秒）。
+    ///
+    /// ⚠️ 重探**不清旧值**（[`Shell::refresh_deploy_status_quiet`]）：
+    /// 否则每 9 秒整列都会闪一下「读取中…」—— 那比"数据晚 9 秒"更难受。
+    fn tick_deploy_status(&mut self, cx: &mut Context<Self>) {
+        // 只有站在这一页上才值得问：别的页面根本看不到这一列。
+        if self.state.page != Page::Deploy {
+            return;
+        }
+        // 一条部署动作正在跑 / 正在读 → 别插一脚（进度文案和这一列会互相踩）。
+        // 先把三个旗标取出来，`self.state.deploy` 的借用就在这里结束 ——
+        // 下面要 `&mut self`（借用检查器看得见这个顺序）。
+        let (action_running, busy, loaded) = match self.state.deploy.as_ref() {
+            Some(deploy) => (
+                deploy.progress.is_some(),
+                deploy.busy,
+                deploy.loaded,
+            ),
+            None => return,
+        };
+        if action_running || busy || !loaded {
+            return;
+        }
+        self.deploy_tick = self.deploy_tick.wrapping_add(1);
+        if self.deploy_tick % Self::deploy_status_every_n_ticks() != 0 {
+            return;
+        }
+        self.refresh_deploy_status_quiet(cx);
+    }
+
+    /// 部署页状态列隔几轮问一次（一轮 = `prefs.refresh_secs`，默认 3 秒）。
+    fn deploy_status_every_n_ticks() -> u32 {
+        3
     }
 
     /// 按固定间隔自动刷新。
@@ -7987,9 +8153,14 @@ fn nav_item(page: Page, current: Page, entity: &Entity<Shell>) -> AnyElement {
 /// 用 `&'static str` 而不是格式化出来的 `String`：
 /// GPUI 的交互元素要求 ID 稳定，静态字符串最不容易出错。
 ///
-/// ⚠️ 这个 match 只覆盖 `Page::ALL` 里那 8 页 —— `AddInstance` / `Database`
-/// 都不是导航项（它们从别的页面的按钮进），所以这里也不需要它们的 id
-/// （真走到那两页也只是给一个不会被用到的 id）。
+/// ⚠️ 这个 match 覆盖的是**全部 `Page` 变体**（`Page` 没有 `#[non_exhaustive]`，
+/// 少一支就是编译错误），而侧边栏只画 `Page::ALL` 里那 8 页。
+/// 另外三页 —— `AddInstance` / `Database` / `Deploy`（v0.9）—— **不是导航项**
+/// （只能从别的页面上的按钮进），它们那三支给的是不会被用到的 id。
+///
+/// ⚠️ 这段注释早先写的是"这个 match 只覆盖 `Page::ALL` 里那 8 页"，
+/// 从 `AddInstance` 起就不准了 —— 照着一句过期的注释去判断，会得出
+/// "这些页面在侧边栏里"的错误结论。
 fn nav_id(page: Page) -> &'static str {
     match page {
         Page::Dashboard => "nav-dashboard",

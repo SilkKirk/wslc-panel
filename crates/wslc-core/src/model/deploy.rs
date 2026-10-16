@@ -257,6 +257,19 @@ impl AppRuntime {
     }
 }
 
+/// 「添加部署」弹窗里**应用名**那一格的默认值（见 [`AppRuntime::key`] 的反例）。
+///
+/// ⚠️ 刻意**不**用 [`AppRuntime::key`]（v0.9.13 改）。拿运行时键当初值的话，
+/// Java 容器预填出来是 `java` → 默认目标目录正好是 **`/opt/java`** —— 即
+/// `docs/PLAN-v0.9.md` §15 那次"部署把镜像自带的 JDK 删掉"的现场路径
+///（`eclipse-temurin` 的 JDK 就在 `/opt/java/openjdk`）。逐名删除之后面板
+/// 已经不会删它了，但把用户往那个路径上引没有任何好处 —— 而 §15.7 给用户的
+/// 自救建议恰恰是"目标目录改成 `/opt/app`"。
+///
+/// 应用名只是**存档键 + 默认目录名**，用户随时能改；一个中性的默认值
+/// 比一个"看起来像是猜出来的"名字更容易被改掉。
+pub const DEFAULT_APP_NAME: &str = "app";
+
 // ---------------------------------------------------------------------------
 // 识别
 // ---------------------------------------------------------------------------
@@ -418,25 +431,34 @@ pub fn runtime_from_inspect(inspect: &ContainerInspect) -> Option<AppRuntime> {
 /// 容器重建也不会丢。这正是要把 Web 根推出来的理由：直接写死
 /// `/usr/share/nginx/html` 会在"用户自己挂了别的目录"时把文件铺到**没人读**的地方。
 ///
-/// 规则：`Destination` 在 `/usr/share/nginx` 或 `/etc/nginx` 底下、且**不是**
-/// `/etc/nginx` 本身（那挂的是配置不是站点）时取它。
+/// 规则：`Destination` 在 `/usr/share/nginx` 底下、且**不是** `/usr/share/nginx`
+/// 本身（那挂的是"站点目录的父目录"，往里铺文件没人读）时取它。
 ///
 /// ⚠️ 这条**是推的**：本机只有一个 nginx 容器，我验的是"这条路能读到那个挂载点"，
 /// 没验过"各种 nginx 变体的挂载点都长这样"。所以界面上的目标目录**可编辑**，
 /// 而且会写明这个默认值是从哪儿来的。
+///
+/// # ⚠️ `/etc/nginx` 底下的挂载点**不算**站点根（v0.9.13 改）
+///
+/// 早先这里还有第二段："再退一步找 `/etc/nginx` 底下的（有的镜像把 `conf.d`
+/// 单独挂出来）"。**那是错的**，而且错得会伤到用户：
+///
+/// - `/etc/nginx/conf.d` 挂的是**配置**，不是站点 —— `-v ./conf.d:/etc/nginx/conf.d`
+///   是极常见的挂法，而那种容器的站点内容往往**烤在镜像里、根本没有挂载**。
+///   于是这个函数会返回配置目录，「添加部署」把它预填进「容器内目标目录」，
+///   用户不改就点下去：文件铺进去**没有任何效果**（nginx 不会把 `.html`
+///   当配置读），而面板会说"部署成功"；
+/// - 更糟的是源目录里如果有个 `default.conf`，[`removals_script`] 会先删掉
+///   容器里那个**同名配置文件**再覆盖它 —— 那是在改用户的 nginx 配置。
+///
+/// 所以现在只认 `/usr/share/nginx`（官方镜像的站点目录就在那儿）。拿不到就
+/// 返回 `None`，由调用方回落到 [`AppRuntime::default_target_dir`]
+/// （`/usr/share/nginx/html`，官方镜像的默认值）—— 那个值至少在"站点没挂卷"
+/// 时是对的，而且它在安全闸的白名单里。
 pub fn nginx_web_root(inspect: &ContainerInspect) -> Option<String> {
-    let mounts = inspect.mounts();
-    // 先在 `/usr/share/nginx` 底下找（官方镜像的站点目录就在那儿）
-    for mount in &mounts {
+    for mount in inspect.mounts() {
         let dest = mount.destination.trim_end_matches('/');
         if dest.starts_with("/usr/share/nginx") && dest != "/usr/share/nginx" {
-            return Some(mount.destination.clone());
-        }
-    }
-    // 再退一步找 `/etc/nginx` 底下的（有的镜像把 `conf.d` 单独挂出来）
-    for mount in &mounts {
-        let dest = mount.destination.trim_end_matches('/');
-        if dest.starts_with("/etc/nginx") && dest != "/etc/nginx" {
             return Some(mount.destination.clone());
         }
     }
@@ -1095,6 +1117,41 @@ pub fn render_log_output(stdout: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// 端口发布（只能报告，不能发布）
+// ---------------------------------------------------------------------------
+
+/// `inspect.Ports` 的形状：`"80/tcp" -> [(host_ip, host_port)]`。
+///
+/// 单独写一个别名，是因为这个形状出现在两处**结构体签名**里
+/// （`cmd::deploy::DeployProbe::ports` 与 `wslc_panel_core::state::DeployState::ports`）
+/// —— 元组套元组写两遍必然会有人抄错一层。判据函数
+/// [`port_is_published`] 收的是它的**切片**形态（这样测试里传
+/// `&[…]` / `&vec![…]` 都能用）。
+pub type PortMap = Vec<(String, Vec<(String, String)>)>;
+
+/// 这个**容器端口**有没有发布到主机。
+///
+/// # 为什么要抽成纯函数（v0.9.13）
+///
+/// 早先这个判据有两份：`cmd::deploy::DeployProbe::publishes()`（有单测、**没有
+/// 生产调用点**）和 `views::deploy_port_cell` 里内联复制的一段。也就是说
+/// **跑在界面上的那份从来没被测过** —— 正是本仓库最忌讳的"测的不是跑的那份"。
+/// 现在两边都调这里，测试也就真的盯着在跑的那份。
+///
+/// ⚠️ 匹配要**带那个 `/`**：容器端口的键是 `"80/tcp"` 这种形状，只用
+/// `starts_with("80")` 会把 `8080/tcp` 也算成"80 已发布"。
+///
+/// ⚠️ 有键但**没有实际绑定**（`"80/tcp": []`）不算发布出去 —— `inspect` 在
+/// 容器**声明**了端口却没映射到主机时就是这个形状（本机那个 nginx 容器
+/// 的 `Labels` 里也能看到同样的空数组）。
+pub fn port_is_published(ports: &[(String, Vec<(String, String)>)], port: u16) -> bool {
+    let prefix = format!("{port}/");
+    ports
+        .iter()
+        .any(|(key, bindings)| key.starts_with(&prefix) && !bindings.is_empty())
+}
+
+// ---------------------------------------------------------------------------
 // 错误分类
 // ---------------------------------------------------------------------------
 
@@ -1105,16 +1162,12 @@ pub fn render_log_output(stdout: &str) -> String {
 pub enum DeployErrorKind {
     /// 容器没在运行（一切都是 `wslc exec`，它必然失败）。
     ContainerNotRunning,
-    /// 镜像里没有我们要的工具（`sh` / `tar` / `nginx` …）。
+    /// 镜像里没有我们要用的工具（`/bin/sh`）。
     MissingTool,
     /// 没有可执行位 —— 就是那个 `666` 的坑。
     PermissionDenied,
-    /// 路径不存在 / 建不出来。
+    /// 路径不存在 / 建不出来 / 被别的东西占着。
     PathNotFound,
-    /// 上传的字节不是能解开的 tar 流。
-    BadArchive,
-    /// 本机没有 `tar.exe`。
-    NoHostTar,
     /// 认不出来的。
     Other,
 }
@@ -1126,9 +1179,16 @@ impl DeployErrorKind {
             Self::ContainerNotRunning => {
                 Some("容器没在运行 —— 先到「容器」页把它启动起来（这一页每个动作都要进容器）")
             }
+            // ⚠️ v0.9 的搬运改成 `wslc container cp` 之后，要用到的只剩 `/bin/sh`
+            //（准备目录 / 起停 / 判活 / 看日志全是 `sh -c` 一条脚本）。
+            // 这句里早先写着"部署需要 /bin/sh **和 tar**"，而 tar 那条路
+            // （往 stdin 灌 tar）已经被否掉了 —— 留着只会把人往一个
+            // 已经不存在的问题上引。同族的 `BadArchive` / `NoHostTar`
+            // 两个变体也一起删了：`classify_error` 造不出它们了。
             Self::MissingTool => Some(
-                "镜像里缺我们要用的命令。部署需要 /bin/sh 和 tar；\
-                 nginx 的内容形态还需要 nginx 命令。换一个完整点的镜像，\
+                "镜像里缺我们要用的命令。整套动作只用容器里的 `/bin/sh`\
+                 （准备目录、起停、判活、看日志都是一条 `sh -c` 脚本）——\
+                 这个镜像精简到连它都没有的话，换一个完整点的镜像，\
                  或者用「终端」自己进去装",
             ),
             Self::PermissionDenied => Some(
@@ -1136,15 +1196,8 @@ impl DeployErrorKind {
                  这是面板的 bug，请把它报出来",
             ),
             Self::PathNotFound => {
-                Some("容器里的这个路径不存在或者建不出来 —— 换一个路径试试（比如 /opt 底下）")
+                Some("容器里的这个路径不存在、建不出来，或者被别的东西占着 —— 换一个目录试试（比如 /opt 底下）")
             }
-            Self::BadArchive => {
-                Some("上传的数据解不开 —— 多半是打包那一步失败了，看原文里的 tar 报错")
-            }
-            Self::NoHostTar => Some(
-                "这台机器上没有 tar.exe。Windows 10 1803 以上自带它 \
-                 （%SystemRoot%\\System32\\tar.exe）；少了它就没法把文件打包传进容器",
-            ),
             Self::Other => None,
         }
     }
@@ -1156,8 +1209,6 @@ impl DeployErrorKind {
             Self::MissingTool => "镜像里缺命令",
             Self::PermissionDenied => "没有可执行位",
             Self::PathNotFound => "路径不可用",
-            Self::BadArchive => "归档解不开",
-            Self::NoHostTar => "本机没有 tar",
             Self::Other => "操作失败",
         }
     }
@@ -1183,13 +1234,9 @@ pub fn classify_error(text: &str, code: Option<i32>) -> DeployErrorKind {
         return DeployErrorKind::PermissionDenied;
     }
 
-    // 归档解不开（实测：`tar: This does not look like a tar archive` + exit 2）
-    if lower.contains("does not look like a tar archive")
-        || lower.contains("unexpected eof in archive")
-        || lower.contains("not in gzip format")
-    {
-        return DeployErrorKind::BadArchive;
-    }
+    // 归档解不开那一条**随 tar 方案一起删了**（v0.9.13）：搬运现在只走
+    // `wslc container cp`，它不产生 tar 报错，那两个关键词分支是死的。
+    // 留着它的代价不是"多几行"—— 是下一个人会以为"有一条 tar 的路能用"。
 
     // 镜像里缺命令：exit 127，或者 OCI runtime 的 "executable file not found"
     // （后者是 `cmd::mysql` 那边实测到的原文）
@@ -1200,11 +1247,31 @@ pub fn classify_error(text: &str, code: Option<i32>) -> DeployErrorKind {
         return DeployErrorKind::MissingTool;
     }
 
-    // 路径不可用（实测：`mkdir -p /proc/nope` → `The system cannot find the path
-    // specified.` + exit 1；容器里则是 `No such file or directory`）
+    // 路径不可用。判据全是**本机跑出来的原文**（wslc 3.0.3.0 + 一个 alpine 容器，
+    // 2026-10-16 复核）：
+    //
+    // - `mkdir -p <已存在的文件>` → `mkdir: cannot create directory '/tmp/afile':
+    //   File exists`（用户把目标目录填成某个文件名，是**最像手滑**的一种）；
+    // - `mkdir -p <穿过一个文件的路径>` → 同上，但尾句是 `Not a directory`；
+    // - `wslc container cp <文件> <容器>:/不存在的目录/` → exit 1 +
+    //   `Could not find the file /tmp/nope-dir/ in container …` +
+    //   `错误代码： ERROR_PATH_NOT_FOUND`
+    //   （⚠️ 注意那是 `ERROR_PATH_NOT_FOUND`：下划线形态**匹配不到**
+    //    上面那句 `lower.contains("not found")`，所以它落在这一支里是对的）；
+    // - 早先实测的 `The system cannot find the path specified.`（Windows 侧）
+    //   与 `No such file or directory`（容器里）继续留着。
+    //
+    // ⚠️ 这三条是 v0.9.13 补的：在补之前它们全都落到 `Other`，
+    // 而 `Other` 的 `hint()` 是 `None` —— 用户只拿到一句引擎原文，
+    // 明明这一支的"换个目录试试"就是对的。
     if lower.contains("no such file or directory")
         || lower.contains("cannot find the path")
         || lower.contains("directory nonexistent")
+        || lower.contains("could not find the file")
+        || lower.contains("error_path_not_found")
+        || lower.contains("cannot create directory")
+        || lower.contains("not a directory")
+        || lower.contains("file exists")
     {
         return DeployErrorKind::PathNotFound;
     }
@@ -1411,7 +1478,7 @@ mod tests {
     }
 
     #[test]
-    fn web_root_prefers_usr_share_over_etc_nginx() {
+    fn web_root_keeps_the_site_mount_when_a_config_mount_is_also_there() {
         let insp = ContainerInspect::new(json!({
             "Mounts": [
                 { "Type": "bind", "Source": "C:\\conf", "Destination": "/etc/nginx/conf.d" },
@@ -1424,13 +1491,28 @@ mod tests {
         );
     }
 
+    /// ⚠️ 回归钉（v0.9.13）：`/etc/nginx` 底下的挂载点**不是站点根**。
+    ///
+    /// 早先这里会返回 `/etc/nginx/conf.d`，于是「添加部署」把配置目录预填成
+    /// 「容器内目标目录」——文件铺进去没有任何效果（那是配置，不是站点），
+    /// 而删的时候还会先删掉容器里同名的 `.conf`。见 [`nginx_web_root`] 那段。
     #[test]
-    fn mount_of_etc_nginx_itself_is_not_a_web_root() {
-        // `/etc/nginx` 挂的是**配置**，不是站点 —— 铺文件进去没人读
-        let insp = ContainerInspect::new(json!({
-            "Mounts": [ { "Type": "volume", "Name": "conf", "Destination": "/etc/nginx" } ]
-        }));
-        assert_eq!(nginx_web_root(&insp), None);
+    fn config_mounts_are_never_treated_as_the_web_root() {
+        for destination in [
+            "/etc/nginx",
+            "/etc/nginx/conf.d",
+            "/etc/nginx/conf.d/",
+            "/usr/share/nginx", // 站点目录的**父目录**：往里铺文件也没人读
+        ] {
+            let insp = ContainerInspect::new(json!({
+                "Mounts": [ { "Type": "volume", "Name": "conf", "Destination": destination } ]
+            }));
+            assert_eq!(
+                nginx_web_root(&insp),
+                None,
+                "{destination} 不该被当成站点根（配置 / 父目录），要回落默认值"
+            );
+        }
     }
 
     #[test]
@@ -2097,10 +2179,6 @@ mod tests {
             DeployErrorKind::PermissionDenied
         );
         assert_eq!(
-            classify_error("tar: This does not look like a tar archive", Some(2)),
-            DeployErrorKind::BadArchive
-        );
-        assert_eq!(
             classify_error("sh: 1: tar: not found", Some(127)),
             DeployErrorKind::MissingTool
         );
@@ -2117,6 +2195,34 @@ mod tests {
             DeployErrorKind::MissingTool
         );
         assert_eq!(classify_error("没什么线索", None), DeployErrorKind::Other);
+    }
+
+    /// ⚠️ 回归钉（v0.9.13）：`mkdir` / `cp` 真实报出来的那三种"路径不可用"。
+    ///
+    /// 三段文本都是**本机跑出来的原文**（wslc 3.0.3.0 + 一个 alpine 容器）：
+    /// 前两条是把目标目录填成"一个已存在的文件"和"穿过一个文件的路径"
+    /// （最像手滑的两种），第三条是 `cp` 打到不存在的目录。
+    ///
+    /// 在补这一条之前，它们**全都落到 `Other`**，而 `Other` 没有 `hint()`
+    /// —— 用户只拿到引擎原文，尽管"换一个目录试试"就是对的。
+    #[test]
+    fn classifies_the_path_errors_we_just_measured() {
+        for text in [
+            "mkdir: cannot create directory '/tmp/afile': File exists",
+            "mkdir: cannot create directory '/tmp/afile': Not a directory",
+            "来自引擎的错误信息: Could not find the file /tmp/nope-dir/ in container 453766a51f44\n错误代码： ERROR_PATH_NOT_FOUND",
+        ] {
+            assert_eq!(
+                classify_error(text, Some(1)),
+                DeployErrorKind::PathNotFound,
+                "{text}"
+            );
+        }
+        // `lower` 是拿整段做的，所以大小写 / 前缀都不影响判断
+        assert_eq!(
+            classify_error("ERROR_PATH_NOT_FOUND", None),
+            DeployErrorKind::PathNotFound
+        );
     }
 
     #[test]
@@ -2136,8 +2242,6 @@ mod tests {
             DeployErrorKind::MissingTool,
             DeployErrorKind::PermissionDenied,
             DeployErrorKind::PathNotFound,
-            DeployErrorKind::BadArchive,
-            DeployErrorKind::NoHostTar,
         ] {
             assert!(!kind.label().is_empty());
             let hint = kind.hint().expect("这几类都要给下一步");
@@ -2145,5 +2249,34 @@ mod tests {
         }
         // `Other` 刻意没有建议（就看原文）
         assert_eq!(DeployErrorKind::Other.hint(), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // 端口发布
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn publishing_is_matched_by_container_port() {
+        // 本机那个 nginx 容器的实测值
+        let ports = vec![(
+            "80/tcp".to_owned(),
+            vec![("127.0.0.1".to_owned(), "80".to_owned())],
+        )];
+        assert!(port_is_published(&ports, 80));
+        assert!(!port_is_published(&ports, 8080), "没发布的端口要如实说不");
+        // ⚠️ `8080` 不能被 `80/tcp` 匹配上（前缀要带那个 `/`）
+        assert!(!port_is_published(&ports, 8));
+    }
+
+    #[test]
+    fn a_port_key_with_no_bindings_counts_as_not_published() {
+        // 容器**声明**了端口但没映射到主机时就是这个形状（`"80/tcp": []`）
+        let ports = vec![("80/tcp".to_owned(), Vec::new())];
+        assert!(
+            !port_is_published(&ports, 80),
+            "有键但没有实际绑定（HostIp/HostPort 缺失）不算发布出去"
+        );
+        // 一个映射都没有时不 panic
+        assert!(!port_is_published(&[], 80));
     }
 }

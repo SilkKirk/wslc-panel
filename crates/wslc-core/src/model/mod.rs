@@ -45,7 +45,7 @@ pub use container::{
 // （函数仍走 `model::deploy::`，一看就知道来自哪）。
 pub use deploy::{
     container_app_kind, AppRuntime, DeployCandidate, DeployErrorKind, DeployKind, DeploySignal,
-    ProbeResult, ProcessStatus, SourceKind,
+    PortMap, ProbeResult, ProcessStatus, SourceKind,
 };
 pub use distro::{parse_distro_list, Distro, DistroState, WslStatus};
 pub use image::{

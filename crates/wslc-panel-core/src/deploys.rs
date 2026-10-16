@@ -181,9 +181,71 @@ pub fn store_path(data_dir: impl AsRef<Path>) -> PathBuf {
     data_dir.as_ref().join("deployments.json")
 }
 
+/// 一次部署的**删除列表**：这一次要铺的 ∪ **上一次铺过的**（去重）。
+///
+/// # 为什么必须有"上一次"这一半（v0.9.13 修）
+///
+/// [`crate::deploys::DeployRecord::members`] 的文档、以及
+/// `model::deploy::removals_script` 的文档都写着"删除列表有三个来源：
+/// 这次的成员、**存档里上一次的成员**、外加 `app.log` / `app.pid`"。
+/// 而 `Shell::submit_deploy` 早先只传了**这次的**成员 —— 于是源目录里
+/// **改名 / 删掉**的文件会永远留在目标目录里（"我明明改了，页面上还是旧的"
+/// 正是 `docs/PLAN-v0.9.md` §2.3 当初要避免的那一类），而且记录随后被覆盖，
+/// 连「删除」也再也收拾不到它。
+///
+/// 顺序：**这次的在前**（它们马上要被写进去），上一次剩下的跟在后面。
+/// 去重按 trim 之后的名字比，空名字直接丢掉（`removals_script` 那边还会再
+/// 拦一次带 `/`、`..` 的，这里不做路径判断）。
+///
+/// ⚠️ 纯函数、住在这里（而不是 `app.rs`）：`app.rs` 没有 `#[cfg(test)]`，
+/// 而 CI 的测试任务**不跑 `wslc-panel`** —— 写在那儿等于没有断言。
+pub fn merge_members(previous: &[String], current: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(previous.len() + current.len());
+    for name in current.iter().chain(previous.iter()) {
+        let name = name.trim();
+        if name.is_empty() || out.iter().any(|kept| kept.as_str() == name) {
+            continue;
+        }
+        out.push(name.to_owned());
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ⚠️ 回归钉（v0.9.13）：**上一次铺过、这一次不铺了**的名字必须留在删除列表里。
+    ///
+    /// 现场的形状：源目录里 `b.html` 改名成了 `c.html`，用户点「重新部署」。
+    /// 少了这一半，`b.html` 会永远留在容器里（nginx 照旧把它发给访客）。
+    #[test]
+    fn merge_members_keeps_the_names_we_laid_down_last_time() {
+        let previous = vec!["a.html".to_owned(), "b.html".to_owned()];
+        let current = vec!["a.html".to_owned(), "c.html".to_owned()];
+        assert_eq!(
+            merge_members(&previous, &current),
+            vec!["a.html", "c.html", "b.html"],
+            "这次的在前、上一次剩下的跟在后面，重复的只留一份"
+        );
+    }
+
+    #[test]
+    fn merge_members_handles_the_empty_shapes() {
+        let one = vec!["x".to_owned()];
+        assert_eq!(merge_members(&[], &one), one, "第一次部署：只有这次的");
+        assert_eq!(merge_members(&one, &[]), one, "这次没铺东西（理论上到不了）");
+        assert!(merge_members(&[], &[]).is_empty());
+        // 老存档里没有 `members`（`#[serde(default)]` → 空表）：那就是只有这次的
+        assert_eq!(merge_members(&[], &["x".to_owned()]), vec!["x"]);
+    }
+
+    #[test]
+    fn merge_members_trims_and_drops_empty_names() {
+        let previous = vec!["  ".to_owned(), " a ".to_owned(), String::new()];
+        let current = vec!["a".to_owned()];
+        assert_eq!(merge_members(&previous, &current), vec!["a"]);
+    }
 
     fn record(app: &str, target: &str) -> DeployRecord {
         DeployRecord {

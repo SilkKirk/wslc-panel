@@ -28,7 +28,7 @@ use std::time::Duration;
 use crate::cli::Wslc;
 use crate::error::{Error, Result};
 use crate::model::deploy::{
-    self, AppRuntime, DeployKind, ProbeResult, ProcessStatus, SourceKind,
+    self, AppRuntime, DeployKind, PortMap, ProbeResult, SourceKind,
 };
 
 /// 复制文件的超时。
@@ -67,17 +67,11 @@ pub struct DeployProbe {
     /// 只用来**报告**：已存在的容器改不了端口发布（`-p` 只在 `run` / `create`
     /// 时给），所以界面上只能告诉用户"这个端口没发布到主机"，
     /// 不能画一个点了没用的「发布」按钮。
-    pub ports: Vec<(String, Vec<(String, String)>)>,
-}
-
-impl DeployProbe {
-    /// 这个端口发布到主机了吗（按容器端口号匹配 `"80/tcp"` 这种键）。
-    pub fn publishes(&self, port: u16) -> bool {
-        let prefix = format!("{port}/");
-        self.ports
-            .iter()
-            .any(|(key, bindings)| key.starts_with(&prefix) && !bindings.is_empty())
-    }
+    ///
+    /// 判"发布了没有"用 [`deploy::port_is_published`]（纯函数、有单测）——
+    /// 早先这里挂过一个 `publishes()` 方法，但界面另写了一份内联判据，
+    /// 于是**被测的那份没人用、在用的那份没被测**（v0.9.13 改掉了）。
+    pub ports: PortMap,
 }
 
 /// 探测：`inspect` 一次，判运行时 + 推 Web 根 + 读端口映射。
@@ -328,16 +322,11 @@ pub fn probe_state(
 }
 
 /// 只判活（不带文件数）。
-pub fn is_running(wslc: &Wslc, container: &str, dir: &str) -> Result<ProcessStatus> {
-    let script = deploy::status_script(&deploy::container_join(dir, deploy::PID_FILE));
-    let output = run_script(wslc, container, &script)?;
-    deploy::parse_process_status(&output).ok_or_else(|| {
-        Error::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("判活脚本的输出看不懂：{}", output.trim()),
-        ))
-    })
-}
+///
+/// ⚠️ 这里**没有** `is_running()` 那样的"单独判活"入口了（v0.9.13 删掉的）：
+/// 界面上每一行问的都是 [`probe_state`]（一条脚本同时拿到"跑没跑"和"目录里
+/// 有几个文件"），单独再开一个入口只会是"没人用的公共 API"。
+/// 真要单问，把 [`deploy::status_script`] 交给 `run_script` 就是那一段。
 
 /// 读应用日志的最后 [`LOG_TAIL_LINES`] 行。
 pub fn read_log(wslc: &Wslc, container: &str, dir: &str) -> Result<String> {
@@ -385,41 +374,9 @@ fn run_script(wslc: &Wslc, container: &str, script: &str) -> Result<String> {
     Ok(output.stdout)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// 这里**没有** `#[cfg(test)] mod tests`：这个模块里的东西全是"拼参数 → 起进程"，
+// 纯逻辑都在 `model::deploy`（那边有 40 多条断言）。原先这里挂着两条
+// `DeployProbe::publishes` 的测试 —— v0.9.13 把那个方法连同测试一起搬进了
+// `model::deploy::port_is_published`：那个判据**界面真的在调**，
+// 而 `publishes()` 只有测试在调（界面另写了一份内联的）。
 
-    #[test]
-    fn publishing_is_matched_by_container_port() {
-        let probe = DeployProbe {
-            container: "nginx".to_owned(),
-            image: "docker.1panel.live/library/nginx:latest".to_owned(),
-            runtime: AppRuntime::Nginx,
-            web_root: Some("/usr/share/nginx/html".to_owned()),
-            // 本机那个真容器的实测值
-            ports: vec![(
-                "80/tcp".to_owned(),
-                vec![("127.0.0.1".to_owned(), "80".to_owned())],
-            )],
-        };
-        assert!(probe.publishes(80));
-        assert!(!probe.publishes(8080), "没发布的端口要如实说不");
-        // ⚠️ `8080` 不能被 `80/tcp` 匹配上（前缀要带那个 `/`）
-        assert!(!probe.publishes(8));
-    }
-
-    #[test]
-    fn a_port_key_with_no_bindings_counts_as_not_published() {
-        let probe = DeployProbe {
-            container: "web".to_owned(),
-            image: "nginx".to_owned(),
-            runtime: AppRuntime::Nginx,
-            web_root: None,
-            ports: vec![("80/tcp".to_owned(), Vec::new())],
-        };
-        assert!(
-            !probe.publishes(80),
-            "有键但没有实际绑定（HostIp/HostPort 缺失）不算发布出去"
-        );
-    }
-}

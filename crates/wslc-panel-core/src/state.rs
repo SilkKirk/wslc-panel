@@ -2094,6 +2094,11 @@ pub enum DeployPhase {
     Uploading,
     /// 文件到位了，正在起进程（进程形态）/ 这一步内容形态没有。
     Starting,
+    /// 正在停掉那个受 pidfile 管的进程（「停止」，只发 `TERM`）。
+    ///
+    /// ⚠️ v0.9.13 才有这一档：在那之前「停止」复用的是 [`Self::Starting`]，
+    /// 于是点下去那一行写的是**"正在启动…"** —— 用户按的是停止、界面说的是启动。
+    Stopping,
     /// 正在删掉目标目录里的内容（"删除部署"，不可撤销）。
     Removing,
 }
@@ -2104,6 +2109,7 @@ impl DeployPhase {
         match self {
             Self::Uploading => "正在上传…",
             Self::Starting => "正在启动…",
+            Self::Stopping => "正在停止…",
             Self::Removing => "正在删除…",
         }
     }
@@ -2211,8 +2217,9 @@ pub struct DeployState {
     /// 容器**已经发布**的端口：`"80/tcp" -> [(host_ip, host_port)]`。
     ///
     /// 只用来**报告**（已存在的容器改不了端口发布），见
-    /// `cmd::deploy::DeployProbe::publishes` 的说明。
-    pub ports: Vec<(String, Vec<(String, String)>)>,
+    /// `cmd::deploy::DeployProbe` 的说明；判"发布了没有"用
+    /// `wslc_core::model::deploy::port_is_published`（唯一一份判据，界面也调它）。
+    pub ports: wslc_core::model::PortMap,
     /// 正在后台跑（探测 / 读状态 / 上传）。
     pub busy: bool,
     /// **根本性**的问题（不是这类容器 / 容器没运行）。
@@ -3421,7 +3428,7 @@ impl DetailInspect {
     }
 }
 
-/// 应用的完整状态。///
+/// 应用的完整状态。
 /// 这是 `app::Shell` 里唯一的字段，所有页面都是它的只读视图。
 ///
 /// （`Shell` 在 `wslc-panel` 那个 crate 里 —— 它持有 GPUI 的 `InputState`，
@@ -5392,8 +5399,21 @@ mod tests {
         assert_eq!(state.signal, DeploySignal::Image);
         // Web 根是从挂载点推出来的（内容形态的默认目标目录用它）
         assert_eq!(state.web_root.as_deref(), Some("/usr/share/nginx/html"));
-        assert!(probe.publishes(80));
+        // 判端口发布用的是**唯一那份**纯函数（界面和这里调的是同一个）
+        assert!(wslc_core::model::deploy::port_is_published(&probe.ports, 80));
+        assert!(!wslc_core::model::deploy::port_is_published(&probe.ports, 8080));
         assert!(!state.busy, "探测回来必须把忙清掉，否则按钮永远是「读取中…」");
+    }
+
+    #[test]
+    fn every_deploy_phase_says_what_it_is_doing() {
+        // ⚠️ 「停止」曾经复用 `Starting`，于是那一行写着"正在启动…" ——
+        // 按钮和文案对不上，是实机一眼能看出来、CI 看不出来的那类问题。
+        assert_eq!(DeployPhase::Starting.label(), "正在启动…");
+        assert_eq!(DeployPhase::Stopping.label(), "正在停止…");
+        assert_ne!(DeployPhase::Stopping.label(), DeployPhase::Starting.label());
+        assert_eq!(DeployPhase::Uploading.label(), "正在上传…");
+        assert_eq!(DeployPhase::Removing.label(), "正在删除…");
     }
 
     #[test]
