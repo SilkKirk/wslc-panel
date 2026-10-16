@@ -634,6 +634,26 @@ pub const STATUS_STOPPED: &str = "__WSLC_STOPPED__";
 pub const NO_DIR: &str = "__WSLC_NO_DIR__";
 /// 「还没有日志文件」的哨兵。
 pub const NO_LOG: &str = "__WSLC_NO_LOG__";
+/// 「目标目录里已经有东西，而它不是我们铺的」的哨兵。
+///
+/// 见 [`prepare_target_script`]：这一条是 v0.9.8 加的，代价是一次**真实的灾难**
+/// （部署到 `/opt/java` 把镜像自带的 JDK 删了）。
+pub const TARGET_NOT_EMPTY: &str = "__WSLC_TARGET_NOT_EMPTY__";
+
+/// 目标目录非空、且不是我们铺的时的说明（给用户看的那一句）。
+///
+/// ⚠️ **第一行要能独立成立**：提示条（toast）只取第一行并截断到 120 字符，
+/// 详情弹窗才显示全文 —— 和 `DbFailure::summary` 那条约定一样。
+pub fn target_not_empty_hint(target: &str) -> String {
+    format!(
+        "目标目录 {target} 里已经有东西，而它不是面板铺的 —— 面板不会清空它。\n\
+         ⚠️ 那里面很可能是**镜像自己要用的文件**：实测把应用部署到 `/opt/java` 时，\
+         `eclipse-temurin` 镜像的 JDK 正好在 `/opt/java/openjdk`，清空它等于把容器里的 \
+         `java` 删掉，应用从此起不来（`nohup: failed to run command 'java'`）。\n\
+         换个目录（比如 `/opt/<你的应用名>`、`/app/...`），\
+         或者先用「终端」把那个目录清空再回来部署。"
+    )
+}
 
 /// 准备目标目录：建出来，然后清空它的**内容**。
 ///
@@ -663,12 +683,46 @@ pub const NO_LOG: &str = "__WSLC_NO_LOG__";
 /// 所以调用方必须在**点得下去的地方**把这件事写出来，而且
 /// [`safe_target`] 会先把危险路径挡掉。
 ///
-/// ⚠️ 这一步必须在 `cp` **之前**跑：一是它会报出"容器没在运行"
-///（`cp` 在那种情况下**静默成功**，见模块文档），二是 `cp` 要求目标目录已存在
-///（实测不存在的路径报 `ERROR_PATH_NOT_FOUND`）。
-pub fn prepare_target_script(target: &str) -> String {
+/// # ⚠️ `ours`：不是我们铺的目录**一个字节都不许清**（v0.9.8 加）
+/// 白名单（[`safe_target`]）只知道"`/opt` 底下允许"，**不知道镜像在 `/opt`
+/// 底下放了什么**。实测那次灾难：应用名就叫 `java`，默认目标目录是
+/// `/opt/java`，而 `eclipse-temurin:8-jre-alpine` 的 JDK 正好在
+/// `/opt/java/openjdk` —— 先清空再铺，把容器里的 `java` **整个删掉**，
+/// 从此应用必然起不来（`nohup: failed to run command 'java': No such file
+/// or directory`），而界面上还显示"运行中"（见 [`status_script`] 那条僵尸坑）。
+///
+/// 所以：
+///
+/// | `ours` | 行为 |
+/// |---|---|
+/// | `true`（本地存档里有这个目录的记录 = 我们自己铺的） | 照旧清空 —— 「重新部署」的语义就是"结果等于源" |
+/// | `false`（第一次往这个目录铺） | **只允许它不存在或为空**；否则 echo [`TARGET_NOT_EMPTY`] 并**什么都不做** |
+///
+/// 调用方（`cmd::deploy::prepare_target`）看到那个哨兵就转成一句人话
+/// （[`target_not_empty_hint`]），**不是**当成"清空成功"。
+///
+/// ⚠️ 这一步必须在 `cp` **之前**跑，两条理由：
+///
+/// 1. 它（通过 `exec`）会**报出"容器没在运行"** —— 而 `cp` 在那种情况下
+///    **静默成功**（实测 exit 0、不输出、什么都不做）；
+/// 2. `cp` **要求目标目录已经存在**（实测不存在的路径报
+///    `ERROR_PATH_NOT_FOUND`），它不会替我们建。
+pub fn prepare_target_script(target: &str, ours: bool) -> String {
     let target_q = shell_quote(target);
-    format!("mkdir -p {target_q} && find {target_q} -mindepth 1 -delete")
+    let guard = if ours {
+        String::new()
+    } else {
+        // `ls -A` 认隐藏文件（`.hidden` 也要算"已经有东西"），
+        // 目录不存在时它自己报错但我们不看退出码（`2>/dev/null`）——
+        // 那种情况本来就该放行。
+        // ⚠️ 这里**退出码是 0**：调用方要读到哨兵才能给出自己的那句话，
+        // 非零退出码会让 `run_script` 先把它变成一个"参数 + stderr"的原始错误。
+        format!(
+            "if test -d {target_q} && test -n \"$(ls -A {target_q} 2>/dev/null)\"; then \
+             echo {TARGET_NOT_EMPTY}; exit 0; fi; "
+        )
+    };
+    format!("{guard}mkdir -p {target_q} && find {target_q} -mindepth 1 -delete")
 }
 
 /// `chmod +x <路径>`。
@@ -743,13 +797,40 @@ pub fn start_script(dir: &str, command: &str) -> String {
     )
 }
 
-/// 判活脚本：pidfile 在、而且那个 pid 还活着 → `__WSLC_RUNNING__`。
+/// 判活脚本：pidfile 在、那个 pid 还活着、**而且它不是僵尸** → `__WSLC_RUNNING__`。
 ///
-/// `test -f X && kill -0 $(cat X) && echo R || echo S` 的结合性正是我们要的
-/// （`((test && kill) && echo R) || echo S`）：链上任何一环失败都会走到 `echo S`。
+/// # ⚠️ 为什么要多看一眼 `/proc/<pid>/stat`（v0.9.8 加）
+///
+/// `kill -0` 对**僵尸进程**也返回 0 —— 而"启动失败"恰好会留下一个僵尸：
+///
+/// ```text
+/// $ nohup java -jar app.jar > app.log 2>&1 & echo $! > app.pid
+/// nohup: failed to run command 'java': No such file or directory
+/// $ ps -o pid,ppid,args
+///   PID  PPID COMMAND
+///     1     0 tail -f /dev/null     ← PID 1 是面板吊容器用的 tail，它**不回收子进程**
+///    29     1 [nohup]               ← 僵尸：`kill -0 29` 仍然是成功
+/// ```
+///
+/// 于是 pidfile 里那个 pid "还活着"，界面上一直显示**运行中**（实机报过来的就是
+/// 这个："java 容器日志和部署的 java 应用日志都看不到"，其实进程早就死了）。
+///
+/// 修法：读 `/proc/<pid>/stat` 的**第三个字段**（进程状态），`Z` 就当死。
+/// 这里不用 `awk`：镜像里不一定有它（busybox 有、精简镜像没有），
+/// 而纯 shell 剥掉 `comm` 那一段只需要 `${s##*) }` 一步 ——
+/// ⚠️ 必须用 `##`（**最长**匹配）而不是 `#`：`comm` 自己可能带 `)` 甚至 `) `，
+/// 短的匹配会停在 comm 中间，剥出来的"状态"就成了 comm 的残渣（实测这一条是推的，
+/// 但代价只有两个字符）。
+///
+/// `test -f X && kill -0 … && … && echo R || echo S` 的结合性正是我们要的
+/// （链上任何一环失败都会走到 `echo S`）。
 pub fn status_script(pid_path: &str) -> String {
     let pid_q = shell_quote(pid_path);
-    format!("test -f {pid_q} && kill -0 $(cat {pid_q}) 2>/dev/null && echo {STATUS_RUNNING} || echo {STATUS_STOPPED}")
+    format!(
+        "test -f {pid_q} && p=$(cat {pid_q}) && kill -0 \"$p\" 2>/dev/null && \
+         s=$(cat /proc/\"$p\"/stat 2>/dev/null) && s=${{s##*) }} && st=${{s%% *}} && \
+         [ -n \"$st\" ] && [ \"$st\" != Z ] && echo {STATUS_RUNNING} || echo {STATUS_STOPPED}"
+    )
 }
 
 /// 停止脚本：发 `TERM` 然后删掉 pidfile。
@@ -1399,12 +1480,36 @@ mod tests {
 
     #[test]
     fn prepare_target_creates_then_clears_only_the_contents() {
+        // **我们自己铺的目录**（本地存档里有记录）→ 照旧"先清空再铺"：
+        // 结果目录等于源目录，才不会有"改了文件页面上还是旧的"那类问题。
         assert_eq!(
-            prepare_target_script("/opt/app"),
+            prepare_target_script("/opt/app", true),
             "mkdir -p '/opt/app' && find '/opt/app' -mindepth 1 -delete"
         );
         // 目录不存在时 `mkdir -p` 要先建出来（`cp` 要求目标已存在）
-        assert!(prepare_target_script("/opt/app").starts_with("mkdir -p "));
+        assert!(prepare_target_script("/opt/app", true).starts_with("mkdir -p "));
+    }
+
+    /// ⚠️ 回归钉（v0.9.8 的**真实事故**）：不是我们铺的目录，**一个字节都不清**。
+    ///
+    /// 实测那次：应用名就叫 `java`，默认目标目录是 `/opt/java`，而
+    /// `eclipse-temurin:8-jre-alpine` 的 JDK 正好在 `/opt/java/openjdk` ——
+    /// 清空它等于把容器里的 `java` 删掉，应用从此起不来。
+    #[test]
+    fn prepare_target_refuses_a_foreign_non_empty_directory() {
+        let script = prepare_target_script("/opt/java", false);
+        // 先探测"目录在、而且非空"，是就打哨兵、**什么都不做**
+        assert!(script.contains(TARGET_NOT_EMPTY), "{script}");
+        assert!(script.contains("ls -A"), "{script}");
+        assert!(
+            script.find(TARGET_NOT_EMPTY).unwrap() < script.find("-delete").unwrap(),
+            "哨兵必须在清空**之前**（否则照删不误）：{script}"
+        );
+        // ⚠️ 这里退出码必须是 **0**：非零退出码会被 `run_script` 先转成一条
+        // "参数 + stderr" 的原始错误，调用方就读不到哨兵、给不出自己的那句话了
+        assert!(script.contains("exit 0"), "{script}");
+        // `ours = true` 时没有这段守卫（自己铺的目录才允许清空重铺）
+        assert!(!prepare_target_script("/opt/java", true).contains("ls -A"));
     }
 
     #[test]
@@ -1414,16 +1519,19 @@ mod tests {
         // 写成 `rm -rf <目标> && …` 的话 `&&` 链会断在第一步。
         // 实测踩到过。
         for target in ["/opt/app", "/usr/share/nginx/html"] {
-            let script = prepare_target_script(target);
-            assert!(
-                !script.contains(&format!("rm -rf '{target}'")),
-                "不能对目标目录本身 rm -rf：{script}"
-            );
-            // 清内容用的是 find，而且必须带上 -mindepth 1（否则会试图删目录自己）
-            assert!(
-                script.contains(&format!("find '{target}' -mindepth 1 -delete")),
-                "{script}"
-            );
+            // 两种 `ours` 都要查：守卫那段也不许出现 `rm -rf <目标>`
+            for ours in [true, false] {
+                let script = prepare_target_script(target, ours);
+                assert!(
+                    !script.contains(&format!("rm -rf '{target}'")),
+                    "不能对目标目录本身 rm -rf：{script}"
+                );
+                // 清内容用的是 find，而且必须带上 -mindepth 1（否则会试图删目录自己）
+                assert!(
+                    script.contains(&format!("find '{target}' -mindepth 1 -delete")),
+                    "{script}"
+                );
+            }
         }
     }
 
@@ -1546,6 +1654,13 @@ mod tests {
         assert!(script.contains(STATUS_RUNNING), "{script}");
         assert!(script.contains(STATUS_STOPPED), "{script}");
         assert!(script.contains("kill -0"), "{script}");
+        // ⚠️ 僵尸必须算"没在跑"：`kill -0` 对僵尸也返回 0，而"启动失败"恰好留下
+        // 一个僵尸（实机：pidfile 里那个 `[nohup]`，PPID=1，PID 1 不回收子进程）
+        // —— 少了这一条，界面会一直显示"运行中"，而应用早就死了。
+        assert!(script.contains("/proc/"), "{script}");
+        assert!(script.contains("!= Z"), "{script}");
+        // 读状态不能用 `awk`：精简镜像里不一定有它（纯 shell 剥 `(comm)` 就够）
+        assert!(!script.contains("awk"), "{script}");
 
         assert_eq!(
             parse_process_status(STATUS_RUNNING),

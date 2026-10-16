@@ -7748,6 +7748,31 @@ pub fn logs_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
         None => log_text(logs.text.as_deref(), "logs-body"),
     };
 
+    // 日志为空时**解释一句** —— 空不等于"坏了"。
+    //
+    // ⚠️ 这条是 v0.9.8 实机反馈加的（"java 容器日志…看不到"）：那个容器的主进程是
+    // 面板为「吊住」它而起的 `tail -f /dev/null`，它本身**不打印任何东西**，
+    // 所以这里是空的、而且永远会是空的。而应用自己的输出**不在这里**：
+    // 进程形态的部署把它重定向到了目标目录的 `app.log`（「部署管理」里那一行的
+    // 「日志」）。不写这两句，用户只会以为日志功能坏了。
+    let empty_hint: AnyElement = if logs.error.is_none()
+        && logs.text.as_deref().is_none_or(|t| t.trim().is_empty())
+    {
+        div()
+            .w_full()
+            .text_sm()
+            .text_color(theme::text_dim())
+            .child(
+                "容器主进程没有往 stdout / stderr 写东西时就是这个样子 —— 比如面板为了\
+                 「吊住」容器而起的 `tail -f /dev/null`，它本身不打印任何东西。\
+                 部署的应用日志不在这一份里：那是应用自己的输出，在「部署管理」\
+                 那一行的「日志」里看。",
+            )
+            .into_any_element()
+    } else {
+        div().into_any_element()
+    };
+
     modal_scrim("logs",
         v_flex()
             .id("logs-card")
@@ -7786,6 +7811,7 @@ pub fn logs_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                     .child(follow),
             )
             .child(body)
+            .child(empty_hint)
             .child(h_flex().w_full().justify_end().child(close)),
     )
     .into_any_element()
