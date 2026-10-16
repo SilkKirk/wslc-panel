@@ -12,6 +12,13 @@ use gpui_kit::component::input::{Input, InputState};
 // 「微软商店」与「在线发行版」两张清单都是**下拉框**（参考实现也是
 // `CustomComboBox`，不是我们原先那种按钮列表）。
 use gpui_kit::component::select::Select;
+// 列表行那颗「更多」用的下拉菜单（v0.9.14）。
+//
+// ⚠️ 它来自 gpui-kit 的**扩展 trait**：`Button::dropdown_menu(…)`（和
+// `ButtonVariants` 一样，光导入 `Button` 是不够的），菜单项是 `PopupMenuItem`。
+// 走的是组件的 popover 层（`deferred` + `POPUP_PRIORITY`），所以**不会被表格的
+// `overflow_hidden` 裁掉** —— 那是这一类弹出能用的前提（见 `AGENTS.md` §7.5）。
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 // 注意：这里**不导入** `Disableable` —— 全项目不再使用 `.disabled()`：
 // gpui-component 的禁用态文字几乎看不清，改用"守卫 + 文案"表达不可用状态。
 use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
@@ -872,10 +879,24 @@ fn container_name_link(name: &str, entity: &Entity<Shell>) -> AnyElement {
         .into_any_element()
 }
 
-/// 行内操作：**只放高频的**启动/重启、停止、删除。
+/// 行内操作：**只留最高频的那几个**，其余收进「更多」下拉菜单。
 ///
-/// 「强杀」这种低频且危险的操作留在详情弹窗里 —— 列表里塞满按钮
-/// 反而找不到常用的那个。
+/// # 这一格现在是 `[数据库] [部署管理] [启动/停止] [更多]`（v0.9.14 改）
+///
+/// 之前它会把 7 个按钮全铺出来（终端 / 数据库 / 部署管理 / 重启 / 停止 /
+/// 日志 / 删除），于是这一列在 1707 逻辑宽下被挤成两行、还要靠权重硬撑。
+/// 现在行内只留：**这一类容器专属的入口**（数据库 / 部署管理）+ **最高频的
+/// 状态切换**（启动 / 停止），其余（终端 / 重启 / 日志 / 删除）进「更多」。
+///
+/// 取舍的理由：
+/// - 「数据库 / 部署管理」是**只能从这一行进**的两个页面（都不在侧边栏里）——
+///   藏进菜单等于把唯一入口埋起来，所以它们必须在行内；
+/// - 「启动 / 停止」是这一页最常点的动作，也是唯一一个"看着状态点"的动作；
+/// - 「终端 / 重启 / 日志 / 删除」都是**低频或危险**的：删除有二次确认、
+///   日志是排查时才看、终端只在运行中才有意义 —— 它们放菜单里正好。
+///
+/// ⚠️ 菜单里的项**只画当前有意义的**（停止的容器不画「终端」：`wslc exec`
+/// 在它上面必然失败，那种"点了必然报错"的项不如不画）。
 ///
 /// MySQL / MariaDB 容器多一个「数据库」按钮（v0.7.0）：它是那一类容器上
 /// 最高频的动作，而且**只能从这里进**（数据库管理页不在侧边栏里）。
@@ -885,22 +906,6 @@ fn container_row_actions(item: &ContainerListItem, entity: &Entity<Shell>) -> An
     let mut actions: Vec<AnyElement> = Vec::new();
 
     if running {
-        // 「终端」放**第一个**：进容器里干活是运行中的容器最高频的动作
-        // （v0.6.3 从详情挪上来的 —— 原先要"点名字 → 找按钮"两次点击，
-        // 见 `container_detail_overlay` 里那条说明）。
-        //
-        // ⚠️ 只有**运行中**才给：`wslc exec` 在停止的容器上必然失败，
-        // 那种"点了必然报错"的按钮不如不画。
-        actions.push(
-            immediate_button(
-                &format!("shell-{name}"),
-                "终端",
-                ImmediateAction::OpenContainerShell(name.to_owned()),
-                entity,
-            )
-            .into_any_element(),
-        );
-
         // 「数据库」：只有**认得出是 MySQL 家族**的容器才有。
         //
         // 判定是**纯字符串**（镜像名 / 命令 / 3306 端口，见
@@ -942,8 +947,7 @@ fn container_row_actions(item: &ContainerListItem, entity: &Entity<Shell>) -> An
             let signal = candidate.signal;
             actions.push(overlay_button(
                 &format!("deploy-{name}"),
-                // 运行时名也不进按钮文案（那一行已经挤了 6 个按钮）——
-                // 页面顶上写着"Nginx · 按镜像名判断"。
+                // 运行时名也不进按钮文案 —— 页面顶上写着"Nginx · 按镜像名判断"。
                 "部署管理",
                 move |shell, _, cx| {
                     shell.open_deploy_page(
@@ -957,16 +961,10 @@ fn container_row_actions(item: &ContainerListItem, entity: &Entity<Shell>) -> An
                 entity,
             ));
         }
+    }
 
-        actions.push(
-            immediate_button(
-                &format!("restart-{name}"),
-                "重启",
-                ImmediateAction::RestartContainer(name.to_owned()),
-                entity,
-            )
-            .into_any_element(),
-        );
+    // 「启动 / 停止」：行内**唯一**的通用动作（不分容器类型，只看状态）。
+    if running {
         actions.push(
             danger_button(
                 &format!("stop-{name}"),
@@ -988,32 +986,84 @@ fn container_row_actions(item: &ContainerListItem, entity: &Entity<Shell>) -> An
         );
     }
 
-    // 「日志」不分运行状态：`wslc logs` 读的是容器留下的日志，
-    // 停掉的容器照样有东西可看（排查"它为什么退了"正是看这个）。
-    actions.push(overlay_button(
-        &format!("logs-{name}"),
-        "日志",
-        {
-            let target = name.to_owned();
-            move |shell, _, cx| shell.open_logs(target.clone(), cx)
-        },
-        entity,
-    ));
-
-    actions.push(
-        danger_button(
-            &format!("remove-{name}"),
-            "删除",
-            PendingAction::RemoveContainer(name.to_owned()),
-            entity,
-        )
-        .into_any_element(),
-    );
+    // 「更多」放在**最后**：它收的是低频 / 危险动作，顺序上也让"主要动作在左"
+    // 这条读起来成立（和参考实现的 `终端 / 日志 / 更多` 同一个形状）。
+    actions.push(container_more_menu(item, entity));
 
     h_flex()
         .gap_2()
         .flex_wrap()
         .children(actions)
+        .into_any_element()
+}
+
+/// 行末那颗「更多」：低频 / 危险动作都收在这里。
+///
+/// # 菜单里放什么（只画当前有意义的）
+///
+/// | 什么时候 | 菜单里 |
+/// |---|---|
+/// | 运行中 | 终端 / 重启 / 日志 / 删除 |
+/// | 已停止 | 日志 / 删除 |
+///
+/// - 「终端」只有运行中才画：`wslc exec` 在停止的容器上必然失败；
+/// - 「日志」**不分运行状态**：`wslc logs` 读的是容器留下的日志，
+///   停掉的容器照样有东西可看（排查"它为什么退了"正是看这个）；
+/// - 「删除」放最后，前面加一条分隔线 —— 它是唯一不可撤销的那个。
+///
+/// ⚠️ 菜单项**不用** `.disabled()`（全项目不用，见文件头的说明），
+/// 也不做红色高亮：0.7.1 的 `PopupMenuItem` 没有危险态样式，
+/// 而这本来就该由二次确认（`PendingAction`）来兜底，而不是靠颜色。
+///
+/// ⚠️ 回调是 `'static` 的（菜单可能比这一帧活得久）：所以名字 / `Entity`
+/// 都要 `move` 进去，不能借 `item`。
+fn container_more_menu(item: &ContainerListItem, entity: &Entity<Shell>) -> AnyElement {
+    let name = item.display_name().to_owned();
+    let running = item.is_running();
+    let entity = entity.clone();
+
+    Button::new(SharedString::from(format!("more-{name}")))
+        .label("更多")
+        .small()
+        .dropdown_menu(move |mut menu, _window, _cx| {
+            // ⚠️ 每一次都从**捕获进来的** `entity` / `name` 克隆一份，绑定名不要
+            // 叫 `entity`（CI 实测报过 E0382）：内层 `move` 闭包会把那个新绑定
+            // 搬走，而"遮蔽"只在同一个块里生效 —— 下一句再写
+            // `let entity = entity.clone()` 克隆的就是**已经被搬走的那个**。
+            if running {
+                let shell_entity = entity.clone();
+                let app = name.clone();
+                menu = menu.item(PopupMenuItem::new("终端").on_click(move |_, _, cx| {
+                    shell_entity.update(cx, |shell, cx| {
+                        shell.run_immediate(ImmediateAction::OpenContainerShell(app.clone()), cx);
+                    });
+                }));
+
+                let shell_entity = entity.clone();
+                let app = name.clone();
+                menu = menu.item(PopupMenuItem::new("重启").on_click(move |_, _, cx| {
+                    shell_entity.update(cx, |shell, cx| {
+                        shell.run_immediate(ImmediateAction::RestartContainer(app.clone()), cx);
+                    });
+                }));
+            }
+
+            let shell_entity = entity.clone();
+            let app = name.clone();
+            menu = menu.item(PopupMenuItem::new("日志").on_click(move |_, _, cx| {
+                shell_entity.update(cx, |shell, cx| shell.open_logs(app.clone(), cx));
+            }));
+
+            // 分隔线 + 「删除」：不可撤销的那个单独放在最后
+            let shell_entity = entity.clone();
+            let app = name.clone();
+            menu.item(PopupMenuItem::separator())
+                .item(PopupMenuItem::new("删除").on_click(move |_, _, cx| {
+                    shell_entity.update(cx, |shell, cx| {
+                        shell.request(PendingAction::RemoveContainer(app.clone()), cx);
+                    });
+                }))
+        })
         .into_any_element()
 }
 
@@ -1536,7 +1586,8 @@ fn db_blocked_card(failure: &DbFailure) -> AnyElement {
                 .text_color(theme::text_muted())
                 .child(
                     "面板不自己连 3306，而是驱动容器里的客户端 —— 所以它不依赖端口有没有\
-                     发布出来，但要求那个客户端存在。想自己进去看，用「容器」页那一行的「终端」。",
+                     发布出来，但要求那个客户端存在。想自己进去看，用「容器」页那一行\
+                     「更多」菜单里的「终端」。",
                 ),
         )
         .child(log_text(Some(&failure.detail), "db-blocked-detail"))
@@ -2970,9 +3021,12 @@ fn deploy_blocked_card(deploy: &DeployState, failure: &crate::state::DeployFailu
         "这一页的每一个动作都要进容器里执行（准备目录 → 传文件 → 起进程），\
          所以容器得先跑起来。「启动」就在容器列表那一行上。"
     } else {
+        // ⚠️ 「终端」v0.9.14 起在列表行的「更多」菜单里 —— 这句话要跟着改，
+        // 否则用户去行内找那个按钮会找不到（`AGENTS.md` §5：过期注释/文案
+        // 会让后来的人照着它继续错）。
         "「部署应用」服务的是 nginx / Java / Node.js / Go 这几类容器 —— \
          面板按镜像引用、环境变量、启动命令三样认人，一个线索都没有时不会去猜。\
-         想自己进去看，用「容器」页那一行的「终端」。"
+         想自己进去看，用「容器」页那一行「更多」菜单里的「终端」。"
     };
 
     v_flex()
@@ -7025,12 +7079,16 @@ pub fn create_dialog_overlay(
 /// 容器详情弹窗。
 ///
 /// 挂载、端口这些占地方的信息在这儿看全；动作只放**列表行里没有**的那几个
-/// （强杀 / 执行命令 / 打开终端 / attach 主进程），高频动作留在列表行。
+/// （强杀 / 执行命令 / attach 主进程），高频动作留在列表行。
 ///
 /// ⚠️ 这里原先写着"列表里不放操作按钮，操作按钮集中在这儿" —— 那是照 1Panel
 /// 写的，但本项目的列表行一直有操作按钮（启动 / 重启 / 停止 / 日志 / 删除），
 /// 于是详情里又摆了一份一模一样的，实机上看起来就是"同一排按钮出现两次"。
 /// 现在按"不重复"来分：列表放高频的，详情放低频或危险的。
+///
+/// ⚠️ v0.9.14 起列表行自己又分了两层（行内 4 个 + 「更多」菜单），
+/// 这份"不重复"的账要按 `container_row_actions` / `container_more_menu`
+/// 那两个函数来算 —— 终端也在那一行的「更多」里，所以详情里照样没有它。
 ///
 /// 挂载用 `kv_block`（换行不截断）：`E:\code → /etc/nginx/conf.d/`
 /// 这种长路径用 `kv` 会被截成 `E:\...\con...`，等于没显示。
@@ -7056,7 +7114,8 @@ pub fn container_detail_overlay(
     //
     // ⚠️ **列表行里已经有的动作，这里一个都不重复。**
     //
-    // 容器列表那一行给的是高频动作：**终端** / 启动 / 重启 / 停止 / 日志 / 删除。
+    // 容器列表那一行给的是高频动作：**启动 / 停止**在行内，
+    // **终端 / 重启 / 日志 / 删除** 在那一行的「更多」菜单里（v0.9.14 起）。
     // 详情里再摆一遍没有意义 —— 同一个动作两个入口，用户还得判断该点哪个，
     // 而两个入口背后是同一个 `ImmediateAction` / `PendingAction`，行为完全一样。
     // （这一点是**实机看出来的**：发布版里停止的容器在列表行和详情里各有一份
@@ -7109,10 +7168,14 @@ pub fn container_detail_overlay(
 
     // 一行说明：其余动作为什么不在这儿。
     // 没有它，用户会以为详情里少了按钮（或者按钮没画出来）。
+    //
+    // ⚠️ v0.9.14 起列表行里多了一层「更多」菜单 —— 这句话必须**指到菜单**
+    // （终端 / 重启 / 日志 / 删除 都在那儿），否则用户按老习惯去行内找，
+    // 找了一圈只看到"启动/停止"，会以为功能被删了。
     let hint = if running {
-        "终端 / 停止 / 重启 / 日志 / 删除 在列表那一行里"
+        "终端 / 重启 / 日志 / 删除 在列表那一行的「更多」菜单里（停止在行内）"
     } else {
-        "这个容器已经停止 —— 启动 / 日志 / 删除 都在列表那一行里"
+        "这个容器已经停止 —— 启动在行内，日志 / 删除 在那一行的「更多」菜单里"
     };
 
     let close = {
