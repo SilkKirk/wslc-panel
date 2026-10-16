@@ -5528,14 +5528,29 @@ impl Shell {
         let database = entry.database.clone();
 
         let wslc = self.state.wslc.clone();
+        // ⚠️ 这两件事都是**阻塞**的（删 Windows 侧文件 + 进容器 `rm -f`），
+        // 所以整段丢进后台执行器。`cx.spawn(…)` 的 future 是在**界面线程**上被
+        // poll 的，直接在它里面调 `wslc.run(…)` 就是 `AGENTS.md` §7.1 那个形状
+        //（点一下窗口变灰，直到子进程结束）。仓库里其余后台任务都是这个写法：
+        // `cx.background_executor().spawn(async move { … }).await`。
+        //
+        // ⚠️ `container` 后面还要用（刷列表），所以进后台块的是它的一份 clone。
+        let exec_container = container.clone();
         cx.spawn(async move |this, cx| {
-            // Windows 侧那份是**主体**，删不掉要报错；容器内那份尽力删
-            //（容器停了 / 文件没了都不影响这次删除的结果）
-            let file_result = std::fs::remove_file(&windows_path).map_err(|e| e.to_string());
-            let container_result = wslc
-                .run(&["exec", &container, "rm", "-f", &container_path])
-                .map(|_| ())
-                .map_err(|e| e.to_string());
+            let (file_result, container_result) = cx
+                .background_executor()
+                .spawn(async move {
+                    // Windows 侧那份是**主体**，删不掉要报错；容器内那份尽力删
+                    //（容器停了 / 文件没了都不影响这次删除的结果）
+                    let file_result =
+                        std::fs::remove_file(&windows_path).map_err(|e| e.to_string());
+                    let container_result = wslc
+                        .run(&["exec", &exec_container, "rm", "-f", &container_path])
+                        .map(|_| ())
+                        .map_err(|e| e.to_string());
+                    (file_result, container_result)
+                })
+                .await;
 
             let _ = this.update(cx, |shell, cx| {
                 match &file_result {
@@ -8065,7 +8080,6 @@ impl Render for Shell {
                             .child(toast),
                     ),
             )
-            .child(confirm)
             // 拉取弹窗排在创建弹窗**之前**：两者不会同时开着
             // （`use_pulled_image` 会先关掉拉取弹窗），但万一同时开着，
             // 后画的创建表单应该压在上面 —— 用户刚点的是它。
@@ -8107,6 +8121,28 @@ impl Render for Shell {
             .child(db_backup_progress)
             .child(db_import_progress)
             .child(db_backup_dialog)
+            // ⚠️ **通用二次确认必须挂在最后一个。**
+            //
+            // 层序就是这个 `.child()` 链的先后：**后画的压在上面**（同一个文件里
+            // 上面那几段注释都是按这条写的）。而 `confirm` 是"最后点的那个动作"
+            // 的确认框，它可以从**任一**浮层里点出来：
+            //
+            // - 发行版详情 → 「压缩磁盘」「删除」
+            // - 容器详情   → 「强杀」
+            // - 备份列表   → 「恢复」
+            //
+            //（⚠️ 备份列表里的「删除」**不**走这里 —— 它直接删、没有确认框，
+            // 见 `Shell::delete_db_backup`。别照这句话去推断它。）
+            //
+            // v0.9.14 及以前它挂在整条链子的**最前面**（`pull_dialog` 之前），
+            // 于是这些确认框全被自己下面那层浮层盖住了 —— 实机报过来的就是这一条：
+            // "实例详情这里点击压缩磁盘之后没有隐藏详情，压缩磁盘的对话确认在详情之下"
+            //（确认框连着它的遮罩一起被盖住：既看不到「确认」，也挡不住背后的按钮）。
+            //
+            // ⚠️ 加新浮层时问一句：**它能不能从另一个浮层里被打开？** 能的话，
+            // 就必须排在那个浮层之后。`views::modal_scrim` 那套遮罩只保证"点不到
+            // 背后"，管不了层序 —— 层序全靠这条链子。见 `AGENTS.md` §7.5。
+            .child(confirm)
     }
 }
 
