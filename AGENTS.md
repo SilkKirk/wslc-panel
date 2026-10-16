@@ -395,6 +395,14 @@ https://github.com/owu/wsl-dashboard
 - 真的只是"把进程拉起来、不等待"的才可以同步：
   `spawn_in_new_console`（`CREATE_NEW_CONSOLE` + `spawn()`）、
   `explorer.exe`、`spawn_detached`。
+- ⚠️ **`cx.spawn(…)` 的 future 是在界面线程上被 poll 的**，所以它**不是**后台
+  执行器：在它里面直接调 `wslc.run(…)` / `wsl.exec(…)` / `std::fs::*` 一样会卡住
+  界面。要**再套一层** `cx.background_executor().spawn(async move { … }).await`
+  —— 项目里 40+ 处后台任务都是这个形状。
+  **实测漏网过一次**：`Shell::delete_db_backup` 把"删文件 + 进容器 `rm -f`"直接
+  写在 `cx.spawn` 的 async 块里，点「删除」会卡一下（v0.9.15 修）。
+  查这个的字面判据：`wslc.run(` / `wsl.run(` **上面十几行**里有没有
+  `background_executor`（全仓库现在只剩注释里的例子）。
 
 ### 7.2 异步里要 `&mut Window` → `spawn_in` + `update_in`
 
@@ -466,6 +474,16 @@ cx.spawn_in(window, async move |this, cx| {
 - **模态遮罩没有点击处理器**（`modal_scrim()` 只画底色 + `.occlude()`）——
   所以"点遮罩关弹窗"这种事**不存在**，每个弹窗都得自己给「关闭」按钮。
   这也意味着点遮罩**不会**跟组件库自己的"点外面关菜单"打架。
+- ⚠️ **覆盖层的层序 = 渲染树里 `.child(…)` 的先后（后画的压在上面），
+  全靠 `Shell::render` 末尾那条链子手工维持** —— 遮罩只管"点不到背后"，
+  管不了层序。规矩：**能从一个浮层里被打开的，必须排在那个浮层之后**。
+  最容易漏的是**通用二次确认 `confirm`**（`views::confirm_overlay`）：它能从
+  发行版详情（「压缩磁盘」「删除」）、容器详情（「强杀」）、备份列表（「恢复」）
+  里点出来，所以它必须挂在**最后**。
+  **实测踩过一次**：v0.9.14 及以前它挂在链子的最前面，于是这些确认框连着遮罩
+  一起被详情浮层盖住 —— 既看不到「确认」，也挡不住背后的按钮。实机原话：
+  "实例详情这里点击压缩磁盘之后没有隐藏详情，压缩磁盘的对话确认在详情之下"。
+  加新浮层时先问：**它能不能从另一个浮层里被打开？**
 - **模态里放 `Select`（可搜索下拉框）**：v0.6.3 起「拉取镜像」弹窗里有 tag
   下拉框，这是本仓库**第一次**把 `Select` 放进模态。看实现是安全的
   （弹层走 `deferred` + `POPUP_PRIORITY`，遮罩只有 `BlockMouse`，见上一条），
