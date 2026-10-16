@@ -457,8 +457,11 @@ impl Snapshot {
     ///   它**不是** Task Manager 里那个 CPU 占用。
     /// - **内存**：各容器的 `MemUsage` 分子之和 / 分母（分母是 WSL 的内存上限，
     ///   各容器报的是同一个数，所以取任意一个都行）。
-    /// - **磁盘**：会话存储所在的那个卷（`wslc_core::storage` 自己查的）——
-    ///   镜像、容器可写层、卷都落在它上面。
+    /// - **存储**：会话 VHD 在宿主机上实际占的字节 ÷ **所在盘总量** ——
+    ///   镜像、容器可写层、卷都在这个 VHD 里（`wslc_core::storage` 的说明），
+    ///   所以这一环回答的是"容器这一摊占了这块盘多少"。
+    ///   ⚠️ 分母刻意**不是**"整块盘已用了多少"：那样读数是**这台电脑**的磁盘
+    ///   占用率，和面板管的这一摊没关系（实机反馈就是这个）。
     pub fn dashboard_stats(&self) -> DashboardStats {
         let mut cpu_percent = 0.0f64;
         let mut mem_used = 0u64;
@@ -521,8 +524,13 @@ pub struct DashboardStats {
     /// WSL 的内存上限（字节）；一个容器都没在跑时报不出来，为 `None`。
     pub mem_limit: Option<u64>,
     /// 会话存储所在卷的容量；拿不到时为 `None`。
+    ///
+    /// 它在这个页面上只当**分母**用（"会话 VHD 占了这块盘的多少"）——
+    /// 见 [`DashboardStats::vhd_percent_of_disk`]。
     pub disk: Option<VolumeSpace>,
     /// 当前会话 VHD 的实际占用；文件还没建出来时为 `None`。
+    ///
+    /// 它是「存储」那一环的**分子**（镜像、容器可写层、卷都在这个 VHD 里）。
     pub vhd_bytes: Option<u64>,
 }
 
@@ -548,6 +556,25 @@ impl DashboardStats {
     pub fn mem_percent(&self) -> Option<f64> {
         let limit = self.mem_limit.filter(|limit| *limit > 0)?;
         let percent = self.mem_used as f64 / limit as f64 * 100.0;
+        percent.is_finite().then(|| percent.clamp(0.0, 100.0))
+    }
+
+    /// 会话 VHD 占**所在盘总量**的百分比（0.0–100.0）。
+    ///
+    /// # 分子是 VHD，不是"整块盘已用了多少"
+    ///
+    /// 这一环要回答的是"**容器这一摊**在这块盘里占了多少" —— 镜像、容器可写层、
+    /// 卷都在那个 `storage.vhdx` 里（`wslc_core::storage` 的说明），所以分子用
+    /// 它在宿主机上实际占的字节（`vhd_bytes`）。
+    ///
+    /// 换成"整块盘已用 / 总量"的话，环读数是**这台电脑**的磁盘占用率
+    /// （本机 50%），和面板管的这一摊没关系 —— 用户就是这么反馈的。
+    ///
+    /// 分母拿不到（读不到卷容量）或 VHD 还没建出来时返回 `None`。
+    pub fn vhd_percent_of_disk(&self) -> Option<f64> {
+        let total = self.disk.filter(|disk| disk.total > 0)?.total;
+        let vhd = self.vhd_bytes?;
+        let percent = vhd as f64 / total as f64 * 100.0;
         percent.is_finite().then(|| percent.clamp(0.0, 100.0))
     }
 }
@@ -4961,11 +4988,55 @@ mod tests {
         let mem_percent = stats.mem_percent().expect("有上限就该算得出来");
         assert!((mem_percent - (541.55 / (15.48 * 1024.0) * 100.0)).abs() < 1e-6);
 
-        // 存储那一环（已用 = 总量 - 可用）
+        // 存储那一环：**会话 VHD** ÷ 所在盘总量 = 120 / 1000 = 12%
+        //
+        // ⚠️ 刻意**不是**"盘已用 / 盘总量"（600/1000 = 60%）：那是这台电脑的
+        // 磁盘占用率，和面板管的这一摊没关系 —— 实机反馈就是这个
+        // （环里写着 50%，而容器数据只有 2.64 GB）。
         let disk = stats.disk.expect("给了 storage 就该有盘");
-        assert_eq!(disk.used(), 600);
-        assert!((disk.used_percent() - 60.0).abs() < 1e-9);
+        assert_eq!(disk.total, 1000);
         assert_eq!(stats.vhd_bytes, Some(120));
+        let vhd_percent = stats.vhd_percent_of_disk().expect("有 VHD、有盘总量就算得出来");
+        assert!((vhd_percent - 12.0).abs() < 1e-9, "{vhd_percent}");
+    }
+
+    #[test]
+    fn dashboard_stats_storage_ring_needs_both_the_vhd_and_the_disk() {
+        // 缺哪一半都不出百分比：这是**一个比例**，只有分子或只有分母都是编数字。
+        // VHD 还没建出来（新装的会话）
+        let mut snap = Snapshot::default();
+        snap.storage = Some(wslc_core::storage::layout(
+            None,
+            PathBuf::from(r"C:\x"),
+            None,
+        ));
+        assert_eq!(snap.dashboard_stats().vhd_percent_of_disk(), None);
+
+        // 有 VHD，但读不到卷容量
+        let mut snap = Snapshot::default();
+        let mut storage = wslc_core::storage::layout(None, PathBuf::from(r"C:\x"), None);
+        storage.vhd_bytes = Some(120);
+        snap.storage = Some(storage);
+        assert_eq!(snap.dashboard_stats().vhd_percent_of_disk(), None);
+
+        // 两个都有 → 算得出来
+        let mut storage = wslc_core::storage::layout(None, PathBuf::from(r"C:\x"), None);
+        storage.vhd_bytes = Some(120);
+        storage.volume = Some(VolumeSpace {
+            total: 1000,
+            free: 400,
+        });
+        let mut snap = Snapshot::default();
+        snap.storage = Some(storage);
+        assert_eq!(snap.dashboard_stats().vhd_percent_of_disk(), Some(12.0));
+
+        // 卷容量是 0（不该发生）→ 不当分母，别去算除零
+        let mut storage = wslc_core::storage::layout(None, PathBuf::from(r"C:\x"), None);
+        storage.vhd_bytes = Some(120);
+        storage.volume = Some(VolumeSpace { total: 0, free: 0 });
+        let mut snap = Snapshot::default();
+        snap.storage = Some(storage);
+        assert_eq!(snap.dashboard_stats().vhd_percent_of_disk(), None);
     }
 
     #[test]

@@ -689,13 +689,22 @@ fn gauge(
                 ),
         )
         .child(
-            div()
+            // ⚠️ 这行小字要**居中**，不能只写个 `w_full` 就完事：这一格是
+            // `flex_1` 的一整列，文本默认左对齐 —— 环在格子正中、字却贴着
+            // 格子左边，两行对不上（实机反馈："下面的字有点歪了"）。
+            // 用 `justify_center` 而不是 `text_center()`：前者本仓库到处在用，
+            // 后者一次都没用过 —— 本机没工具链，不赌没验证过的 API（AGENTS.md §1）。
+            // `overflow_hidden` 兜住"比格子还长"的那种小字（居中裁掉两头，不越界）。
+            h_flex()
                 .w_full()
-                .text_xs()
-                .text_color(theme::text_muted())
+                .justify_center()
                 .overflow_hidden()
-                .truncate()
-                .child(caption),
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child(caption),
+                ),
         )
         .into_any_element()
 }
@@ -722,11 +731,12 @@ fn gauge_big(percent: Option<f64>) -> String {
 
 /// 「状态」卡：四只圆环 —— 容器 CPU / 容器内存 / 会话盘 / 容器数量。
 ///
-/// 顺序照 1Panel（CPU → 内存 → 磁盘 → 数量），把"最要紧的那几个"排在左边。
+/// 顺序：CPU → 内存 → 容器 → 存储。前三只都是"容器这一摊"的（CPU / 内存 / 数量），
+/// 存储单独摆在最后 —— 实机反馈就是把存储和容器调了个个儿。
 fn status_card(stats: &DashboardStats) -> AnyElement {
     let cpu_percent = stats.cpu_whole_machine_percent();
     let mem_percent = stats.mem_percent();
-    let disk_percent = stats.disk.as_ref().map(|disk| disk.used_percent());
+    let disk_percent = stats.vhd_percent_of_disk();
     let has_running = stats.running > 0;
 
     // 数量那一环：全部为 0 时没有"比例"可言，`None` 让环空着。
@@ -753,13 +763,16 @@ fn status_card(stats: &DashboardStats) -> AnyElement {
         _ => "没有正在运行的容器".to_owned(),
     };
 
-    let disk_caption = match stats.disk {
-        Some(disk) => format!(
-            "{} / {}",
-            format_bytes(disk.used()),
-            format_bytes(disk.total)
-        ),
-        None => "拿不到会话盘容量".to_owned(),
+    // 存储那一环：分子是**会话 VHD** 的实际占用，分母是所在盘总量
+    // （"容器这一摊占了这块盘多少"）。缺哪一半都不写数字 —— 一个比例只有
+    // 分子或只有分母都是编的，不如写清楚缺什么。
+    let disk_caption = match (stats.vhd_bytes, stats.disk) {
+        (Some(vhd), Some(disk)) => {
+            format!("{} / {}", format_bytes(vhd), format_bytes(disk.total))
+        }
+        (None, Some(disk)) => format!("VHD 还没建出来 / {}", format_bytes(disk.total)),
+        (Some(vhd), None) => format!("{}（拿不到盘总量）", format_bytes(vhd)),
+        (None, None) => "拿不到会话存储信息".to_owned(),
     };
 
     let (count_big, count_caption) = if stats.total > 0 {
@@ -777,14 +790,11 @@ fn status_card(stats: &DashboardStats) -> AnyElement {
         Some(cores) => format!("CPU 合计 ÷ {cores} 核"),
         None => "CPU 是各容器之和（未折算）".to_owned(),
     };
-    let vhd_note = match stats.vhd_bytes {
-        Some(bytes) => format!("；当前会话的 VHD 占 {}", format_bytes(bytes)),
-        None => String::new(),
-    };
-    let note = format!(
-        "口径：CPU 与内存只算容器（{cores_note}，内存分母是 WSL 的内存上限）；\
-         存储是会话盘（镜像与容器可写层都在它上面）{vhd_note}。"
-    );
+    let note = crate::util::strip_md(&format!(
+        "口径：只算容器 —— CPU 与内存的分母分别是核数与 WSL 的内存上限（{cores_note}）；\
+         存储是**会话 VHD**（镜像、容器可写层、卷都在它里面）占所在盘总量的比例，\
+         不是整块盘的占用率。"
+    ));
 
     card(
         "状态",
@@ -813,14 +823,6 @@ fn status_card(stats: &DashboardStats) -> AnyElement {
                         mem_caption,
                     ))
                     .child(gauge(
-                        "gauge-session-disk",
-                        disk_percent,
-                        gauge_color(disk_percent),
-                        gauge_big(disk_percent),
-                        "存储",
-                        disk_caption,
-                    ))
-                    .child(gauge(
                         "gauge-container-count",
                         count_percent,
                         // 数量不是"用量"，别让它在 85% 时变红 ——
@@ -829,6 +831,14 @@ fn status_card(stats: &DashboardStats) -> AnyElement {
                         count_big,
                         "容器",
                         count_caption,
+                    ))
+                    .child(gauge(
+                        "gauge-session-disk",
+                        disk_percent,
+                        gauge_color(disk_percent),
+                        gauge_big(disk_percent),
+                        "存储",
+                        disk_caption,
                     )),
             )
             .child(
