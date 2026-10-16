@@ -17,6 +17,7 @@
 //! | 试的 | 结果 |
 //! |---|---|
 //! | `wslc exec -e MYSQL_PWD=root mysql mysql -uroot -N -B -e "SHOW DATABASES"` | exit 0，4 行 TSV |
+//! | 不给 `--default-character-set` 时客户端协商到的字符集 | **latin1**（容器里没有 `LANG`，客户端 `auto` 认不出 locale）—— `SELECT` 的中文变 `?`、**恢复时中文被双重编码**，实测与修法见 [`load_script`]；所以 argv 里现在写死 `--default-character-set=utf8mb4` |
 //! | `wslc exec --help` | **有 `-e/--env`**，所以密码能走环境变量、不进 argv |
 //! | 客户端在哪 | `/usr/bin/mysql`（另有 `/usr/bin/mysqlsh`） |
 //! | stdout 不是 tty 时的默认输出 | **batch（TSV）** —— 所以"给人看的表格"必须显式 `--table` |
@@ -395,6 +396,16 @@ pub fn client_args(
     mode: SqlMode,
 ) -> Vec<String> {
     let mut args: Vec<String> = vec![bin.to_owned()];
+
+    // ⚠️ **必须显式指定 utf8mb4**：容器里通常没有 `LANG`，而 mysql 客户端的
+    // `--default-character-set` 默认是 `auto` —— 认不出 locale 时**退回 latin1**。
+    // 实测（本机容器，mysql 26.7.0）：不指定时 `character_set_client` /
+    // `character_set_results` 都是 **latin1**，于是
+    // ① `SELECT` 出来的中文变成 `?`（服务端转不成 latin1）；
+    // ② 更要命的是恢复 / 导入：dump 是 utf8mb4 字节，客户端当 latin1 再转一次
+    //    → **双重编码存进库**（实测 `中文测试` 的 HEX 从 `E4B8AD…` 变成 `C3A4C2B8…`，
+    //    数据静默损坏）。同一容器上加上这个开关后 HEX 原样一致。
+    args.push("--default-character-set=utf8mb4".to_owned());
 
     args.push("-u".to_owned());
     args.push(creds.user.clone());
@@ -981,7 +992,63 @@ pub fn default_user_for(database: &str) -> String {
     format!("{}_user", database.trim())
 }
 
+/// 从**客户端**的二进制名推出配套的 dump 工具（**纯函数**）。
+///
+/// # 为什么需要它（v0.9.6 的实机事故）
+///
+/// 面板探测容器时只找 `mysql` / `mariadb` / `mysqlsh` 客户端（那是执行 SQL 用的），
+/// 从来没有单独找过 dump 工具。而备份第一步却**把客户端当成了 dump 程序**：
+/// `mysqldump_args(client_bin, …)` 原来直接把 `client_bin` 当成 argv[0]，
+/// 于是容器里真正跑起来的是
+///
+/// ```text
+/// mysql -u <用户> -N -B --databases <库> --single-transaction --quick --set-gtid-purged=OFF
+/// ```
+///
+/// —— 把 **mysqldump 的参数喂给了 mysql 客户端**。实测（本机容器，mysql 26.7.0）：
+///
+/// | 形状 | 结果 |
+/// |---|---|
+/// | `mysql … --databases djxm …`（改之前） | `mysql: [ERROR] unknown option '--databases'.` **exit 2** |
+/// | `mysqldump … --databases djxm …`（改之后） | exit 0，110 张表 / 2.3 MB |
+///
+/// 之所以一直没人发现：这个函数**只有一个调用方**（`cmd::mysql::backup_database`），
+/// 而"备份"这个按钮从 v0.8 到 v0.9.6 之间**根本不存在**（见 `docs/PLAN-v0.9.md` §12），
+/// 单测又只传 `"mysqldump"` 进来、从不检查 argv[0]，于是两边一起沉默。
+///
+/// # 规则
+///
+/// 只换**基名**、保留目录（`/usr/bin/mysql` → `/usr/bin/mysqldump`）：
+/// 客户端和 dump 工具在官方镜像里永远同目录。
+///
+/// | 客户端 | dump 工具 |
+/// |---|---|
+/// | `mysql` | `mysqldump` |
+/// | `mariadb` | `mariadb-dump` |
+/// | `mysqlsh` | `mysqldump`（⚠️ 这一条是**推的**：官方 mysql-shell 镜像里有没有 `mysqldump` 没实测过） |
+/// | 已经叫 `*dump` 的 | 原样返回（幂等 —— 手写测试/将来直接传 dumper 都不会被改坏） |
+/// | 其它 | `mysqldump`（退回最可能的那个；真没有时容器会报 `not found`） |
+pub fn dump_bin(client_bin: &str) -> String {
+    let (dir, base) = match client_bin.rsplit_once('/') {
+        Some((dir, base)) => (Some(dir), base),
+        None => (None, client_bin),
+    };
+    let dump = match base {
+        "mariadb" => "mariadb-dump",
+        // 幂等：已经是个 dump 工具就原样用（`mariadb-dump` 也落在这里）
+        other if other.ends_with("dump") => other,
+        _ => "mysqldump",
+    };
+    match dir {
+        Some(dir) => format!("{dir}/{dump}"),
+        None => dump.to_owned(),
+    }
+}
+
 /// `mysqldump` 的参数（**纯函数**，`cmd::mysql` 拿它去拼 `wslc exec`）。
+///
+/// ⚠️ 收的是**客户端**的二进制名（探测得来的那个），dump 工具由 [`dump_bin`] 推导 ——
+/// 调用方**不要**自己传 `mysqldump`，v0.9.6 就是在这里把客户端当成了 dump 程序。
 ///
 /// # 实测（wslc 3.0.3.0 / mysql 26.7.0）
 ///
@@ -991,9 +1058,29 @@ pub fn default_user_for(database: &str) -> String {
 /// - `--quick`：逐行取，不在内存里攒整个结果集 —— 对大表是**必须的**；
 /// - `--set-gtid-purged=OFF`：实测不加会往 stderr 打一条 GTID 警告；
 ///   恢复到同一个实例的场景 GTID 本来就不该带，加上它把警告也消了。
-pub fn mysqldump_args(bin: &str, creds: &MysqlCreds, database: &str) -> Result<Vec<String>> {
+/// - `--default-character-set=utf8mb4` 也是复用 `client_args` 带进来的（见那边）：
+///   对 dump 来说等于显式声明"写出来的是 utf8mb4"，不再依赖容器 locale。
+/// - 前面那对 `-N -B` 同样是复用 `client_args(SqlMode::Batch)` 带进来的：
+///   `-B` 在 mysqldump 里就是 `--databases`（重复但无害），`-N` = `--no-set-names`
+///   （dump 里因此少了 `SET NAMES` 那一行）。
+///
+/// # `-N` 与中文：实测过，**它不是问题**（但"去掉它"也不是解）
+///
+/// 在真容器里对一份含 `中文测试` 的库做完整往返（建库 → dump → 删库 → 恢复 → 比 HEX，
+/// 原始值 `E4B8ADE69687E6B58BE8AF95`）：
+///
+/// | 恢复时用的客户端 | 恢复后 HEX | 结论 |
+/// |---|---|---|
+/// | `mysql -uroot < dump`（面板 v0.9.6 的形状） | `C3A4C2B8C2ADC3A6…` | ❌ 双重编码 |
+/// | 同一份 dump，但 dump **去掉 `-N`**（自带 `SET NAMES utf8mb4`） | `C3A4C2B8C2ADC3A6…` | ❌ 一样坏 |
+/// | 同一份 `-N` dump + 客户端 `--default-character-set=utf8mb4` | `E4B8ADE69687E6B58BE8AF95` | ✅ 一致 |
+///
+/// 结论：**问题在消费端的客户端字符集，不在 dump 的 `-N`** —— 客户端自己的字符集
+/// 不对时，dump 里那句 `SET NAMES` 救不回来。所以 `-N` 保留（少一行无害的语句），
+/// 真正的修复在 `client_args` / `load_script` 里那个显式字符集开关。
+pub fn mysqldump_args(client_bin: &str, creds: &MysqlCreds, database: &str) -> Result<Vec<String>> {
     validate_ident("库名", database)?;
-    let mut args = client_args(bin, creds, "", None, SqlMode::Batch);
+    let mut args = client_args(&dump_bin(client_bin), creds, "", None, SqlMode::Batch);
     // client_args 的尾巴是 `-e <sql>`，dump 不需要它 —— 掐掉再接自己的参数
     args.truncate(args.len() - 2);
     args.push("--databases".to_owned());
@@ -1045,10 +1132,29 @@ pub fn sh_quote(value: &str) -> Result<String> {
 /// "stdin 来自文件"。要走那条路得先给 `cli.rs` 加一个同族方法。
 pub fn load_script(bin: &str, sql_path: &str, database: Option<&str>) -> Result<String> {
     let path = sh_quote(sql_path)?;
+    // ⚠️ 这个开关是**防数据损坏**的，不是"顺手加个好习惯"：容器里没有 `LANG` 时
+    // 客户端默认字符集退回 **latin1**（实测 `character_set_client=latin1`），
+    // 而 dump / 用户选的 `.sql` 都是 utf8mb4 字节 —— 客户端按 latin1 解释再转一次，
+    // 中文就变成双重编码**静默存进库**。
+    // 实测（本机容器，mysql 26.7.0，`中文测试` = HEX `E4B8ADE69687E6B58BE8AF95`）：
+    //
+    // | 恢复时用的客户端 | 恢复后 HEX | 结论 |
+    // |---|---|---|
+    // | `mysql -uroot < dump`（面板 v0.9.6 的形状） | `C3A4C2B8C2ADC3A6…` | ❌ 坏了 |
+    // | 同一份 dump + `--default-character-set=utf8mb4` | `E4B8ADE69687E6B58BE8AF95` | ✅ 一致 |
+    //
+    // ⚠️ 顺带记一条**反直觉**的实测：光靠 dump 里那句 `SET NAMES utf8mb4`
+    // **救不回来**（同样变成 `C3A4C2B8…`）—— 客户端自己的字符集不对时，
+    // 服务端那句 SET NAMES 改不了客户端怎么解释它读到的字节。
+    // 所以"去掉 dump 的 `-N` 让 dump 自带 SET NAMES"**不是**这个问题的解。
+    let charset = "--default-character-set=utf8mb4";
     match database {
         // `-D` 的值也过一次 shell，所以同样要引起来（库名可能带空格 / 中文）
-        Some(db) => Ok(format!("exec {bin} -D {} < {path}", sh_quote(db)?)),
-        None => Ok(format!("exec {bin} < {path}")),
+        Some(db) => Ok(format!(
+            "exec {bin} {charset} -D {} < {path}",
+            sh_quote(db)?
+        )),
+        None => Ok(format!("exec {bin} {charset} < {path}")),
     }
 }
 
@@ -1467,9 +1573,25 @@ mod tests {
         let args = client_args("mysql", &creds, "SHOW DATABASES", None, SqlMode::Batch);
         assert_eq!(
             args,
-            vec!["mysql", "-u", "root", "-N", "-B", "-e", "SHOW DATABASES"]
+            vec![
+                "mysql",
+                "--default-character-set=utf8mb4",
+                "-u",
+                "root",
+                "-N",
+                "-B",
+                "-e",
+                "SHOW DATABASES"
+            ]
         );
         assert_eq!(args.last().map(String::as_str), Some("SHOW DATABASES"));
+        // ⚠️ 字符集写死 utf8mb4（**位置也要在 `-e` 之前**）：容器里没有 `LANG`
+        // 时客户端退回 latin1，`SELECT` 的中文会变 `?`、恢复会双重编码。
+        // 实测见 `load_script` 的注释 —— 这一条是数据安全断言，不是风格问题。
+        assert!(
+            args.contains(&"--default-character-set=utf8mb4".to_owned()),
+            "缺字符集开关：{args:?}"
+        );
         // 密码**不在**参数里 —— 只走 `exec_env`
         assert!(
             !args.iter().any(|a| a.contains("pw")),
@@ -1489,7 +1611,17 @@ mod tests {
         );
         assert_eq!(
             args,
-            vec!["mariadb", "-u", "root", "--table", "-D", "shop", "-e", "SELECT 1"]
+            vec![
+                "mariadb",
+                "--default-character-set=utf8mb4",
+                "-u",
+                "root",
+                "--table",
+                "-D",
+                "shop",
+                "-e",
+                "SELECT 1"
+            ]
         );
         // `--table` 必须显式给：stdout 不是 tty 时 mysql 默认是 batch（实测）
         assert!(args.contains(&"--table".to_owned()));
@@ -1798,9 +1930,34 @@ mod tests {
     }
 
     #[test]
+    fn dump_bin_is_derived_from_the_client_never_the_client_itself() {
+        // v0.9.6 的实机事故：备份把**客户端**当成了 dump 程序，容器里跑出
+        // `mysql … --databases …`（mysql 不认这个开关，实测 exit 2）。
+        assert_eq!(dump_bin("mysql"), "mysqldump");
+        assert_eq!(dump_bin("/usr/bin/mysql"), "/usr/bin/mysqldump");
+        assert_eq!(dump_bin("mariadb"), "mariadb-dump");
+        assert_eq!(dump_bin("/usr/bin/mariadb"), "/usr/bin/mariadb-dump");
+        // 幂等：已经是 dump 工具就原样返回（`mariadb-dump` 落在 ends_with("dump")）
+        assert_eq!(dump_bin("mysqldump"), "mysqldump");
+        assert_eq!(dump_bin("/usr/bin/mariadb-dump"), "/usr/bin/mariadb-dump");
+        // 认不出来时退回最可能的那个 —— **不能**把客户端名字原样带下去
+        assert_eq!(dump_bin("mysqlsh"), "mysqldump");
+        assert_eq!(dump_bin("weird"), "mysqldump");
+    }
+
+    #[test]
     fn mysqldump_args_are_the_verified_shape() {
         let creds = MysqlCreds::root("pw");
-        let args = mysqldump_args("mysqldump", &creds, "shop").unwrap();
+        // ⚠️ 传进去的是**客户端**（生产里就是 `mysql`，因为探测只找客户端），
+        // dump 工具由 `dump_bin` 推导。这两条断言是 v0.9.6 那次事故的回归钉 ——
+        // 原来的测试传 `"mysqldump"` 进来、又从不看 argv[0]，
+        // 于是"调用方传了客户端"这件事在测试里完全看不见。
+        let args = mysqldump_args("mysql", &creds, "shop").unwrap();
+        assert_eq!(args[0], "mysqldump", "argv[0] 必须是 dump 工具：{args:?}");
+        assert_ne!(
+            args[0], "mysql",
+            "不能把 mysql 客户端当 dump 程序（它不认 --databases）：{args:?}"
+        );
         assert!(
             args.windows(2).any(|w| w[0] == "-u" && w[1] == "root"),
             "{args:?}"
@@ -1821,7 +1978,7 @@ mod tests {
         // 参数里绝不能出现密码（和 exec 同一条纪律）
         assert!(!args.iter().any(|a| a.contains("pw")), "{args:?}");
         // 非法库名在本地就拦下，不起进程
-        assert!(mysqldump_args("mysqldump", &creds, "shop; drop").is_err());
+        assert!(mysqldump_args("mysql", &creds, "shop; drop").is_err());
     }
 
     #[test]
@@ -1839,30 +1996,32 @@ mod tests {
 
     #[test]
     fn load_script_quotes_the_path_and_optionally_picks_a_database() {
-        // 恢复（面板自己的备份）：不带库名 —— 让 dump 里的 CREATE DATABASE 说话
+        // 恢复（面板自己的备份）：不带库名 —— 让 dump 里的 CREATE DATABASE 说话。
+        // ⚠️ `--default-character-set=utf8mb4` 必须在：容器里没有 `LANG` 时
+        // 客户端退回 latin1，中文会被**双重编码**存进库（实测见函数注释）。
         assert_eq!(
             load_script("mysql", "/tmp/wslc-restore/x.sql", None).unwrap(),
-            "exec mysql < '/tmp/wslc-restore/x.sql'"
+            "exec mysql --default-character-set=utf8mb4 < '/tmp/wslc-restore/x.sql'"
         );
         // 导入到指定库
         assert_eq!(
             load_script("mysql", "/tmp/wslc-restore/x.sql", Some("djxm")).unwrap(),
-            "exec mysql -D 'djxm' < '/tmp/wslc-restore/x.sql'"
+            "exec mysql --default-character-set=utf8mb4 -D 'djxm' < '/tmp/wslc-restore/x.sql'"
         );
         // ⚠️ 文件名是**用户选的**：空格 / 括号 / 中文都必须原样进去 ——
         // 不包引号的话 `mysql < /tmp/shop backup (1).sql` 会被 shell 拆开。
         assert_eq!(
             load_script("mysql", "/tmp/wslc-restore/shop backup (1).sql", None).unwrap(),
-            "exec mysql < '/tmp/wslc-restore/shop backup (1).sql'"
+            "exec mysql --default-character-set=utf8mb4 < '/tmp/wslc-restore/shop backup (1).sql'"
         );
         assert_eq!(
             load_script("mysql", "/tmp/wslc-restore/订单.sql", Some("我的库")).unwrap(),
-            "exec mysql -D '我的库' < '/tmp/wslc-restore/订单.sql'"
+            "exec mysql --default-character-set=utf8mb4 -D '我的库' < '/tmp/wslc-restore/订单.sql'"
         );
         // `;` `$` 这些在**单引号里**是字面量，不需要拒
         assert_eq!(
             load_script("mysql", "/tmp/a;b$c.sql", None).unwrap(),
-            "exec mysql < '/tmp/a;b$c.sql'"
+            "exec mysql --default-character-set=utf8mb4 < '/tmp/a;b$c.sql'"
         );
         // 只有真正没法安全表达的两个字符被拒
         assert!(load_script("mysql", "/tmp/a'b.sql", None).is_err());

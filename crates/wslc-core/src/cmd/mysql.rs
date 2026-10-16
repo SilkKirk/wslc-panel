@@ -248,6 +248,12 @@ pub fn run_console_sql(
 // - **备份**：容器内 `sh -c 'mkdir -p <目录> && mysqldump … > <文件>'` 可行
 //   （3.7 MB 的 `mysql` 系统库一次成功）；stdout 直接落**容器里**的文件
 //   （sh 的重定向做的），所以 Windows 侧没有"大输出撑爆内存"的问题；
+//   ⚠️ **程序名必须是 `mysqldump`，不是客户端 `mysql`** —— v0.9.6 实测：
+//   把 mysqldump 的参数喂给 `mysql` 客户端是 `unknown option '--databases'`、
+//   退出码 2，而 `>` 已经在容器里留下一个 **0 字节**文件。推导在
+//   [`logic::dump_bin`]（收客户端名、吐 dump 工具名），别在调用方手拼；
+//   同一台机器上 `mysqldump` 版实测：exit 0、110 张表 / 2.32 MB，
+//   `container cp` 回 Windows 后 **sha256 一致**；
 // - **拉回 Windows**：`wslc container cp <容器>:<路径> <本地目录>` **可用**
 //   （3.7 MB 完整拉回）；
 // - **送进容器**：`wslc container cp <本地文件> <容器>:<已存在的目录>/`
@@ -297,6 +303,10 @@ pub fn backup_paths(
 
 /// 备份一个数据库：容器内 dump 到 `/tmp` → `container cp` 拉回 Windows。
 ///
+/// `client_bin` 收的是**客户端**（探测得来的 `mysql` / `mariadb`）——
+/// dump 工具（`mysqldump` / `mariadb-dump`）由 [`logic::dump_bin`] 自己推导。
+/// 别把这个参数当成"dump 程序"用：v0.9.6 就是这么错的（详见模块注释）。
+///
 /// # 返回
 ///
 /// [`BackupPaths`] —— 界面要两个都报（容器内那份是恢复用的）。
@@ -307,6 +317,13 @@ pub fn backup_paths(
 /// 拿不到数据流，所以界面上只有"正在备份…"和完成提示。
 /// `Wslc::spawn_to_file`（stdout 落**本地**文件那条路）是给将来
 /// "边 dump 边传"留的地基，见 `cli.rs` 的注释。
+///
+/// # 只认退出码（实测过的一个坑）
+///
+/// mysqldump 会因为**权限不够但无关紧要**的两件事往 stderr 打 `Error:` 字样
+/// （实测 26.7.0：`column_masking_policy` 少 SELECT、tablespaces 少 PROCESS），
+/// 但**退出码仍然是 0、dump 是完整的**。所以这里只看退出码，不拿 stderr
+/// 去判失败 —— 否则一个正常的备份会被判成失败。
 pub fn backup_database(
     wslc: &Wslc,
     container_name: &str,
@@ -503,6 +520,9 @@ mod tests {
                 "MYSQL_PWD=s3cret",
                 "mysql",
                 "mysql",
+                // ⚠️ 服务器名（第 4 项）之后紧接着客户端和它的字符集开关 ——
+                // 少了它，容器里（没有 LANG）客户端退回 latin1，中文会坏。
+                "--default-character-set=utf8mb4",
                 "-u",
                 "root",
                 "-N",
