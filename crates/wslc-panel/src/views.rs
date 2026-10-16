@@ -3319,7 +3319,7 @@ fn deploy_row_actions(
 ///
 /// 为什么不复用 [`danger_button`]：那一个把动作交给 `ConfirmAction::execute`，
 /// 而它的形状是"跑一条 `wslc` 命令 → 返回字符串"（同步、单个子进程）。
-/// 删一条部署要做三件事 —— 停进程、清空目标目录、**改本地存档并重读列表** ——
+/// 删一条部署要做三件事 —— 停进程、删掉面板铺进去的那些文件、**改本地存档并重读列表** ——
 /// 最后那件它表达不了。所以删除确认是部署页自己的浮层
 ///（[`deploy_remove_confirm_overlay`]），按钮直接把动作交给 `Shell`。
 fn deploy_danger_button(
@@ -3349,7 +3349,9 @@ fn deploy_danger_button(
 ///
 /// # 表单里的说明文字都是**必须的**
 ///
-/// - 「目标目录会被清空」：部署是"先清空再铺"，用户有权在点之前知道；
+/// - 「目标目录里会被替换的是哪几个文件」：部署是"删掉我们铺过的名字再铺"，
+///   用户有权在点之前知道（v0.9.10 起不再整目录清空 —— 见
+///   `model::deploy::removals_script`）；
 /// - 「启动命令会原样交给 /bin/sh -c」：它**不做**引号转义（刻意的，
 ///   见 `model::deploy::start_script`），不说清楚用户会以为它是参数。
 pub fn deploy_dialog_overlay(
@@ -3460,8 +3462,9 @@ pub fn deploy_dialog_overlay(
                 .text_xs()
                 .text_color(theme::danger())
                 .child(
-                    "⚠️ 部署会**先清空目标目录**再铺 —— 那个目录里原有的东西会没。\
-                     所以目标目录只允许填在 /opt、/srv、/app、/var/www、\
+                    "「部署」会**替换掉面板上次铺进去的那几个文件**（不多删别的：\
+                     镜像自带的文件、你自己放的东西都留着），所以要填一个专门放这个应用的\
+                     目录。目标目录只允许填在 /opt、/srv、/app、/var/www、\
                      /usr/share/nginx 这些地方，不能是系统目录。",
                 ),
         );
@@ -3626,11 +3629,12 @@ pub fn deploy_remove_confirm_overlay(
                 .text_sm()
                 .text_color(theme::text())
                 .child(if is_process {
-                    "面板会：① 停掉这个应用的进程；② **清空**容器里的目标目录；\
+                    "面板会：① 停掉这个应用的进程；② 删掉面板铺进目标目录的那几个文件\
+                     （`app.log` / `app.pid` 与上次部署的文件，**别人的东西不动**）；\
                      ③ 删掉本地的那条记录。"
                 } else {
-                    "面板会：**清空**容器里的目标目录（内容形态没有我们起的进程），\
-                     然后删掉本地的那条记录。"
+                    "面板会：删掉面板铺进目标目录的那几个文件（内容形态没有我们起的进程；\
+                     镜像自带的文件、你自己放的东西都不动），然后删掉本地的那条记录。"
                 }),
         )
         .child(kv_block("容器", container))
@@ -6502,13 +6506,27 @@ fn image_facts_hint(dialog: &CreateDialog) -> AnyElement {
                 // （`create-command`），两处都写"启动命令"用户会分不清哪个生效。
                 //
                 // ⚠️ 这一行**不能**读成"这个镜像跑得起来" —— 它拼的是
-                // `Entrypoint + Cmd`，而只有 ENTRYPOINT、没有 CMD 的镜像
-                // （`eclipse-temurin:*-jre-alpine` 就是，这里显示的是
-                // `/__cacert_entrypoint.sh`）起来就退。判定见 `create_command`。
-                body = body.child(div().text_xs().text_color(theme::text_dim()).child(format!(
-                    "镜像自带的启动命令：{}（「启动命令」那格留空时用它）",
-                    facts.command
-                )));
+                // `Entrypoint + Cmd`。有 CMD 的（nginx / mysql）留空就是用它；
+                // **只有 ENTRYPOINT 的**（`eclipse-temurin:*-jre-alpine` 就是，
+                // 这里显示的是 `/__cacert_entrypoint.sh`）留空**起来就退**。
+                // 所以两种情况给两句不同的话（v0.9.10 起 `ImageFacts::has_cmd`
+                // 能把它们分开；`confirm_create` 也会拦住后者留空提交）。
+                let text = if facts.has_cmd {
+                    format!(
+                        "镜像自带的启动命令：{}（「启动命令」那格留空时用它）",
+                        facts.command
+                    )
+                } else {
+                    format!(
+                        "⚠️ 这个镜像**没有默认命令**（只有 ENTRYPOINT：{}）——\
+                         「启动命令」那格**必须自己填**，留空的话容器起来就会立刻退出。\
+                         想让它先待着等部署就填 `tail -f /dev/null`，\
+                         想直接跑应用就填你的启动命令。",
+                        facts.command
+                    )
+                };
+                body = body
+                    .child(div().text_xs().text_color(theme::text_dim()).child(text));
             }
             body.into_any_element()
         }

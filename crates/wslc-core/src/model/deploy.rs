@@ -487,7 +487,7 @@ pub fn valid_app_name(name: &str) -> bool {
 
 /// 允许作为目标目录的**前缀白名单**。
 ///
-/// 见 [`safe_target`]：因为"部署"和"删除"都会**清空**目标目录，
+/// 见 [`safe_target`]：因为"部署"和"删除"都会往目标目录里**放 / 删文件**，
 /// 而目标目录是用户填的。
 const SAFE_TARGET_PREFIXES: &[&str] = &[
     "/opt/",
@@ -508,15 +508,15 @@ const SAFE_TARGET_PREFIXES: &[&str] = &[
 ///
 /// # 为什么必须有这个东西
 ///
-/// [`prepare_target_script`] 和 [`remove_script`] 都会**清空目标目录**
-/// （`find <目标> -mindepth 1 -delete`），而目标目录是**用户填的**。
-/// 填成 `/usr` 就是 `find /usr -mindepth 1 -delete` —— 容器当场报废。
+/// [`prepare_target_script`] 与 [`remove_script`] 都会在目标目录里**删东西**
+/// （现在删的是我们自己铺的那些名字，见 [`removals_script`]），而目标目录是
+/// **用户填的**。填成 `/usr` 就等于往系统目录里塞文件、还可能在删的时候
+/// 撞上系统文件 —— 容器照样会被搞坏。
 ///
 /// # 为什么是白名单而不是黑名单
 ///
 /// 黑名单要枚举所有危险路径（`/usr`、`/usr/share`、`/etc`、`/var`、
-/// `/var/lib`……），漏一个就是灾难；而且 `find -mindepth 1 -delete`
-/// 的危险面是"这一层的所有东西"，光看深度判不出来。
+/// `/var/lib`……），漏一个就是灾难。
 /// 白名单反过来：**只认识这几种**，其余一律拒绝，并把允许的写进提示里。
 ///
 /// 这条刻意保守 —— 想加一个前缀就是 [`SAFE_TARGET_PREFIXES`] 里加一行。
@@ -551,7 +551,7 @@ pub fn safe_target(target: &str) -> bool {
 ///
 /// ⚠️ 这**不是**把闸门放宽成"任意路径"：`web_root` 来自**容器自己的配置**
 /// （`inspect` 的 `Mounts[].Destination`），是那个运行时真正对外提供内容的地方
-/// —— 清空它正是"部署"的语义。而白名单仍然是默认那一层：拿不到 `web_root`
+/// —— 往它里面铺站点文件正是"部署"的语义。而白名单仍然是默认那一层：拿不到 `web_root`
 /// 时（`None`）、或者它自己就是个怪路径时，一行都不多放。
 ///
 /// ⚠️ 判"在它底下"要看**路径边界**：`/sitemap` 不在 `/site` 底下。
@@ -578,7 +578,7 @@ pub fn safe_target_with_site(target: &str, web_root: Option<&str>) -> bool {
 /// 目标目录不合规时给用户看的那一句（把允许的前缀列出来）。
 pub fn safe_target_hint() -> String {
     format!(
-        "目标目录只允许填在 {} 底下 —— 「部署」会把目标目录**清空**再铺，\
+        "目标目录只允许填在 {} 底下 —— 面板要往这个目录里**放文件**，\
          所以不能是系统目录。要放到别处请用「终端」自己拷。",
         SAFE_TARGET_PREFIXES.join("、")
     )
@@ -655,7 +655,56 @@ pub fn target_not_empty_hint(target: &str) -> String {
     )
 }
 
-/// 准备目标目录：建出来，然后清空它的**内容**。
+/// 拼"**只删我们自己铺的那些名字**"的片段（不清空整个目录）。
+///
+/// # ⚠️ 为什么不再 `find <目标> -mindepth 1 -delete`（v0.9.10 改）
+///
+/// 整目录清空造成过一次**真实的数据损坏**：应用名就叫 `java`，默认目标目录
+/// `/opt/java` 正好是 `eclipse-temurin:8-jre-alpine` 放 JDK 的地方
+/// （`/opt/java/openjdk`）—— 一个 `find -delete` 就把容器里的 `java` 删了，
+/// 应用从此起不来。白名单（[`safe_target`]）挡不住这种事：它只知道
+/// "`/opt` 底下允许"，**不知道镜像在 `/opt` 底下放了什么**。
+///
+/// v0.9.9 加过一层"不是我们铺的就拒绝"，但那层依赖**本地存档里有没有记录**
+/// —— 而记录是**按容器名**索引的，容器删掉重建之后记录还在，
+/// 于是"重新部署"又会把新容器里的 JDK 删一遍（同一个坑的第二只脚）。
+///
+/// 所以现在改成逐个删**我们自己写进去的名字**：
+///
+/// - `members`：这次要铺进去的成员名（`cmd::deploy::member_names` 算得出来），
+///   外加调用方从存档里带上的**上一次**铺过的名字（`DeployRecord::members`），
+///   后者把"上一次有、这一次没有"的旧文件也收拾掉；
+/// - 外加进程形态的 `app.log` / `app.pid` —— 那两个也是我们写的；
+/// - **其余一律不碰**：镜像自带的文件、用户自己放的东西都留着。
+///
+/// 代价要说清（这是刻意的取舍）：结果目录**不再等于源目录**，
+/// 目录里不是我们放的东⻄会留下。比起"悄悄删掉一个 JDK"，
+/// 多留几个文件是划算的。
+///
+/// 名字里出现 `/`、`\`、`..` 或空串时**跳过**：成员名来自本地文件名，
+/// 不该带路径；真带了说明上游错了，宁可少删也不能删到目标目录外面去。
+pub fn removals_script(target: &str, members: &[String]) -> String {
+    let mut names: Vec<String> = Vec::new();
+    for member in members {
+        let member = member.trim();
+        if !is_safe_member(member) {
+            continue;
+        }
+        names.push(shell_quote(&container_join(target, member)));
+    }
+    // 日志与 pidfile 无条件带上（它们的名字是面板定的，不是一个"成员"）
+    for fixed in [LOG_FILE, PID_FILE] {
+        names.push(shell_quote(&container_join(target, fixed)));
+    }
+    format!("rm -rf {}", names.join(" "))
+}
+
+/// 成员名能不能安全地拼成 `<目标>/<名字>`。
+fn is_safe_member(name: &str) -> bool {
+    !name.is_empty() && !name.contains('/') && !name.contains('\\') && !name.contains("..")
+}
+
+/// 准备目标目录：建出来，然后删掉**我们自己铺的那些名字**（[`removals_script`]）。
 ///
 /// # ⚠️ 为什么不能写 `rm -rf <目标>`
 ///
@@ -671,34 +720,20 @@ pub fn target_not_empty_hint(target: &str) -> String {
 /// 它**确实清空了内容**，但退出码是 1 —— 于是 `&&` 链在那里就断了，
 /// 后面的步骤根本不会跑。表现是"点了部署，界面上说失败了，什么都没有"。
 ///
-/// 所以改成 `mkdir -p` + `find -mindepth 1 -delete`：只清**内容**、不碰挂载点
-/// 本身。实测在同一个挂载点上 exit 0、隐藏文件（`.hidden`）也清掉了、
-/// 子目录（`a/b/c.txt`）与符号链接都递归删掉、`X` 自己留着。
+/// 所以只删**里面的名字**、不碰目录本身（[`removals_script`]）。
 ///
-/// # 为什么"先清空"
-///
-/// 部署要**可预期**：结果目录应当**等于源目录**，而不是"上一次部署 + 这一次的
-/// 并集"。残留的旧 `index.html` / 旧 jar 是最难查的一类问题
-/// （"我明明改了，页面上还是旧的"）。代价是目标目录里原有的东西会没 ——
-/// 所以调用方必须在**点得下去的地方**把这件事写出来，而且
-/// [`safe_target`] 会先把危险路径挡掉。
-///
-/// # ⚠️ `ours`：不是我们铺的目录**一个字节都不许清**（v0.9.8 加）
-/// 白名单（[`safe_target`]）只知道"`/opt` 底下允许"，**不知道镜像在 `/opt`
-/// 底下放了什么**。实测那次灾难：应用名就叫 `java`，默认目标目录是
-/// `/opt/java`，而 `eclipse-temurin:8-jre-alpine` 的 JDK 正好在
-/// `/opt/java/openjdk` —— 先清空再铺，把容器里的 `java` **整个删掉**，
-/// 从此应用必然起不来（`nohup: failed to run command 'java': No such file
-/// or directory`），而界面上还显示"运行中"（见 [`status_script`] 那条僵尸坑）。
-///
-/// 所以：
+/// # `ours`：第一次往这个目录铺时，非空就先拒绝（v0.9.9 加，保留）
 ///
 /// | `ours` | 行为 |
 /// |---|---|
-/// | `true`（本地存档里有这个目录的记录 = 我们自己铺的） | 照旧清空 —— 「重新部署」的语义就是"结果等于源" |
-/// | `false`（第一次往这个目录铺） | **只允许它不存在或为空**；否则 echo [`TARGET_NOT_EMPTY`] 并**什么都不做** |
+/// | `true`（本地存档里有这个目录的记录） | 直接按 [`removals_script`] 收拾 + 铺 |
+/// | `false`（第一次往这个目录铺） | **只允许它不存在或为空**；否则 echo [`TARGET_NOT_EMPTY`] 并什么都不做 |
 ///
-/// 调用方（`cmd::deploy::prepare_target`）看到那个哨兵就转成一句人话
+/// ⚠️ 这一层**不是**数据安全的最后一道防线 —— 真正保证"不删别人的东西"的是
+/// [`removals_script`] 的逐名删除。它只是替用户拦一下"你可能选错目录了"
+/// （比如第一次就想往 `/opt/java` 铺）。所以 `ours` 判断失手也不会损坏数据。
+///
+/// 调用方（`cmd::deploy::prepare_target`）看到哨兵就转成一句人话
 /// （[`target_not_empty_hint`]），**不是**当成"清空成功"。
 ///
 /// ⚠️ 这一步必须在 `cp` **之前**跑，两条理由：
@@ -707,7 +742,7 @@ pub fn target_not_empty_hint(target: &str) -> String {
 ///    **静默成功**（实测 exit 0、不输出、什么都不做）；
 /// 2. `cp` **要求目标目录已经存在**（实测不存在的路径报
 ///    `ERROR_PATH_NOT_FOUND`），它不会替我们建。
-pub fn prepare_target_script(target: &str, ours: bool) -> String {
+pub fn prepare_target_script(target: &str, ours: bool, members: &[String]) -> String {
     let target_q = shell_quote(target);
     let guard = if ours {
         String::new()
@@ -722,7 +757,8 @@ pub fn prepare_target_script(target: &str, ours: bool) -> String {
              echo {TARGET_NOT_EMPTY}; exit 0; fi; "
         )
     };
-    format!("{guard}mkdir -p {target_q} && find {target_q} -mindepth 1 -delete")
+    let removals = removals_script(target, members);
+    format!("{guard}mkdir -p {target_q} && {removals}")
 }
 
 /// `chmod +x <路径>`。
@@ -942,20 +978,23 @@ pub fn parse_probe_output(kind: DeployKind, stdout: &str) -> ProbeResult {
     }
 }
 
-/// 清空目标目录（"删除部署"用）。
+/// 删除一次部署（「删除」按钮用）：只删**我们自己铺的那些名字**。
 ///
-/// ⚠️ **只清内容、不删目录本身**，理由和 [`prepare_target_script`] 完全一样：
-/// 目标可能是卷挂载点，对挂载点 `rm -rf` 会返回 1（`Device or resource busy`）。
+/// ⚠️ 不碰目录本身（理由见 [`prepare_target_script`]：目标可能是卷挂载点，
+/// 对挂载点 `rm -rf` 返回 1），也**不碰别人的文件** —— 只删 `members`
+/// （调用方从 `DeployRecord::members` 取，也就是上一次真的铺了什么）
+/// 加上 `app.log` / `app.pid`。见 [`removals_script`] 那段"为什么要改"：
+/// 整目录清空在 v0.9.8 把 `eclipse-temurin` 的 JDK 删掉过一次。
+///
 /// 用 `if test -d` 包着是因为目录可能已经不在（容器重建过）——
-/// 那种情况**不算失败**，用户要的结果（里面没东西）已经成立了。
+/// 那种情况**不算失败**，用户要的结果（里面没我们的东西了）已经成立了。
 ///
 /// ⚠️ 这一步**不可撤销**，而且目标是卷挂载点时会删掉卷里的数据 ——
 /// 所以界面上必须是二次确认，而且要把完整路径显示出来。
-pub fn remove_script(target: &str) -> String {
+pub fn remove_script(target: &str, members: &[String]) -> String {
     let target_q = shell_quote(target);
-    format!(
-        "if test -d {target_q}; then find {target_q} -mindepth 1 -delete; fi; echo {STATUS_STOPPED}"
-    )
+    let removals = removals_script(target, members);
+    format!("if test -d {target_q}; then {removals}; fi; echo {STATUS_STOPPED}")
 }
 
 // ---------------------------------------------------------------------------
@@ -1479,15 +1518,59 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn prepare_target_creates_then_clears_only_the_contents() {
-        // **我们自己铺的目录**（本地存档里有记录）→ 照旧"先清空再铺"：
-        // 结果目录等于源目录，才不会有"改了文件页面上还是旧的"那类问题。
+    fn prepare_target_removes_only_our_own_names() {
+        let members = vec!["ruoyi-admin.jar".to_owned()];
         assert_eq!(
-            prepare_target_script("/opt/app", true),
-            "mkdir -p '/opt/app' && find '/opt/app' -mindepth 1 -delete"
+            prepare_target_script("/opt/app", true, &members),
+            "mkdir -p '/opt/app' && rm -rf '/opt/app/ruoyi-admin.jar' \
+             '/opt/app/app.log' '/opt/app/app.pid'"
         );
         // 目录不存在时 `mkdir -p` 要先建出来（`cp` 要求目标已存在）
-        assert!(prepare_target_script("/opt/app", true).starts_with("mkdir -p "));
+        assert!(prepare_target_script("/opt/app", true, &members).starts_with("mkdir -p "));
+        // ⚠️ **一个 `-delete` 都不许有**：整目录清空就是 v0.9.8 删掉 JDK 的那一手
+        assert!(!prepare_target_script("/opt/app", true, &members).contains("-delete"));
+    }
+
+    /// ⚠️ 回归钉（v0.9.10）：容器重建过、存档里那条记录还在时，
+    /// 「重新部署」**也不许**碰目录里不是我们铺的东西。
+    ///
+    /// 场景就是现场那次：目标目录 `/opt/java` 里躺着镜像自带的 `openjdk/`，
+    /// 而我们要铺的只有 `ruoyi-admin.jar` —— 删除列表里**绝不能**出现
+    /// `openjdk`，也绝不能出现 `find … -delete`。
+    #[test]
+    fn removals_never_touch_files_that_are_not_ours() {
+        let members = vec!["ruoyi-admin.jar".to_owned()];
+        for script in [
+            prepare_target_script("/opt/java", true, &members),
+            remove_script("/opt/java", &members),
+        ] {
+            assert!(script.contains("'/opt/java/ruoyi-admin.jar'"), "{script}");
+            assert!(!script.contains("openjdk"), "{script}");
+            assert!(!script.contains("-delete"), "{script}");
+            // 目录本身永远不删（它可能是挂载点，`rm -rf` 会返回 1）
+            assert!(!script.contains("rm -rf '/opt/java'"), "{script}");
+        }
+    }
+
+    /// 成员名里带路径 / `..` 时**跳过**：宁可少删，也不能删到目标目录外面去。
+    #[test]
+    fn removals_skip_unsafe_member_names() {
+        let members = vec![
+            "ok.txt".to_owned(),
+            "../escape.txt".to_owned(),
+            "a/b.txt".to_owned(),
+            "a\\b.txt".to_owned(),
+            String::new(),
+            "   ".to_owned(),
+        ];
+        let script = removals_script("/opt/app", &members);
+        assert!(script.contains("'/opt/app/ok.txt'"), "{script}");
+        assert!(!script.contains("escape"), "{script}");
+        assert!(!script.contains("a/b"), "{script}");
+        assert!(!script.contains("a\\b"), "{script}");
+        // 固定那两个（日志 / pidfile）永远在删除列表里
+        assert!(script.contains("'/opt/app/app.log'"), "{script}");
+        assert!(script.contains("'/opt/app/app.pid'"), "{script}");
     }
 
     /// ⚠️ 回归钉（v0.9.8 的**真实事故**）：不是我们铺的目录，**一个字节都不清**。
@@ -1497,19 +1580,19 @@ mod tests {
     /// 清空它等于把容器里的 `java` 删掉，应用从此起不来。
     #[test]
     fn prepare_target_refuses_a_foreign_non_empty_directory() {
-        let script = prepare_target_script("/opt/java", false);
+        let script = prepare_target_script("/opt/java", false, &[]);
         // 先探测"目录在、而且非空"，是就打哨兵、**什么都不做**
         assert!(script.contains(TARGET_NOT_EMPTY), "{script}");
         assert!(script.contains("ls -A"), "{script}");
         assert!(
-            script.find(TARGET_NOT_EMPTY).unwrap() < script.find("-delete").unwrap(),
-            "哨兵必须在清空**之前**（否则照删不误）：{script}"
+            script.find(TARGET_NOT_EMPTY).unwrap() < script.find("rm -rf").unwrap(),
+            "哨兵必须在动手删**之前**（否则照删不误）：{script}"
         );
         // ⚠️ 这里退出码必须是 **0**：非零退出码会被 `run_script` 先转成一条
         // "参数 + stderr" 的原始错误，调用方就读不到哨兵、给不出自己的那句话了
         assert!(script.contains("exit 0"), "{script}");
         // `ours = true` 时没有这段守卫（自己铺的目录才允许清空重铺）
-        assert!(!prepare_target_script("/opt/java", true).contains("ls -A"));
+        assert!(!prepare_target_script("/opt/java", true, &[]).contains("ls -A"));
     }
 
     #[test]
@@ -1518,19 +1601,21 @@ mod tests {
         // 而对挂载点 `rm -rf` 返回 **1**（`Device or resource busy`）——
         // 写成 `rm -rf <目标> && …` 的话 `&&` 链会断在第一步。
         // 实测踩到过。
+        let members = vec!["index.html".to_owned()];
         for target in ["/opt/app", "/usr/share/nginx/html"] {
             // 两种 `ours` 都要查：守卫那段也不许出现 `rm -rf <目标>`
             for ours in [true, false] {
-                let script = prepare_target_script(target, ours);
+                let script = prepare_target_script(target, ours, &members);
                 assert!(
                     !script.contains(&format!("rm -rf '{target}'")),
                     "不能对目标目录本身 rm -rf：{script}"
                 );
-                // 清内容用的是 find，而且必须带上 -mindepth 1（否则会试图删目录自己）
+                // 删的是**里面的名字**，而且没有整目录清空那一手
                 assert!(
-                    script.contains(&format!("find '{target}' -mindepth 1 -delete")),
+                    script.contains(&format!("rm -rf '{target}/index.html'")),
                     "{script}"
                 );
+                assert!(!script.contains("-delete"), "{script}");
             }
         }
     }
@@ -1750,16 +1835,18 @@ mod tests {
 
     #[test]
     fn remove_script_quotes_and_confirms() {
-        let script = remove_script("/usr/share/nginx/html");
+        let members = vec!["index.html".to_owned()];
+        let script = remove_script("/usr/share/nginx/html", &members);
         assert_eq!(
             script,
-            "if test -d '/usr/share/nginx/html'; then find '/usr/share/nginx/html' \
-             -mindepth 1 -delete; fi; echo __WSLC_STOPPED__"
+            "if test -d '/usr/share/nginx/html'; then rm -rf \
+             '/usr/share/nginx/html/index.html' '/usr/share/nginx/html/app.log' \
+             '/usr/share/nginx/html/app.pid'; fi; echo __WSLC_STOPPED__"
         );
         // 目录已经不在了**不算失败**（容器重建过就是这种）
         assert!(script.contains("if test -d"), "{script}");
         // 注入形状必须被引号吃掉
-        let injected = remove_script("/opt/a; rm -rf /");
+        let injected = remove_script("/opt/a; rm -rf /", &members);
         assert!(injected.contains("'/opt/a; rm -rf /'"), "{injected}");
     }
 
@@ -1849,7 +1936,9 @@ mod tests {
     fn safe_target_hint_lists_what_is_allowed() {
         let hint = safe_target_hint();
         assert!(hint.contains("/opt/"), "{hint}");
-        assert!(hint.contains("清空"), "要说清为什么被拒：{hint}");
+        // ⚠️ 这里**不再**断言"清空"：v0.9.10 起部署只替换自己铺的文件，
+        // 提示里那句话也就跟着改了（断言旧文案会让测试和界面一起撒谎）
+        assert!(hint.contains("不能是系统目录"), "要说清为什么被拒：{hint}");
         assert!(hint.len() > 20, "不能是一句空话：{hint}");
     }
 

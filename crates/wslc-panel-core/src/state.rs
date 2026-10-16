@@ -5151,6 +5151,7 @@ mod tests {
                 command: format!("./{app}"),
                 artifact: app.to_owned(),
                 port: 8080,
+                members: vec![app.to_owned()],
             },
             runtime: AppRuntime::from_key(runtime_key),
             process: None,

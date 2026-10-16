@@ -35,7 +35,8 @@ use crate::model::deploy::{
 ///
 /// 实测单个 8 MB 文件是亚秒级，但要按**体积**给余量：一个几 GB 的镜像层式
 /// 产物在慢盘上可能几分钟。超时的后果是子进程被杀掉、复制到一半的东西留在
-/// 容器里 —— 下一次部署会把这个目录清空重来，所以不是不可恢复，但宁松不宁紧。
+/// 容器里 —— 下一次部署会按存档里的成员名把它替换掉，所以不是不可恢复，
+/// 但宁松不宁紧。
 const COPY_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// 短命令（准备目录 / 判活 / chmod / 停止 / 看日志 / 重载）的超时。
@@ -110,19 +111,45 @@ pub fn detect(wslc: &Wslc, container: &str) -> Result<DeployProbe> {
 // 准备 + 复制 + 核对
 // ---------------------------------------------------------------------------
 
-/// 准备好目标目录：建出来，然后清空它的**内容**（不碰目录本身）。
+/// 一次部署会往目标目录里放哪几个**名字**（不读文件内容）。
+///
+/// # 为什么要单独算一遍
+///
+/// [`prepare_target`] 现在只删**我们自己铺的名字**（[`deploy::removals_script`]），
+/// 而这一步在**复制之前**跑 —— 所以得独立于 [`copy_sources`] 把名字算出来。
+/// 同一份列表也进本地存档（`DeployRecord::members`），下次「重新部署 / 删除」
+/// 靠它把"上一次有、这一次没有"的旧文件收拾掉。
+///
+/// 文件来源就是文件名；目录来源是它的**顶层条目名**（和 `copy_members` 同一套语义）。
+/// 目录为空时返回空表 —— 调用方（`copy_sources`）会自己拦掉那种情况。
+pub fn member_names(source: &Path, kind: SourceKind) -> Result<Vec<String>> {
+    let paths = match kind {
+        SourceKind::File => vec![source.to_path_buf()],
+        SourceKind::Directory => directory_entries(source)?,
+    };
+    Ok(paths
+        .iter()
+        .filter_map(|path| deploy::artifact_name(path))
+        .collect())
+}
+
+/// 准备好目标目录：建出来，然后删掉**我们自己铺的那些名字**（不碰别人的文件）。
 ///
 /// `ours` = 这个目录是**本面板之前铺的**（本地存档里有记录）：
 ///
-/// - `true`：清空重铺 —— 「重新部署」要的就是"结果目录等于源目录"；
+/// - `true`：按 `members` 收拾一遍再铺 —— 「重新部署」要的是"结果目录等于源目录"；
 /// - `false`：**只允许它不存在或为空**。非空就返回一句人话的错误，
-///   **一个字节都不清**。⚠️ 这一条是 v0.9.8 加的真实事故补丁：目标目录
+///   **一个字节都不清**。⚠️ 这一条是 v0.9.9 加的真实事故补丁：目标目录
 ///   很可能是**镜像自己要用的地方** —— 实测把应用（名字就叫 `java`）部署到
 ///   默认的 `/opt/java`，而 `eclipse-temurin:8-jre-alpine` 的 JDK 正是
-///   `/opt/java/openjdk`，清空它等于删掉容器里的 `java`，应用从此起不来。
-///   白名单（[`deploy::safe_target`]）挡不住这种事：它只知道"`/opt` 底下允许"。
+///   `/opt/java/openjdk`。白名单（[`deploy::safe_target`]）挡不住这种事：
+///   它只知道"`/opt` 底下允许"。
 ///
-/// ⚠️ 这个判断必须和清空在**同一条脚本**里（不能先由界面查一次再清）：
+/// ⚠️ 真正保证"不删别人的东西"的是 [`deploy::removals_script`] 的**逐名删除**
+/// （v0.9.10 起不再 `find -delete`）—— 所以 `ours` 判断失手也不会损坏数据，
+/// 它只是替用户拦一下"你可能选错目录了"。
+///
+/// ⚠️ 这个判断必须和动手删在**同一条脚本**里（不能先由界面查一次再删）：
 /// 两次 `exec` 之间目标目录可能被别的东西写进去，而且多一次往返。
 ///
 /// ⚠️ 必须在复制**之前**跑，两条理由：
@@ -131,8 +158,18 @@ pub fn detect(wslc: &Wslc, container: &str) -> Result<DeployProbe> {
 ///    **静默成功**（实测 exit 0、不输出、什么都不做）；
 /// 2. `cp` **要求目标目录已经存在**（实测不存在的路径报
 ///    `ERROR_PATH_NOT_FOUND`），它不会替我们建。
-pub fn prepare_target(wslc: &Wslc, container: &str, target: &str, ours: bool) -> Result<()> {
-    let out = run_script(wslc, container, &deploy::prepare_target_script(target, ours))?;
+pub fn prepare_target(
+    wslc: &Wslc,
+    container: &str,
+    target: &str,
+    ours: bool,
+    members: &[String],
+) -> Result<()> {
+    let out = run_script(
+        wslc,
+        container,
+        &deploy::prepare_target_script(target, ours, members),
+    )?;
     if out.contains(deploy::TARGET_NOT_EMPTY) {
         // 哨兵走的是 stdout（脚本特意 `exit 0`），所以由我们转成一句人话 ——
         // 原样露给用户只会是一串 `__WSLC_…__`
@@ -318,11 +355,21 @@ pub fn reload_nginx(wslc: &Wslc, container: &str) -> Result<String> {
     run_script(wslc, container, &deploy::reload_nginx_script())
 }
 
-/// 清空目标目录（"删除部署"）。
+/// 删除一次部署（「删除」按钮）。
+///
+/// `members` 是**上一次真的铺进去的名字**（`DeployRecord::members`）——
+/// 删除只删这些 + `app.log` / `app.pid`，**不碰目录里别人的东西**
+/// （见 [`deploy::removals_script`]：整目录清空在 v0.9.8 删掉过一个 JDK）。
+/// 老存档里没有这个字段时传空表：那就只删日志 / pidfile。
 ///
 /// ⚠️ 不可撤销，而且目标是卷挂载点时会删掉卷里的数据 —— 调用方必须先二次确认。
-pub fn remove_target(wslc: &Wslc, container: &str, target: &str) -> Result<()> {
-    run_script(wslc, container, &deploy::remove_script(target)).map(|_| ())
+pub fn remove_target(
+    wslc: &Wslc,
+    container: &str,
+    target: &str,
+    members: &[String],
+) -> Result<()> {
+    run_script(wslc, container, &deploy::remove_script(target, members)).map(|_| ())
 }
 
 /// 跑一条容器内脚本，返回 stdout；非零退出码转成错误。
