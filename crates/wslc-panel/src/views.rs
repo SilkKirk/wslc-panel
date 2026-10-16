@@ -1021,6 +1021,17 @@ fn container_row_actions(item: &ContainerListItem, entity: &Entity<Shell>) -> An
 pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
     let items = &state.snapshot.all;
 
+    // 「在运行的有几个」直接用快照里那份**只列运行中**的清单的长度。
+    //
+    // 为什么不数 `items.iter().filter(|s| s.item.is_running())`：那等于**换一个判据**。
+    // 「停止全部」执行时问的是 `wslc list`（不带 `-a`，见
+    // `cmd::container::list_running`），页面上这个数字必须和它**是同一批** ——
+    // 否则"确认框里写着 3 个、实际停了 4 个"就会发生。`is_running()` 是
+    // `state == "running"` 的严格判断，而 `wslc list` 还会列出哪些其它状态
+    // **没有逐个实测过**（`wslc` 连 `pause` 这个子命令都没有），所以这里不去猜，
+    // 直接用它的输出。
+    let running = state.snapshot.running.len();
+
     let rows: Vec<AnyElement> = items
         .iter()
         .map(|summary| {
@@ -1056,6 +1067,31 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
             })
     };
 
+    // 「停止全部」和发行版页的「关停全部」是同一类东西：**页面级**动作
+    // （一次影响所有容器），所以放工具栏，不放进任何一行 —— 放进行里
+    // 会让人以为只影响那一行（`AGENTS.md` §5）。
+    //
+    // 一个都没在跑时干脆不显示：这时点它什么也做不了（执行侧会直接
+    // 回一句"没有正在运行的容器"），让用户去确认一个没有效果的动作
+    // 只会让人怀疑自己是不是看错了。
+    //
+    // ⚠️ 用 `then(..)` + `.children(..)`，**不**像实例页那样拿一个空 `div()`
+    // 占位：那边它两边没有兄弟，而这里左边是那句计数、右边是「清理已停止」
+    // —— 空元素夹在中间会让 `gap_2` 多出一份间距（8px 变 16px），
+    // "一个都没在跑"的时候那两颗按钮之间的缝一眼就不对。
+    let stop_all = (running > 0).then(|| {
+        let entity = entity.clone();
+        Button::new("stop-all")
+            .label("停止全部")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| {
+                    shell.request(PendingAction::StopAllContainers { running }, cx);
+                });
+            })
+            .into_any_element()
+    });
+
     v_flex()
         .w_full()
         .gap_3()
@@ -1082,8 +1118,13 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
                             div()
                                 .text_sm()
                                 .text_color(theme::text_muted())
-                                .child(format!("共 {} 个容器", items.len())),
+                                .child(format!(
+                                    "共 {} 个容器，{} 个在运行",
+                                    items.len(),
+                                    running
+                                )),
                         )
+                        .children(stop_all)
                         .child(prune),
                 ),
         )
