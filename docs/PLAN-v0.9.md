@@ -930,4 +930,105 @@ let db_console: AnyElement = match &state.db { … views::db_console_overlay(…
 - ⚠️ **必须在本机点一遍**（§8）：浮层是不是真的画出来了、SQL 输入框能不能
   直接打字、备份能不能跑完并在列表里多出一行。CI 只证明编译过。
 
+---
+
+## 13. v0.9.6 的「立即备份」：第一次真点下去就炸，还牵出一个会**弄坏数据**的隐患
+
+### 13.1 现象（用户截图，构建 `9458905`）
+
+装上 v0.9.6 点「立即备份」，红色提示条写着：
+
+```text
+备份失败：wslc exec -e MYSQL_PWD=* mysql /bin/sh -c mkdir -p
+/tmp/wslc-backups && mysql -u *_user -N -B --databases * --sing...
+```
+
+（`*` 是脱敏：密码 `djxm` 出现在用户名和库名里，按值一起被洗掉了。）
+
+### 13.2 根因一：把**客户端**当成了 dump 程序
+
+`mysqldump_args(client_bin, …)` 原来把传进来的 `client_bin` 直接当 argv[0]，
+而调用链传的是**探测到的客户端**（`db.client` = `mysql`，那是执行 SQL 用的）。
+于是容器里真跑起来的是"**mysql 客户端 + mysqldump 的参数**"。
+
+**实测（本机容器，mysql 26.7.0，同一条 sh 脚本、同一个库）**：
+
+| 程序名 | 结果 |
+|---|---|
+| `mysql -u djxm_user -N -B --databases djxm …`（v0.9.6 的形状） | `mysql: [ERROR] unknown option '--databases'.` **exit 2** |
+| `mysqldump -u djxm_user -N -B --databases djxm …` | **exit 0**，110 张表 / 2,318,588 字节 |
+
+顺带解释了现场那两个 **0 字节**文件（`/tmp/wslc-backups/djxm-*.sql`）：
+`>` 在程序失败**之前**就把文件建出来了。
+
+**为什么一直没人发现**（两条一起才成立）：
+
+1. 这个函数只有一个调用方，而"备份"按钮从 v0.8 到 v0.9.6 **根本不存在**（§12）
+   —— 那段代码从来没被真跑过；
+2. 单测传的是 `"mysqldump"`，而且**从不检查 argv[0]**（只查 `-u` / `--databases`
+   这些"形状"），于是"调用方传了客户端"这件事在测试里完全不可见。
+
+### 13.3 根因二（更严重）：恢复 / 导入会把非 ASCII 数据**双重编码**
+
+查这个 bug 时顺手量了字符集，发现容器里（没有 `LANG`）mysql 客户端协商出来的
+是 **latin1**：`character_set_client` / `character_set_results` 全是 latin1。
+而面板恢复 / 导入时既没给 `--default-character-set`，dump 里的 `SET NAMES utf8mb4`
+又救不回来 —— 中文会被当成 latin1 再转一次存进库。
+
+**实测（临时库往返：建库 → 塞 `中文测试` → dump → 删库 → 恢复 → 比 HEX）**：
+
+| 恢复时用的客户端 | 恢复后 HEX | 结论 |
+|---|---|---|
+| `mysql -uroot < dump`（v0.9.6 的形状） | `C3A4C2B8C2ADC3A6E28093E280A1…` | ❌ 双重编码 |
+| 同一份 dump，但 dump **去掉 `-N`**（自带 `SET NAMES utf8mb4`） | `C3A4C2B8C2ADC3A6E28093E280A1…` | ❌ 一样坏 |
+| 同一份 `-N` dump + 客户端 `--default-character-set=utf8mb4` | `E4B8ADE69687E6B58BE8AF95` | ✅ 与原始一致 |
+
+⚠️ **中间那行是这条结论里最值钱的一格**：它推翻了"把 `-N` 去掉就好了"这个
+看起来最顺手的修法 —— 客户端自己的字符集不对时，dump 里那句 `SET NAMES`
+**改不了客户端怎么解释它读到的字节**。所以 `-N` 保留，修在客户端参数上。
+
+### 13.4 改法
+
+1. 新的纯函数 `model::mysql::dump_bin(client_bin)`：**收客户端名、吐 dump 工具名**
+   （`mysql` → `mysqldump`、`mariadb` → `mariadb-dump`，保留目录；
+   `mysqldump` / `mariadb-dump` 幂等原样返回）。`mysqldump_args` 内部调它 ——
+   调用方**没有机会**再传错；
+2. `client_args` 与 `load_script` 都在客户端后面写死
+   `--default-character-set=utf8mb4`：前者覆盖 SQL 控制台（顺便修了"控制台里
+   `SELECT` 中文显示成 `?`"）与 dump，后者覆盖**恢复 / 导入**（那条才是数据安全）；
+3. 测试改成**钉住事故**：`mysqldump_args("mysql", …)` 断言 `args[0] == "mysqldump"`
+   且 `!= "mysql"`；`client_args` / `load_script` 的期望串里都带上了字符集开关。
+
+### 13.5 端到端实测（本机容器，2026-10-16）
+
+跑的是**面板修复后的确切 argv**（不是手写的等价命令）：
+
+```text
+① wslc exec -e MYSQL_PWD=<pw> mysql /bin/sh -c \
+     "mkdir -p /tmp/wslc-backups && mysqldump --default-character-set=utf8mb4 \
+      -u djxm_user -N -B --databases djxm --single-transaction --quick \
+      --set-gtid-purged=OFF > /tmp/wslc-backups/djxm-repro.sql"
+   → exit 0、2,318,588 字节、110 个 CREATE TABLE、sha256 0824bfdc6f81…eed6
+② wslc container cp -q mysql:/tmp/wslc-backups/djxm-repro.sql <Windows 完整文件路径>
+   → exit 0，Windows 侧 2,318,588 字节，sha256 同样 0824bfdc6f81…eed6（**逐字节一致**）
+```
+
+中文往返（另一轮临时库）：dump 新形状 exit 0 / stderr 空，恢复后 HEX 与原始
+`E4B8ADE69687E6B58BE8AF95` **完全一致**。
+
+⚠️ `mysqldump` 会因为**权限不够但无关紧要**的两件事往 stderr 打 `Error:` 字样
+（实测：`column_masking_policy` 少 SELECT、tablespaces 少 PROCESS），
+但**退出码是 0、dump 是完整的** —— 所以 [`backup_database`] 只认退出码，
+不拿 stderr 判失败（这条也写进函数文档了）。
+
+### 13.6 这一版**没做**的
+
+- stderr 里那两条 mysqldump 警告**没有显示给用户**：`BackupState::last_message`
+  这个字段从 v0.8 就留着（注释写着"最近一条 mysqldump 的 stderr"），
+  但一直是 `None` —— 要显示得把 `backup_database` 的 stderr 一路带回界面；
+- 备份仍然**不能中途打断**、仍然**没有"另存为"**（同 §12.5）；
+- ⚠️ 仍然**必须在本机点一遍**（§8）：这次只能在命令行把 argv 形状跑通
+  ——「点按钮 → 进度浮层 → 列表多一行 → 点恢复」这条界面路径没人走过。
+  恢复那一步尤其要小心：它是**覆盖**操作。
+
 
