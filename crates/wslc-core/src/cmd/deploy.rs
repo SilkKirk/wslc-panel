@@ -112,14 +112,33 @@ pub fn detect(wslc: &Wslc, container: &str) -> Result<DeployProbe> {
 
 /// 准备好目标目录：建出来，然后清空它的**内容**（不碰目录本身）。
 ///
+/// `ours` = 这个目录是**本面板之前铺的**（本地存档里有记录）：
+///
+/// - `true`：清空重铺 —— 「重新部署」要的就是"结果目录等于源目录"；
+/// - `false`：**只允许它不存在或为空**。非空就返回一句人话的错误，
+///   **一个字节都不清**。⚠️ 这一条是 v0.9.8 加的真实事故补丁：目标目录
+///   很可能是**镜像自己要用的地方** —— 实测把应用（名字就叫 `java`）部署到
+///   默认的 `/opt/java`，而 `eclipse-temurin:8-jre-alpine` 的 JDK 正是
+///   `/opt/java/openjdk`，清空它等于删掉容器里的 `java`，应用从此起不来。
+///   白名单（[`deploy::safe_target`]）挡不住这种事：它只知道"`/opt` 底下允许"。
+///
+/// ⚠️ 这个判断必须和清空在**同一条脚本**里（不能先由界面查一次再清）：
+/// 两次 `exec` 之间目标目录可能被别的东西写进去，而且多一次往返。
+///
 /// ⚠️ 必须在复制**之前**跑，两条理由：
 ///
 /// 1. 它（通过 `exec`）会**报出"容器没在运行"** —— 而 `cp` 在那种情况下
 ///    **静默成功**（实测 exit 0、不输出、什么都不做）；
 /// 2. `cp` **要求目标目录已经存在**（实测不存在的路径报
 ///    `ERROR_PATH_NOT_FOUND`），它不会替我们建。
-pub fn prepare_target(wslc: &Wslc, container: &str, target: &str) -> Result<()> {
-    run_script(wslc, container, &deploy::prepare_target_script(target)).map(|_| ())
+pub fn prepare_target(wslc: &Wslc, container: &str, target: &str, ours: bool) -> Result<()> {
+    let out = run_script(wslc, container, &deploy::prepare_target_script(target, ours))?;
+    if out.contains(deploy::TARGET_NOT_EMPTY) {
+        // 哨兵走的是 stdout（脚本特意 `exit 0`），所以由我们转成一句人话 ——
+        // 原样露给用户只会是一串 `__WSLC_…__`
+        return Err(Error::InvalidArgument(deploy::target_not_empty_hint(target)));
+    }
+    Ok(())
 }
 
 /// 列出目录来源的**顶层条目**（给 `deploy::copy_members` 用）。

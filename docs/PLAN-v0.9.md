@@ -1114,4 +1114,125 @@ $ wslc inspect mysql
 - ⚠️ 仍需**本机点一遍**（§8）：那三行画出来什么样、`正在读取…`会不会一闪而过、
   环境变量多的容器滚动条正不正常。
 
+---
+
+## 15. 「部署 java 应用」把镜像的 JDK 删了，而界面还说"运行中"（v0.9.8 实机）
+
+### 15.1 现象（两张截图）
+
+1. 「部署管理」里那行 `java` 显示**运行中 · 3 个文件**，点「日志」只有一行：
+   `nohup: failed to run command 'java': No such file or directory`；
+2. 容器的「日志」浮层是 **（没有输出）**。
+   用户的描述是"java 容器日志和部署的 java 应用日志都看不到"。
+
+### 15.2 根因一：**部署把目标目录清空时，连镜像自带的 JDK 一起删了**
+
+部署（进程形态）的语义是"**先清空目标目录**再铺"（§`prepare_target_script`），
+而那个应用的默认目标目录是 `/opt/<应用名>` —— 应用名正好叫 `java`，
+于是目标目录是 **`/opt/java`**。而 `eclipse-temurin:8-jre-alpine` 的 JDK
+**正好在 `/opt/java/openjdk`**：
+
+```text
+$ wslc exec eclipse-temurin /bin/sh -c 'ls -la /opt/java; command -v java'
+total 113176
+-rw-r--r-- 1 root root        63 Oct 16 06:17 app.log
+-rw-r--r-- 1 root root         3 Oct 16 06:17 app.pid
+-rw-rw-rw- 1 root root 115864603 Sep  3 06:12 ruoyi-admin.jar
+                             ← 没有 openjdk/ 了；`command -v java` 也没有
+$ wslc inspect eclipse-temurin        （镜像的 ENV 还在，但指向的东西已经没了）
+  PATH=/opt/java/openjdk/bin:…        JAVA_HOME=/opt/java/openjdk
+```
+
+`/opt/java/openjdk/bin/java` 不存在 → `nohup java …` 必然失败。
+
+⚠️ **白名单挡不住这种事**：`safe_target` 只知道"`/opt` 底下允许"，它**不可能知道
+哪个镜像在 `/opt` 底下放了什么**（temurin 的 JDK、tomcat 的 `/usr/local/tomcat`…）。
+这一条是"用户填的路径 + 我们的清空语义"撞上"镜像自己的布局"，跟路径白名单是两回事。
+
+### 15.3 根因二：判活把**僵尸**当成活着，于是状态一直是"运行中"
+
+```text
+$ wslc exec eclipse-temurin /bin/sh -c 'ps -o pid,ppid,args'
+  PID  PPID COMMAND
+    1     0 tail -f /dev/null      ← 容器主进程（面板为了"吊住"它起的）
+   29     1 [nohup]                ← **僵尸**：nohup 起不来 java 就退了
+$ kill -0 29 && echo 活着
+活着                               ← `kill -0` 对僵尸也返回 0
+```
+
+`status_script` 原本就是 `test -f pidfile && kill -0 $(cat pidfile) && echo R || echo S`
+—— 僵尸让这条链**一路走到底**，界面于是常年显示"运行中"，而进程早就死了。
+（PID 1 是 `tail -f /dev/null`，它**不回收子进程**，所以那个僵尸会一直挂着。）
+
+### 15.4 根因三：容器日志确实**是空的**，但界面没解释
+
+那个容器的主进程是 `tail -f /dev/null`（面板为了吊住它而起的，§11 那次留下的），
+它本身不打印任何东西 —— 所以「日志」里"（没有输出）"是**正确**的。
+而应用自己的输出**不在这里**：进程形态的部署把它重定向到了目标目录的 `app.log`。
+两件事界面都没说，用户只能猜"日志功能坏了"。
+
+### 15.5 改法
+
+1. **清空之前先确认这个目录是我们的**：`prepare_target_script(target, ours)`
+   - `ours = true`（本地存档里有这个目录的记录 = 我们自己铺的）→ 照旧清空重铺；
+   - `ours = false` → **只允许它不存在或为空**；非空就 echo
+     `__WSLC_TARGET_NOT_EMPTY__` 并**什么都不做**，`cmd::deploy::prepare_target`
+     把它转成一句人话（`target_not_empty_hint`：先说结论、再说为什么、最后给出
+     "换个目录 / 先去终端清空"两条出路）。
+   - ⚠️ 判断与清空必须在**同一条脚本**里（不能先由界面查一次再清）：中间会有竞态，
+     而且多一次 `exec` 往返。哨兵走 stdout 且脚本 `exit 0` —— 非零退出码会被
+     `run_script` 先变成"参数 + stderr"的原始错误，调用方就读不到哨兵了。
+   - 界面侧：`ours_target = 正在重新部署 || 存档里有同目标目录的记录`（`app.rs`）。
+2. **判活认僵尸**：`status_script` 多读一眼 `/proc/<pid>/stat` 的第三个字段，
+   `Z` 就当死。用纯 shell 剥 `(comm)`（`${s#*) }`）而不是 `awk`：精简镜像不一定有 awk，
+   而 `comm` 里**可能带空格**，按空格切会切错。
+3. **空日志给一句解释**（`logs_overlay`）：说明"主进程不写 stdout/stderr 时就是这个样子
+   （比如 `tail -f /dev/null`）"，并指出应用日志在「部署管理」里。
+
+### 15.6 实测（本机容器，2026-10-16；不是推的）
+
+判活（`eclipse-temurin` 里那个 pid=29 的僵尸就是现场）：
+
+| 场景 | 旧脚本 | 新脚本 |
+|---|---|---|
+| pidfile 里的 pid 是**僵尸**（现场那个 29） | `__WSLC_RUNNING__` ❌ | `__WSLC_STOPPED__` ✅ |
+| pidfile 里是**真活的**进程（`nohup sleep 300`） | — | `__WSLC_RUNNING__` ✅ |
+| 没有 pidfile | — | `__WSLC_STOPPED__` ✅ |
+
+清目录守卫（用 `/tmp/probe-nonempty/openjdk/readme` 合成一个"像 `/opt/java` 那样
+非空的陌生目录"，**不拿用户真实目录做实验**）：
+
+| 场景 | 结果 |
+|---|---|
+| 非空 + `ours=false` | `__WSLC_TARGET_NOT_EMPTY__`，**目录内容原样**（`openjdk` 还在） ✅ |
+| 空目录 + `ours=false` | 放行（无输出，然后 mkdir + 清） ✅ |
+| 不存在的目录 + `ours=false` | 放行并建出来 ✅ |
+| `ours=true` | 照旧清空 ✅ |
+
+用户的 `/opt/java` 全程原样（`app.log` / `app.pid` / `ruoyi-admin.jar`）。
+
+### 15.7 用户那个容器怎么救（已经坏了的部分，代码救不回来）
+
+`/opt/java/openjdk` 已经被删，那个容器里的 `java` **回不来了**。两条路：
+
+1. **重建容器**（干净）：面板里删掉 `eclipse-temurin` → 「创建容器」用同一个镜像,
+   **「启动命令」填 `tail -f /dev/null`**（§11 那一格，这个镜像没有 `CMD`，
+   不填就起来就退）→ 再「部署管理」重新部署。源 jar（`E:\code\ruoyi-admin.jar`）
+   还在，**目标目录改成 `/opt/app`**（别再用 `/opt/java`）；
+2. **只把 JDK 搬回去**：起一个临时容器（`wslc run -d --name jdkprobe <镜像> /bin/sh -c "sleep 600"`）
+   → `wslc container cp jdkprobe:/opt/java/openjdk <本地目录>` →
+   `wslc container cp <本地目录>/openjdk eclipse-temurin:/opt/java/` → 删临时容器。
+   ⚠️ 这条**没实测过**（`container cp` 搬**目录**出容器的语义没验），写在这里只是备选。
+
+### 15.8 这一版**没做**的
+
+- **首次部署到"非空的陌生目录"会被拒**（哪怕那目录只是镜像自带的默认站点）：
+  要用它就得先去「终端」自己清空。这是刻意的保守 —— 比起"悄悄删掉 JDK"，
+  多一次手动清空是划算的；真嫌麻烦，可以让面板在弹窗里给一个"我知道我在干什么"的勾选；
+- **僵尸不会被回收**：容器 PID 1 不回收子进程是容器自己的事，面板只能"别把它当活着"；
+- 「运行中」这一列**不再撒谎**，但"启动失败"和"正常停止"在界面上仍是同一句
+  「已停止」—— 想说清区别得再存一个"上一次是启动失败"的状态（这次没做，日志里有原因）；
+- ⚠️ 仍需**本机点一遍**（§8）：守卫拒绝时那句话在提示条 / 弹窗里显示成什么样、
+  空日志那句解释排版正常、部署成功的老路没被弄坏。
+
 

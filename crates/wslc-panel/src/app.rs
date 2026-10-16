@@ -4429,6 +4429,22 @@ impl Shell {
         let command = values.command.clone();
         let port = record.port;
 
+        // 目标目录是**我们自己铺的**吗？
+        //
+        // 「重新部署」显然算（`editing` 就是那条记录）；另外同一个目录可能被
+        // **另一个应用名**用过（面板存档里有记录）—— 那也是我们铺的，清空重铺没问题。
+        //
+        // 两样都不是时，`prepare_target` 会**拒绝清空一个非空目录**：那里面可能是
+        // 镜像自己要用的文件 —— 实测那次把应用（名字就叫 `java`）部署到默认的
+        // `/opt/java`，而 `eclipse-temurin` 的 JDK 正是 `/opt/java/openjdk`，
+        // 清空它等于把容器里的 `java` 删掉，应用从此起不来。
+        let ours_target = editing.is_some()
+            || self
+                .state
+                .deploy
+                .as_ref()
+                .is_some_and(|d| d.entries.iter().any(|e| e.record.target == target));
+
         self.deploy_form = None;
         self.set_deploy_progress(
             Some(DeployProgress {
@@ -4458,8 +4474,10 @@ impl Shell {
                             let _ = deploy_cmd::stop(&wslc, &container, &target);
                         }
                         // 准备目录 —— 它顺带把"容器没在运行"报出来
-                        //（`cp` 在那种情况下**静默成功**，见 `cmd::deploy`）
-                        deploy_cmd::prepare_target(&wslc, &container, &target)
+                        //（`cp` 在那种情况下**静默成功**，见 `cmd::deploy`），
+                        // 以及"这个目录不是我们铺的、而且非空"时**拒绝清空**
+                        //（`ours_target`，见上面那段注释）
+                        deploy_cmd::prepare_target(&wslc, &container, &target, ours_target)
                             .map_err(|e| e.to_string())?;
                         let members = deploy_cmd::copy_sources(
                             &wslc,
