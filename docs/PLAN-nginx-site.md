@@ -16,11 +16,13 @@
 > （标记检查 → 备份 → 写 → `nginx -t` → 回滚 / reload）/ `remove_site` /
 > `read_resolv_conf`；部署弹窗的站点区（SPA + **一条**反代 + 去前缀）；
 > `record_binds_port` 改成「nginx 站点开才算 bind」；删除部署连 conf 一起删；
-> `DeployPhase::Configuring`；「重载 nginx」过滤 `conflicting server name`。
+> `DeployPhase::Configuring`；「重载 nginx」过滤 `conflicting server name`；
+> **站点反代的网络预检**：上游是容器名时找共同用户网络，没有就建/接
+> `wslc-panel`（只接缺的一边），找不到同名容器按外部主机处理，失败只警告；
+> 界面「自动接通」默认开。
 >
-> **未落地**：网络预检 / 一键 `wslc network connect`（界面只写了手工命令；
-> 默认 bridge 解析不了名字）、只读配置浮层、端口列 URL、多规则 / 负载均衡 /
-> HTTPS / 自定义 `server_name`。
+> **未落地**：只读配置浮层、端口列 URL、多规则 / 负载均衡 / HTTPS /
+> 自定义 `server_name`。
 >
 > **真实 nginx 验证**（`docker.1panel.live/library/nginx:latest`）：一个容器
 > 两个 `server` 块（8080/8081）各带自己的 `resolver`，`nginx -t` 通过；
