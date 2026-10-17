@@ -4985,7 +4985,7 @@ impl Shell {
                                         step.warning = warning;
                                     }
                                     Err(error) => {
-                                        step.site = previous.clone();
+                                        step.site = Some(previous.clone());
                                         step.error = Some(error.to_string());
                                     }
                                 }
