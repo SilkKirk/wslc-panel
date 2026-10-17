@@ -41,14 +41,92 @@ pub fn ports_summary(item: &ContainerSummary) -> String {
 
 /// 按逗号（中英文）或换行切分，去掉空白项。
 ///
-/// 刻意**不按空格切**：环境变量的值里完全可能有空格
-/// （`MESSAGE=hello world`），按空格切会把它切成两条。
+/// 刻意**不按空格切**：卷路径、端口映射里完全可能有空格
+/// （`E:\my code:/app`），按空格切会把它切成两条。
 pub fn split_list(text: &str) -> Vec<String> {
     text.split([',', '，', '\n', '\r'])
         .map(str::trim)
         .filter(|item| !item.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+/// 环境变量专用切分：换行一定分隔，逗号**只在后面看起来是新的 `KEY=` 时**才分隔。
+///
+/// # 为什么不能直接用 [`split_list`]（v0.9.20 修）
+///
+/// 环境变量的值里逗号非常常见：
+///
+/// ```text
+/// SPRING_PROFILES_ACTIVE=dev,local
+/// CORS_ALLOWED_ORIGINS=https://a.example,https://b.example
+/// JAVA_TOOL_OPTIONS=-Dfoo=a,b
+/// ```
+///
+/// 按逗号一刀切，后半段没有 `=` 会被 `to_spec` 静默丢掉 —— 界面上不报错，
+/// 但 Java 进程起来后行为和预期不一样，属于最难查的一类问题。
+///
+/// 同时也不能只认换行：老用户可能一直按界面提示写 `A=1,B=2`。
+/// 所以这里保留逗号分隔能力，但用「逗号后面是不是一个合法的 `KEY=`」来判断：
+///
+/// - `A=1,B=2` → `["A=1", "B=2"]`
+/// - `A=1, B=2` → 同上（逗号后的空格会先 trim）
+/// - `SPRING_PROFILES_ACTIVE=dev,local` → 一条
+/// - `CORS=https://a,https://b` → 一条
+/// - `A=x,B=y,z` → `["A=x", "B=y,z"]`
+///
+/// ⚠️ 这是启发式，不是完整的 shell 解析：`A=x,y=B` 这种"值里刚好出现
+/// `,y=`"的形状会被切错。环境变量名必须是 `[A-Za-z_][A-Za-z0-9_]*`，
+/// 现实里这种值极少；真需要精确控制就一行一个，换行永远不会误切。
+pub fn split_env_list(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.split(['\n', '\r']) {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut start = 0usize;
+        for (index, ch) in line.char_indices() {
+            if ch != ',' && ch != '，' {
+                continue;
+            }
+            let after = index + ch.len_utf8();
+            if looks_like_env_assignment(line[after..].trim_start()) {
+                push_env_item(&line[start..index], &mut out);
+                start = after;
+            }
+        }
+        push_env_item(&line[start..], &mut out);
+    }
+    out
+}
+
+/// 一段是不是以合法的 `KEY=` 开头（用来判断逗号是不是分隔符）。
+fn looks_like_env_assignment(text: &str) -> bool {
+    let Some((key, _)) = text.split_once('=') else {
+        return false;
+    };
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// 收集一段环境变量；顺手清掉连续逗号留下的空段 / 尾逗号。
+fn push_env_item(segment: &str, out: &mut Vec<String>) {
+    // `trim_matches` 而不是 `trim_end_matches`：`"  ,  , "` 这种"只有分隔符"
+    // 的段两边都要清，否则会留下一个 `","` 被当成环境变量。
+    let segment = segment
+        .trim()
+        .trim_matches(|c| c == ',' || c == '，')
+        .trim();
+    if !segment.is_empty() {
+        out.push(segment.to_owned());
+    }
 }
 
 /// 顶部刷新按钮的文案。
@@ -129,7 +207,8 @@ mod tests {
     // `wslc-panel` **排除**掉（`cargo test --workspace --exclude wslc-panel`），
     // 写在那个 crate 里的断言根本不会被执行。
     use super::{
-        LoadLevel, human_secs, load_level, ports_summary, refresh_label, split_list, strip_md,
+        LoadLevel, human_secs, load_level, ports_summary, refresh_label, split_env_list,
+        split_list, strip_md,
     };
     use wslc_core::model::{ContainerListItem, ContainerSummary};
 
@@ -195,11 +274,48 @@ mod tests {
 
     #[test]
     fn split_list_does_not_split_on_spaces() {
-        // 环境变量的值里完全可能有空格，按空格切会把它切成两条
+        // 卷路径 / 端口里也可能有空格，按空格切会把它切成两条
+        assert_eq!(split_list(r"E:\my code:/app"), vec![r"E:\my code:/app"]);
+    }
+
+    #[test]
+    fn split_env_list_keeps_commas_inside_values() {
+        // 这三条是实际会写进 Java / Spring 配置的形状 —— 逗号属于值，
+        // 按 `split_list` 切会把后半段变成没有 `=` 的段，然后被静默丢掉。
         assert_eq!(
-            split_list("MESSAGE=hello world"),
-            vec!["MESSAGE=hello world"]
+            split_env_list("SPRING_PROFILES_ACTIVE=dev,local"),
+            vec!["SPRING_PROFILES_ACTIVE=dev,local"]
         );
+        assert_eq!(
+            split_env_list("CORS_ALLOWED_ORIGINS=https://a.example,https://b.example"),
+            vec!["CORS_ALLOWED_ORIGINS=https://a.example,https://b.example"]
+        );
+        assert_eq!(
+            split_env_list("JAVA_TOOL_OPTIONS=-Dfoo=a,b"),
+            vec!["JAVA_TOOL_OPTIONS=-Dfoo=a,b"]
+        );
+    }
+
+    #[test]
+    fn split_env_list_still_accepts_comma_separated_pairs() {
+        // 老习惯（界面以前写着"逗号或换行"）不能一夜之间失效：
+        // 逗号后面只要是一个合法的 `KEY=`，仍按分隔符处理。
+        assert_eq!(split_env_list("A=1,B=2"), vec!["A=1", "B=2"]);
+        assert_eq!(split_env_list("A=1, B=2"), vec!["A=1", "B=2"]);
+        assert_eq!(split_env_list("A=1，B=2"), vec!["A=1", "B=2"]);
+        assert_eq!(split_env_list("A=1\nB=2"), vec!["A=1", "B=2"]);
+    }
+
+    #[test]
+    fn split_env_list_handles_empty_and_mixed_segments() {
+        assert!(split_env_list("").is_empty());
+        assert!(split_env_list("  ,  , \n ").is_empty());
+        // 连续逗号不产生空条目；后面的 `B=2` 仍要保住
+        assert_eq!(split_env_list("A=1,,B=2"), vec!["A=1", "B=2"]);
+        // 逗号后是值的一部分（没有 `KEY=`），整段保留
+        assert_eq!(split_env_list("A=x,B=y,z"), vec!["A=x", "B=y,z"]);
+        // CRLF 也要吃掉
+        assert_eq!(split_env_list("A=1\r\nB=2"), vec!["A=1", "B=2"]);
     }
 
     #[test]

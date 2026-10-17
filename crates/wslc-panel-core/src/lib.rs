@@ -29,6 +29,8 @@ pub mod columns;
 pub mod dbcreds;
 // 部署记录的本地存档（v0.9：部署过什么由面板记；"它现在跑没跑"问容器）。
 pub mod deploys;
+// 存档的原子写 + 崩溃恢复（v0.9.20：删旧档再 rename 有丢档窗口）。
+pub mod fileio;
 pub mod prefs;
 pub mod presets;
 pub mod state;

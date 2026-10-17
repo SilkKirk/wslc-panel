@@ -73,9 +73,10 @@ use crate::state::{
     Toast, ToastKind, create_command, exec_argv,
 };
 use crate::theme;
-// `split_list` / `refresh_label` 是纯函数，住在不依赖 GPUI 的 `wslc-panel-core` 里
+// `split_list` / `split_env_list` / `refresh_label` 是纯函数，
+// 住在不依赖 GPUI 的 `wslc-panel-core` 里
 // —— 这样它们的单测不必链接 GPUI（见那个 crate 的顶层说明）。
-use crate::util::{refresh_label, split_list};
+use crate::util::{refresh_label, split_env_list, split_list};
 use crate::views;
 
 /// 「添加实例」页的全部输入框与选项。
@@ -509,7 +510,11 @@ impl CreateDialog {
 
         // 环境变量按 `KEY=VALUE` 解析；没有等号的**直接丢掉**，
         // 不去猜用户想表达什么（猜错了反而更难查）。
-        spec.env = split_list(&text(&self.env))
+        //
+        // ⚠️ 用 `split_env_list` 而不是 `split_list`：值里的逗号是合法的
+        // （`SPRING_PROFILES_ACTIVE=dev,local`），按逗号一刀切会把后半段
+        // 变成没有 `=` 的段然后静默丢掉。见 `util::split_env_list`。
+        spec.env = split_env_list(&text(&self.env))
             .iter()
             .filter_map(|pair| pair.split_once('='))
             .map(|(key, value)| (key.trim().to_owned(), value.trim().to_owned()))
@@ -2285,6 +2290,40 @@ impl Shell {
             Err(e) => {
                 tracing::warn!("打开资源管理器失败：{e}");
                 self.state.notify(Toast::error(format!("打开失败：{e}")));
+            }
+        }
+        cx.notify();
+    }
+
+    /// 用系统默认浏览器打开一个 URL。
+    ///
+    /// # 为什么是 `explorer.exe`
+    ///
+    /// 它把 URL 交给 Windows 的默认协议处理器（也就是默认浏览器），
+    /// 本身不等待、不捕获输出 —— `AGENTS.md` §7.1 允许这种"只把进程拉起来"
+    /// 的同步调用（和打开资源管理器同一个理由）。
+    ///
+    /// ⚠️ 只接受 `http://` / `https://`：这个入参来自容器 inspect 的
+    /// `Ports`，理论上是我们自己拼的，但把任意字符串交给
+    /// `explorer.exe` 等于多开一个协议处理器入口，没必要。
+    pub fn open_url(&mut self, url: String, cx: &mut Context<Self>) {
+        let url = url.trim().to_owned();
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            self.state
+                .notify(Toast::error(format!("不是可打开的 URL：{url}")));
+            cx.notify();
+            return;
+        }
+        match std::process::Command::new("explorer.exe").arg(&url).spawn() {
+            Ok(_) => {
+                tracing::info!("已用默认浏览器打开 {url}");
+                self.state
+                    .notify(Toast::info(format!("已在浏览器打开 {url}")));
+            }
+            Err(e) => {
+                tracing::warn!("打开浏览器失败：{e}");
+                self.state
+                    .notify(Toast::error(format!("打开浏览器失败：{e}")));
             }
         }
         cx.notify();

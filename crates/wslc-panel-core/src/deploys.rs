@@ -24,7 +24,8 @@
 //! - 结构：`{ "<容器名>/<应用名>": { … } }` —— **键里带容器名**：
 //!   两个容器各有一个 `site` 时互不串台（和 `dbcreds` 同一条理由）；
 //! - 解析失败（手改坏了 / 半截写入）**不 panic、不覆盖**：返回空档 + 一句原因，
-//!   写入走"临时文件 + 重命名"，半途断电最多丢掉这一次的记录。
+//!   写入走 [`crate::fileio`] 的原子写（临时文件 → `.bak` → 主文件），
+//!   半途断电最多丢掉这一次的更新，旧档还能恢复。
 //!
 //! 这里**没有密码**，所以 `Debug` 可以派生（对比 `dbcreds::DbCredential`，
 //! 那个的 `Debug` 是手写脱敏的）。
@@ -103,7 +104,8 @@ impl DeployStore {
     /// 读档。文件不存在 → 空档（第一次运行就是这么进来的）；
     /// 解析失败 → 空档 + `Some(原因)`（调用方**必须**把它显示出来）。
     pub fn load(path: &Path) -> (Self, Option<String>) {
-        let text = match std::fs::read_to_string(path) {
+        // 主文件缺失时从 `.bak` 恢复（见 `fileio` 的崩溃点表）。
+        let text = match crate::fileio::read_text(path) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Self::default(), None),
             Err(e) => return (Self::default(), Some(format!("读不到部署存档：{e}"))),
@@ -120,22 +122,10 @@ impl DeployStore {
         }
     }
 
-    /// 写档（临时文件 + 重命名，见模块注释）。
+    /// 写档（原子写，见 [`crate::fileio`] 的模块注释）。
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let text = serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_owned());
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, text)?;
-        // rename 覆盖已存在的目标：Windows 上 `std::fs::rename` 对已存在目标会失败
-        // （POSIX 不会），所以先删一次 —— 两步之间断电的最坏情况是"旧档还在 /
-        // 新档在 .tmp"，都不会把档写坏。（和 `dbcreds::save` 一字不差，
-        // 这条坑是那边先踩的。）
-        if path.exists() {
-            std::fs::remove_file(path)?;
-        }
-        std::fs::rename(&tmp, path)
+        crate::fileio::write_atomic(path, &text)
     }
 
     /// 取一条记录。

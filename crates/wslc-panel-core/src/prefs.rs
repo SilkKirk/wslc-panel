@@ -276,7 +276,8 @@ impl Prefs {
         let Some(path) = Self::path() else {
             return Self::default();
         };
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        // 和另外两个存档一样走 `fileio`：主文件缺失时能从 `.bak` 恢复。
+        let Ok(text) = crate::fileio::read_text(&path) else {
             return Self::default();
         };
         match serde_json::from_str::<Prefs>(&text) {
@@ -293,13 +294,10 @@ impl Prefs {
         let Some(path) = Self::path() else {
             return Err("LOCALAPPDATA 未设置，无法确定偏好文件位置".to_owned());
         };
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)
-                .map_err(|e| format!("创建 {} 失败：{e}", dir.display()))?;
-        }
         let text =
             serde_json::to_string_pretty(self).map_err(|e| format!("序列化偏好失败：{e}"))?;
-        std::fs::write(&path, text).map_err(|e| format!("写入 {} 失败：{e}", path.display()))
+        crate::fileio::write_atomic(&path, &text)
+            .map_err(|e| format!("写入 {} 失败：{e}", path.display()))
     }
 }
 

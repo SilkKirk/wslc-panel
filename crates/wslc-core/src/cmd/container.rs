@@ -39,18 +39,49 @@ pub fn stats(wslc: &Wslc, all: bool) -> Result<Vec<ContainerStats>> {
     jsonl::parse_lines(&out.stdout)
 }
 
+/// 一次采集同时拿到「运行中」和「全部」两份合并视图。
+///
+/// # 为什么合成一个函数（v0.9.20）
+///
+/// `load_snapshot` 早先分别调 [`running_summaries`] 和 [`all_summaries`]，
+/// 而两个函数各自跑一次 `stats`。`wslc stats` 是**按采样窗口**返回的，
+/// 本机实测每次约 **2 秒**（`wslc 3.0.3.0`，4 个容器）—— 同一轮里跑两次
+/// 等于白等 2 秒，而默认刷新间隔只有 3 秒（`wslc-panel-core` 的
+/// `prefs::DEFAULT_REFRESH_SECS`）。
+/// 结果是一轮采集约 4.5 秒，`state.busy` 长期为真。
+///
+/// 现在只跑 **一次 `list -a` + 一次 `stats -a`**，再从同一份结果里过滤出
+/// 运行中的那些：省掉一次 `list` 和一次 `stats`，统计口径也完全一致。
+///
+/// ⚠️ 别在调用点再分别调 [`running_summaries`] / [`all_summaries`] ——
+/// 那两个保留只是为了不破坏已有 API，内部都会走这里；两个都调就是两次
+/// `stats`，又回到老问题。
+pub fn summaries(wslc: &Wslc) -> Result<(Vec<ContainerSummary>, Vec<ContainerSummary>)> {
+    let items = list(wslc, true)?;
+    let stats = stats(wslc, true)?;
+    let all = ContainerSummary::merge(items, stats);
+    // `Paused` / `Restarting` 在 `wslc list` 里也算"还在跑"（Docker 的 `ps`
+    // 同样会把它们列出来），所以用 `is_active()` 而不是只认 `Running`。
+    let running = all
+        .iter()
+        .filter(|summary| summary.item.state_kind().is_active())
+        .cloned()
+        .collect();
+    Ok((running, all))
+}
+
 /// 运行中容器的列表 + 统计合并视图（"当前运行 container" 页直接消费）。
+///
+/// 优先用 [`summaries`] 一次拿两份；这个包装保留给只关心运行中容器的调用点。
 pub fn running_summaries(wslc: &Wslc) -> Result<Vec<ContainerSummary>> {
-    let items = list_running(wslc)?;
-    let stats = stats(wslc, false)?;
-    Ok(ContainerSummary::merge(items, stats))
+    Ok(summaries(wslc)?.0)
 }
 
 /// 全部容器的列表 + 统计合并视图。
+///
+/// 优先用 [`summaries`] 一次拿两份；这个包装保留给只关心全部容器的调用点。
 pub fn all_summaries(wslc: &Wslc) -> Result<Vec<ContainerSummary>> {
-    let items = list(wslc, true)?;
-    let stats = stats(wslc, true)?;
-    Ok(ContainerSummary::merge(items, stats))
+    Ok(summaries(wslc)?.1)
 }
 
 /// `wslc inspect <id>`。
