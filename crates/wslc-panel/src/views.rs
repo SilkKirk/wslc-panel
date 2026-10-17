@@ -379,6 +379,40 @@ fn cell_full(
         .into_any_element()
 }
 
+/// 可点击的 URL 单元格：主色 + 悬停变亮 + 点击用默认浏览器打开。
+///
+/// 和 [`cell_full`] 一样借组件库的 `Button::text()` 当壳，所以长 URL 仍然
+/// 可以悬停看全文；区别只是多了一个 `on_click`，并且用主色让人看出能点。
+fn cell_link(
+    key: impl Into<SharedString>,
+    text: impl Into<SharedString>,
+    url: impl Into<String>,
+    entity: &Entity<Shell>,
+) -> AnyElement {
+    let key: SharedString = key.into();
+    let text: SharedString = text.into();
+    let url: String = url.into();
+    let entity = entity.clone();
+
+    Button::new(SharedString::from(format!("cell-link-{key}")))
+        .text()
+        .tooltip(text.clone())
+        .w_full()
+        .on_click(move |_, _, cx| {
+            entity.update(cx, |shell, cx| shell.open_url(url.clone(), cx));
+        })
+        .child(
+            div()
+                .w_full()
+                .text_sm()
+                .text_color(theme::primary())
+                .overflow_hidden()
+                .truncate()
+                .child(text),
+        )
+        .into_any_element()
+}
+
 /// 状态徽标单元格。
 fn cell_badge(state: ContainerState) -> AnyElement {
     let (fg, bg) = theme::state_colors(&state);
@@ -3227,7 +3261,7 @@ fn deploy_table(deploy: &DeployState, entity: &Entity<Shell>) -> AnyElement {
                     // 截断了也要能悬停看全文。
                     cell_muted_full(entry.record.app.clone(), entry.record.target.clone()),
                     deploy_status_cell(entry, deploy),
-                    deploy_port_cell(entry, deploy),
+                    deploy_port_cell(entry, deploy, entity),
                     deploy_row_actions(entry, deploy, entity),
                 ],
             )
@@ -3325,7 +3359,11 @@ fn deploy_status_cell(entry: &DeployEntry, deploy: &DeployState) -> AnyElement {
 ///
 /// ⚠️ 已存在的容器改不了端口发布（`-p` 只在 `run` / `create` 时给），
 /// 所以这里绝不画一个点了没用的「发布」按钮 —— 而是把下一步说清楚。
-fn deploy_port_cell(entry: &DeployEntry, deploy: &DeployState) -> AnyElement {
+fn deploy_port_cell(
+    entry: &DeployEntry,
+    deploy: &DeployState,
+    entity: &Entity<Shell>,
+) -> AnyElement {
     let port = entry.record.port;
     if port == 0 {
         return cell_text("—");
@@ -3350,7 +3388,14 @@ fn deploy_port_cell(entry: &DeployEntry, deploy: &DeployState) -> AnyElement {
             );
         }
         if let Some(url) = deploy_model::app_url(&deploy.ports, port) {
-            return cell_text_full(key, format!("{url}（容器 {port}）"));
+            // URL 直接可点：部署完最自然的下一步就是打开看一眼。
+            // 单元格仍然保留 tooltip，长 URL 被截断时悬停能看全。
+            return cell_link(
+                key,
+                format!("{url}（容器 {port}）"),
+                url,
+                entity,
+            );
         }
         cell_text(format!("{port}（已发布）"))
     } else {
@@ -7373,7 +7418,7 @@ pub fn create_dialog_overlay(
                     ))
                     .child(form_field(
                         "create-env",
-                        "环境变量 KEY=VALUE（逗号或换行分隔）",
+                        "环境变量 KEY=VALUE（每行一个；值里可以有逗号）",
                         &dialog.env,
                         cx,
                         false,

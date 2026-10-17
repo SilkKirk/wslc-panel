@@ -602,13 +602,14 @@ pub fn load_snapshot(wslc: &Wslc, wsl: &Wsl) -> Snapshot {
     // 被删掉的卡消费，而同一份数据 `wslc info` 的 `Server.Sessions` 里已经有了
     // —— 也就是说那是一个**每 3 秒白起的子进程**。
 
-    match cmd::container::running_summaries(wslc) {
-        Ok(v) => snap.running = v,
-        Err(e) => snap.errors.push(format!("运行中容器：{e}")),
-    }
-
-    match cmd::container::all_summaries(wslc) {
-        Ok(v) => snap.all = v,
+    // ⚠️ 一次拿两份（运行中 / 全部）：`stats` 每次约 2 秒，分别调
+    // `running_summaries` + `all_summaries` 会让每一轮刷新白等两次。
+    // 详见 `cmd::container::summaries` 的说明。
+    match cmd::container::summaries(wslc) {
+        Ok((running, all)) => {
+            snap.running = running;
+            snap.all = all;
+        }
         Err(e) => snap.errors.push(format!("容器列表：{e}")),
     }
 

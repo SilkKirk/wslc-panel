@@ -19,8 +19,8 @@
 //! # 兜底
 //!
 //! 解析失败（手改坏了 / 半截写入）**不 panic、不覆盖**：返回空档并在
-//! 读取时把原文留给调用方提示。写入走"临时文件 + 重命名"，
-//! 半途断电最多丢掉这一次的记录，不会把旧档写坏。
+//! 读取时把原文留给调用方提示。写入走 [`crate::fileio`] 的
+//! "临时文件 → .bak → 主文件"三步；任何一步之后崩溃都能读回至少一份完整数据。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -83,7 +83,9 @@ impl DbCredentialStore {
     /// 读档。文件不存在 → 空档（第一次运行就是这么进来的）；
     /// 解析失败 → 空档 + `Some(原因)`（调用方决定要不要提示）。
     pub fn load(path: &Path) -> (Self, Option<String>) {
-        let text = match std::fs::read_to_string(path) {
+        // `fileio::read_text` 会在主文件缺失时尝试 `.bak`：
+        // 旧版保存逻辑删完旧档、rename 前崩溃的话，这里还能把账号捞回来。
+        let text = match crate::fileio::read_text(path) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Self::default(), None),
             Err(e) => return (Self::default(), Some(format!("读不到凭据存档：{e}"))),
@@ -100,21 +102,10 @@ impl DbCredentialStore {
         }
     }
 
-    /// 写档（临时文件 + 重命名，见模块注释）。
+    /// 写档（原子写，见 [`crate::fileio`] 的模块注释）。
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let text = serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_owned());
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, text)?;
-        // rename 覆盖已存在的目标：Windows 上 `std::fs::rename` 对已存在目标
-        // 会失败（POSIX 不会），所以先删一次 —— 两步之间断电的最坏情况是
-        // "旧档还在 / 新档在 .tmp"，都不会把档写坏。
-        if path.exists() {
-            std::fs::remove_file(path)?;
-        }
-        std::fs::rename(&tmp, path)
+        crate::fileio::write_atomic(path, &text)
     }
 
     /// 取一个库的账号。
