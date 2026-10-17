@@ -2955,6 +2955,30 @@ pub fn deploy_page(shell: &Shell, _cx: &App, entity: &Entity<Shell>) -> AnyEleme
         .into_any_element()
 }
 
+/// 页头那一行"已发布到主机的端口"。
+///
+/// 只**报告**：已建好的容器改不了端口发布（`-p` 只在建容器时给），所以这里
+/// 不画按钮，只把 `主机 URL → 容器端口` 摆出来。端口列的 URL 是逐应用的，
+/// 这里是容器级的全量清单。
+fn deploy_published_line(deploy: &DeployState) -> String {
+    let ports = deploy_model::published_container_ports(&deploy.ports);
+    if ports.is_empty() {
+        return "还没有端口发布到主机（-p 只能在建容器时给）".to_owned();
+    }
+    let items: Vec<String> = ports
+        .iter()
+        .filter_map(|port| {
+            deploy_model::app_url(&deploy.ports, *port)
+                .map(|url| format!("{url} → 容器 {port}"))
+        })
+        .collect();
+    if items.is_empty() {
+        "有发布记录，但没有可用的主机绑定".to_owned()
+    } else {
+        format!("已发布：{}", items.join("，"))
+    }
+}
+
 /// 页头：容器 / 镜像 / 运行时 + 依据 + 「← 返回容器」「重新读取」「添加部署…」。
 fn deploy_header(deploy: &DeployState, entity: &Entity<Shell>) -> AnyElement {
     let back = {
@@ -3049,6 +3073,14 @@ fn deploy_header(deploy: &DeployState, entity: &Entity<Shell>) -> AnyElement {
                             deploy.image,
                             deploy.signal.label(),
                         )),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .max_w(px(560.0))
+                        .truncate()
+                        .child(deploy_published_line(deploy)),
                 ),
         )
         .child(
@@ -3953,6 +3985,21 @@ pub fn deploy_site_conf_overlay(conf: &DeploySiteConf, entity: &Entity<Shell>) -
         }
     };
 
+    let reapply: AnyElement = if conf.busy {
+        div().into_any_element()
+    } else {
+        let app = conf.app.clone();
+        let entity = entity.clone();
+        Button::new("deploy-site-conf-reapply")
+            .label("重写配置")
+            .small()
+            .on_click(move |_, _, cx| {
+                let app = app.clone();
+                entity.update(cx, |shell, cx| shell.reapply_deploy_site(app, cx));
+            })
+            .into_any_element()
+    };
+
     let card = v_flex()
         .w(px(720.0))
         .max_h(px(560.0))
@@ -3979,18 +4026,34 @@ pub fn deploy_site_conf_overlay(conf: &DeploySiteConf, entity: &Entity<Shell>) -
                             "容器里的 `/etc/nginx/conf.d/00-wslc-panel-<应用名>.conf`（只读）。\
                              重新部署会整份覆盖；要改就改部署弹窗里的站点区，别直接改这个文件。",
                         )),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child(crate::util::strip_md(
+                            "容器重建后这份 conf 会丢 —— 可以点「重写配置」补回来\
+                             （只写 conf，不重新铺文件 / 不重新接网络）。",
+                        )),
                 ),
         )
         .child(body)
-        .child(h_flex().w_full().justify_end().child({
-            let entity = entity.clone();
-            Button::new("deploy-site-conf-close")
-                .label("关闭")
-                .small()
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |shell, cx| shell.close_deploy_site_conf(cx));
-                })
-        }));
+        .child(
+            h_flex()
+                .w_full()
+                .justify_end()
+                .gap_2()
+                .child(reapply)
+                .child({
+                    let entity = entity.clone();
+                    Button::new("deploy-site-conf-close")
+                        .label("关闭")
+                        .small()
+                        .on_click(move |_, _, cx| {
+                            entity.update(cx, |shell, cx| shell.close_deploy_site_conf(cx));
+                        })
+                }),
+        );
 
     modal_scrim("deploy-site-conf-scrim", card).into_any_element()
 }

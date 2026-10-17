@@ -1017,6 +1017,8 @@ struct DeployAction {
     container: String,
     /// 容器内的目标目录。
     target: String,
+    /// 应用端口（站点配置重写时 `listen` 要用）。
+    port: u16,
     /// 启动命令。
     command: String,
     /// 是不是进程形态（决定要不要先停 / 能不能启动）。
@@ -5479,6 +5481,110 @@ impl Shell {
         cx.notify();
     }
 
+    /// 重写当前应用的站点配置（容器重建后 conf 丢了时用）。
+    ///
+    /// 只写 conf、**不重新铺文件**；也不重新接网络（容器重建后网络连接也会丢，
+    /// 需要重新部署或手动 `wslc network connect` —— 浮层说明里写了）。
+    pub fn reapply_deploy_site(&mut self, app: String, cx: &mut Context<Self>) {
+        let Some(action) = self.deploy_action(&app) else {
+            return;
+        };
+        let Some(site) = action.site.clone() else {
+            self.state
+                .notify(Toast::info("这个部署没有站点配置（站点关）"));
+            return;
+        };
+        if self
+            .state
+            .deploy
+            .as_ref()
+            .is_some_and(|d| d.progress.is_some())
+        {
+            self.deploy_busy_notice(cx);
+            return;
+        }
+        if let Some(deploy) = self.state.deploy.as_mut() {
+            if let Some(conf) = deploy.site_conf.as_mut() {
+                conf.busy = true;
+            } else {
+                deploy.site_conf = Some(DeploySiteConf {
+                    app: app.clone(),
+                    text: None,
+                    busy: true,
+                });
+            }
+        }
+        cx.notify();
+
+        let wslc = self.state.wslc.clone();
+        let container = action.container.clone();
+        let target = action.target.clone();
+        let port = action.port;
+        cx.spawn(async move |this, cx| {
+            let result = {
+                let wslc = wslc.clone();
+                let container = container.clone();
+                let app = app.clone();
+                let site = site.clone();
+                let target = target.clone();
+                cx.background_executor()
+                    .spawn(async move {
+                        let resolv = deploy_cmd::read_resolv_conf(&wslc, &container)
+                            .unwrap_or_default();
+                        let resolver = deploy_model::first_nameserver(&resolv)
+                            .unwrap_or_else(|| "127.0.0.11".to_owned());
+                        let applied = deploy_cmd::apply_site(
+                            &wslc,
+                            &container,
+                            &app,
+                            &site,
+                            &target,
+                            port,
+                            Some(&resolver),
+                        )
+                        .map_err(|e| e.to_string())?;
+                        let text = deploy_cmd::read_site_conf(&wslc, &container, &app, Some(&site))
+                            .map_err(|e| e.to_string())?;
+                        Ok::<(Option<String>, String), String>((applied.warning, text))
+                    })
+                    .await
+            };
+            let _ = this.update(cx, |shell, cx| {
+                let Some(deploy) = shell.state.deploy.as_mut() else {
+                    return;
+                };
+                if deploy.container != container {
+                    return;
+                }
+                let Some(conf) = deploy.site_conf.as_mut() else {
+                    return;
+                };
+                if conf.app != app {
+                    return;
+                }
+                conf.busy = false;
+                match result {
+                    Ok((warning, text)) => {
+                        conf.text = Some(text);
+                        let mut message = "站点配置已重写".to_owned();
+                        if let Some(warning) = warning {
+                            message.push_str(&format!("；{warning}"));
+                        }
+                        shell.state.notify(Toast::info(message));
+                    }
+                    Err(message) => {
+                        conf.text = Some(format!("重写失败：{message}"));
+                        shell
+                            .state
+                            .notify(Toast::error(format!("重写站点配置失败：{message}")));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// 让容器里的 nginx 重载配置（内容形态的「重载 nginx」）。
     pub fn reload_nginx_in_container(&mut self, cx: &mut Context<Self>) {
         let Some(deploy) = self.state.deploy.as_ref() else {
@@ -5705,6 +5811,7 @@ impl Shell {
         Some(DeployAction {
             container: deploy.container.clone(),
             target: entry.record.target.clone(),
+            port: entry.record.port,
             command: entry.record.command.clone(),
             is_process: entry
                 .runtime
