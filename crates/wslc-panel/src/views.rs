@@ -3737,16 +3737,29 @@ pub fn deploy_dialog_overlay(
                                     });
                                 })
                         })
+                        .child({
+                            let entity = entity.clone();
+                            Checkbox::new("deploy-auto-connect")
+                                .label("自动把两个容器接到同一个用户网络")
+                                .checked(form.auto_connect)
+                                .on_change(move |checked: &bool, _, cx| {
+                                    let enabled = *checked;
+                                    entity.update(cx, |shell, cx| {
+                                        shell.set_deploy_auto_connect(enabled, cx)
+                                    });
+                                })
+                        })
                         .child(
                             div()
                                 .text_xs()
                                 .text_color(theme::text_dim())
                                 .child(crate::util::strip_md(
-                                    "上游是另一个容器时，两个容器要在**同一个用户网络**里\
-                                     （默认 bridge 解析不了名字）：先用 \
-                                     `wslc network connect <网络> <容器>` 接一下；\
-                                     这一版不自动接通。上游停着也能保存配置（不会让 \
-                                     `nginx -t` 失败），请求会在它起来后恢复。",
+                                    "上游是另一个容器时，面板会先找两个容器的**共同用户网络**；\
+                                     没有就创建/接到 `wslc-panel`（勾选「自动接通」时）。\
+                                     取消勾选就只能手动 `wslc network connect <网络> <容器>`。\
+                                     默认 bridge 解析不了名字（实测 `getent` rc=2）。\
+                                     上游停着也能保存配置（不会让 `nginx -t` 失败），\
+                                     请求会在它起来后恢复。",
                                 )),
                         )
                         .into_any_element()

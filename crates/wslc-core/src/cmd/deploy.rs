@@ -72,6 +72,10 @@ pub struct DeployProbe {
     /// 早先这里挂过一个 `publishes()` 方法，但界面另写了一份内联判据，
     /// 于是**被测的那份没人用、在用的那份没被测**（v0.9.13 改掉了）。
     pub ports: PortMap,
+    /// 容器当前接入的网络名（反代预检用：和上游容器找共同用户网络）。
+    ///
+    /// 默认 `bridge` 上容器名解析不了，所以站点反代必须落在用户自定义网络上。
+    pub networks: Vec<String>,
 }
 
 /// 探测：`inspect` 一次，判运行时 + 推 Web 根 + 读端口映射。
@@ -98,6 +102,11 @@ pub fn detect(wslc: &Wslc, container: &str) -> Result<DeployProbe> {
         runtime,
         web_root: deploy::nginx_web_root(&inspect),
         ports: inspect.ports(),
+        networks: inspect
+            .networks()
+            .into_iter()
+            .map(|(name, _, _, _)| name)
+            .collect(),
     })
 }
 

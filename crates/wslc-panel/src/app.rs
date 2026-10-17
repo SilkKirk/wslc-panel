@@ -633,6 +633,8 @@ pub(crate) struct DeployForm {
     pub(crate) proxy_upstream: Entity<InputState>,
     /// 反代时去掉前缀。
     pub(crate) proxy_strip: bool,
+    /// 上游是另一个容器时，自动把两个容器接到同一个用户网络。
+    pub(crate) auto_connect: bool,
 }
 
 /// 「数据库管理」页的一次性动作弹窗在做什么。
@@ -999,6 +1001,8 @@ struct DeployFormValues {
     proxy_upstream: String,
     /// 反代去掉前缀。
     proxy_strip: bool,
+    /// 自动接通两个容器的网络。
+    auto_connect: bool,
 }
 
 /// 一次部署动作要用的素材（从当前页面状态 + 存档里取出来的一份快照）。
@@ -1031,6 +1035,8 @@ struct SiteStep {
     site: Option<DeploySite>,
     /// 非致命警告（reload 失败 / 有噪音）。
     warning: Option<String>,
+    /// 成功时附带的说明（自动接通了哪个网络）。
+    note: Option<String>,
     /// 致命错误（`nginx -t` 没过、conf 删不掉）；`Some` 时 `site` 保留旧值。
     error: Option<String>,
 }
@@ -4305,6 +4311,7 @@ impl Shell {
             proxy_prefix,
             proxy_upstream,
             proxy_strip,
+            auto_connect: true,
         });
         cx.notify();
     }
@@ -4335,6 +4342,14 @@ impl Shell {
     pub fn set_deploy_proxy_strip(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if let Some(form) = self.deploy_form.as_mut() {
             form.proxy_strip = enabled;
+        }
+        cx.notify();
+    }
+
+    /// 「自动接通网络」勾选变化。
+    pub fn set_deploy_auto_connect(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if let Some(form) = self.deploy_form.as_mut() {
+            form.auto_connect = enabled;
         }
         cx.notify();
     }
@@ -4455,6 +4470,7 @@ impl Shell {
             proxy_prefix: form.proxy_prefix.read(cx).value().trim().to_owned(),
             proxy_upstream: form.proxy_upstream.read(cx).value().trim().to_owned(),
             proxy_strip: form.proxy_strip,
+            auto_connect: form.auto_connect,
         })
     }
 
@@ -4495,6 +4511,7 @@ impl Shell {
         // 要 `&mut self`，`deploy` 那个借用在最后用到它的地方就得结束。
         let web_root = deploy.web_root.clone();
         let ports = deploy.ports.clone();
+        let container_networks = deploy.networks.clone();
         let Some(values) = self.read_deploy_form(cx) else {
             return;
         };
@@ -4800,6 +4817,7 @@ impl Shell {
         let app = values.app.clone();
         let target = values.target.clone();
         let command = values.command.clone();
+        let auto_connect = values.auto_connect;
         let port = record.port;
         // 改目标目录时，旧进程的 pidfile 在**旧**目录里 —— 必须用旧目标停，
         // 否则新目录里找不到 pid，旧进程会一直活着（多应用/迁移时很容易踩）。
@@ -4934,10 +4952,12 @@ impl Shell {
                 let target = target.clone();
                 let desired = site.clone();
                 let previous = previous_site.clone();
+                let container_networks = container_networks.clone();
                 if runtime != AppRuntime::Nginx || (desired.is_none() && previous.is_none()) {
                     SiteStep {
                         site: None,
                         warning: None,
+                        note: None,
                         error: None,
                     }
                 } else {
@@ -4951,9 +4971,71 @@ impl Shell {
                             let mut step = SiteStep {
                                 site: previous.clone(),
                                 warning: None,
+                                note: None,
                                 error: None,
                             };
                             if let Some(desired) = desired.as_ref() {
+                                // 反代预检：上游是**容器名**时，先把两个容器接到
+                                // 同一个用户网络 —— 默认 bridge 解析不了名字
+                                // （实测 `getent` rc=2），否则 conf 写得再对也是 502。
+                                if auto_connect {
+                                    if let Some(rule) = desired.proxies.first() {
+                                        let host = deploy_model::upstream_host(&rule.upstream);
+                                        let is_ip = host.parse::<std::net::IpAddr>().is_ok();
+                                        if host != container.as_str()
+                                            && host != "localhost"
+                                            && !is_ip
+                                        {
+                                            let left = if container_networks.is_empty() {
+                                                crate::cmd::container::inspect(
+                                                    &wslc, &container, false,
+                                                )
+                                                .ok()
+                                                .map(|inspect| {
+                                                    inspect
+                                                        .networks()
+                                                        .into_iter()
+                                                        .map(|(name, _, _, _)| name)
+                                                        .collect::<Vec<_>>()
+                                                })
+                                                .unwrap_or_default()
+                                            } else {
+                                                container_networks.clone()
+                                            };
+                                            // 找不到同名容器 → 按"外部主机"处理，
+                                            // 不吓用户（上游可能是外部域名）。
+                                            if let Ok(peer) =
+                                                crate::cmd::container::inspect(&wslc, host, false)
+                                            {
+                                                let peer_networks: Vec<String> = peer
+                                                    .networks()
+                                                    .into_iter()
+                                                    .map(|(name, _, _, _)| name)
+                                                    .collect();
+                                                match crate::cmd::network::ensure_shared_network(
+                                                    &wslc,
+                                                    &container,
+                                                    &left,
+                                                    host,
+                                                    &peer_networks,
+                                                ) {
+                                                    Ok(network) => {
+                                                        step.note = Some(format!(
+                                                            "已确认 {container} 和 {host} 在同一个网络 {network}"
+                                                        ));
+                                                    }
+                                                    Err(error) => {
+                                                        step.warning = Some(format!(
+                                                            "自动接通网络失败：{error} — 反代可能 502；\
+                                                             手动 `wslc network connect {} {host}`",
+                                                            deploy_model::PANEL_NETWORK
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 let resolv = deploy_cmd::read_resolv_conf(&wslc, &container)
                                     .unwrap_or_default();
                                 let resolver = deploy_model::first_nameserver(&resolv)
@@ -4969,7 +5051,9 @@ impl Shell {
                                 ) {
                                     Ok(result) => {
                                         step.site = Some(desired.clone());
-                                        step.warning = result.warning;
+                                        if result.warning.is_some() {
+                                            step.warning = result.warning;
+                                        }
                                     }
                                     Err(error) => {
                                         // `-t` 没过：apply_site 已经把文件回滚了，
@@ -5093,6 +5177,9 @@ impl Shell {
                                 )));
                         }
                         let mut message = format!("已部署 {app} → {target}");
+                        if let Some(note) = site_step.note.clone() {
+                            message.push_str(&format!("；{note}"));
+                        }
                         if let Some(warning) = site_step.warning.clone() {
                             message.push_str(&format!("；站点配置：{warning}"));
                         }

@@ -2391,6 +2391,8 @@ pub struct DeployState {
     /// `cmd::deploy::DeployProbe` 的说明；判"发布了没有"用
     /// `wslc_core::model::deploy::port_is_published`（唯一一份判据，界面也调它）。
     pub ports: wslc_core::model::PortMap,
+    /// 容器当前接入的网络名（站点反代预检找共同用户网络用）。
+    pub networks: Vec<String>,
     /// 正在后台跑（探测 / 读状态 / 上传）。
     pub busy: bool,
     /// **根本性**的问题（不是这类容器 / 容器没运行）。
@@ -2448,6 +2450,7 @@ impl DeployState {
             signal,
             web_root: None,
             ports: Vec::new(),
+            networks: Vec::new(),
             // ⚠️ **必须 false**。这里的语义只能是"**已经有一个后台任务在跑**"，
             // 而不是"马上就要去探测"—— `load_deploy` 的第一句就是"正在跑就不叠
             // 第二次"，先置 true 会把第一次加载自己挡掉，页面永远停在
@@ -2473,6 +2476,7 @@ impl DeployState {
         self.signal = DeploySignal::Image;
         self.web_root = probe.web_root.clone();
         self.ports = probe.ports.clone();
+        self.networks = probe.networks.clone();
         self.busy = false;
     }
 
@@ -5730,6 +5734,7 @@ mod tests {
                 "80/tcp".to_owned(),
                 vec![("127.0.0.1".to_owned(), "80".to_owned())],
             )],
+            networks: vec!["bridge".to_owned()],
         };
         state.apply_probe(&probe);
 

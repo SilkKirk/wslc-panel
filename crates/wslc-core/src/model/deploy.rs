@@ -1549,6 +1549,25 @@ pub fn nginx_test_script() -> String {
     "nginx -t 2>&1".to_owned()
 }
 
+/// 面板自己建的网络名：两个容器没有共同用户网络时用它。
+pub const PANEL_NETWORK: &str = "wslc-panel";
+
+/// 两个容器**共同的用户自定义网络**（`bridge` / `host` / `none` 不算）。
+///
+/// 默认 `bridge` 上容器名解析不了（实测 `getent` rc=2，`host.docker.internal`
+/// 也不通），所以反代的上游名字要么本来就有一个共同用户网络，要么得建/接一个。
+/// 返回 `left` 里第一个也出现在 `right` 里的名字 —— 顺序稳定，测试可预期。
+pub fn common_user_network(left: &[String], right: &[String]) -> Option<String> {
+    left.iter()
+        .filter(|name| is_user_network(name.as_str()))
+        .find(|name| right.iter().any(|other| other == *name))
+        .cloned()
+}
+
+fn is_user_network(name: &str) -> bool {
+    !matches!(name.trim(), "" | "bridge" | "host" | "none")
+}
+
 // ---------------------------------------------------------------------------
 // 端口发布（只能报告，不能发布）
 // ---------------------------------------------------------------------------
@@ -2995,5 +3014,23 @@ mod tests {
             "/etc/nginx/conf.d/00-wslc-panel-site.conf"
         );
         assert_eq!(conf_marker("site"), "# wslc-panel:site:site");
+    }
+
+    #[test]
+    fn common_user_network_ignores_builtin_networks() {
+        let left = vec!["bridge".to_owned(), "wslc-panel".to_owned()];
+        let right = vec!["bridge".to_owned(), "wslc-panel".to_owned()];
+        assert_eq!(
+            common_user_network(&left, &right).as_deref(),
+            Some(PANEL_NETWORK)
+        );
+        assert_eq!(common_user_network(&left, &["bridge".to_owned()]), None);
+        assert_eq!(common_user_network(&[], &[]), None);
+        let left = vec!["host".to_owned(), "none".to_owned(), "app-net".to_owned()];
+        let right = vec!["app-net".to_owned(), "host".to_owned()];
+        assert_eq!(
+            common_user_network(&left, &right).as_deref(),
+            Some("app-net")
+        );
     }
 }
