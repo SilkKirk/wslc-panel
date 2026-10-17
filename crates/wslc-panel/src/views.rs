@@ -3308,6 +3308,9 @@ fn deploy_port_cell(entry: &DeployEntry, deploy: &DeployState) -> AnyElement {
         // 站点关的 nginx 由**默认站点**提供，路径不是 `/`（`/<app>/` 或用户自己
         // 填的相对目录）。这一格不猜路径，只把"已发布 + 站点关"说清楚；
         // 站点开 / 进程型才有独立 URL。
+        //
+        // ⚠️ 不拼 URL 的具体理由：默认站点的 path 是 `<target 相对 Web 根>`，
+        // 不一定等于 `<app>`；老记录还可能直接铺在 Web 根（path 就是 `/`）。
         if is_nginx && entry.record.site.is_none() {
             return cell_muted_full(
                 key,
