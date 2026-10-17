@@ -5485,6 +5485,11 @@ impl Shell {
     ///
     /// 只写 conf、**不重新铺文件**；也不重新接网络（容器重建后网络连接也会丢，
     /// 需要重新部署或手动 `wslc network connect` —— 浮层说明里写了）。
+    ///
+    /// # 为什么不做"自动补写"
+    ///
+    /// 容器重建后网络连接也丢了；自动重写 conf 会让人以为"已经好了"，其实反代
+    /// 还是 502。手动点一次，失败 / 警告能停在浮层里。
     pub fn reapply_deploy_site(&mut self, app: String, cx: &mut Context<Self>) {
         let Some(action) = self.deploy_action(&app) else {
             return;
