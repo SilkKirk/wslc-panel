@@ -36,7 +36,8 @@ use gpui_kit::component::select::{SelectEvent, SelectState};
 use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 
-use wslc_core::cmd::container::{PullPolicy, RunSpec};
+use wslc_core::cmd::container::{PullPolicy, RunSpec, inspect as inspect_container};
+use wslc_core::cmd::network as network_cmd;
 // 部署管理页（v0.9）：真正的活都在 `cmd::deploy` 里（打包 / 上传 / 起停判活），
 // 识别 / 脚本生成 / 输出解析是 `model::deploy` 的纯逻辑。
 // ⚠️ `deploy` 这个名字两边都有（`cmd::deploy` 和 `model::deploy`），
@@ -4987,32 +4988,30 @@ impl Shell {
                                             && !is_ip
                                         {
                                             let left = if container_networks.is_empty() {
-                                                crate::cmd::container::inspect(
-                                                    &wslc, &container, false,
-                                                )
-                                                .ok()
-                                                .map(|inspect| {
-                                                    inspect
-                                                        .networks()
-                                                        .into_iter()
-                                                        .map(|(name, _, _, _)| name)
-                                                        .collect::<Vec<_>>()
-                                                })
-                                                .unwrap_or_default()
+                                                inspect_container(&wslc, &container, false)
+                                                    .ok()
+                                                    .map(|inspect| {
+                                                        inspect
+                                                            .networks()
+                                                            .into_iter()
+                                                            .map(|(name, _, _, _)| name)
+                                                            .collect::<Vec<_>>()
+                                                    })
+                                                    .unwrap_or_default()
                                             } else {
                                                 container_networks.clone()
                                             };
                                             // 找不到同名容器 → 按"外部主机"处理，
                                             // 不吓用户（上游可能是外部域名）。
                                             if let Ok(peer) =
-                                                crate::cmd::container::inspect(&wslc, host, false)
+                                                inspect_container(&wslc, host, false)
                                             {
                                                 let peer_networks: Vec<String> = peer
                                                     .networks()
                                                     .into_iter()
                                                     .map(|(name, _, _, _)| name)
                                                     .collect();
-                                                match crate::cmd::network::ensure_shared_network(
+                                                match network_cmd::ensure_shared_network(
                                                     &wslc,
                                                     &container,
                                                     &left,
