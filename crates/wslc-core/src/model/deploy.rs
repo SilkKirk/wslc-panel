@@ -1508,6 +1508,67 @@ pub fn upstream_host(upstream: &str) -> &str {
     rest.rsplit_once(':').map(|(host, _)| host).unwrap_or(rest)
 }
 
+/// 校验 `server_name`（单个主机名；空串按 `localhost`）。
+///
+/// 不开放空格分隔的多名字：表单只有一格，多名字放进来既难校验也难解释；
+/// 真要多个域名，等 P1 的列表 UI。
+pub fn valid_server_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Ok("localhost".to_owned());
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+    {
+        return Err("server_name 只允许字母 / 数字 / 点 / 连字符 / 下划线".to_owned());
+    }
+    Ok(name.to_owned())
+}
+
+/// 把一条反代规则格式化成「更多反代」那一格的写法（预填用）。
+pub fn format_proxy_rule(rule: &ProxyRule) -> String {
+    let mut out = format!("{} => {}", rule.prefix, rule.upstream);
+    if rule.strip_prefix {
+        out.push_str(" strip");
+    }
+    out
+}
+
+/// 解析「更多反代」：`/api/ => http://api:8080; /auth/ => http://auth:9000 strip`
+///
+/// 用 `;` 分隔（单行输入框里最稳；上游本身不允许 `;`，不会有歧义）。
+pub fn parse_proxy_rules(raw: &str) -> Result<Vec<ProxyRule>, String> {
+    let mut out = Vec::new();
+    for part in raw.split(';').map(str::trim).filter(|part| !part.is_empty()) {
+        let Some((prefix, rest)) = part.split_once("=>") else {
+            return Err(format!(
+                "这条反代看不懂（要 /path/ => host:port）：{part}"
+            ));
+        };
+        let prefix = valid_proxy_prefix(prefix)?;
+        let mut tokens = rest.split_whitespace();
+        let upstream = tokens
+            .next()
+            .ok_or_else(|| format!("反代「{part}」缺少上游"))?;
+        let upstream = normalize_upstream(upstream)?;
+        let mut strip_prefix = false;
+        for token in tokens {
+            if token.eq_ignore_ascii_case("strip") {
+                strip_prefix = true;
+            } else {
+                return Err(format!("反代「{part}」里多了一个看不懂的词：{token}"));
+            }
+        }
+        out.push(ProxyRule {
+            prefix,
+            upstream,
+            strip_prefix,
+        });
+    }
+    Ok(out)
+}
+
 /// 从 `/etc/resolv.conf` 取第一个 `nameserver`（nginx 的 `resolver` 要用它）。
 pub fn first_nameserver(resolv_conf: &str) -> Option<String> {
     for line in resolv_conf.lines() {
@@ -3032,5 +3093,73 @@ mod tests {
             common_user_network(&left, &right).as_deref(),
             Some("app-net")
         );
+    }
+
+    #[test]
+    fn server_names_are_validated_and_empty_means_localhost() {
+        assert_eq!(valid_server_name(" example.com ").unwrap(), "example.com");
+        assert_eq!(valid_server_name("").unwrap(), "localhost");
+        assert_eq!(valid_server_name("_").unwrap(), "_");
+        for bad in ["a b", "a;b", "a{b", "a\"b", "a/b"] {
+            assert!(valid_server_name(bad).is_err(), "应当拒绝：{bad}");
+        }
+    }
+
+    #[test]
+    fn proxy_rules_parse_and_format_round_trip() {
+        let text = "/api/ => http://api:8080; /auth/ => https://auth:9000 strip";
+        let rules = parse_proxy_rules(text).unwrap();
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].prefix, "/api/");
+        assert_eq!(rules[0].upstream, "http://api:8080");
+        assert!(!rules[0].strip_prefix);
+        assert_eq!(rules[1].upstream, "https://auth:9000");
+        assert!(rules[1].strip_prefix);
+        let formatted: Vec<String> = rules.iter().map(format_proxy_rule).collect();
+        assert_eq!(parse_proxy_rules(&formatted.join("; ")).unwrap(), rules);
+        // 空串 / 多余分号不算规则
+        assert!(parse_proxy_rules("  ;  ").unwrap().is_empty());
+    }
+
+    #[test]
+    fn proxy_rules_reject_garbage() {
+        for bad in [
+            "api",
+            "/api => http://api:8080",
+            "/api/ => http://api",
+            "/api/ => http://a:1; wat",
+            "/api/ => http://a:1 strip wat",
+        ] {
+            assert!(parse_proxy_rules(bad).is_err(), "应当拒绝：{bad}");
+        }
+    }
+
+    #[test]
+    fn site_conf_emits_one_location_per_rule() {
+        let rules = vec![
+            ProxyRule {
+                prefix: "/api/".to_owned(),
+                upstream: "http://api:8080".to_owned(),
+                strip_prefix: false,
+            },
+            ProxyRule {
+                prefix: "/auth/".to_owned(),
+                upstream: "http://auth:9000".to_owned(),
+                strip_prefix: true,
+            },
+        ];
+        let mut site = site(rules);
+        site.spa = false;
+        let text = site_conf(
+            "site",
+            &site,
+            "/data/www/site",
+            8080,
+            Some("127.0.0.11"),
+        );
+        assert_eq!(text.matches("    location ").count(), 2, "{text}");
+        assert!(text.contains("location /api/ {"), "{text}");
+        assert!(text.contains("location ~ ^/auth/(.*)$ {"), "{text}");
+        assert!(text.contains("$wslc_upstream_2"), "{text}");
     }
 }

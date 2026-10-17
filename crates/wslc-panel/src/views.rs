@@ -3776,6 +3776,13 @@ pub fn deploy_dialog_overlay(
                                 })
                         })
                         .child(form_field(
+                            "deploy-server-name",
+                            "server_name（域名 / localhost）",
+                            &form.server_name,
+                            cx,
+                            true,
+                        ))
+                        .child(form_field(
                             "deploy-proxy-prefix",
                             "反代路径前缀（可选）",
                             &form.proxy_prefix,
@@ -3801,10 +3808,27 @@ pub fn deploy_dialog_overlay(
                                     });
                                 })
                         })
+                        .child(form_field(
+                            "deploy-proxy-more",
+                            "更多反代（; 分隔：/auth/ => http://auth:9000 [strip]）",
+                            &form.proxy_more,
+                            cx,
+                            true,
+                        ))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::text_dim())
+                                .child(crate::util::strip_md(
+                                    "第一条规则用上面两格；更多规则用 `;` 分隔，例如 \
+                                     `/auth/ => http://auth:9000; /ws/ => http://ws:9001 strip`。\
+                                     同一个前缀只能出现一次（nginx 会报 duplicate location）。",
+                                )),
+                        )
                         .child({
                             let entity = entity.clone();
                             Checkbox::new("deploy-auto-connect")
-                                .label("自动把两个容器接到同一个用户网络")
+                                .label("自动接通上游容器的用户网络")
                                 .checked(form.auto_connect)
                                 .on_change(move |checked: &bool, _, cx| {
                                     let enabled = *checked;
@@ -3818,7 +3842,7 @@ pub fn deploy_dialog_overlay(
                                 .text_xs()
                                 .text_color(theme::text_dim())
                                 .child(crate::util::strip_md(
-                                    "上游是另一个容器时，面板会先找两个容器的**共同用户网络**；\
+                                    "上游是另一个容器时，面板会**逐个**找共同用户网络；\
                                      没有就创建/接到 `wslc-panel`（勾选「自动接通」时）。\
                                      取消勾选就只能手动 `wslc network connect <网络> <容器>`。\
                                      默认 bridge 解析不了名字（实测 `getent` rc=2）。\

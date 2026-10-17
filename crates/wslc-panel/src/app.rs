@@ -15,6 +15,7 @@
 //! 这是整个项目里**唯一**接触 GPUI 异步 API 的地方，
 //! 因此如果上游 API 有变动，只需要改这一个文件。
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -629,12 +630,16 @@ pub(crate) struct DeployForm {
     pub(crate) site_enabled: bool,
     /// 单页应用回退。
     pub(crate) site_spa: bool,
+    /// `server_name`（域名 / localhost）。
+    pub(crate) server_name: Entity<InputState>,
     /// 反代路径前缀（`/api/`）。
     pub(crate) proxy_prefix: Entity<InputState>,
     /// 反代上游（`http://api:8080`）。
     pub(crate) proxy_upstream: Entity<InputState>,
     /// 反代时去掉前缀。
     pub(crate) proxy_strip: bool,
+    /// 更多反代（`/auth/ => http://auth:9000; ...`）。
+    pub(crate) proxy_more: Entity<InputState>,
     /// 上游是另一个容器时，自动把两个容器接到同一个用户网络。
     pub(crate) auto_connect: bool,
 }
@@ -978,6 +983,10 @@ enum DeployField {
     ProxyPrefix,
     /// 反代上游。
     ProxyUpstream,
+    /// `server_name`。
+    ServerName,
+    /// 更多反代（`;` 分隔）。
+    ProxyMore,
 }
 
 /// 从「添加部署」弹窗里读出来的值。
@@ -997,12 +1006,16 @@ struct DeployFormValues {
     site_enabled: bool,
     /// 单页应用回退。
     site_spa: bool,
+    /// `server_name`。
+    server_name: String,
     /// 反代路径前缀。
     proxy_prefix: String,
     /// 反代上游。
     proxy_upstream: String,
     /// 反代去掉前缀。
     proxy_strip: bool,
+    /// 更多反代（`;` 分隔）。
+    proxy_more: String,
     /// 自动接通两个容器的网络。
     auto_connect: bool,
 }
@@ -4258,6 +4271,23 @@ impl Shell {
             .map(|rule| rule.upstream.clone())
             .unwrap_or_default();
         let proxy_strip = first_proxy.is_some_and(|rule| rule.strip_prefix);
+        let server_name_value = record_site
+            .as_ref()
+            .map(|site| site.server_name.clone())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "localhost".to_owned());
+        // 第一条进上面两格；其余塞进「更多反代」一格（预填成它能解析的写法）。
+        let proxy_more_value = record_site
+            .as_ref()
+            .map(|site| {
+                site.proxies
+                    .iter()
+                    .skip(1)
+                    .map(deploy_model::format_proxy_rule)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .unwrap_or_default();
 
         // `InputState::new` 要 `&mut Window` → 只能在这里（有 window）建。
         let app = cx.new(|cx| InputState::new(window, cx).placeholder("site"));
@@ -4273,8 +4303,13 @@ impl Shell {
         let target = cx.new(|cx| InputState::new(window, cx).placeholder("/opt/site"));
         let command = cx.new(|cx| InputState::new(window, cx).placeholder("java -jar app.jar"));
         let port = cx.new(|cx| InputState::new(window, cx).placeholder("8080"));
+        let server_name = cx.new(|cx| InputState::new(window, cx).placeholder("localhost"));
         let proxy_prefix = cx.new(|cx| InputState::new(window, cx).placeholder("/api/"));
         let proxy_upstream = cx.new(|cx| InputState::new(window, cx).placeholder("http://api:8080"));
+        let proxy_more = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("/auth/ => http://auth:9000; /ws/ => http://ws:9001 strip")
+        });
 
         app.update(cx, |state, cx| {
             state.set_value(app_value, window, cx);
@@ -4291,11 +4326,17 @@ impl Shell {
         port.update(cx, |state, cx| {
             state.set_value(port_value, window, cx);
         });
+        server_name.update(cx, |state, cx| {
+            state.set_value(server_name_value, window, cx);
+        });
         proxy_prefix.update(cx, |state, cx| {
             state.set_value(proxy_prefix_value, window, cx);
         });
         proxy_upstream.update(cx, |state, cx| {
             state.set_value(proxy_upstream_value, window, cx);
+        });
+        proxy_more.update(cx, |state, cx| {
+            state.set_value(proxy_more_value, window, cx);
         });
 
         // 焦点给**来源**那一格：新增时最可能要做的事就是点「浏览…」，
@@ -4312,9 +4353,11 @@ impl Shell {
             port,
             site_enabled,
             site_spa,
+            server_name,
             proxy_prefix,
             proxy_upstream,
             proxy_strip,
+            proxy_more,
             auto_connect: true,
         });
         cx.notify();
@@ -4452,6 +4495,8 @@ impl Shell {
             DeployField::Port => &form.port,
             DeployField::ProxyPrefix => &form.proxy_prefix,
             DeployField::ProxyUpstream => &form.proxy_upstream,
+            DeployField::ServerName => &form.server_name,
+            DeployField::ProxyMore => &form.proxy_more,
         };
         let handle = input.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
@@ -4471,9 +4516,11 @@ impl Shell {
             port: form.port.read(cx).value().trim().parse::<u16>().ok(),
             site_enabled: form.site_enabled,
             site_spa: form.site_spa,
+            server_name: form.server_name.read(cx).value().trim().to_owned(),
             proxy_prefix: form.proxy_prefix.read(cx).value().trim().to_owned(),
             proxy_upstream: form.proxy_upstream.read(cx).value().trim().to_owned(),
             proxy_strip: form.proxy_strip,
+            proxy_more: form.proxy_more.read(cx).value().trim().to_owned(),
             auto_connect: form.auto_connect,
         })
     }
@@ -4670,6 +4717,15 @@ impl Shell {
         // `apply_site`（见 `cmd::deploy`）。上游规范化在提交前做，免得文件都
         // 铺完了才告诉用户"上游写错了"。
         let site: Option<DeploySite> = if runtime == AppRuntime::Nginx && values.site_enabled {
+            let server_name = match deploy_model::valid_server_name(&values.server_name) {
+                Ok(name) => name,
+                Err(message) => {
+                    self.state.notify(Toast::error(message));
+                    self.focus_deploy_field(DeployField::ServerName, window, cx);
+                    cx.notify();
+                    return;
+                }
+            };
             let prefix = values.proxy_prefix.trim();
             let upstream = values.proxy_upstream.trim();
             let mut proxies = Vec::new();
@@ -4698,8 +4754,30 @@ impl Shell {
                     strip_prefix: values.proxy_strip,
                 });
             }
+            let extra = match deploy_model::parse_proxy_rules(&values.proxy_more) {
+                Ok(rules) => rules,
+                Err(message) => {
+                    self.state.notify(Toast::error(message));
+                    self.focus_deploy_field(DeployField::ProxyMore, window, cx);
+                    cx.notify();
+                    return;
+                }
+            };
+            proxies.extend(extra);
+            let mut seen = BTreeSet::new();
+            for rule in &proxies {
+                if !seen.insert(rule.prefix.clone()) {
+                    self.state.notify(Toast::error(format!(
+                        "反代前缀 {} 重复了 —— 同一个前缀只能有一条规则",
+                        rule.prefix
+                    )));
+                    self.focus_deploy_field(DeployField::ProxyMore, window, cx);
+                    cx.notify();
+                    return;
+                }
+            }
             Some(DeploySite {
-                server_name: "localhost".to_owned(),
+                server_name,
                 spa: values.site_spa,
                 proxies,
                 conf: deploy_model::conf_path(&values.app),
@@ -4983,62 +5061,81 @@ impl Shell {
                                 // 同一个用户网络 —— 默认 bridge 解析不了名字
                                 // （实测 `getent` rc=2），否则 conf 写得再对也是 502。
                                 if auto_connect {
-                                    if let Some(rule) = desired.proxies.first() {
-                                        let host = deploy_model::upstream_host(&rule.upstream);
-                                        let is_ip = host.parse::<std::net::IpAddr>().is_ok();
-                                        if host != container.as_str()
-                                            && host != "localhost"
-                                            && !is_ip
-                                        {
-                                            let left = if container_networks.is_empty() {
-                                                inspect_container(&wslc, &container, false)
-                                                    .ok()
-                                                    .map(|inspect| {
-                                                        inspect
-                                                            .networks()
-                                                            .into_iter()
-                                                            .map(|(name, _, _, _)| name)
-                                                            .collect::<Vec<_>>()
-                                                    })
-                                                    .unwrap_or_default()
-                                            } else {
-                                                container_networks.clone()
-                                            };
-                                            // 找不到同名容器 → 按"外部主机"处理，
-                                            // 不吓用户（上游可能是外部域名）。
-                                            if let Ok(peer) =
-                                                inspect_container(&wslc, host, false)
-                                            {
-                                                let peer_networks: Vec<String> = peer
+                                    let mut left = if container_networks.is_empty() {
+                                        inspect_container(&wslc, &container, false)
+                                            .ok()
+                                            .map(|inspect| {
+                                                inspect
                                                     .networks()
                                                     .into_iter()
                                                     .map(|(name, _, _, _)| name)
-                                                    .collect();
-                                                match network_cmd::ensure_shared_network(
-                                                    &wslc,
-                                                    &container,
-                                                    &left,
-                                                    host,
-                                                    &peer_networks,
-                                                ) {
-                                                    Ok(network) => {
-                                                        step.note = Some(format!(
-                                                            "已确认 {container} 和 {host} 在同一个网络 {network}"
-                                                        ));
-                                                    }
-                                                    Err(error) => {
-                                                        // ⚠️ 只**警告**、不阻断：conf 本身
-                                                        // 有效，网络没接上只是 502；阻断的话
-                                                        // 用户连"先部署、后接网络"都做不到。
-                                                        step.warning = Some(format!(
-                                                            "自动接通网络失败：{error} — 反代可能 502；\
-                                                             手动 `wslc network connect {} {host}`",
-                                                            deploy_model::PANEL_NETWORK
-                                                        ));
-                                                    }
+                                                    .collect::<Vec<_>>()
+                                            })
+                                            .unwrap_or_default()
+                                    } else {
+                                        container_networks.clone()
+                                    };
+                                    let mut seen_hosts: Vec<String> = Vec::new();
+                                    let mut notes: Vec<String> = Vec::new();
+                                    let mut warnings: Vec<String> = Vec::new();
+                                    for rule in &desired.proxies {
+                                        let host =
+                                            deploy_model::upstream_host(&rule.upstream);
+                                        let is_ip = host.parse::<std::net::IpAddr>().is_ok();
+                                        if host == container.as_str()
+                                            || host == "localhost"
+                                            || is_ip
+                                            || seen_hosts.iter().any(|item| item.as_str() == host)
+                                        {
+                                            continue;
+                                        }
+                                        seen_hosts.push(host.to_owned());
+                                        // 找不到同名容器 → 按"外部主机"处理，
+                                        // 不吓用户（上游可能是外部域名）。
+                                        let Ok(peer) = inspect_container(&wslc, host, false) else {
+                                            continue;
+                                        };
+                                        let peer_networks: Vec<String> = peer
+                                            .networks()
+                                            .into_iter()
+                                            .map(|(name, _, _, _)| name)
+                                            .collect();
+                                        match network_cmd::ensure_shared_network(
+                                            &wslc,
+                                            &container,
+                                            &left,
+                                            host,
+                                            &peer_networks,
+                                        ) {
+                                            Ok(network) => {
+                                                // ⚠️ 接上之后要更新 `left`：下一条规则
+                                                // 再 ensure 时如果 `left` 还是旧的，会
+                                                // 对同一个网络重复 `connect`，第二个
+                                                // peer 就会报"already connected"。
+                                                if !left.iter().any(|item| item == &network) {
+                                                    left.push(network.clone());
                                                 }
+                                                notes.push(format!(
+                                                    "已确认 {container} 和 {host} 在同一个网络 {network}"
+                                                ));
+                                            }
+                                            Err(error) => {
+                                                // 只警告、不阻断：conf 本身有效，网络没接上
+                                                // 只是 502；阻断的话用户连"先部署、后接网络"
+                                                // 都做不到。
+                                                warnings.push(format!(
+                                                    "自动接通 {host} 的网络失败：{error} — 反代可能 502；\
+                                                     手动 `wslc network connect {} {host}`",
+                                                    deploy_model::PANEL_NETWORK
+                                                ));
                                             }
                                         }
+                                    }
+                                    if !notes.is_empty() {
+                                        step.note = Some(notes.join("；"));
+                                    }
+                                    if !warnings.is_empty() {
+                                        step.warning = Some(warnings.join("；"));
                                     }
                                 }
                                 let resolv = deploy_cmd::read_resolv_conf(&wslc, &container)
