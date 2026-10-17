@@ -19,10 +19,11 @@
 > `DeployPhase::Configuring`；「重载 nginx」过滤 `conflicting server name`；
 > **站点反代的网络预检**：上游是容器名时找共同用户网络，没有就建/接
 > `wslc-panel`（只接缺的一边），找不到同名容器按外部主机处理，失败只警告；
-> 界面「自动接通」默认开。
+> 界面「自动接通」默认开；**只读配置浮层**：站点开的行有「站点配置」按钮，
+> 读容器里的 conf（等宽、可滚、不 strip / 不重排）。
 >
-> **未落地**：只读配置浮层、端口列 URL、多规则 / 负载均衡 / HTTPS /
-> 自定义 `server_name`。
+> **未落地**：端口列 URL、多规则 / 负载均衡 / HTTPS / 自定义 `server_name`、
+> 容器重建后自动补写 conf（现在要重新部署才会重写）。
 >
 > **真实 nginx 验证**（`docker.1panel.live/library/nginx:latest`）：一个容器
 > 两个 `server` 块（8080/8081）各带自己的 `resolver`，`nginx -t` 通过；

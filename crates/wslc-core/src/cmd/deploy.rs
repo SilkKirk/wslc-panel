@@ -570,6 +570,8 @@ pub fn read_site_conf(
     app: &str,
     site: Option<&DeploySite>,
 ) -> Result<String> {
+    // ⚠️ 只读：这里**不**校验首行标记 —— 文件可能刚被用户手改过，
+    // 让他看到"现在实际是什么"比拒绝读更有用；写 / 删那两条才校验。
     let path = site
         .map(|site| site.conf.trim())
         .filter(|path| !path.is_empty())
