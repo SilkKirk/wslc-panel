@@ -8,6 +8,25 @@
 > 另外 nginx 的默认目标目录改成 `<web_root>/<app>`（本文写的是单应用时的 Web 根）。
 > 下面保留原文是为了记录当时的取舍，不要照抄这三处。
 
+> **实施进度（2026-10-17，PR #76，栈在 #75 上）**
+>
+> **已落地**：`DeploySite` / `ProxyRule` + 记录 `site`；`conf_path` /
+> `site_conf` / `normalize_upstream` / `valid_proxy_prefix` /
+> `first_nameserver` / `filter_nginx_noise`（带单测）；`apply_site`
+> （标记检查 → 备份 → 写 → `nginx -t` → 回滚 / reload）/ `remove_site` /
+> `read_resolv_conf`；部署弹窗的站点区（SPA + **一条**反代 + 去前缀）；
+> `record_binds_port` 改成「nginx 站点开才算 bind」；删除部署连 conf 一起删；
+> `DeployPhase::Configuring`；「重载 nginx」过滤 `conflicting server name`。
+>
+> **未落地**：网络预检 / 一键 `wslc network connect`（界面只写了手工命令；
+> 默认 bridge 解析不了名字）、只读配置浮层、端口列 URL、多规则 / 负载均衡 /
+> HTTPS / 自定义 `server_name`。
+>
+> **真实 nginx 验证**（`docker.1panel.live/library/nginx:latest`）：一个容器
+> 两个 `server` 块（8080/8081）各带自己的 `resolver`，`nginx -t` 通过；
+> SPA 的 `/foo` 回退到 `index.html`，A/B 内容各自正确；`/api/x` 在 `api`
+> 未解析时是 **502**（不是 500，也不是配置校验失败）。
+
 > **触发问题**：「nginx 的部署管理是不是有点问题？nginx 部署的前端怎么反代到后端？」
 >
 > **结论：不是操作错了，是功能缺一层。** 现在的「部署管理」对 nginx 只做一件事：
