@@ -16,6 +16,18 @@ pub fn human_secs(secs: u64) -> String {
     }
 }
 
+/// 页头那句「最后刷新：N 秒前」。
+///
+/// 0 / 1 秒都写「刚刚」：自动刷新默认 3 秒，刚刷完就显示「1 秒前」
+/// 会让人以为数据是旧的。其余复用 [`human_secs`] 再加「前」。
+pub fn refresh_age_label(secs: u64) -> String {
+    if secs < 2 {
+        "刚刚".to_owned()
+    } else {
+        format!("{}前", human_secs(secs))
+    }
+}
+
 /// 容器端口的一行摘要。
 ///
 /// 有宿主端口就写 `宿主:容器`；只声明了容器端口时退回 `容器/协议`。
@@ -385,5 +397,15 @@ mod tests {
         assert_eq!(load_level(f64::NAN), LoadLevel::Low);
         // 负数（理论上不会出现）同样按轻载处理，不进警告区
         assert_eq!(load_level(-1.0), LoadLevel::Low);
+    }
+
+    #[test]
+    fn refresh_age_label_says_just_now_for_the_first_two_seconds() {
+        assert_eq!(super::refresh_age_label(0), "刚刚");
+        assert_eq!(super::refresh_age_label(1), "刚刚");
+        assert_eq!(super::refresh_age_label(2), "2 秒前");
+        assert_eq!(super::refresh_age_label(59), "59 秒前");
+        assert_eq!(super::refresh_age_label(60), "1 分 00 秒前");
+        assert_eq!(super::refresh_age_label(3661), "1 时 01 分前");
     }
 }

@@ -47,6 +47,7 @@ use wslc_core::model::mysql as mysql_model;
 use wslc_core::model::deploy as deploy_model;
 use wslc_core::model::{
     ContainerListItem, ContainerState, ContainerSummary, DbUser, Distro, DistroState, GrantKind,
+    ImageListItem, VolumeListItem,
 };
 // 镜像仓库（Registry V2）的纯逻辑：常用镜像清单、引用/主机名校验、体积累加。
 use wslc_core::registry;
@@ -71,6 +72,8 @@ use crate::columns::{
     ALL_COLUMNS, BACKUP_COLUMNS, DB_COLUMNS, DB_USER_COLUMNS, DEPLOY_COLUMNS, DISTRO_COLUMNS,
     IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS,
 };
+// 容器列表的筛选 / 排序状态与纯逻辑（在 `wslc-panel-core`，带单测）。
+use crate::listview::{ContainerScope, ContainerSort, ContainerView};
 use crate::presets::presets_for;
 use crate::state::{
     AppState, DashboardStats, DbFailure, DbState, DbTab, DeployEntry, DeployLogs, DeploySiteConf,
@@ -549,7 +552,8 @@ pub fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
         // 这几个直接返回 `AnyElement`，不再多套一层转换。
         Page::Instances => instances(state, entity),
         Page::AddInstance => add_instance(shell, cx, entity),
-        Page::Containers => containers(state, entity).into_any_element(),
+        // 「容器」页要读搜索框（`InputState`）并触发筛选，所以收 `&Shell` + `&App`。
+        Page::Containers => containers(shell, cx, entity).into_any_element(),
         // 「镜像」页只要 `&AppState`：v0.6.3 起拉取表单在弹窗里（那个要 `&Shell`，
         // 见 `pull_dialog_overlay`），页面本身只剩一个按钮和一张表。
         Page::Images => images(state, entity).into_any_element(),
@@ -562,7 +566,6 @@ pub fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
         // 住在 `Shell` 里（页面本身没有输入框）。
         Page::Deploy => deploy_page(shell, cx, entity),
         Page::AppSettings => app_settings(shell, entity),
-        Page::About => about(state, entity),
     }
 }
 
@@ -600,7 +603,7 @@ pub fn dashboard(state: &AppState) -> impl IntoElement {
         .w_full()
         .gap_4()
         .child(environment_card(state))
-        .child(status_card(&stats))
+        .child(status_card(state, &stats))
         .child(overview_tiles(state))
 }
 
@@ -767,7 +770,7 @@ fn gauge_big(percent: Option<f64>) -> String {
 ///
 /// 顺序：CPU → 内存 → 容器 → 存储。前三只都是"容器这一摊"的（CPU / 内存 / 数量），
 /// 存储单独摆在最后 —— 实机反馈就是把存储和容器调了个个儿。
-fn status_card(stats: &DashboardStats) -> AnyElement {
+fn status_card(state: &AppState, stats: &DashboardStats) -> AnyElement {
     let cpu_percent = stats.cpu_whole_machine_percent();
     let mem_percent = stats.mem_percent();
     let disk_percent = stats.vhd_percent_of_disk();
@@ -820,21 +823,55 @@ fn status_card(stats: &DashboardStats) -> AnyElement {
 
     // 底部那句总口径。**刻意写在这里而不是每一环里**：四条小字已经
     // 各说各的数字了，再各自加一句"这是什么"会把环淹掉。
-    let cores_note = match stats.cpu_cores {
-        Some(cores) => format!("CPU 合计 ÷ {cores} 核"),
-        None => "CPU 是各容器之和（未折算）".to_owned(),
+    // v0.9.22 把原来那三行压成一句，腾出的位置给下面的「会话存储」——
+    // 那一条回答的是"这些数字对应哪个文件、盘还剩多少"，比重复口径有用。
+    let note = "口径：只算容器；CPU 按核数折算；存储是会话 VHD 占所在盘的比例。";
+
+    let storage_line: AnyElement = match state.snapshot.storage.as_ref() {
+        None => div()
+            .w_full()
+            .text_xs()
+            .text_color(theme::text_dim())
+            .child("会话存储：拿不到（LOCALAPPDATA / storagePath 未设置？）")
+            .into_any_element(),
+        Some(storage) => {
+            let path = storage
+                .vhd
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| storage.sessions_dir.display().to_string());
+            let free = storage
+                .volume
+                .map(|volume| format_bytes(volume.free))
+                .unwrap_or_else(|| "—".to_owned());
+            let mut extra = String::new();
+            if storage.has_other_sessions() {
+                // `sessions_count` 数的是"找到几个 storage.vhdx"；当前会话的
+                // VHD 还没建出来时（`vhd_bytes == None`），找到的全都是"其它"。
+                let others = if storage.vhd_bytes.is_some() {
+                    storage.sessions_count.saturating_sub(1)
+                } else {
+                    storage.sessions_count
+                };
+                if others > 0 {
+                    extra = format!(
+                        " · 另有 {others} 个会话占 {}",
+                        format_bytes(storage.other_sessions_bytes())
+                    );
+                }
+            }
+            cell_muted_full(
+                "session-storage",
+                format!("会话存储：{path} · 盘剩余 {free}{extra}"),
+            )
+        }
     };
-    let note = crate::util::strip_md(&format!(
-        "口径：只算容器 —— CPU 与内存的分母分别是核数与 WSL 的内存上限（{cores_note}）；\
-         存储是**会话 VHD**（镜像、容器可写层、卷都在它里面）占所在盘总量的比例，\
-         不是整块盘的占用率。"
-    ));
 
     card(
         "状态",
         v_flex()
             .w_full()
-            .gap_4()
+            .gap_3()
             .child(
                 h_flex()
                     .w_full()
@@ -875,6 +912,7 @@ fn status_card(stats: &DashboardStats) -> AnyElement {
                         disk_caption,
                     )),
             )
+            .child(storage_line)
             .child(
                 div()
                     .text_xs()
@@ -932,6 +970,47 @@ fn cell_resources(summary: &ContainerSummary) -> AnyElement {
             )
             .into_any_element(),
     }
+}
+
+/// 「状态」格：状态徽标 + 非健康态徽标 + 一行 `Status`（`Up 2 hours`）。
+///
+/// 为什么第二行是 `Status` 而不是再算一次 uptime：`RunningFor` 实测是
+/// **创建至今**，和 `Status` 里的 `Up 2 hours` 不是一回事（见容器详情里
+/// 「已创建」那一段的说明）。列表里要给用户看的是"它现在怎么样"，
+/// 所以直接用 `wslc` 给的 `Status` 文案，不再自己算。
+///
+/// `healthy` 刻意**不画**：那是默认态，每行都挂一个绿色「健康」只会让
+/// 真正异常的橙/红徽标被淹没。
+fn cell_container_status(summary: &ContainerSummary) -> AnyElement {
+    let item = &summary.item;
+    let health = item.health_status.trim();
+
+    let mut badges: Vec<AnyElement> = vec![cell_badge(item.state_kind())];
+    if !health.is_empty() && !health.eq_ignore_ascii_case("healthy") {
+        let (fg, bg) = if health.eq_ignore_ascii_case("starting") {
+            (theme::warning(), theme::warning_soft())
+        } else {
+            (theme::danger(), theme::danger_soft())
+        };
+        badges.push(badge(health.to_owned(), fg, bg).into_any_element());
+    }
+
+    let status = item.status.trim();
+
+    v_flex()
+        .gap_1()
+        // `flex_wrap`：状态 + 健康两枚徽标在窄列里宁可换行，也别溢出到
+        // 隔壁「资源」列（`table_row` 会裁，但裁掉的是右边那一半）。
+        .child(h_flex().gap_1().flex_wrap().children(badges))
+        .children((!status.is_empty()).then(|| {
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .overflow_hidden()
+                .truncate()
+                .child(status.to_owned())
+        }))
+        .into_any_element()
 }
 
 /// 容器名（蓝色链接，点开看详情）。
@@ -1149,8 +1228,16 @@ fn container_more_menu(item: &ContainerListItem, entity: &Entity<Shell>) -> AnyE
 }
 
 /// 全部容器页（含已退出）。
-pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
+///
+/// # 为什么收 `&Shell` + `&App`
+///
+/// 搜索框是一个 `InputState`（住在 `Shell`），而查询词要**每帧**从它里面读
+/// （`Input` 的 `InputEvent::Change` 会订阅回 `Shell`，触发重绘）。
+/// 过滤/排序本身是纯逻辑，在 `wslc-panel-core::listview` 里带单测。
+pub fn containers(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> impl IntoElement {
+    let state = &shell.state;
     let items = &state.snapshot.all;
+    let view = state.container_view;
 
     // 「在运行的有几个」直接用快照里那份**只列运行中**的清单的长度。
     //
@@ -1163,8 +1250,18 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
     // 直接用它的输出。
     let running = state.snapshot.running.len();
 
-    let rows: Vec<AnyElement> = items
+    // 查询词住在 `InputState` 里；没有输入框（理论上不该发生）时按空串处理。
+    let query = shell
+        .container_search
+        .as_ref()
+        .map(|input| input.read(cx).value().trim().to_owned())
+        .unwrap_or_default();
+    let visible = crate::listview::visible_containers(items, query.trim(), view);
+    let (all_count, running_count, not_running_count) = crate::listview::scope_counts(items);
+
+    let rows: Vec<AnyElement> = visible
         .iter()
+        .copied()
         .map(|summary| {
             table_row(
                 ALL_COLUMNS,
@@ -1176,7 +1273,7 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
                         summary.item.display_name().to_owned(),
                         summary.item.image.clone(),
                     ),
-                    cell_badge(summary.item.state_kind()),
+                    cell_container_status(summary),
                     cell_resources(summary),
                     cell_text(crate::util::ports_summary(summary)),
                     container_row_actions(&summary.item, entity),
@@ -1185,6 +1282,98 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
             .into_any_element()
         })
         .collect();
+
+    let create = {
+        let entity = entity.clone();
+        Button::new("create-container")
+            .label("创建容器")
+            .small()
+            .primary()
+            .on_click(move |_, window, cx| {
+                // `InputState` 只能在有 window 的地方创建，
+                // 所以弹窗是懒创建的。
+                entity.update(cx, |shell, cx| shell.open_create_dialog(window, cx));
+            })
+    };
+
+    let search: Option<AnyElement> = shell.container_search.as_ref().map(|input| {
+        Input::new(input)
+            .id("container-search")
+            .w(px(240.))
+            .into_any_element()
+    });
+
+    let clear = (!query.trim().is_empty()).then(|| {
+        let entity = entity.clone();
+        let input = shell.container_search.clone();
+        Button::new("container-search-clear")
+            .label("清空")
+            .small()
+            .on_click(move |_, window, cx| {
+                if let Some(input) = input.as_ref() {
+                    input.update(cx, |state, cx| state.set_value(String::new(), window, cx));
+                }
+                // `set_value` 会发 `InputEvent::Change`，订阅那边会 notify；
+                // 这里再补一次是兜底：输入框没变（本来就是空）时父级也该重绘。
+                entity.update(cx, |_, cx| cx.notify());
+            })
+            .into_any_element()
+    });
+
+    let chips: Vec<AnyElement> = ContainerScope::ALL
+        .iter()
+        .map(|scope| {
+            let scope = *scope;
+            let count = match scope {
+                ContainerScope::All => all_count,
+                ContainerScope::Running => running_count,
+                ContainerScope::NotRunning => not_running_count,
+            };
+            let shell_entity = entity.clone();
+            let mut button = Button::new(SharedString::from(format!(
+                "container-scope-{scope:?}"
+            )))
+            .label(format!("{} {}", scope.label(), count))
+            .small()
+            .on_click(move |_, _, cx| {
+                shell_entity.update(cx, |shell, cx| {
+                    shell.state.container_view.scope = scope;
+                    cx.notify();
+                });
+            });
+            if view.scope == scope {
+                button = button.primary();
+            }
+            button.into_any_element()
+        })
+        .collect();
+
+    let sort_menu = {
+        let entity = entity.clone();
+        Button::new("container-sort")
+            .label(format!("排序：{}", view.sort.label()))
+            .small()
+            .dropdown_menu(move |mut menu, _window, _cx| {
+                for sort in ContainerSort::ALL {
+                    let shell_entity = entity.clone();
+                    menu = menu.item(PopupMenuItem::new(sort.label()).on_click(
+                        move |_, _, cx| {
+                            shell_entity.update(cx, |shell, cx| {
+                                shell.state.container_view.sort = sort;
+                                cx.notify();
+                            });
+                        },
+                    ));
+                }
+                menu
+            })
+    };
+
+    let count_text = if query.trim().is_empty() && view.scope == ContainerScope::All {
+        format!("共 {all_count} 个容器")
+    } else {
+        format!("显示 {} / 共 {all_count}", visible.len())
+    };
 
     let prune = {
         let entity = entity.clone();
@@ -1223,6 +1412,51 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
             .into_any_element()
     });
 
+    // 筛选后为空：不要显示成"没有任何容器"（那是在说"你机器上没容器"）。
+    let empty: AnyElement = if rows.is_empty() {
+        if all_count == 0 {
+            empty_state("没有任何容器").into_any_element()
+        } else {
+            let entity = entity.clone();
+            let input = shell.container_search.clone();
+            let reset = Button::new("container-filter-clear")
+                .label("清空筛选")
+                .small()
+                .on_click(move |_, window, cx| {
+                    entity.update(cx, |shell, cx| {
+                        shell.state.container_view = ContainerView::default();
+                        cx.notify();
+                    });
+                    if let Some(input) = input.as_ref() {
+                        input.update(cx, |state, cx| {
+                            state.set_value(String::new(), window, cx)
+                        });
+                    }
+                });
+            v_flex()
+                .w_full()
+                .items_center()
+                .gap_2()
+                .p_5()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme::text_muted())
+                        .child("没有匹配的容器"),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child("换个关键词，或点「全部」；也可以清空筛选。"),
+                )
+                .child(reset)
+                .into_any_element()
+        }
+    } else {
+        v_flex().w_full().children(rows).into_any_element()
+    };
+
     v_flex()
         .w_full()
         .gap_3()
@@ -1230,33 +1464,31 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
             h_flex()
                 .w_full()
                 .justify_between()
-                .child({
-                    let entity = entity.clone();
-                    Button::new("create-container")
-                        .label("创建容器")
-                        .small()
-                        .primary()
-                        .on_click(move |_, window, cx| {
-                            // `InputState` 只能在有 window 的地方创建，
-                            // 所以弹窗是懒创建的。
-                            entity.update(cx, |shell, cx| shell.open_create_dialog(window, cx));
-                        })
-                })
+                .items_center()
+                .gap_3()
                 .child(
                     h_flex()
                         .gap_2()
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(theme::text_muted())
-                                .child(format!(
-                                    "共 {} 个容器，{} 个在运行",
-                                    items.len(),
-                                    running
-                                )),
-                        )
-                        .children(stop_all)
-                        .child(prune),
+                        .items_center()
+                        .child(create)
+                        .children(search)
+                        .children(clear),
+                )
+                .child(h_flex().gap_2().items_center().children(stop_all).child(prune)),
+        )
+        .child(
+            h_flex()
+                .w_full()
+                .gap_2()
+                .items_center()
+                .flex_wrap()
+                .children(chips)
+                .child(sort_menu)
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme::text_muted())
+                        .child(count_text),
                 ),
         )
         .child(
@@ -1268,11 +1500,7 @@ pub fn containers(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement 
                 .border_color(theme::border())
                 .overflow_hidden()
                 .child(table_header(ALL_COLUMNS))
-                .child(if rows.is_empty() {
-                    empty_state("没有任何容器").into_any_element()
-                } else {
-                    v_flex().w_full().children(rows).into_any_element()
-                }),
+                .child(empty),
         )
 }
 // ---------------------------------------------------------------------------
@@ -1520,8 +1748,8 @@ fn db_header(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
         Button::new("db-back")
             .label("← 返回容器")
             .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.close_database_page(cx));
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |shell, cx| shell.close_database_page(window, cx));
             })
     };
 
@@ -3025,8 +3253,8 @@ fn deploy_header(deploy: &DeployState, entity: &Entity<Shell>) -> AnyElement {
         Button::new("deploy-back")
             .label("← 返回容器")
             .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.close_deploy_page(cx));
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |shell, cx| shell.close_deploy_page(window, cx));
             })
     };
 
@@ -4234,15 +4462,16 @@ pub fn deploy_remove_confirm_overlay(
 
 /// 镜像页（v0.6.2 合并成一页，v0.6.3 把拉取表单收进弹窗）。
 ///
-/// 页面现在只剩两样东西：一个「拉取镜像…」按钮 + **本地镜像**表。
+/// 页面只有两样东西：一个「拉取镜像…」按钮 + **本地镜像**表。
 /// 拉取表单（registry / 仓库名 / tag 下拉框 / 体积 / 拉取）在弹窗里，
 /// 见 [`pull_dialog_overlay`] —— 它和这里**是同一个入口**：点这个按钮才会
 /// 建表单、才可能拉取（`AGENTS.md` §5「同一个动作只给一个入口」）。
 ///
-/// # 为什么表单不铺在页面上（v0.6.3 改回来）
+/// # 行内为什么只留「更多」（v0.9.22）
 ///
-/// v0.6.2 合并两页时把表单铺在了页面上，结果这一页被表单占满，
-/// 而"本地有什么镜像"反倒成了次要内容 —— 后者才是经常要看的。
+/// 删除是低频危险动作；「用这个镜像创建容器」是"从这一行顺手做"的第二入口。
+/// 两个都进菜单，操作列在窄窗下才放得下 —— 也顺手把整页的红色按钮
+/// 收干净了（原先每一行一个红色「删除」）。
 pub fn images(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     let rows: Vec<AnyElement> = state
         .snapshot
@@ -4255,16 +4484,10 @@ pub fn images(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                 IMAGE_COLUMNS,
                 vec![
                     cell_text_full(reference.clone(), reference.clone()),
-                    cell_muted(img.short_id().to_owned()),
                     cell_muted(img.size.clone()),
+                    image_usage_cell(img),
                     cell_muted(img.created_since.clone()),
-                    danger_button(
-                        &format!("rmi-{ix}"),
-                        "删除",
-                        PendingAction::RemoveImage(reference),
-                        entity,
-                    )
-                    .into_any_element(),
+                    image_row_actions(ix, &reference, entity),
                 ],
             )
             .into_any_element()
@@ -4289,12 +4512,23 @@ pub fn images(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
 
     // 拉取中时这一行说明"在忙什么"：进度本身在弹窗里（而且那个弹窗关不掉），
     // 这一行只是让页面本身也看得出它在忙。
+    //
+    // 没在拉取时顺带报"记录数 / 不同镜像数 / 合计体积"—— 同一 ID 的多条引用
+    // 只算一次，否则体积会翻倍（见 `Snapshot::image_totals`）。
     let status = match &state.pulling {
         Some(progress) => format!("正在拉取 {} …", progress.image),
-        None => format!(
-            "共 {} 条镜像记录（同一镜像可能对应多个仓库引用）",
-            state.snapshot.images.len()
-        ),
+        None => {
+            let (distinct, total) = state.snapshot.image_totals();
+            let total_part = (total > 0)
+                .then(|| format!(" · 合计 {}", format_bytes(total)))
+                .unwrap_or_default();
+            format!(
+                "共 {} 条记录（{} 个镜像）{}",
+                state.snapshot.images.len(),
+                distinct,
+                total_part
+            )
+        }
     };
 
     v_flex()
@@ -4323,6 +4557,61 @@ pub fn images(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                     v_flex().w_full().children(rows).into_any_element()
                 }),
         )
+        .into_any_element()
+}
+
+/// 镜像「使用中」格。
+///
+/// `Containers` 字段缺失（空串）时显示 `—`，**不能**显示「未使用」——
+/// "读不到"和"确实是 0"是两件事，后者才允许说这个镜像没被用。
+fn image_usage_cell(image: &ImageListItem) -> AnyElement {
+    if image.containers.trim().is_empty() {
+        return cell_muted("—");
+    }
+    match image.container_count() {
+        0 => div()
+            .text_sm()
+            .text_color(theme::text_muted())
+            .child("未使用")
+            .into_any_element(),
+        count => cell_text(format!("{count} 个容器")),
+    }
+}
+
+/// 镜像行末的「更多」：创建容器 / 删除。
+///
+/// 创建容器走现成的 [`Shell::use_pulled_image`]（它会关掉拉取弹窗、
+/// 按镜像引用预填创建表单）。删除仍然要二次确认，颜色由确认框承担。
+fn image_row_actions(ix: usize, reference: &str, entity: &Entity<Shell>) -> AnyElement {
+    let create_ref = reference.to_owned();
+    let remove_ref = reference.to_owned();
+    let entity = entity.clone();
+
+    Button::new(SharedString::from(format!("more-image-{ix}")))
+        .label("更多")
+        .small()
+        .dropdown_menu(move |mut menu, _window, _cx| {
+            let shell_entity = entity.clone();
+            let image = create_ref.clone();
+            menu = menu.item(
+                PopupMenuItem::new("用这个镜像创建容器").on_click(move |_, window, cx| {
+                    let image = image.clone();
+                    shell_entity.update(cx, |shell, cx| {
+                        shell.use_pulled_image(image, window, cx)
+                    });
+                }),
+            );
+
+            let shell_entity = entity.clone();
+            let image = remove_ref.clone();
+            menu.item(PopupMenuItem::separator())
+                .item(PopupMenuItem::new("删除").on_click(move |_, _, cx| {
+                    let image = image.clone();
+                    shell_entity.update(cx, |shell, cx| {
+                        shell.request(PendingAction::RemoveImage(image), cx)
+                    });
+                }))
+        })
         .into_any_element()
 }
 
@@ -4688,33 +4977,21 @@ pub fn networks(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
         .enumerate()
         .map(|(ix, net)| {
             let op: AnyElement = if net.is_builtin() {
-                div()
-                    .text_xs()
-                    .text_color(theme::text_dim())
-                    .child("内置网络，不可删除")
-                    .into_any_element()
+                // 10 个汉字在 880px 的窄列里会被裁；用「截断 + tooltip 全文」
+                // 而不是让 `overflow_hidden` 直接切掉半句话。
+                cell_muted_full(format!("net-{ix}"), "内置网络，不可删除")
             } else {
-                danger_button(
-                    &format!("rmnet-{ix}"),
-                    "删除",
-                    PendingAction::RemoveNetwork(net.name.clone()),
-                    entity,
-                )
-                .into_any_element()
+                network_row_actions(ix, &net.name, entity)
             };
 
             table_row(
                 NETWORK_COLUMNS,
                 vec![
                     cell_text(net.name.clone()),
-                    cell_muted(net.short_id().to_owned()),
                     cell_muted(net.driver.clone()),
-                    cell_muted(net.scope.clone()),
-                    cell_muted(if net.ipv6_enabled() {
-                        "启用"
-                    } else {
-                        "关闭"
-                    }),
+                    cell_muted(if net.ipv4_enabled() { "启用" } else { "关闭" }),
+                    cell_muted(if net.ipv6_enabled() { "启用" } else { "关闭" }),
+                    cell_muted(if net.is_internal() { "是" } else { "否" }),
                     op,
                 ],
             )
@@ -4748,6 +5025,26 @@ pub fn networks(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
         )
 }
 
+/// 网络行末的「更多」：删除（内置网络不画这个按钮）。
+fn network_row_actions(ix: usize, name: &str, entity: &Entity<Shell>) -> AnyElement {
+    let name = name.to_owned();
+    let entity = entity.clone();
+    Button::new(SharedString::from(format!("more-network-{ix}")))
+        .label("更多")
+        .small()
+        .dropdown_menu(move |menu, _window, _cx| {
+            let shell_entity = entity.clone();
+            let target = name.clone();
+            menu.item(PopupMenuItem::new("删除").on_click(move |_, _, cx| {
+                let target = target.clone();
+                shell_entity.update(cx, |shell, cx| {
+                    shell.request(PendingAction::RemoveNetwork(target), cx)
+                });
+            }))
+        })
+        .into_any_element()
+}
+
 /// 卷页。
 pub fn volumes(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
     let rows: Vec<AnyElement> = state
@@ -4760,16 +5057,10 @@ pub fn volumes(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                 VOLUME_COLUMNS,
                 vec![
                     cell_text(vol.display_name().to_owned()),
+                    volume_usage_cell(vol),
                     cell_muted(vol.driver.clone()),
-                    cell_muted(vol.scope.clone()),
                     cell_muted_full(vol.name.clone(), vol.mountpoint.clone()),
-                    danger_button(
-                        &format!("rmvol-{ix}"),
-                        "删除",
-                        PendingAction::RemoveVolume(vol.name.clone()),
-                        entity,
-                    )
-                    .into_any_element(),
+                    volume_row_actions(ix, &vol.name, entity),
                 ],
             )
             .into_any_element()
@@ -4828,6 +5119,43 @@ pub fn volumes(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                 v_flex().w_full().children(rows).into_any_element()
             }),
     )
+}
+
+/// 卷「使用中」格。
+///
+/// ⚠️ `InUse` 字段没有实机夹具（采集环境没有卷，见 `volume.rs` 顶部），
+/// 所以 `None` 必须显示 `—`。**不要**拿它决定能不能删 —— 删除/清理
+/// 仍然交给 `wslc` 自己判断。
+fn volume_usage_cell(volume: &VolumeListItem) -> AnyElement {
+    match volume.in_use() {
+        Some(true) => cell_text("使用中"),
+        Some(false) => div()
+            .text_sm()
+            .text_color(theme::text_muted())
+            .child("未使用")
+            .into_any_element(),
+        None => cell_muted("—"),
+    }
+}
+
+/// 卷行末的「更多」：删除。
+fn volume_row_actions(ix: usize, name: &str, entity: &Entity<Shell>) -> AnyElement {
+    let name = name.to_owned();
+    let entity = entity.clone();
+    Button::new(SharedString::from(format!("more-volume-{ix}")))
+        .label("更多")
+        .small()
+        .dropdown_menu(move |menu, _window, _cx| {
+            let shell_entity = entity.clone();
+            let target = name.clone();
+            menu.item(PopupMenuItem::new("删除").on_click(move |_, _, cx| {
+                let target = target.clone();
+                shell_entity.update(cx, |shell, cx| {
+                    shell.request(PendingAction::RemoveVolume(target), cx)
+                });
+            }))
+        })
+        .into_any_element()
 }
 
 // ---------------------------------------------------------------------------
@@ -4891,6 +5219,31 @@ pub fn instances(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
 
     let running = distros.iter().filter(|d| d.state.is_running()).count();
 
+    // 原来这里有一张「实例概览」卡（运行中 / 全部 / 磁盘合计 / 默认发行版），
+    // 和工具栏那行计数、表格本身各说了一遍同样的数字。v0.9.22 把它压成
+    // **一行**：信息一个不少，但不再占一张卡的高度。
+    let known = distros.iter().filter(|d| d.vhdx_bytes.is_some()).count();
+    let total_bytes: u64 = distros.iter().filter_map(|d| d.vhdx_bytes).sum();
+    // 一个都没读到就别写 "0 B"（那是在编一个"总共没占空间"的数）。
+    let total_label = if known == 0 {
+        "—".to_owned()
+    } else {
+        format_bytes(total_bytes)
+    };
+    let mut summary = format!(
+        "共 {} 个发行版 · {} 个在运行 · 磁盘合计 {total_label}（虚拟）",
+        distros.len(),
+        running,
+    );
+    if let Some(default) = state.default_distro() {
+        summary.push_str(&format!(" · 默认 {default}"));
+    }
+    if known != distros.len() {
+        // 读不到大小的那些按 0 算进合计了，必须如实说有几个 ——
+        // 否则用户会以为合计是准的。
+        summary.push_str(&format!(" · {} 个没读到大小", distros.len() - known));
+    }
+
     // 「关停全部」是**页面级**动作（影响所有发行版），所以放工具栏，
     // 不放进任何一行 —— 放行里会让人以为只影响那一行。
     //
@@ -4914,24 +5267,20 @@ pub fn instances(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     v_flex()
         .w_full()
         .gap_3()
-        .child(distro_summary_card(state, distros))
         .child(
             h_flex()
                 .w_full()
                 .justify_between()
-                .child(
-                    h_flex().gap_3().child(add_instance_button(entity)).child(
-                        div()
-                            .text_sm()
-                            .text_color(theme::text_muted())
-                            .child(format!(
-                                "共 {} 个发行版，{} 个在运行",
-                                distros.len(),
-                                running
-                            )),
-                    ),
-                )
+                .items_center()
+                .child(h_flex().gap_3().child(add_instance_button(entity)))
                 .child(shutdown_all),
+        )
+        .child(
+            div()
+                .w_full()
+                .text_sm()
+                .text_color(theme::text_muted())
+                .child(summary),
         )
         .child(
             v_flex()
@@ -4945,63 +5294,6 @@ pub fn instances(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                 .child(v_flex().w_full().children(rows)),
         )
         .into_any_element()
-}
-
-/// 实例概览卡：运行中 / 全部 / 磁盘合计 / 默认发行版。
-fn distro_summary_card(state: &AppState, distros: &[Distro]) -> AnyElement {
-    let running = distros.iter().filter(|d| d.state.is_running()).count();
-
-    // 只把**读到了大小**的那些加起来。读不到的（注册表被挡、磁盘文件不在）
-    // 按 0 算，但要在文案里如实说明有几个 —— 不能让用户以为合计是准的。
-    let known = distros.iter().filter(|d| d.vhdx_bytes.is_some()).count();
-    let total_bytes: u64 = distros.iter().filter_map(|d| d.vhdx_bytes).sum();
-
-    let default = state
-        .default_distro()
-        .map(|name| name.to_owned())
-        .unwrap_or_else(|| "（未设置）".to_owned());
-
-    let disk_note = if known == distros.len() {
-        "磁盘合计是 VHDX 的虚拟大小，不是磁盘实际占用。".to_owned()
-    } else {
-        format!(
-            "磁盘合计是 VHDX 的虚拟大小；{} / {} 个实例没读到大小\
-             （注册表读不到，或磁盘文件不在）。",
-            distros.len() - known,
-            distros.len()
-        )
-    };
-
-    card(
-        "实例概览",
-        v_flex()
-            .w_full()
-            .gap_3()
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap_3()
-                    .child(stat_tile("运行中", running.to_string(), theme::success()))
-                    .child(stat_tile(
-                        "全部",
-                        distros.len().to_string(),
-                        theme::primary(),
-                    ))
-                    .child(stat_tile(
-                        "磁盘合计",
-                        format_bytes(total_bytes),
-                        theme::warning(),
-                    )),
-            )
-            .child(kv("默认发行版", default))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme::text_dim())
-                    .child(disk_note),
-            ),
-    )
-    .into_any_element()
 }
 
 /// 一行实例。
@@ -6119,7 +6411,7 @@ fn install_log_card(
 ///
 /// 这里管的是**本程序自己的偏好**
 /// （`%LOCALAPPDATA%\wslc-panel\prefs.json`），
-/// 和「wlsc 配置」页管的 `wslc` 的 `settings.yaml` 是两回事 ——
+/// 和「wslc 配置」tab 管的 `wslc` 的 `settings.yaml` 是两回事 ——
 /// 分开放是刻意的，见 `prefs.rs` 的模块说明。
 ///
 /// v0.3 只做两项（都是"简单且立刻见效"的）：自动刷新间隔、界面主题。
@@ -6134,6 +6426,7 @@ pub fn app_settings(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         // 内容一行没改，只是不再各占一个侧边栏入口。
         SettingsTab::Advanced => config(state, entity),
         SettingsTab::Wsl => wsl_config(state, entity),
+        SettingsTab::About => settings_about(state, entity),
     };
 
     v_flex()
@@ -6178,8 +6471,10 @@ fn settings_tabs(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
 
 /// 「常规」tab：界面 + 主题 + 终端。
 ///
-/// 「关于」卡片从这里**搬走了** —— 它现在是一个独立的侧边栏页面
-/// （见 [`about`]），因为那一页只有只读信息，混在设置里容易被当成开关。
+/// 主题 / 刷新 / 终端三张卡。
+///
+/// 「关于」以前是一个独立的侧边栏页面；v0.9.22 起它变成这一页的最后一个
+/// tab（见 [`settings_about`]）—— 它只有只读信息，不值得占一个一级入口。
 fn settings_general(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     let state = &shell.state;
     v_flex()
@@ -6191,11 +6486,11 @@ fn settings_general(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         .into_any_element()
 }
 
-/// 「关于」页：应用介绍、版本、构建、地址。
+/// 「应用设置 → 关于」tab：应用介绍、版本、构建、会话、地址。
 ///
-/// 单独一页而不是设置里的一个 tab：这里**没有任何开关**，
-/// 放进设置会让人以为里面能改东西。
-pub fn about(_state: &AppState, _entity: &Entity<Shell>) -> AnyElement {
+/// 它从独立页面收进来（v0.9.22）：这里**没有任何开关**，占一个侧边栏入口
+/// 太贵；放进设置也不会让人误以为能改东西 —— 它已经是最后一个 tab 了。
+pub fn settings_about(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     const LINKS: &[(&str, &str)] = &[
         ("项目主页", "https://github.com/SilkKirk/wslc-panel"),
         ("问题反馈", "https://github.com/SilkKirk/wslc-panel/issues"),
@@ -6213,13 +6508,9 @@ pub fn about(_state: &AppState, _entity: &Entity<Shell>) -> AnyElement {
                 .w_full()
                 .gap_1()
                 .child(div().text_xs().text_color(theme::text_dim()).child(*label))
-                .child(
-                    div()
-                        .font_family("Consolas")
-                        .text_xs()
-                        .text_color(theme::primary())
-                        .child(*url),
-                )
+                // 以前这里是一个纯 `div` —— 地址看得见、点不动。
+                // `cell_link` 是表格里那个"可点 URL"助手：默认浏览器打开 + tooltip。
+                .child(cell_link(*label, *url, *url, entity))
                 .into_any_element()
         })
         .collect();
@@ -6240,6 +6531,9 @@ pub fn about(_state: &AppState, _entity: &Entity<Shell>) -> AnyElement {
                 )
                 .child(kv("版本", env!("CARGO_PKG_VERSION")))
                 .child(kv("构建", crate::short_build_sha()))
+                // 会话名从页头挪过来：报问题时它和构建号一样有用，但不该
+                // 每页都占着页头。
+                .child(kv("会话", state.session_label()))
                 .child(kv("界面库", "gpui-kit 0.7.1（GPUI）"))
                 .child(div().text_xs().text_color(theme::text_dim()).child(
                     "许可证 Apache-2.0。参考项目 owu/wsl-dashboard 是 GPL-3.0-only，\
@@ -7697,6 +7991,17 @@ pub fn container_detail_overlay(
         .filter(|lines| !lines.is_empty())
         .map(|lines| lines.join("\n"));
 
+    let networks_text = if item.networks.trim().is_empty() {
+        "—".to_owned()
+    } else {
+        item.networks.clone()
+    };
+    let size_text = if item.size.trim().is_empty() {
+        "—".to_owned()
+    } else {
+        item.size.clone()
+    };
+
     let mut rows: Vec<AnyElement> = vec![
         kv("ID", item.id().to_owned()).into_any_element(),
         kv("镜像", item.image.clone()).into_any_element(),
@@ -7706,11 +8011,24 @@ pub fn container_detail_overlay(
         // 原先标成「运行时长」，于是"状态 Up 2 hours"和"运行时长 45 hours ago"
         // 并排出现、看着自相矛盾（v0.9.7 实机反馈）。
         kv("已创建", item.running_for.clone()).into_any_element(),
+        // `RunningFor` 是相对时间，给一个绝对时间对照 —— 排查"它到底哪会儿建的"时
+        // 相对时间不够用。两个标签分开写，别让用户以为是一个东西。
+        kv("创建时间", item.created_at.clone()).into_any_element(),
+        kv("网络", networks_text).into_any_element(),
+        // `Size` 是 wslc 列表给的容器大小（不是镜像大小）。标签写「容器大小」
+        // 是为了不和上面的镜像/下面的挂载混淆；不承诺它精确等于可写层。
+        kv("容器大小", size_text).into_any_element(),
         kv_block("端口", ports_text).into_any_element(),
         inspect_field("挂载", mounts),
         inspect_field("启动命令", command_line),
         inspect_field("环境变量", env),
     ];
+
+    // 健康检查为空 = 这个镜像没定义 HEALTHCHECK；非空就原样报出来
+    // （`healthy` 在列表里被刻意隐去，详情里要能看到事实）。
+    if !item.health_status.trim().is_empty() {
+        rows.insert(3, kv("健康检查", item.health_status.clone()).into_any_element());
+    }
 
     if let Some(stats) = summary.stats.as_ref() {
         rows.push(kv("CPU", stats.cpu_perc.clone()).into_any_element());

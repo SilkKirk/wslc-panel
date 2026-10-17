@@ -31,6 +31,9 @@ pub mod dbcreds;
 pub mod deploys;
 // 存档的原子写 + 崩溃恢复（v0.9.20：删旧档再 rename 有丢档窗口）。
 pub mod fileio;
+// 容器列表的过滤 / 排序（纯逻辑，带单测）—— 状态筛选的判据、排序规则
+// 都在这里，`views.rs` 只负责画按钮和读输入框。
+pub mod listview;
 pub mod prefs;
 pub mod presets;
 pub mod state;

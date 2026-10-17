@@ -24,10 +24,13 @@ use std::time::{Duration, Instant};
 use gpui_kit::component::button::*;
 // `StyledExt` 提供 `font_bold` / `font_semibold` 等字重方法（由宏生成），
 // 不导入 trait 就会报 "no method named font_bold"。
-// 输入框。⚠️ v0.6.2 之前这里还导入 `InputEvent`（订阅 tag 过滤框的按键）——
-// 过滤框被可搜索下拉框取代之后就没有订阅输入框的场合了，导入也要跟着去掉，
-// 否则 `ui` job 会留一条 unused import 警告。
-use gpui_kit::component::input::InputState;
+// 输入框与它的变化事件。
+//
+// `InputEvent::Change` 用来把「容器」页搜索框的输入**订阅回 `Shell`**：
+// 渲染整页的是 `Shell`，输入框改的只是它自己的值 —— 不订阅父级就不会重绘，
+// 过滤结果要等下一次自动刷新（默认 3 秒）才变，打字时像"搜索框坏了"。
+// 这套写法在 v0.6 的 tag 过滤框上验证过（`cx.subscribe` + `matches!(event, InputEvent::Change)`）。
+use gpui_kit::component::input::{InputEvent, InputState};
 // 「微软商店」与「在线发行版」两张清单都走组件库的 `Select`（下拉框）——
 // 参考实现也是一个下拉框（`CustomComboBox`），而不是我们原先那种
 // "几十个按钮铺满一屏"的写法。
@@ -791,6 +794,24 @@ fn effective_db_creds(
 pub struct Shell {
     /// 全部状态。
     pub state: AppState,
+    /// 最近一次采集完成的时间（自动刷新与手动刷新都算）。
+    ///
+    /// 只用于页头那句「最后刷新：N 秒前」—— 它是**界面状态**，不进快照：
+    /// 快照每轮整体重建，放进去反而要每轮重新赋值。
+    last_refresh: Option<Instant>,
+    /// 错误横幅是不是展开着（多条错误时才用得上）。
+    errors_expanded: bool,
+    /// 「容器」页的搜索框；进过那一页之后一直是 `Some`。
+    ///
+    /// `InputState::new` 要 `&mut Window`，所以只能在进入页面时建一次
+    /// （见 [`Shell::ensure_container_search`]）。`pub(crate)` 是因为
+    /// `views.rs` 要读它来画 `Input`。
+    pub(crate) container_search: Option<Entity<InputState>>,
+    /// 搜索框内容变化的订阅。
+    ///
+    /// ⚠️ **必须存着**：`Subscription` 一 drop 就退订，表现是"打字时列表
+    /// 不跟着变"，不会报错 —— 这是本仓库踩过的坑（见 `select_subs`）。
+    container_search_sub: Option<Subscription>,
     /// 正在进行的拉取任务的取消令牌。
     ///
     /// 放 `Shell`：这是**能力**（能 kill 子进程），不是"状态"。
@@ -1068,6 +1089,10 @@ impl Shell {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let mut shell = Self {
             state: AppState::new(Wslc::new(), Wsl::new()),
+            last_refresh: None,
+            errors_expanded: false,
+            container_search: None,
+            container_search_sub: None,
             pull_cancel: None,
             export_cancel: None,
             picking: false,
@@ -1101,6 +1126,34 @@ impl Shell {
         shell.start_auto_refresh(cx);
         shell.start_toast_reaper(cx);
         shell
+    }
+
+    /// 建「容器」页的搜索框（幂等）。
+    ///
+    /// **必须**在有 `&mut Window` 的地方调用（`InputState::new` 要它），
+    /// 所以入口是 `set_page`，不是 render。
+    ///
+    /// 订阅 `InputEvent::Change` 不是优化，是**必须**：渲染整页的是 `Shell`，
+    /// 输入框改的是 `InputState` 自己的值 —— 不订阅父级不会重绘，过滤结果
+    /// 要等到下一次自动刷新才变，打字时看起来就像"搜索框坏了"。
+    /// （v0.6 的 tag 过滤框就是这套写法，见 `InputEvent` 的导入注释。）
+    fn ensure_container_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.container_search.is_some() {
+            return;
+        }
+
+        let input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("搜索名称 / 镜像 / ID / 端口")
+        });
+        let sub = cx.subscribe(&input, |_shell, _input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        });
+
+        self.container_search = Some(input);
+        self.container_search_sub = Some(sub);
+        cx.notify();
     }
 
     /// 建「添加实例」表单（幂等）。
@@ -2736,13 +2789,13 @@ impl Shell {
         cx.notify();
 
         let wslc = self.state.wslc.clone();
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move { wslc_core::cmd::container::run(&wslc, &spec) })
                 .await;
 
-            let _ = this.update(cx, |shell, cx| {
+            let _ = this.update_in(cx, |shell, window, cx| {
                 match result {
                     Ok(id) => {
                         let id = id.trim().to_owned();
@@ -2751,9 +2804,9 @@ impl Shell {
                             .state
                             .notify(Toast::success(format!("容器已创建：{short}")));
                         // 建完直接跳到「容器」页，让用户看到结果。
-                        // 用 `goto_page` 而不是 `set_page`：这里没有 window，
-                        // 而「容器」页也不需要表单。
-                        shell.goto_page(Page::Containers, cx);
+                        // 用 `set_page`（而不是 `goto_page`）：这一页有搜索框，
+                        // 必须在有 window 的地方建；`update_in` 正好把 window 带回来了。
+                        shell.set_page(Page::Containers, window, cx);
                     }
                     Err(e) => shell.state.notify(Toast::error(format!("创建失败：{e}"))),
                 }
@@ -3941,8 +3994,8 @@ impl Shell {
     ///
     /// **不**清 `state.db`：下次再进来时连接信息与刚读到的两张表都还在
     /// （省掉一次探测 + 两次查询）。
-    pub fn close_database_page(&mut self, cx: &mut Context<Self>) {
-        self.goto_page(Page::Containers, cx);
+    pub fn close_database_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_page(Page::Containers, window, cx);
         cx.notify();
     }
 
@@ -4200,8 +4253,8 @@ impl Shell {
     /// 从部署管理页回到容器列表。
     ///
     /// **不**清 `state.deploy`：和数据库页同一条理由 —— 下次进来省掉一次探测。
-    pub fn close_deploy_page(&mut self, cx: &mut Context<Self>) {
-        self.goto_page(Page::Containers, cx);
+    pub fn close_deploy_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_page(Page::Containers, window, cx);
         cx.notify();
     }
 
@@ -6580,6 +6633,13 @@ impl Shell {
                     snapshot.errors.len()
                 );
                 shell.state.snapshot = snapshot;
+                // 页头「最后刷新」用：自动 / 手动刷新都算一次。
+                shell.last_refresh = Some(Instant::now());
+                // 没有错误了就收起横幅；否则上一次点开的「查看」会让下一次
+                // 新错误**自动展开**，看起来像突然弹了一屏红字。
+                if shell.state.snapshot.errors.is_empty() {
+                    shell.errors_expanded = false;
+                }
 
                 // 30 秒一次的那部分：失败时**保留旧值**。
                 // 一次瞬时失败不该让界面变成空白（那看起来像"数据丢了"）。
@@ -6990,8 +7050,11 @@ impl Shell {
     /// 而 `InputState::new` / `SelectState::new` 都要 `&mut Window` —— 所以必须
     /// **在点击时**把表单建好。在渲染时建会每帧重建一次控件，字都打不进去。
     ///
-    /// ⚠️ 「镜像」页现在**不需要** window：v0.6.3 把拉取表单挪进了弹窗，
+    /// ⚠️ 「镜像」页**不需要** window：v0.6.3 把拉取表单挪进了弹窗，
     /// 它是在**点「拉取镜像…」那一刻**建的（`SelectState` 同理）。
+    ///
+    /// v0.9.22 起「容器」页也需要 window：列表上方的搜索框是 `InputState`，
+    /// 只能在进入页面时建一次（见 [`Shell::ensure_container_search`]）。
     pub fn set_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         if page.needs_window_to_enter() {
             // 「添加实例」那一套：表单 + 两份清单的预取。
@@ -7020,6 +7083,10 @@ impl Shell {
             // 「数据库管理」：连接卡那三个输入框（懒创建，幂等）
             if page == Page::Database {
                 self.ensure_db_form(window, cx);
+            }
+            // 「容器」：搜索框是 `InputState`，只能在进入页面这一刻建。
+            if page == Page::Containers {
+                self.ensure_container_search(window, cx);
             }
         }
         self.goto_page(page, cx);
@@ -8480,12 +8547,15 @@ impl Render for Shell {
             nav.push(nav_item(page, state.page, &entity));
         }
 
-        // 副标题只显示当前会话。刷新耗时/间隔属于实现细节，
-        // 不进界面（耗时写日志，间隔在"设置"页里改）。
+        // 副标题回答「数据有多新」，不再放会话 / 构建号 —— 那两样是低频
+        // 诊断信息，已经挪到「应用设置 → 关于」。
+        let refreshed = match self.last_refresh {
+            Some(at) => crate::util::refresh_age_label(at.elapsed().as_secs()),
+            None => "还没刷新".to_owned(),
+        };
         let subtitle = format!(
-            "会话 {} · 构建 {}",
-            state.session_label(),
-            crate::short_build_sha()
+            "最后刷新：{refreshed} · 自动刷新 {} 秒",
+            state.prefs.refresh_secs
         );
 
         // 按钮只在**用户发起**的采集期间显示「刷新中…」。
@@ -8507,42 +8577,113 @@ impl Render for Shell {
                 })
         };
 
-        let error_banner: AnyElement = if !state.snapshot.errors.is_empty() {
+        // 错误横幅：1 条直显；多条默认折叠成「第一条 + 还有 N 项」。
+        //
+        // 之前把**每个区段**的错误逐条铺出来，`wslc` 一时读不到时能红七行，
+        // 把整页内容推下去 —— 用户第一眼看到的是七行报错，而不是"哪些数据还在"。
+        let errors = &state.snapshot.errors;
+        let error_banner: AnyElement = if errors.is_empty() {
+            if !state.snapshot.has_data() {
+                // 首屏 / 连不上 wslc 时的提示。比一片空白有用得多。
+                //
+                // 用 `user_refreshing` 而不是 `state.busy`：连不上 wslc 时
+                // 后台每 3 秒就会空跑一轮，用 `busy` 的话这两句话会一直闪。
+                let hint = if user_refreshing {
+                    "正在读取 wslc 数据…"
+                } else {
+                    "没有读到任何数据。请确认已安装 WSL 3.0 以上版本；\
+                     若 wslc.exe 不在默认路径，请设置环境变量 WSLC_PATH 指向它。"
+                };
+                div()
+                    .w_full()
+                    .text_sm()
+                    .text_color(theme::text_dim())
+                    .child(hint)
+                    .into_any_element()
+            } else {
+                div().into_any_element()
+            }
+        } else {
+            let count = errors.len();
+            let expanded = self.errors_expanded;
+            let toggle = |label: &'static str| {
+                let entity = entity.clone();
+                Button::new("errors-toggle")
+                    .label(label)
+                    .small()
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |shell, cx| {
+                            shell.errors_expanded = !shell.errors_expanded;
+                            cx.notify();
+                        });
+                    })
+            };
+
+            let mut body = v_flex().w_full().gap_2();
+            if count == 1 {
+                body = body.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::danger())
+                        .child(errors[0].clone()),
+                );
+            } else if expanded {
+                // 滚动容器必须先有 id（`overflow_y_scroll` 只对带 id 的元素可用）。
+                body = body.child(
+                    v_flex()
+                        .id("error-list")
+                        .w_full()
+                        .max_h(px(160.))
+                        .overflow_y_scroll()
+                        .gap_1()
+                        .children(
+                            errors
+                                .iter()
+                                .map(|e| div().text_xs().text_color(theme::danger()).child(e.clone())),
+                        ),
+                );
+                body = body.child(h_flex().w_full().justify_end().child(toggle("收起")));
+            } else {
+                body = body.child(
+                    h_flex()
+                        .w_full()
+                        .justify_between()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .min_w_0()
+                                .text_xs()
+                                .text_color(theme::danger())
+                                .overflow_hidden()
+                                .truncate()
+                                .child(errors[0].clone()),
+                        )
+                        .child(
+                            h_flex()
+                                .flex_none()
+                                .gap_2()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme::text_dim())
+                                        .child(format!("还有 {} 项", count - 1)),
+                                )
+                                .child(toggle("查看")),
+                        ),
+                );
+            }
+
             v_flex()
                 .w_full()
-                .gap_1()
-                .p_3()
+                .p_2()
                 .rounded_md()
                 .bg(theme::danger_soft())
                 .border_1()
                 .border_color(theme::danger_edge())
-                .children(
-                    state
-                        .snapshot
-                        .errors
-                        .iter()
-                        .map(|e| div().text_xs().text_color(theme::danger()).child(e.clone())),
-                )
+                .child(body)
                 .into_any_element()
-        } else if !state.snapshot.has_data() {
-            // 首屏 / 连不上 wslc 时的提示。比一片空白有用得多。
-            //
-            // 用 `user_refreshing` 而不是 `state.busy`：连不上 wslc 时
-            // 后台每 3 秒就会空跑一轮，用 `busy` 的话这两句话会一直闪。
-            let hint = if user_refreshing {
-                "正在读取 wslc 数据…"
-            } else {
-                "没有读到任何数据。请确认已安装 WSL 3.0 以上版本；\
-                 若 wslc.exe 不在默认路径，请设置环境变量 WSLC_PATH 指向它。"
-            };
-            div()
-                .w_full()
-                .text_sm()
-                .text_color(theme::text_dim())
-                .child(hint)
-                .into_any_element()
-        } else {
-            div().into_any_element()
         };
 
         // 提示条：主内容列里的一个**布局项**，不是浮层。
@@ -8906,7 +9047,9 @@ impl Render for Shell {
 /// 左侧导航项。
 fn nav_item(page: Page, current: Page, entity: &Entity<Shell>) -> AnyElement {
     let entity = entity.clone();
-    let active = page == current;
+    // 子页面（添加实例 / 数据库 / 部署）也高亮它所属的父项 ——
+    // 否则进这三页时侧边栏一个都不选中，用户会失去"我在哪"。
+    let active = current.highlights_nav(page);
 
     let mut item = h_flex()
         .w_full()
@@ -8971,7 +9114,6 @@ fn nav_id(page: Page) -> &'static str {
         // 同上（v0.9 的部署管理页）
         Page::Deploy => "nav-deploy",
         Page::AppSettings => "nav-app-settings",
-        Page::About => "nav-about",
     }
 }
 

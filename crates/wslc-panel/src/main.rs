@@ -55,6 +55,10 @@ mod columns {
 mod deploys {
     pub use wslc_panel_core::deploys::*;
 }
+// 容器列表的过滤 / 排序：纯逻辑在 `wslc-panel-core`，这里只做旧路径垫片。
+mod listview {
+    pub use wslc_panel_core::listview::*;
+}
 mod prefs {
     pub use wslc_panel_core::prefs::*;
 }

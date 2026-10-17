@@ -15,6 +15,7 @@
 //! 两者的采集**频率不同**（见 [`load_distro_status`] 的说明）：
 //! 列表跟随自动刷新（默认 3 秒），`wsl --status` 单独降到 30 秒。
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -91,18 +92,16 @@ pub enum Page {
     /// 应用自己的设置（刷新间隔、主题……）。
     ///
     /// 这里存的是**本程序的偏好**（`%LOCALAPPDATA%\wslc-panel\prefs.json`）。
-    /// `wslc` 自己的 `settings.yaml` 和 WSL 自己的 `.wslconfig` 是这一页里的
-    /// 两个 **tab**（见 [`SettingsTab`]），不是并列的页面。
+    /// `wslc` 自己的 `settings.yaml`、WSL 自己的 `.wslconfig` 和「关于」
+    /// 都是这一页里的 **tab**（见 [`SettingsTab`]），不是并列的页面。
     ///
     /// ⚠️ 它们曾经是 `Page::Config` / `Page::WslConfig` 两个变体。v0.4 把它们
     /// 收进这一页的 tab 之后就没**人**能导航到它们了（`ALL` 里没有、界面上
     /// 也不构造），却一直留在枚举里：`nav_id` 与页面分发里各留了两个永远走不到
     /// 的分支。已删。
+    /// v0.9.22 又把「关于」从页面收进来 —— 它同样是"只能看、不能改"的低频页，
+    /// 不值得占一个侧边栏入口。
     AppSettings,
-    /// 关于：应用介绍、版本、构建、地址。
-    ///
-    /// 和「应用设置」分开：那一页是**可改**的偏好，这一页只是**看**。
-    About,
 }
 
 impl Page {
@@ -119,7 +118,7 @@ impl Page {
     /// 所以 `ALL` 是"侧边栏列哪些页"，**不等于**"有哪些页"。
     /// （`wlsc 配置` / `WSL 配置` 曾经也在"不在这里"之列，但它们现在是
     /// [`SettingsTab`] 的两个 tab、不再是页面了。）
-    pub const ALL: [Page; 8] = [
+    pub const ALL: [Page; 7] = [
         Page::Dashboard,
         Page::Instances,
         Page::Containers,
@@ -127,7 +126,6 @@ impl Page {
         Page::Networks,
         Page::Volumes,
         Page::AppSettings,
-        Page::About,
     ];
 
     /// 导航标签。
@@ -143,7 +141,6 @@ impl Page {
             Page::Database => "数据库管理",
             Page::Deploy => "部署管理",
             Page::AppSettings => "应用设置",
-            Page::About => "关于",
         }
     }
 
@@ -154,37 +151,52 @@ impl Page {
             Page::Instances | Page::AddInstance => "WSL 实例",
             Page::Containers | Page::Database | Page::Deploy => "容器",
             Page::Images | Page::Networks | Page::Volumes => "资源",
-            Page::AppSettings | Page::About => "设置",
+            Page::AppSettings => "设置",
         }
     }
 
     /// 这一页是不是需要 `&mut Window` 才能进去。
     ///
-    /// 「添加实例」有输入框，而 `InputState::new` 需要 `&mut Window` ——
-    /// 所以它必须在**点击导航时**（有 window）把表单建好，
-    /// 不能在渲染时建（那会每帧重建一次输入框，打字都打不进去）。
+    /// 有三页在这个列里，原因都是同一个：`InputState::new` 要 `&mut Window`，
+    /// 而这些输入框描述的是**页面状态**（不是一次性动作），只能在点击导航
+    /// 那一刻建一次；在 render 里建会每帧重建，字都打不进去。
     ///
-    /// 「镜像」也一样：它现在有 registry / 仓库名两个输入框**和**一个 tag 下拉框
-    /// （`SelectState::new` 同样要 `&mut Window`）。v0.6.2 合并之前这里只有
-    /// 「镜像仓库」有输入框；合并之后本地镜像那半页也跟着要 window 了。
+    /// - 「添加实例」：名字 / 安装目录 / 来源路径，以及两个 `SelectState`；
+    /// - 「数据库管理」：连接卡的用户名 / 密码；
+    /// - 「容器」（v0.9.22）：列表上方的搜索框。
     ///
-    /// ⚠️ v0.6.3 起这里**只剩「添加实例」**：拉取表单挪进了弹窗，
-    /// 是在点「拉取镜像…」那一刻建的（`Shell::open_pull_dialog`）——
-    /// 页面本身只剩一个按钮和一张表，进来不需要 window。
-    ///
-    /// v0.7.0 起「数据库管理」也回到了这一列：它的**连接卡**（用户名 / 密码）
-    /// 是页面上的输入框，而不是弹窗 —— 因为它描述的是"这一页现在连的是谁"，
-    /// 属于**页面状态**，不是一次性动作。一次性动作（新建库 / 新建用户 / 改密码 /
-    /// 授权）仍然走弹窗（`Shell::open_db_dialog`），和拉取镜像同一个理由。
-    ///
-    /// ⚠️ v0.9 的「部署管理」**故意不在这里**：它页面上一个输入框都没有，
-    /// 「添加部署」那五个框是**点按钮那一刻**才建的 ——
-    /// 和 v0.6.3 的「拉取镜像」同一个形状（那次也是把表单挪进弹窗，
-    /// 于是「镜像」页从这一列里退出去了）。多写一个进去不是"更保险"：
-    /// 它会让 `set_page` 里多一个**永远不会被执行**的分支，
-    /// 而那正是 v0.4 删掉 `Page::Config` / `Page::WslConfig` 时清掉的那种垃圾。
+    /// ⚠️ 「部署管理」**故意不在这里**：它页面上一个输入框都没有，
+    /// 「添加部署」那五个框是**点按钮那一刻**才建的（`Shell::open_deploy_dialog`）。
+    /// 多写一个进去不是"更保险"：它会让 `set_page` 里多一个**永远不会被执行**
+    /// 的分支，而那正是 v0.4 删掉 `Page::Config` / `Page::WslConfig` 时清掉的
+    /// 那种垃圾。同理，「镜像」的拉取表单在弹窗里，也不在这里。
     pub fn needs_window_to_enter(self) -> bool {
-        matches!(self, Page::AddInstance | Page::Database)
+        matches!(
+            self,
+            Page::AddInstance | Page::Database | Page::Containers
+        )
+    }
+
+    /// 这一页在侧边栏里应该高亮哪一项。
+    ///
+    /// 自己就是导航项时返回 `None`（`highlights_nav` 会走"自己等于自己"那一支）；
+    /// 子页面返回它所属的父级：
+    ///
+    /// - 「添加实例」是「实例列表」的一个动作 → 高亮实例列表；
+    /// - 「数据库管理 / 部署管理」服务某一个容器 → 高亮容器。
+    ///
+    /// 不加这个的话，进这三个页面时侧边栏**一个都不选中**，用户会失去"我在哪"。
+    pub fn nav_parent(self) -> Option<Page> {
+        match self {
+            Page::AddInstance => Some(Page::Instances),
+            Page::Database | Page::Deploy => Some(Page::Containers),
+            _ => None,
+        }
+    }
+
+    /// 侧边栏的 `nav` 这一项，在当前页面 `self` 上是否算选中。
+    pub fn highlights_nav(self, nav: Page) -> bool {
+        self == nav || self.nav_parent() == Some(nav)
     }
 }
 
@@ -501,6 +513,41 @@ impl Snapshot {
             disk: self.storage.as_ref().and_then(|storage| storage.volume),
             vhd_bytes: self.storage.as_ref().and_then(|storage| storage.vhd_bytes),
         }
+    }
+
+    /// 镜像页顶部那句「N 条记录（M 个镜像）· 合计 X」。
+    ///
+    /// # 为什么必须按 ID 去重
+    ///
+    /// `wslc images` 对**同一个镜像**会给出多行（不同 `Repository` 引用指向
+    /// 同一个 `ID`）—— 真机夹具里 `e2ac70e7319a` 就同时是
+    /// `docker.1panel.live/library/hello-world` 和 `hello-world`。
+    /// 直接 `sum(Size)` 会把它的体积算两遍；直接 `len()` 会把记录数当镜像数。
+    ///
+    /// ID 为空时退回 `reference()` 当键（理论上不该发生，但别让空串把
+    /// 所有无 ID 的行并成一条）。
+    pub fn image_totals(&self) -> (usize, u64) {
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut bytes = 0u64;
+
+        for image in &self.images {
+            let key = if image.id.trim().is_empty() {
+                image.reference()
+            } else {
+                image.id.clone()
+            };
+            if !seen.insert(key) {
+                continue;
+            }
+            bytes = bytes.saturating_add(
+                image
+                    .size_bytes()
+                    .unwrap_or(0.0)
+                    .max(0.0) as u64,
+            );
+        }
+
+        (seen.len(), bytes)
     }
 }
 
@@ -3323,8 +3370,8 @@ impl WslConfState {
 /// 但它们都是"设置"，分开摆反而让人找不着 —— 收进一页分 tab。
 /// 参考项目的设置页也是这么分的（常规 / 高级 / 界面）。
 ///
-/// ⚠️ 这里**没有**「关于」：那是一个只能看、不能改的页面，
-/// 混进设置 tab 里会让人以为里面有开关。
+/// v0.9.22 起「关于」也收进来了：它同样只能看、不能改，但为此单占一个
+/// 侧边栏入口太贵；放在最后一个 tab 不会让人误以为里面有开关。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SettingsTab {
     /// 常规：刷新间隔、主题。
@@ -3334,22 +3381,30 @@ pub enum SettingsTab {
     Advanced,
     /// WSL：`%USERPROFILE%\.wslconfig`（**WSL 本身**的全局配置）。
     Wsl,
+    /// 关于：版本、构建、地址（v0.9.22 从独立页面收进来）。
+    About,
 }
 
 impl SettingsTab {
     /// 全部 tab（决定显示顺序）。
-    pub const ALL: [SettingsTab; 3] = [
+    pub const ALL: [SettingsTab; 4] = [
         SettingsTab::General,
         SettingsTab::Advanced,
         SettingsTab::Wsl,
+        SettingsTab::About,
     ];
 
     /// tab 标题。
+    ///
+    /// ⚠️ 「高级」是历史变体名，实际内容是 **wslc 的 `settings.yaml`**；
+    /// 「WSL」才是 `.wslconfig`。标题必须说清这两个是不同的配置文件，
+    /// 否则用户会以为「高级」是本程序的高级选项。
     pub fn label(self) -> &'static str {
         match self {
             SettingsTab::General => "常规",
-            SettingsTab::Advanced => "高级",
-            SettingsTab::Wsl => "WSL",
+            SettingsTab::Advanced => "wslc 配置",
+            SettingsTab::Wsl => "WSL 配置",
+            SettingsTab::About => "关于",
         }
     }
 }
@@ -3648,6 +3703,11 @@ pub struct AppState {
     pub wsl: Wsl,
     /// 当前页面。
     pub page: Page,
+    /// 容器页的筛选 / 排序状态。
+    ///
+    /// **页面状态，不是偏好**：不写 `prefs.json`，重启后回到「全部 + 默认排序」。
+    /// 查询词不在这里 —— 它住在 `Shell` 的 `InputState` 里（那是 GPUI 类型）。
+    pub container_view: crate::listview::ContainerView,
     /// 最近一次采集到的数据。
     pub snapshot: Snapshot,
     /// `wsl --status` 的结果。
@@ -3873,6 +3933,7 @@ impl AppState {
             wslc,
             wsl,
             page: Page::Dashboard,
+            container_view: crate::listview::ContainerView::default(),
             snapshot: Snapshot::default(),
             distro_status: None,
             distro_status_error: None,
@@ -4140,14 +4201,30 @@ mod tests {
         // v0.6 加了「镜像仓库」（在线浏览 registry 的 tag 再拉取），8 + 1 = 9。
         // v0.6.2 把它**并回「镜像」页**（远端浏览 + 拉取 + 本地已有，三件事一页），
         // 9 - 1 = 8 —— 同样是"总数少了不代表功能少了"。
+        // v0.9.22 把「关于」从侧边栏收进「应用设置」的 tab，8 - 1 = 7。
         //
         // 这个断言存在的意义就是**逼人改它**：加页面时忘了同步导航分组，
         // 侧边栏会出现重复的组标题。历史上 commit 552a91c 就是被它抓到的；
-        // 加 `Page::About` 这次它又抓了一次（CI 的 `纯逻辑测试` 那一关）。
+        // 加 `Page::About` 那次它又抓了一次（CI 的 `纯逻辑测试` 那一关）。
         //
         // ⚠️ 注意 `cargo check --all-targets` 只编译不执行，
         // 所以它真的被跑到要靠 `cargo test -p wslc-panel-core`（见 SPIKE 7.8）。
-        assert_eq!(Page::ALL.len(), 8);
+        assert_eq!(Page::ALL.len(), 7);
+    }
+
+    #[test]
+    fn settings_tabs_are_all_labelled() {
+        // 加 tab 时忘了同步 `settings_tabs` 的渲染顺序，界面上会出现
+        // 一个点不到的 tab（按钮 id 用 `{:?}`，顺序由 ALL 决定）。
+        assert_eq!(SettingsTab::ALL.len(), 4);
+        for tab in SettingsTab::ALL {
+            assert!(!tab.label().is_empty());
+        }
+        assert_eq!(
+            SettingsTab::About.label(),
+            "关于",
+            "「关于」现在是设置里的 tab，不再是页面"
+        );
     }
 
     #[test]
@@ -4155,19 +4232,41 @@ mod tests {
         // 有输入框的页面必须在点击时（有 window）把表单建好。
         // 哪天给别的页面加了输入框，这个测试会提醒你一起改。
         //
+        // v0.9.17 起「容器」页也进了这一列：搜索框是 `InputState`，
+        // 只能在进入页面那一刻建（`Shell::ensure_container_search`）。
+        //
         // ⚠️ `Page::AddInstance` **不在 `Page::ALL` 里**（侧边栏不列它），
         // 所以不能只遍历 `ALL` 就算完 —— 那样这条断言对它就是**空的**，
         // 哪天真把它改坏了也抓不到。显式再查一遍。
         for page in Page::ALL {
-            // v0.6.3：侧边栏这几页里一个有输入框的都没有了 ——
-            // 「镜像」的拉取表单进了弹窗，是在点「拉取镜像…」那一刻建的。
-            assert!(
-                !page.needs_window_to_enter(),
-                "{page:?} 现在说它需要 window —— 如果它真加了输入框，记得在 app.rs 的 \
-                 `set_page` 里懒创建表单，并把这条断言改回去"
+            let expected = page == Page::Containers;
+            assert_eq!(
+                page.needs_window_to_enter(),
+                expected,
+                "{page:?} 的 `needs_window_to_enter` 和实际不符 —— \
+                 改了页面上的输入框就要同步改 `app.rs::set_page` 和这条断言"
             );
         }
         assert!(Page::AddInstance.needs_window_to_enter());
+        // 「数据库管理」也不在 ALL 里（只能从容器行进），但它有连接卡输入框。
+        assert!(Page::Database.needs_window_to_enter());
+    }
+
+    #[test]
+    fn sub_pages_highlight_their_parent_in_the_sidebar() {
+        assert_eq!(Page::AddInstance.nav_parent(), Some(Page::Instances));
+        assert_eq!(Page::Database.nav_parent(), Some(Page::Containers));
+        assert_eq!(Page::Deploy.nav_parent(), Some(Page::Containers));
+        assert_eq!(Page::Dashboard.nav_parent(), None);
+
+        assert!(Page::AddInstance.highlights_nav(Page::Instances));
+        assert!(Page::Database.highlights_nav(Page::Containers));
+        assert!(Page::Deploy.highlights_nav(Page::Containers));
+        // 子页面不会把别的导航项点亮
+        assert!(!Page::Database.highlights_nav(Page::Images));
+        // 普通页面只高亮自己，不会把别的页也点亮
+        assert!(Page::Containers.highlights_nav(Page::Containers));
+        assert!(!Page::Containers.highlights_nav(Page::Images));
     }
 
     #[test]
@@ -4963,6 +5062,33 @@ mod tests {
         assert_eq!(stats.cpu_whole_machine_percent(), None);
         assert_eq!(stats.mem_percent(), None);
         assert!(stats.disk.is_none());
+    }
+
+    #[test]
+    fn image_totals_dedupe_refs_pointing_at_the_same_id() {
+        // 真机夹具：`e2ac70e7319a` 同时是
+        // `docker.1panel.live/library/hello-world` 和 `hello-world` 两行。
+        const IMAGES: &str = include_str!("../../wslc-core/tests/fixtures/images.jsonl");
+        let images: Vec<ImageListItem> =
+            wslc_core::jsonl::parse_lines(IMAGES).expect("夹具应当能解析");
+        assert_eq!(images.len(), 3, "夹具本身是 3 行（2 个镜像）");
+
+        let snap = Snapshot {
+            images,
+            ..Default::default()
+        };
+        let (distinct, bytes) = snap.image_totals();
+        assert_eq!(distinct, 2, "同一个 ID 的多条引用只算一个镜像");
+        // 8.42MB + 10.1kB（1000 进制，见 `parse_size`）。浮点转 u64 允许 1 字节误差。
+        assert!(
+            (bytes as i64 - 8_430_100).abs() <= 1,
+            "合计体积应当是 8.42MB + 10.1kB，实际 {bytes}"
+        );
+    }
+
+    #[test]
+    fn image_totals_of_empty_snapshot_is_zero() {
+        assert_eq!(Snapshot::default().image_totals(), (0, 0));
     }
 
     /// 一个只有 CPU / 内存指标有意义的样本（字段形状照 `wslc stats` 真机输出）。
