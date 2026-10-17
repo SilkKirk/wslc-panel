@@ -3303,6 +3303,20 @@ fn deploy_port_cell(entry: &DeployEntry, deploy: &DeployState) -> AnyElement {
     // 全仓库没有一个调用点 —— "测的不是跑的那份"（v0.9.13 改）。
     let published = deploy_model::port_is_published(&deploy.ports, port);
     if published {
+        let key = format!("deploy-port-{}-{}", deploy.container, entry.record.app);
+        let is_nginx = entry.runtime == Some(wslc_core::model::AppRuntime::Nginx);
+        // 站点关的 nginx 由**默认站点**提供，路径不是 `/`（`/<app>/` 或用户自己
+        // 填的相对目录）。这一格不猜路径，只把"已发布 + 站点关"说清楚；
+        // 站点开 / 进程型才有独立 URL。
+        if is_nginx && entry.record.site.is_none() {
+            return cell_muted_full(
+                key,
+                format!("{port}（已发布；站点关，由默认站点提供）"),
+            );
+        }
+        if let Some(url) = deploy_model::app_url(&deploy.ports, port) {
+            return cell_text_full(key, format!("{url}（容器 {port}）"));
+        }
         cell_text(format!("{port}（已发布）"))
     } else {
         cell_muted_full(
