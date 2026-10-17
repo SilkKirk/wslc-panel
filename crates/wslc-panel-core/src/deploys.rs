@@ -35,6 +35,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use wslc_core::model::deploy::{TargetOverlap, target_overlap};
+use wslc_core::model::DeploySite;
 
 /// 一条部署记录。
 ///
@@ -73,6 +74,12 @@ pub struct DeployRecord {
     /// （那种老记录只能删日志 / pidfile —— 比"猜它铺了什么"安全）。
     #[serde(default)]
     pub members: Vec<String>,
+    /// nginx 站点配置。`Some` ⟺ 容器里**确实有**面板生成的那份 conf 文件。
+    ///
+    /// `#[serde(default)]`：v0.9.19 之前的存档里没有这一项；`skip_serializing_if`
+    /// 让 `None` 不进 JSON（老档看起来还是一样干净）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<DeploySite>,
 }
 
 /// 全部记录，按 `"<容器名>/<应用名>"` 索引。
@@ -250,13 +257,12 @@ impl DeployStore {
 /// 一条记录会不会真的在容器里 bind 一个端口。
 ///
 /// - 进程型（`java` / `node` / `go`）会；
-/// - **nginx 的内容形态目前不会**（它靠容器里的 nginx 进程，`port` 只是信息）。
-///   等「站点开」（`DeploySite`）落地之后，这里要变成
-///   `record.runtime != "nginx" || record.site.is_some()`。
+/// - nginx 只有**站点开**（`site: Some`）才会 `listen <port>`；站点关的记录
+///   由容器的默认站点提供，`port` 只是信息；
 /// - 认不出来的运行时键按"会 bind"算（保守：宁可多拦一个端口，
 ///   不要让两个应用真的撞上）。
 fn record_binds_port(record: &DeployRecord) -> bool {
-    record.runtime.trim() != "nginx"
+    record.runtime.trim() != "nginx" || record.site.is_some()
 }
 
 /// 去掉尾部 `/`；空串（或全 `/`）归一成 `/`。
@@ -390,6 +396,7 @@ mod tests {
             artifact: app.to_owned(),
             port: 8080,
             members: vec![app.to_owned()],
+            site: None,
         }
     }
 
@@ -410,6 +417,7 @@ mod tests {
             artifact: String::new(),
             port,
             members: members.iter().map(|name| (*name).to_owned()).collect(),
+            site: None,
         }
     }
 
@@ -528,14 +536,12 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn nginx_content_records_do_not_own_a_port_yet() {
-        // nginx 的内容形态不 bind 端口（靠容器里的 nginx 进程）；
-        // 进程型才是真的占端口。站点开（DeploySite）落地后这条要改。
+    fn nginx_records_own_a_port_only_with_a_site() {
+        // nginx 的站点关形态不 bind 端口（靠容器里的默认站点）；
+        // 站点开（DeploySite）才会 `listen <port>`，这时它算真的占端口。
         let mut store = DeployStore::default();
-        store.put(
-            "web",
-            record_of("site", "nginx", 80, "/srv/site", &["index.html"]),
-        );
+        let mut site = record_of("site", "nginx", 80, "/srv/site", &["index.html"]);
+        store.put("web", site.clone());
         store.put(
             "web",
             record_of("api", "java", 8080, "/opt/api", &["app.jar"]),
@@ -543,6 +549,16 @@ mod tests {
         assert_eq!(store.binding_ports("web"), vec![8080]);
         assert_eq!(store.port_conflict("web", "new", 80), None);
         assert_eq!(store.port_conflict("web", "new", 8080), Some("api"));
+
+        site.site = Some(wslc_core::model::DeploySite {
+            server_name: "localhost".to_owned(),
+            spa: true,
+            proxies: Vec::new(),
+            conf: wslc_core::model::deploy::conf_path("site"),
+        });
+        store.put("web", site);
+        assert_eq!(store.binding_ports("web"), vec![80, 8080]);
+        assert_eq!(store.port_conflict("web", "new", 80), Some("site"));
         // 同一个应用重新部署不算冲突
         assert_eq!(store.port_conflict("web", "api", 8080), None);
     }

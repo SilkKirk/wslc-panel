@@ -73,10 +73,10 @@ use crate::columns::{
 };
 use crate::presets::presets_for;
 use crate::state::{
-    AppState, DashboardStats, DbFailure, DbState, DbTab, DeployEntry, DeployLogs, DeployState,
-    DistroAction, ImmediateAction, InstallOutcome, InstallProgress, InstallSourceKind, LogsState,
-    OnlineListSource, Page, PendingAction, PromptKind, PullProgress, SettingsTab, WslConfState,
-    format_bytes,
+    AppState, DashboardStats, DbFailure, DbState, DbTab, DeployEntry, DeployLogs, DeploySiteConf,
+    DeployState, DistroAction, ImmediateAction, InstallOutcome, InstallProgress, InstallSourceKind,
+    LogsState, OnlineListSource, Page, PendingAction, PromptKind, PullProgress, SettingsTab,
+    WslConfState, format_bytes,
 };
 use crate::theme;
 // 基本信息页那排圆环用的纯逻辑：用量分档（≥60% 黄、≥85% 红）。
@@ -2955,6 +2955,30 @@ pub fn deploy_page(shell: &Shell, _cx: &App, entity: &Entity<Shell>) -> AnyEleme
         .into_any_element()
 }
 
+/// 页头那一行"已发布到主机的端口"。
+///
+/// 只**报告**：已建好的容器改不了端口发布（`-p` 只在建容器时给），所以这里
+/// 不画按钮，只把 `主机 URL → 容器端口` 摆出来。端口列的 URL 是逐应用的，
+/// 这里是容器级的全量清单。
+fn deploy_published_line(deploy: &DeployState) -> String {
+    let ports = deploy_model::published_container_ports(&deploy.ports);
+    if ports.is_empty() {
+        return "还没有端口发布到主机（-p 只能在建容器时给）".to_owned();
+    }
+    let items: Vec<String> = ports
+        .iter()
+        .filter_map(|port| {
+            deploy_model::app_url(&deploy.ports, *port)
+                .map(|url| format!("{url} → 容器 {port}"))
+        })
+        .collect();
+    if items.is_empty() {
+        "有发布记录，但没有可用的主机绑定".to_owned()
+    } else {
+        format!("已发布：{}", items.join("，"))
+    }
+}
+
 /// 页头：容器 / 镜像 / 运行时 + 依据 + 「← 返回容器」「重新读取」「添加部署…」。
 fn deploy_header(deploy: &DeployState, entity: &Entity<Shell>) -> AnyElement {
     let back = {
@@ -3049,6 +3073,14 @@ fn deploy_header(deploy: &DeployState, entity: &Entity<Shell>) -> AnyElement {
                             deploy.image,
                             deploy.signal.label(),
                         )),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .max_w(px(560.0))
+                        .truncate()
+                        .child(deploy_published_line(deploy)),
                 ),
         )
         .child(
@@ -3303,6 +3335,23 @@ fn deploy_port_cell(entry: &DeployEntry, deploy: &DeployState) -> AnyElement {
     // 全仓库没有一个调用点 —— "测的不是跑的那份"（v0.9.13 改）。
     let published = deploy_model::port_is_published(&deploy.ports, port);
     if published {
+        let key = format!("deploy-port-{}-{}", deploy.container, entry.record.app);
+        let is_nginx = entry.runtime == Some(wslc_core::model::AppRuntime::Nginx);
+        // 站点关的 nginx 由**默认站点**提供，路径不是 `/`（`/<app>/` 或用户自己
+        // 填的相对目录）。这一格不猜路径，只把"已发布 + 站点关"说清楚；
+        // 站点开 / 进程型才有独立 URL。
+        //
+        // ⚠️ 不拼 URL 的具体理由：默认站点的 path 是 `<target 相对 Web 根>`，
+        // 不一定等于 `<app>`；老记录还可能直接铺在 Web 根（path 就是 `/`）。
+        if is_nginx && entry.record.site.is_none() {
+            return cell_muted_full(
+                key,
+                format!("{port}（已发布；站点关，由默认站点提供）"),
+            );
+        }
+        if let Some(url) = deploy_model::app_url(&deploy.ports, port) {
+            return cell_text_full(key, format!("{url}（容器 {port}）"));
+        }
         cell_text(format!("{port}（已发布）"))
     } else {
         cell_muted_full(
@@ -3429,6 +3478,21 @@ fn deploy_row_actions(
         );
     }
 
+    // 站点配置（只有 nginx 站点开的记录有 —— 站点关没有面板生成的 conf）
+    if !is_process && entry.record.site.is_some() {
+        actions.push(
+            overlay_button(
+                &format!("deploy-site-{app}"),
+                "站点配置",
+                {
+                    let app = app.clone();
+                    move |shell, _, cx| shell.open_deploy_site_conf(app.clone(), cx)
+                },
+                entity,
+            ),
+        );
+    }
+
     // 进程形态才需要"重新部署"（内容形态上面那个就是它）
     if is_process {
         actions.push(
@@ -3522,6 +3586,10 @@ pub fn deploy_dialog_overlay(
         .w(px(560.0))
         .gap_3()
         .p_4()
+        // 站点块出现后弹窗会高出一截；带 id 的滚动容器（AGENTS §7.5）。
+        .id("deploy-dialog-scroll")
+        .max_h(px(760.0))
+        .overflow_y_scroll()
         .rounded_lg()
         .bg(theme::bg_card())
         .border_1()
@@ -3651,8 +3719,154 @@ pub fn deploy_dialog_overlay(
         )
     };
 
+    // nginx 的站点块：勾上才会写 conf。放在端口**前面** —— 端口在站点开时
+    // 就是 `listen`，先解释"要不要站点"再让用户填端口。
+    let site_block: Option<AnyElement> = if runtime == wslc_core::model::AppRuntime::Nginx {
+        Some(
+            v_flex()
+                .w_full()
+                .gap_2()
+                .p_3()
+                .rounded_md()
+                .bg(theme::bg())
+                .border_1()
+                .border_color(theme::border())
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_3()
+                        .items_center()
+                        .child({
+                            let entity = entity.clone();
+                            Checkbox::new("deploy-site-enabled")
+                                .label("生成站点配置（SPA / 反代）")
+                                .checked(form.site_enabled)
+                                .on_change(move |checked: &bool, _, cx| {
+                                    let enabled = *checked;
+                                    entity.update(cx, |shell, cx| {
+                                        shell.set_deploy_site_enabled(enabled, cx)
+                                    });
+                                })
+                        }),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child(crate::util::strip_md(
+                            "站点开 = 面板写一份 `/etc/nginx/conf.d/00-wslc-panel-<应用名>.conf`，\
+                             让这个应用 `listen <端口>`；端口 80 会接管默认站点。\
+                             不勾 = 只铺文件，由默认站点在 `/<应用名>/` 提供。",
+                        )),
+                )
+                .children(form.site_enabled.then(|| {
+                    v_flex()
+                        .w_full()
+                        .gap_2()
+                        .child({
+                            let entity = entity.clone();
+                            Checkbox::new("deploy-site-spa")
+                                .label("单页应用回退（找不到的路径交给 index.html）")
+                                .checked(form.site_spa)
+                                .on_change(move |checked: &bool, _, cx| {
+                                    let enabled = *checked;
+                                    entity.update(cx, |shell, cx| {
+                                        shell.set_deploy_site_spa(enabled, cx)
+                                    });
+                                })
+                        })
+                        .child(form_field(
+                            "deploy-server-name",
+                            "server_name（域名 / localhost）",
+                            &form.server_name,
+                            cx,
+                            true,
+                        ))
+                        .child(form_field(
+                            "deploy-proxy-prefix",
+                            "反代路径前缀（可选）",
+                            &form.proxy_prefix,
+                            cx,
+                            true,
+                        ))
+                        .child(form_field(
+                            "deploy-proxy-upstream",
+                            "反代上游（可选）",
+                            &form.proxy_upstream,
+                            cx,
+                            true,
+                        ))
+                        .child({
+                            let entity = entity.clone();
+                            Checkbox::new("deploy-proxy-strip")
+                                .label("转发时去掉前缀（后端收到 /foo 而不是 /api/foo）")
+                                .checked(form.proxy_strip)
+                                .on_change(move |checked: &bool, _, cx| {
+                                    let enabled = *checked;
+                                    entity.update(cx, |shell, cx| {
+                                        shell.set_deploy_proxy_strip(enabled, cx)
+                                    });
+                                })
+                        })
+                        .child(form_field(
+                            "deploy-proxy-more",
+                            "更多反代（; 分隔：/auth/ => http://auth:9000 [strip]）",
+                            &form.proxy_more,
+                            cx,
+                            true,
+                        ))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::text_dim())
+                                .child(crate::util::strip_md(
+                                    "第一条规则用上面两格；更多规则用 `;` 分隔，例如 \
+                                     `/auth/ => http://auth:9000; /ws/ => http://ws:9001 strip`。\
+                                     同一个前缀只能出现一次（nginx 会报 duplicate location）。",
+                                )),
+                        )
+                        .child({
+                            let entity = entity.clone();
+                            Checkbox::new("deploy-auto-connect")
+                                .label("自动接通上游容器的用户网络")
+                                .checked(form.auto_connect)
+                                .on_change(move |checked: &bool, _, cx| {
+                                    let enabled = *checked;
+                                    entity.update(cx, |shell, cx| {
+                                        shell.set_deploy_auto_connect(enabled, cx)
+                                    });
+                                })
+                        })
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::text_dim())
+                                .child(crate::util::strip_md(
+                                    "上游是另一个容器时，面板会**逐个**找共同用户网络；\
+                                     没有就创建/接到 `wslc-panel`（勾选「自动接通」时）。\
+                                     取消勾选就只能手动 `wslc network connect <网络> <容器>`。\
+                                     默认 bridge 解析不了名字（实测 `getent` rc=2）。\
+                                     上游停着也能保存配置（不会让 `nginx -t` 失败），\
+                                     请求会在它起来后恢复。",
+                                )),
+                        )
+                        .into_any_element()
+                }))
+                .into_any_element(),
+        )
+    } else {
+        None
+    };
+
     let card = card
-        .child(form_field("deploy-port", "端口（信息性）", &form.port, cx, true))
+        .children(site_block)
+        .child(form_field(
+            "deploy-port",
+            "端口（应用监听；站点开时是 listen）",
+            &form.port,
+            cx,
+            true,
+        ))
         .child(
             div()
                 .text_xs()
@@ -3755,6 +3969,117 @@ pub fn deploy_logs_overlay(logs: &DeployLogs, entity: &Entity<Shell>) -> AnyElem
         }));
 
     modal_scrim("deploy-logs-scrim", card).into_any_element()
+}
+
+/// 「站点配置」只读浮层。
+///
+/// 文本**不**过 `strip_md`、不逐行重排：conf 里的缩进 / `#` / 空行都是有意义的，
+/// 逐行处理只会让用户没法对照 `nginx -t` 的错误行。
+pub fn deploy_site_conf_overlay(conf: &DeploySiteConf, entity: &Entity<Shell>) -> AnyElement {
+    let body: AnyElement = if conf.busy {
+        div()
+            .text_sm()
+            .text_color(theme::text_muted())
+            .child("正在读取…")
+            .into_any_element()
+    } else {
+        match conf.text.as_deref() {
+            Some(text) if !text.trim().is_empty() => v_flex()
+                .id("deploy-site-conf-text")
+                .w_full()
+                .max_h(px(420.))
+                .overflow_y_scroll()
+                .rounded_md()
+                .bg(theme::bg())
+                .p_3()
+                .child(
+                    div()
+                        .font_family("Consolas")
+                        .text_xs()
+                        .text_color(theme::text())
+                        .child(text.to_owned()),
+                )
+                .into_any_element(),
+            Some(_) => empty_state("（配置是空的）").into_any_element(),
+            None => div()
+                .text_sm()
+                .text_color(theme::text_dim())
+                .child("正在加载…")
+                .into_any_element(),
+        }
+    };
+
+    let reapply: AnyElement = if conf.busy {
+        div().into_any_element()
+    } else {
+        let app = conf.app.clone();
+        let entity = entity.clone();
+        Button::new("deploy-site-conf-reapply")
+            .label("重写配置")
+            .small()
+            .on_click(move |_, _, cx| {
+                let app = app.clone();
+                entity.update(cx, |shell, cx| shell.reapply_deploy_site(app, cx));
+            })
+            .into_any_element()
+    };
+
+    let card = v_flex()
+        .w(px(720.0))
+        .max_h(px(560.0))
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .bg(theme::bg_card())
+        .border_1()
+        .border_color(theme::border())
+        .child(
+            v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .text_lg()
+                        .font_semibold()
+                        .child(format!("站点配置 · {}", conf.app)),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child(crate::util::strip_md(
+                            "容器里的 `/etc/nginx/conf.d/00-wslc-panel-<应用名>.conf`（只读）。\
+                             重新部署会整份覆盖；要改就改部署弹窗里的站点区，别直接改这个文件。",
+                        )),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child(crate::util::strip_md(
+                            "容器重建后这份 conf 会丢 —— 可以点「重写配置」补回来\
+                             （只写 conf，不重新铺文件 / 不重新接网络）。",
+                        )),
+                ),
+        )
+        .child(body)
+        .child(
+            h_flex()
+                .w_full()
+                .justify_end()
+                .gap_2()
+                .child(reapply)
+                .child({
+                    let entity = entity.clone();
+                    Button::new("deploy-site-conf-close")
+                        .label("关闭")
+                        .small()
+                        .on_click(move |_, _, cx| {
+                            entity.update(cx, |shell, cx| shell.close_deploy_site_conf(cx));
+                        })
+                }),
+        );
+
+    modal_scrim("deploy-site-conf-scrim", card).into_any_element()
 }
 
 /// 删除二次确认。
@@ -7052,6 +7377,17 @@ pub fn create_dialog_overlay(
                         &dialog.env,
                         cx,
                         false,
+                    )),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child(crate::util::strip_md(
+                        "一个容器放多个应用时，**建容器这一刻**就要把每个应用的端口都\
+                         发布出去（`-p` 之后改不了），例如 `8080:8080, 8081:8081`。\
+                         应用自己监听的端口由部署弹窗的「端口」那一格决定，面板不会\
+                         替你改启动命令。",
                     )),
             )
             .child(image_env_hint(dialog, cx))

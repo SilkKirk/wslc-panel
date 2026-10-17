@@ -2257,6 +2257,11 @@ pub enum DeployPhase {
     /// 合成一档而不是拆成四档：这四步在界面上**都是"在搬东西"**，
     /// 而它们的耗时完全由体积决定 —— 拆开只会让按钮文案闪来闪去。
     Uploading,
+    /// 文件到位了，正在写 / 校验站点配置（nginx 站点开 / 关都会走这一档）。
+    ///
+    /// 单独一档是因为它可能失败在 `nginx -t`：用户要能看出"文件已经铺好了、
+    /// 卡在配置上"，而不是以为整个部署都没做。
+    Configuring,
     /// 文件到位了，正在起进程（进程形态）/ 这一步内容形态没有。
     Starting,
     /// 正在停掉那个受 pidfile 管的进程（「停止」，只发 `TERM`）。
@@ -2273,6 +2278,7 @@ impl DeployPhase {
     pub fn label(self) -> &'static str {
         match self {
             Self::Uploading => "正在上传…",
+            Self::Configuring => "正在写入站点配置…",
             Self::Starting => "正在启动…",
             Self::Stopping => "正在停止…",
             Self::Removing => "正在删除…",
@@ -2385,6 +2391,8 @@ pub struct DeployState {
     /// `cmd::deploy::DeployProbe` 的说明；判"发布了没有"用
     /// `wslc_core::model::deploy::port_is_published`（唯一一份判据，界面也调它）。
     pub ports: wslc_core::model::PortMap,
+    /// 容器当前接入的网络名（站点反代预检找共同用户网络用）。
+    pub networks: Vec<String>,
     /// 正在后台跑（探测 / 读状态 / 上传）。
     pub busy: bool,
     /// **根本性**的问题（不是这类容器 / 容器没运行）。
@@ -2403,6 +2411,8 @@ pub struct DeployState {
     /// 纯数据（应用名 + 文本 + 忙不忙），所以能住在这里；
     /// 它是个**只读浮层**，里面一个输入框都没有 —— 和 `LogsState` 同一个理由。
     pub logs: Option<DeployLogs>,
+    /// 正在看哪个应用的站点配置（`None` = 浮层没开）。
+    pub site_conf: Option<DeploySiteConf>,
     /// 等待二次确认的删除（要删哪个应用；`None` = 没在确认）。
     ///
     /// ⚠️ 刻意**不用** `ConfirmAction` 那套：那个的 `execute` 是"跑一条 `wslc`
@@ -2418,6 +2428,21 @@ pub struct DeployLogs {
     /// 看的是哪个应用。
     pub app: String,
     /// 日志内容（`None` = 还在读）。
+    pub text: Option<String>,
+    /// 正在后台读。
+    pub busy: bool,
+}
+
+/// 正在看的站点配置（只读浮层）。
+///
+/// 和 [`DeployLogs`] 同一个形状：纯数据（没有输入框），所以能住在这里；
+/// 和日志分开是因为标题 / 说明 / 打开入口不同，塞进 `DeployLogs` 只会多一个
+/// "这是哪种文本"的布尔。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeploySiteConf {
+    /// 看的是哪个应用。
+    pub app: String,
+    /// conf 内容（`None` = 还在读）。
     pub text: Option<String>,
     /// 正在后台读。
     pub busy: bool,
@@ -2442,6 +2467,7 @@ impl DeployState {
             signal,
             web_root: None,
             ports: Vec::new(),
+            networks: Vec::new(),
             // ⚠️ **必须 false**。这里的语义只能是"**已经有一个后台任务在跑**"，
             // 而不是"马上就要去探测"—— `load_deploy` 的第一句就是"正在跑就不叠
             // 第二次"，先置 true 会把第一次加载自己挡掉，页面永远停在
@@ -2454,6 +2480,7 @@ impl DeployState {
             entries: Vec::new(),
             progress: None,
             logs: None,
+            site_conf: None,
             confirm_remove: None,
         }
     }
@@ -2467,6 +2494,7 @@ impl DeployState {
         self.signal = DeploySignal::Image;
         self.web_root = probe.web_root.clone();
         self.ports = probe.ports.clone();
+        self.networks = probe.networks.clone();
         self.busy = false;
     }
 
@@ -5616,6 +5644,7 @@ mod tests {
                 artifact: app.to_owned(),
                 port: 8080,
                 members: vec![app.to_owned()],
+                site: None,
             },
             runtime: AppRuntime::from_key(runtime_key),
             process: None,
@@ -5723,6 +5752,7 @@ mod tests {
                 "80/tcp".to_owned(),
                 vec![("127.0.0.1".to_owned(), "80".to_owned())],
             )],
+            networks: vec!["bridge".to_owned()],
         };
         state.apply_probe(&probe);
 
@@ -5746,6 +5776,7 @@ mod tests {
         assert_eq!(DeployPhase::Stopping.label(), "正在停止…");
         assert_ne!(DeployPhase::Stopping.label(), DeployPhase::Starting.label());
         assert_eq!(DeployPhase::Uploading.label(), "正在上传…");
+        assert_eq!(DeployPhase::Configuring.label(), "正在写入站点配置…");
         assert_eq!(DeployPhase::Removing.label(), "正在删除…");
     }
 

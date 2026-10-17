@@ -48,7 +48,10 @@
 //! `cannot create …: Directory nonexistent`，而命令"看起来成功了"。
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
 
 use super::{image_last_segment, ContainerInspect, ContainerListItem};
 
@@ -1282,6 +1285,348 @@ fn is_under(path: &str, parent: &str) -> bool {
         return path != "/" && path.starts_with('/');
     }
     path.starts_with(parent) && path.as_bytes().get(parent.len()) == Some(&b'/')
+}
+
+// ---------------------------------------------------------------------------
+// nginx 站点配置：每应用一份 server 块（v0.9.19）
+// ---------------------------------------------------------------------------
+
+/// 一份 nginx 站点配置（只有 nginx 内容形态会有）。
+///
+/// 字段都是**扁平的字符串**，和 [`crate::model::deploy`] 里其它存档类型同一条
+/// 原则：`deployments.json` 是能手改、能看懂的。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeploySite {
+    /// `server_name`。默认 `localhost`（端口 80 上靠它接管 `default.conf`）。
+    #[serde(default = "default_server_name")]
+    pub server_name: String,
+    /// 单页应用回退（`try_files $uri $uri/ /index.html`）。
+    #[serde(default)]
+    pub spa: bool,
+    /// 反代规则。P0 只有 0 或 1 条，结构上留成 `Vec`。
+    #[serde(default)]
+    pub proxies: Vec<ProxyRule>,
+    /// 容器里的配置文件。空串 = 用 [`conf_path`] 重算。
+    #[serde(default)]
+    pub conf: String,
+}
+
+fn default_server_name() -> String {
+    "localhost".to_owned()
+}
+
+/// 一条反向代理规则。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProxyRule {
+    /// 路径前缀，例如 `/api/`（[`valid_proxy_prefix`] 把关）。
+    pub prefix: String,
+    /// 已规范化，例如 `http://api:8080`（[`normalize_upstream`] 把关）。
+    pub upstream: String,
+    /// 转发时去掉 `prefix`（后端收到 `/foo` 而不是 `/api/foo`）。
+    #[serde(default)]
+    pub strip_prefix: bool,
+}
+
+/// 配置文件名：`00-` 让它字典序排在最前（端口 80 上成为默认 server）。
+pub fn conf_file_name(app: &str) -> String {
+    format!("00-wslc-panel-{app}.conf")
+}
+
+/// 容器内的配置文件路径。
+pub fn conf_path(app: &str) -> String {
+    format!("/etc/nginx/conf.d/{}", conf_file_name(app))
+}
+
+/// 配置文件首行的标记 —— 覆盖/删除前靠它确认"这是面板生成的"。
+pub fn conf_marker(app: &str) -> String {
+    format!("# wslc-panel:site:{app}")
+}
+
+/// 生成一份 `server{}` 块。
+///
+/// # 几个**必须**这么写的点（都实测过）
+///
+/// - `resolver` 放**这个 `server` 里**，不能放文件顶层：多应用时第二个文件
+///   再写一次 http 级的 `resolver` 会 `"resolver" directive is duplicate`
+///   （`nginx -t` 直接失败）。
+/// - 反代上游用**变量 + `$request_uri`**，不用静态 `proxy_pass http://api:8080`：
+///   后端容器停着时名字解析不了，静态写法会让 `nginx -t` / reload / 重启全失败；
+///   变量写法只让请求 502，后端起来后自动恢复。
+/// - 去前缀用**正则 location**：`rewrite ... break` + 变量会 500，
+///   `proxy_pass $u;`（变量带末尾 `/`）会丢后缀 —— 实测只有正则这一种能用。
+/// - `root` 要加引号：目标目录可能带空格。
+pub fn site_conf(
+    app: &str,
+    site: &DeploySite,
+    root: &str,
+    listen: u16,
+    resolver: Option<&str>,
+) -> String {
+    let server_name = {
+        let name = site.server_name.trim();
+        if !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        {
+            name
+        } else {
+            "localhost"
+        }
+    };
+
+    let mut out = String::new();
+    // 首行**必须**恰好是标记：`apply_site` / `remove_site` 读首行做等值比较，
+    // 多一个后缀就会被当成"不是面板的文件"而拒绝覆盖。
+    let _ = writeln!(out, "{}", conf_marker(app));
+    let _ = writeln!(out, "# 由面板生成，重新部署会整份覆盖");
+    let _ = writeln!(out, "server {{");
+    let _ = writeln!(out, "    listen {listen};");
+    let _ = writeln!(out, "    server_name {server_name};");
+    if !site.proxies.is_empty() {
+        if let Some(addr) = resolver.map(str::trim).filter(|addr| !addr.is_empty()) {
+            let _ = writeln!(out, "    resolver {addr} ipv6=off valid=5s;");
+        }
+    }
+    let _ = writeln!(out, "    root \"{}\";", nginx_quote(root));
+    let _ = writeln!(out, "    index index.html;");
+    let _ = writeln!(out);
+
+    if site.spa {
+        let _ = writeln!(out, "    location / {{");
+        let _ = writeln!(out, "        try_files $uri $uri/ /index.html;");
+        let _ = writeln!(out, "    }}");
+        let _ = writeln!(out);
+    }
+
+    for (index, rule) in site.proxies.iter().enumerate() {
+        let var = format!("wslc_upstream_{}", index + 1);
+        if rule.strip_prefix {
+            let _ = writeln!(out, "    location ~ ^{}(.*)$ {{", rule.prefix);
+            let _ = writeln!(
+                out,
+                "        set ${var} \"{}\";",
+                nginx_quote(&rule.upstream)
+            );
+            let _ = writeln!(out, "        proxy_pass ${var}/$1$is_args$args;");
+        } else {
+            let _ = writeln!(out, "    location {} {{", rule.prefix);
+            let _ = writeln!(
+                out,
+                "        set ${var} \"{}\";",
+                nginx_quote(&rule.upstream)
+            );
+            let _ = writeln!(out, "        proxy_pass ${var}$request_uri;");
+        }
+        let _ = writeln!(out, "        proxy_http_version 1.1;");
+        let _ = writeln!(out, "        proxy_set_header Host $host;");
+        let _ = writeln!(out, "        proxy_set_header X-Real-IP $remote_addr;");
+        let _ = writeln!(
+            out,
+            "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;"
+        );
+        let _ = writeln!(out, "        proxy_set_header X-Forwarded-Proto $scheme;");
+        let _ = writeln!(out, "    }}");
+        let _ = writeln!(out);
+    }
+
+    let _ = writeln!(out, "}}");
+    out
+}
+
+/// 把 `root` / 上游这类要进 `"…"` 的字符串转义成 nginx 能吃的形状。
+///
+/// `$` 也要转义：nginx 在双引号里**仍然**会做变量替换，路径里带 `$` 会被吃掉。
+fn nginx_quote(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('$', "\\$")
+        .replace('\r', "")
+        .replace('\n', "")
+}
+
+/// 规范化反代上游：接受 `host:port` / `http://host:port` / `https://host:port`。
+///
+/// 主机只允许 `[A-Za-z0-9._-]`、端口 1~65535；不允许路径 / 空格 / `;` / `{}` /
+/// `$` / 换行 —— 这些能直接拼出第二条配置。
+pub fn normalize_upstream(raw: &str) -> Result<String, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("反代上游不能为空".to_owned());
+    }
+    let (scheme, rest) = if let Some(rest) = raw.strip_prefix("http://") {
+        ("http", rest)
+    } else if let Some(rest) = raw.strip_prefix("https://") {
+        ("https", rest)
+    } else {
+        ("http", raw)
+    };
+    let (host, port) = rest.rsplit_once(':').ok_or_else(|| {
+        "上游要写成 host:port（例如 http://api:8080）".to_owned()
+    })?;
+    if host.is_empty()
+        || !host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+    {
+        return Err(format!("上游主机名不合法：{host}"));
+    }
+    let port: u16 = port
+        .parse()
+        .map_err(|_| "上游端口要是 1~65535 的数字".to_owned())?;
+    if port == 0 {
+        return Err("上游端口不能是 0".to_owned());
+    }
+    Ok(format!("{scheme}://{host}:{port}"))
+}
+
+/// 校验路径前缀：`/api/` 这样（`/` 开头、`/` 结尾、只允许安全字符）。
+pub fn valid_proxy_prefix(raw: &str) -> Result<String, String> {
+    let raw = raw.trim();
+    if raw.len() < 2 || !raw.starts_with('/') || !raw.ends_with('/') {
+        return Err("路径前缀要像 /api/ 这样（以 / 开头、以 / 结尾）".to_owned());
+    }
+    if !raw
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_'))
+    {
+        return Err("路径前缀只允许字母 / 数字 / 斜杠 / 下划线 / 连字符".to_owned());
+    }
+    if raw.contains("//") {
+        return Err("路径前缀里不能有 //".to_owned());
+    }
+    Ok(raw.to_owned())
+}
+
+/// 从一个已规范化的上游里取主机名（给网络检查/测试用）。
+pub fn upstream_host(upstream: &str) -> &str {
+    let rest = upstream
+        .strip_prefix("http://")
+        .or_else(|| upstream.strip_prefix("https://"))
+        .unwrap_or(upstream);
+    rest.rsplit_once(':').map(|(host, _)| host).unwrap_or(rest)
+}
+
+/// 校验 `server_name`（单个主机名；空串按 `localhost`）。
+///
+/// 不开放空格分隔的多名字：表单只有一格，多名字放进来既难校验也难解释；
+/// 真要多个域名，等 P1 的列表 UI。
+pub fn valid_server_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Ok("localhost".to_owned());
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+    {
+        return Err("server_name 只允许字母 / 数字 / 点 / 连字符 / 下划线".to_owned());
+    }
+    Ok(name.to_owned())
+}
+
+/// 把一条反代规则格式化成「更多反代」那一格的写法（预填用）。
+pub fn format_proxy_rule(rule: &ProxyRule) -> String {
+    let mut out = format!("{} => {}", rule.prefix, rule.upstream);
+    if rule.strip_prefix {
+        out.push_str(" strip");
+    }
+    out
+}
+
+/// 解析「更多反代」：`/api/ => http://api:8080; /auth/ => http://auth:9000 strip`
+///
+/// 用 `;` 分隔（单行输入框里最稳；上游本身不允许 `;`，不会有歧义）。
+pub fn parse_proxy_rules(raw: &str) -> Result<Vec<ProxyRule>, String> {
+    let mut out = Vec::new();
+    for part in raw.split(';').map(str::trim).filter(|part| !part.is_empty()) {
+        let Some((prefix, rest)) = part.split_once("=>") else {
+            return Err(format!(
+                "这条反代看不懂（要 /path/ => host:port）：{part}"
+            ));
+        };
+        let prefix = valid_proxy_prefix(prefix)?;
+        let mut tokens = rest.split_whitespace();
+        let upstream = tokens
+            .next()
+            .ok_or_else(|| format!("反代「{part}」缺少上游"))?;
+        let upstream = normalize_upstream(upstream)?;
+        let mut strip_prefix = false;
+        for token in tokens {
+            if token.eq_ignore_ascii_case("strip") {
+                strip_prefix = true;
+            } else {
+                return Err(format!("反代「{part}」里多了一个看不懂的词：{token}"));
+            }
+        }
+        out.push(ProxyRule {
+            prefix,
+            upstream,
+            strip_prefix,
+        });
+    }
+    Ok(out)
+}
+
+/// 从 `/etc/resolv.conf` 取第一个 `nameserver`（nginx 的 `resolver` 要用它）。
+pub fn first_nameserver(resolv_conf: &str) -> Option<String> {
+    for line in resolv_conf.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("nameserver") else {
+            continue;
+        };
+        if !rest.chars().next().is_some_and(char::is_whitespace) {
+            continue;
+        }
+        let addr = rest.split_whitespace().next()?;
+        if !addr.is_empty()
+            && addr
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() || matches!(c, '.' | ':'))
+        {
+            return Some(addr.to_owned());
+        }
+    }
+    None
+}
+
+/// 去掉 nginx 的**预期噪音**（`conflicting server name "localhost" ... ignored`）。
+///
+/// 这句是"两个 `server_name localhost` 在同一个端口"的必然结果（端口 80 接管
+/// `default.conf` 时会出现），exit code 仍然是 0。页头「重载 nginx」会原样弹
+/// 输出，不过滤的话每次重载都像报了个错。
+pub fn filter_nginx_noise(text: &str) -> String {
+    text.lines()
+        .filter(|line| !line.contains("conflicting server name"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_owned()
+}
+
+/// `nginx -t` 的脚本（`2>&1` 让错误进 stderr 合并后的输出）。
+pub fn nginx_test_script() -> String {
+    "nginx -t 2>&1".to_owned()
+}
+
+/// 面板自己建的网络名：两个容器没有共同用户网络时用它。
+pub const PANEL_NETWORK: &str = "wslc-panel";
+
+/// 两个容器**共同的用户自定义网络**（`bridge` / `host` / `none` 不算）。
+///
+/// 默认 `bridge` 上容器名解析不了（实测 `getent` rc=2，`host.docker.internal`
+/// 也不通），所以反代的上游名字要么本来就有一个共同用户网络，要么得建/接一个。
+/// 返回 `left` 里第一个也出现在 `right` 里的名字 —— 顺序稳定，测试可预期。
+pub fn common_user_network(left: &[String], right: &[String]) -> Option<String> {
+    left.iter()
+        .filter(|name| is_user_network(name.as_str()))
+        .find(|name| right.iter().any(|other| other == *name))
+        .cloned()
+}
+
+fn is_user_network(name: &str) -> bool {
+    !matches!(name.trim(), "" | "bridge" | "host" | "none")
 }
 
 // ---------------------------------------------------------------------------
@@ -2574,5 +2919,247 @@ mod tests {
             target_overlap("/root", "/"),
             Some(TargetOverlap::NewInsideExisting)
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // nginx 站点配置
+    // -----------------------------------------------------------------------
+
+    fn site(proxies: Vec<ProxyRule>) -> DeploySite {
+        DeploySite {
+            server_name: "localhost".to_owned(),
+            spa: true,
+            proxies,
+            conf: String::new(),
+        }
+    }
+
+    #[test]
+    fn site_conf_has_the_measured_shape() {
+        let text = site_conf(
+            "site",
+            &site(vec![]),
+            "/usr/share/nginx/html/site",
+            8080,
+            None,
+        );
+        assert!(text.contains("listen 8080;"), "{text}");
+        assert!(text.contains("server_name localhost;"), "{text}");
+        assert!(
+            text.contains("root \"/usr/share/nginx/html/site\";"),
+            "{text}"
+        );
+        assert!(text.contains("try_files $uri $uri/ /index.html;"), "{text}");
+        assert!(!text.contains("resolver"), "{text}");
+        assert!(text.contains("# wslc-panel:site:site"), "{text}");
+        let marker = conf_marker("site");
+        assert_eq!(
+            text.lines().next(),
+            Some(marker.as_str()),
+            "首行必须恰好是标记（apply/remove 做等值比较）"
+        );
+    }
+
+    #[test]
+    fn site_conf_puts_resolver_inside_server_and_uses_variables() {
+        let rule = ProxyRule {
+            prefix: "/api/".to_owned(),
+            upstream: "http://api:8080".to_owned(),
+            strip_prefix: false,
+        };
+        let text = site_conf(
+            "site",
+            &site(vec![rule]),
+            "/data/www/site",
+            8080,
+            Some("127.0.0.11"),
+        );
+        let server_at = text.find("server {").expect("server");
+        let resolver_at = text.find("resolver 127.0.0.11").expect("resolver");
+        assert!(resolver_at > server_at, "resolver 必须在 server 里：{text}");
+        assert_eq!(text.matches("resolver ").count(), 1, "{text}");
+        assert!(text.contains("location /api/ {"), "{text}");
+        assert!(
+            text.contains("proxy_pass $wslc_upstream_1$request_uri;"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("proxy_pass http://api:8080"),
+            "不能用静态上游：{text}"
+        );
+    }
+
+    #[test]
+    fn site_conf_strip_prefix_uses_a_regex_location() {
+        let rule = ProxyRule {
+            prefix: "/api/".to_owned(),
+            upstream: "http://api:8080".to_owned(),
+            strip_prefix: true,
+        };
+        let text = site_conf(
+            "site",
+            &site(vec![rule]),
+            "/data/www/site",
+            8080,
+            Some("127.0.0.11"),
+        );
+        assert!(text.contains("location ~ ^/api/(.*)$ {"), "{text}");
+        assert!(
+            text.contains("proxy_pass $wslc_upstream_1/$1$is_args$args;"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn site_conf_quotes_a_root_with_spaces() {
+        let text = site_conf("site", &site(vec![]), "/mnt/e/my site", 80, None);
+        assert!(text.contains("root \"/mnt/e/my site\";"), "{text}");
+    }
+
+    #[test]
+    fn upstreams_are_normalized_and_injection_is_rejected() {
+        assert_eq!(normalize_upstream("api:8080").unwrap(), "http://api:8080");
+        assert_eq!(
+            normalize_upstream("http://api:8080").unwrap(),
+            "http://api:8080"
+        );
+        assert_eq!(
+            normalize_upstream("https://api:443").unwrap(),
+            "https://api:443"
+        );
+        for bad in [
+            "",
+            "api",
+            "api:0",
+            "http://api",
+            "http://a:1; } server { listen 9;",
+            "http://a:1/x",
+        ] {
+            assert!(normalize_upstream(bad).is_err(), "应当拒绝：{bad}");
+        }
+        assert_eq!(upstream_host("http://api:8080"), "api");
+    }
+
+    #[test]
+    fn prefixes_are_strict() {
+        assert_eq!(valid_proxy_prefix(" /api/ ").unwrap(), "/api/");
+        for bad in ["/api", "/", "api/", "/a b/", "/a//b/", "/a;b/"] {
+            assert!(valid_proxy_prefix(bad).is_err(), "应当拒绝：{bad}");
+        }
+    }
+
+    #[test]
+    fn first_nameserver_takes_the_first_valid_line() {
+        let text = "# comment\nsearch lan\nnameserver 127.0.0.11\nnameserver 8.8.8.8\n";
+        assert_eq!(first_nameserver(text).as_deref(), Some("127.0.0.11"));
+        assert_eq!(first_nameserver("search lan\n"), None);
+        assert_eq!(
+            first_nameserver("nameserver 2001:db8::1\n").as_deref(),
+            Some("2001:db8::1")
+        );
+    }
+
+    #[test]
+    fn nginx_noise_is_filtered_but_real_lines_survive() {
+        let text = "nginx: [warn] conflicting server name \"localhost\" on 0.0.0.0:80, ignored\n\
+                    nginx: [notice] signal process started";
+        let clean = filter_nginx_noise(text);
+        assert!(!clean.contains("conflicting server name"), "{clean}");
+        assert!(clean.contains("signal process started"), "{clean}");
+    }
+
+    #[test]
+    fn conf_paths_are_ours_and_sorted_first() {
+        assert_eq!(
+            conf_path("site"),
+            "/etc/nginx/conf.d/00-wslc-panel-site.conf"
+        );
+        assert_eq!(conf_marker("site"), "# wslc-panel:site:site");
+    }
+
+    #[test]
+    fn common_user_network_ignores_builtin_networks() {
+        let left = vec!["bridge".to_owned(), "wslc-panel".to_owned()];
+        let right = vec!["bridge".to_owned(), "wslc-panel".to_owned()];
+        assert_eq!(
+            common_user_network(&left, &right).as_deref(),
+            Some(PANEL_NETWORK)
+        );
+        assert_eq!(common_user_network(&left, &["bridge".to_owned()]), None);
+        assert_eq!(common_user_network(&[], &[]), None);
+        let left = vec!["host".to_owned(), "none".to_owned(), "app-net".to_owned()];
+        let right = vec!["app-net".to_owned(), "host".to_owned()];
+        assert_eq!(
+            common_user_network(&left, &right).as_deref(),
+            Some("app-net")
+        );
+    }
+
+    #[test]
+    fn server_names_are_validated_and_empty_means_localhost() {
+        assert_eq!(valid_server_name(" example.com ").unwrap(), "example.com");
+        assert_eq!(valid_server_name("").unwrap(), "localhost");
+        assert_eq!(valid_server_name("_").unwrap(), "_");
+        for bad in ["a b", "a;b", "a{b", "a\"b", "a/b"] {
+            assert!(valid_server_name(bad).is_err(), "应当拒绝：{bad}");
+        }
+    }
+
+    #[test]
+    fn proxy_rules_parse_and_format_round_trip() {
+        let text = "/api/ => http://api:8080; /auth/ => https://auth:9000 strip";
+        let rules = parse_proxy_rules(text).unwrap();
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].prefix, "/api/");
+        assert_eq!(rules[0].upstream, "http://api:8080");
+        assert!(!rules[0].strip_prefix);
+        assert_eq!(rules[1].upstream, "https://auth:9000");
+        assert!(rules[1].strip_prefix);
+        let formatted: Vec<String> = rules.iter().map(format_proxy_rule).collect();
+        assert_eq!(parse_proxy_rules(&formatted.join("; ")).unwrap(), rules);
+        // 空串 / 多余分号不算规则
+        assert!(parse_proxy_rules("  ;  ").unwrap().is_empty());
+    }
+
+    #[test]
+    fn proxy_rules_reject_garbage() {
+        for bad in [
+            "api",
+            "/api => http://api:8080",
+            "/api/ => http://api",
+            "/api/ => http://a:1; wat",
+            "/api/ => http://a:1 strip wat",
+        ] {
+            assert!(parse_proxy_rules(bad).is_err(), "应当拒绝：{bad}");
+        }
+    }
+
+    #[test]
+    fn site_conf_emits_one_location_per_rule() {
+        let rules = vec![
+            ProxyRule {
+                prefix: "/api/".to_owned(),
+                upstream: "http://api:8080".to_owned(),
+                strip_prefix: false,
+            },
+            ProxyRule {
+                prefix: "/auth/".to_owned(),
+                upstream: "http://auth:9000".to_owned(),
+                strip_prefix: true,
+            },
+        ];
+        let mut site = site(rules);
+        site.spa = false;
+        let text = site_conf(
+            "site",
+            &site,
+            "/data/www/site",
+            8080,
+            Some("127.0.0.11"),
+        );
+        assert_eq!(text.matches("    location ").count(), 2, "{text}");
+        assert!(text.contains("location /api/ {"), "{text}");
+        assert!(text.contains("location ~ ^/auth/(.*)$ {"), "{text}");
+        assert!(text.contains("$wslc_upstream_2"), "{text}");
     }
 }

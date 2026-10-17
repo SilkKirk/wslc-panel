@@ -3,6 +3,7 @@
 use crate::cli::Wslc;
 use crate::error::{Error, Result};
 use crate::jsonl;
+use crate::model::deploy;
 use crate::model::NetworkListItem;
 
 /// `wslc network list --format json`
@@ -32,6 +33,62 @@ pub fn remove(wslc: &Wslc, names: &[String]) -> Result<()> {
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     wslc.run_checked(&refs)?;
     Ok(())
+}
+
+/// 建一个用户自定义网络。
+pub fn create(wslc: &Wslc, name: &str) -> Result<()> {
+    wslc.run_checked(&["network", "create", name])?;
+    Ok(())
+}
+
+/// 把容器接到网络（实测运行中的容器也能直接接）。
+pub fn connect(wslc: &Wslc, network: &str, container: &str) -> Result<()> {
+    wslc.run_checked(&["network", "connect", network, container])?;
+    Ok(())
+}
+
+/// 这个网络名存不存在（按名字精确匹配）。
+pub fn exists(wslc: &Wslc, name: &str) -> Result<bool> {
+    Ok(list(wslc)?
+        .iter()
+        .any(|network| network.name.as_str() == name))
+}
+
+/// 保证两个容器在同一个**用户自定义**网络上，返回用到的网络名。
+///
+/// 顺序：
+/// 1. 已经有共同用户网络 → 直接用（不动现有拓扑）；
+/// 2. 否则用 [`deploy::PANEL_NETWORK`]，不存在就建，然后**只接缺的那一边**。
+///
+/// ⚠️ `bridge` 不算：默认 bridge 上容器名解析不了（实测 `getent` rc=2），
+/// 反代的上游名字必须落在用户自定义网络上。
+pub fn ensure_shared_network(
+    wslc: &Wslc,
+    left_container: &str,
+    left_networks: &[String],
+    right_container: &str,
+    right_networks: &[String],
+) -> Result<String> {
+    if let Some(name) = deploy::common_user_network(left_networks, right_networks) {
+        return Ok(name);
+    }
+    let name = deploy::PANEL_NETWORK;
+    if !exists(wslc, name)? {
+        create(wslc, name)?;
+    }
+    if !left_networks
+        .iter()
+        .any(|network| network.as_str() == name)
+    {
+        connect(wslc, name, left_container)?;
+    }
+    if !right_networks
+        .iter()
+        .any(|network| network.as_str() == name)
+    {
+        connect(wslc, name, right_container)?;
+    }
+    Ok(name.to_owned())
 }
 
 #[cfg(test)]

@@ -15,6 +15,7 @@
 //! 这是整个项目里**唯一**接触 GPUI 异步 API 的地方，
 //! 因此如果上游 API 有变动，只需要改这一个文件。
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -36,14 +37,15 @@ use gpui_kit::component::select::{SelectEvent, SelectState};
 use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 
-use wslc_core::cmd::container::{PullPolicy, RunSpec};
+use wslc_core::cmd::container::{PullPolicy, RunSpec, inspect as inspect_container};
+use wslc_core::cmd::network as network_cmd;
 // 部署管理页（v0.9）：真正的活都在 `cmd::deploy` 里（打包 / 上传 / 起停判活），
 // 识别 / 脚本生成 / 输出解析是 `model::deploy` 的纯逻辑。
 // ⚠️ `deploy` 这个名字两边都有（`cmd::deploy` 和 `model::deploy`），
 // 所以一个用全路径、一个起别名 —— 否则读代码的人分不清在调哪一层。
 use wslc_core::cmd::deploy as deploy_cmd;
 use wslc_core::model::deploy as deploy_model;
-use wslc_core::model::{AppRuntime, DeployKind, DeploySignal};
+use wslc_core::model::{AppRuntime, DeployKind, DeploySignal, DeploySite};
 // 数据库管理页（v0.7.0）：真正的活都在 `cmd::mysql` 里（起进程 + 脱敏），
 // 识别 / 拼参数 / SQL 生成是 `model::mysql` 的纯逻辑。
 use wslc_core::cmd::mysql::{MysqlProbe, run_console_sql, run_sql};
@@ -64,7 +66,8 @@ use wslc_core::{Wsl, Wslc};
 
 use crate::state::{
     self, AppState, BackupState, ConfirmAction, DbFailure, DbState, DbTab, DeployFailure,
-    DeployLogs, DeployPhase, DeployProgress, DeployState, DetailInspect, DistroAction, ExecState,
+    DeployLogs, DeployPhase, DeployProgress, DeploySiteConf, DeployState, DetailInspect, DistroAction,
+    ExecState,
     ExportProgress, ImmediateAction, ImportState, InstallOutcome, InstallProgress,
     InstallSourceKind, LogsState, MirrorChoice, MirrorProbeResult, Page, PendingAction, PromptKind,
     Toast, ToastKind, create_command, exec_argv,
@@ -620,8 +623,25 @@ pub(crate) struct DeployForm {
     /// ⚠️ 它**原样**交给容器里的 `/bin/sh -c`（不引号、不转义）——
     /// 用户在这一格写的就是他要执行的命令行。界面上必须把这件事说出来。
     pub(crate) command: Entity<InputState>,
-    /// 应用监听的端口（**信息性**，见 `columns::DEPLOY_COLUMNS` 的说明）。
+    /// 应用监听的端口。站点关时是**信息性**的（只用来提示有没有发布到主机）；
+    /// 站点开时它就是 `server { listen … }`。
     pub(crate) port: Entity<InputState>,
+    /// 「生成站点配置」勾上没有（只有 nginx 有这一块）。
+    pub(crate) site_enabled: bool,
+    /// 单页应用回退。
+    pub(crate) site_spa: bool,
+    /// `server_name`（域名 / localhost）。
+    pub(crate) server_name: Entity<InputState>,
+    /// 反代路径前缀（`/api/`）。
+    pub(crate) proxy_prefix: Entity<InputState>,
+    /// 反代上游（`http://api:8080`）。
+    pub(crate) proxy_upstream: Entity<InputState>,
+    /// 反代时去掉前缀。
+    pub(crate) proxy_strip: bool,
+    /// 更多反代（`/auth/ => http://auth:9000; ...`）。
+    pub(crate) proxy_more: Entity<InputState>,
+    /// 上游是另一个容器时，自动把两个容器接到同一个用户网络。
+    pub(crate) auto_connect: bool,
 }
 
 /// 「数据库管理」页的一次性动作弹窗在做什么。
@@ -959,6 +979,14 @@ enum DeployField {
     /// v0.9.19 补的：端口校验失败时得把焦点送回这一格 —— 早先枚举里没有它，
     /// 端口填错只能靠用户自己找。
     Port,
+    /// 反代路径前缀（站点开的校验焦点）。
+    ProxyPrefix,
+    /// 反代上游。
+    ProxyUpstream,
+    /// `server_name`。
+    ServerName,
+    /// 更多反代（`;` 分隔）。
+    ProxyMore,
 }
 
 /// 从「添加部署」弹窗里读出来的值。
@@ -974,6 +1002,22 @@ struct DeployFormValues {
     /// 端口。空 / 解析不出来时是 `None` —— 调用方**必须**报错：
     /// 多应用下静默回落到运行时默认端口会撞（v0.9.19 改）。
     port: Option<u16>,
+    /// 是否生成 nginx 站点配置（只有 nginx 有意义）。
+    site_enabled: bool,
+    /// 单页应用回退。
+    site_spa: bool,
+    /// `server_name`。
+    server_name: String,
+    /// 反代路径前缀。
+    proxy_prefix: String,
+    /// 反代上游。
+    proxy_upstream: String,
+    /// 反代去掉前缀。
+    proxy_strip: bool,
+    /// 更多反代（`;` 分隔）。
+    proxy_more: String,
+    /// 自动接通两个容器的网络。
+    auto_connect: bool,
 }
 
 /// 一次部署动作要用的素材（从当前页面状态 + 存档里取出来的一份快照）。
@@ -986,6 +1030,8 @@ struct DeployAction {
     container: String,
     /// 容器内的目标目录。
     target: String,
+    /// 应用端口（站点配置重写时 `listen` 要用）。
+    port: u16,
     /// 启动命令。
     command: String,
     /// 是不是进程形态（决定要不要先停 / 能不能启动）。
@@ -994,6 +1040,22 @@ struct DeployAction {
     /// **不整目录清空**（见 `model::deploy::removals_script`）。
     /// 老存档里没有这一项时是空表：那就只删日志 / pidfile。
     members: Vec<String>,
+    /// 站点配置（删除部署时要连 conf 一起删）。
+    site: Option<DeploySite>,
+}
+
+/// 「写 / 删站点配置」这一步的结果。
+///
+/// 和 [`DeployAction`] 一样是**先取出来**的快照：后台闭包不能借 `self`。
+struct SiteStep {
+    /// 应该写进存档的 site（失败时是**上一次**的，不能把没生效的写进去）。
+    site: Option<DeploySite>,
+    /// 非致命警告（reload 失败 / 有噪音）。
+    warning: Option<String>,
+    /// 成功时附带的说明（自动接通了哪个网络）。
+    note: Option<String>,
+    /// 致命错误（`nginx -t` 没过、conf 删不掉）；`Some` 时 `site` 保留旧值。
+    error: Option<String>,
 }
 
 impl Shell {
@@ -4194,6 +4256,38 @@ impl Shell {
                 )
                 .to_string()
             });
+        // 站点开的记录才有这一块；新应用默认**关**（先铺文件，再决定要不要
+        // 接管端口）。老记录里 `site` 是 `None`，读出来也就是关。
+        let record_site = record.as_ref().and_then(|r| r.site.clone());
+        let site_enabled = record_site.is_some();
+        let site_spa = record_site.as_ref().map(|s| s.spa).unwrap_or(true);
+        let first_proxy = record_site
+            .as_ref()
+            .and_then(|site| site.proxies.first());
+        let proxy_prefix_value = first_proxy
+            .map(|rule| rule.prefix.clone())
+            .unwrap_or_default();
+        let proxy_upstream_value = first_proxy
+            .map(|rule| rule.upstream.clone())
+            .unwrap_or_default();
+        let proxy_strip = first_proxy.is_some_and(|rule| rule.strip_prefix);
+        let server_name_value = record_site
+            .as_ref()
+            .map(|site| site.server_name.clone())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "localhost".to_owned());
+        // 第一条进上面两格；其余塞进「更多反代」一格（预填成它能解析的写法）。
+        let proxy_more_value = record_site
+            .as_ref()
+            .map(|site| {
+                site.proxies
+                    .iter()
+                    .skip(1)
+                    .map(deploy_model::format_proxy_rule)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .unwrap_or_default();
 
         // `InputState::new` 要 `&mut Window` → 只能在这里（有 window）建。
         let app = cx.new(|cx| InputState::new(window, cx).placeholder("site"));
@@ -4209,6 +4303,13 @@ impl Shell {
         let target = cx.new(|cx| InputState::new(window, cx).placeholder("/opt/site"));
         let command = cx.new(|cx| InputState::new(window, cx).placeholder("java -jar app.jar"));
         let port = cx.new(|cx| InputState::new(window, cx).placeholder("8080"));
+        let server_name = cx.new(|cx| InputState::new(window, cx).placeholder("localhost"));
+        let proxy_prefix = cx.new(|cx| InputState::new(window, cx).placeholder("/api/"));
+        let proxy_upstream = cx.new(|cx| InputState::new(window, cx).placeholder("http://api:8080"));
+        let proxy_more = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("/auth/ => http://auth:9000; /ws/ => http://ws:9001 strip")
+        });
 
         app.update(cx, |state, cx| {
             state.set_value(app_value, window, cx);
@@ -4225,6 +4326,18 @@ impl Shell {
         port.update(cx, |state, cx| {
             state.set_value(port_value, window, cx);
         });
+        server_name.update(cx, |state, cx| {
+            state.set_value(server_name_value, window, cx);
+        });
+        proxy_prefix.update(cx, |state, cx| {
+            state.set_value(proxy_prefix_value, window, cx);
+        });
+        proxy_upstream.update(cx, |state, cx| {
+            state.set_value(proxy_upstream_value, window, cx);
+        });
+        proxy_more.update(cx, |state, cx| {
+            state.set_value(proxy_more_value, window, cx);
+        });
 
         // 焦点给**来源**那一格：新增时最可能要做的事就是点「浏览…」，
         // 重新部署时用户多半直接点确认 —— 焦点在哪都不影响。
@@ -4238,6 +4351,14 @@ impl Shell {
             target,
             command,
             port,
+            site_enabled,
+            site_spa,
+            server_name,
+            proxy_prefix,
+            proxy_upstream,
+            proxy_strip,
+            proxy_more,
+            auto_connect: true,
         });
         cx.notify();
     }
@@ -4245,6 +4366,38 @@ impl Shell {
     /// 关掉「添加部署」弹窗（取消 / 提交完都走它）。
     pub fn close_deploy_dialog(&mut self, cx: &mut Context<Self>) {
         self.deploy_form = None;
+        cx.notify();
+    }
+
+    /// 「生成站点配置」勾选变化。
+    pub fn set_deploy_site_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if let Some(form) = self.deploy_form.as_mut() {
+            form.site_enabled = enabled;
+        }
+        cx.notify();
+    }
+
+    /// 「单页应用回退」勾选变化。
+    pub fn set_deploy_site_spa(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if let Some(form) = self.deploy_form.as_mut() {
+            form.site_spa = enabled;
+        }
+        cx.notify();
+    }
+
+    /// 「去掉前缀」勾选变化。
+    pub fn set_deploy_proxy_strip(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if let Some(form) = self.deploy_form.as_mut() {
+            form.proxy_strip = enabled;
+        }
+        cx.notify();
+    }
+
+    /// 「自动接通网络」勾选变化。
+    pub fn set_deploy_auto_connect(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if let Some(form) = self.deploy_form.as_mut() {
+            form.auto_connect = enabled;
+        }
         cx.notify();
     }
 
@@ -4340,6 +4493,10 @@ impl Shell {
             DeployField::Target => &form.target,
             DeployField::Command => &form.command,
             DeployField::Port => &form.port,
+            DeployField::ProxyPrefix => &form.proxy_prefix,
+            DeployField::ProxyUpstream => &form.proxy_upstream,
+            DeployField::ServerName => &form.server_name,
+            DeployField::ProxyMore => &form.proxy_more,
         };
         let handle = input.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
@@ -4357,6 +4514,14 @@ impl Shell {
             target: form.target.read(cx).value().trim().to_owned(),
             command: form.command.read(cx).value().trim().to_owned(),
             port: form.port.read(cx).value().trim().parse::<u16>().ok(),
+            site_enabled: form.site_enabled,
+            site_spa: form.site_spa,
+            server_name: form.server_name.read(cx).value().trim().to_owned(),
+            proxy_prefix: form.proxy_prefix.read(cx).value().trim().to_owned(),
+            proxy_upstream: form.proxy_upstream.read(cx).value().trim().to_owned(),
+            proxy_strip: form.proxy_strip,
+            proxy_more: form.proxy_more.read(cx).value().trim().to_owned(),
+            auto_connect: form.auto_connect,
         })
     }
 
@@ -4397,6 +4562,7 @@ impl Shell {
         // 要 `&mut self`，`deploy` 那个借用在最后用到它的地方就得结束。
         let web_root = deploy.web_root.clone();
         let ports = deploy.ports.clone();
+        let container_networks = deploy.networks.clone();
         let Some(values) = self.read_deploy_form(cx) else {
             return;
         };
@@ -4531,10 +4697,7 @@ impl Shell {
         }
 
         // 多应用：端口必须是用户明确填的。以前空着会静默回落到运行时默认，
-        // 多应用下那必然和第一条撞；进程型还要查"同一个容器里有没有别人占了"。
-        //
-        // nginx 的内容形态目前不 bind 端口（靠容器里的 nginx 进程），所以
-        // 冲突检查只对进程形态做；「站点开」（DeploySite）落地后再补 nginx。
+        // 多应用下那必然和第一条撞；进程型 / 站点开的 nginx 都会真的 bind。
         let Some(port) = values.port else {
             self.state.notify(Toast::error("请填一个端口（1~65535）"));
             self.focus_deploy_field(DeployField::Port, window, cx);
@@ -4547,7 +4710,91 @@ impl Shell {
             cx.notify();
             return;
         }
-        if process_shape {
+
+        // ---- nginx 站点配置（只有勾了「生成站点配置」才会有） ----
+        //
+        // 这里只**校验并组装**；真正写文件 / `nginx -t` / 回滚在后台的
+        // `apply_site`（见 `cmd::deploy`）。上游规范化在提交前做，免得文件都
+        // 铺完了才告诉用户"上游写错了"。
+        let site: Option<DeploySite> = if runtime == AppRuntime::Nginx && values.site_enabled {
+            let server_name = match deploy_model::valid_server_name(&values.server_name) {
+                Ok(name) => name,
+                Err(message) => {
+                    self.state.notify(Toast::error(message));
+                    self.focus_deploy_field(DeployField::ServerName, window, cx);
+                    cx.notify();
+                    return;
+                }
+            };
+            let prefix = values.proxy_prefix.trim();
+            let upstream = values.proxy_upstream.trim();
+            let mut proxies = Vec::new();
+            if !prefix.is_empty() || !upstream.is_empty() {
+                let prefix = match deploy_model::valid_proxy_prefix(prefix) {
+                    Ok(prefix) => prefix,
+                    Err(message) => {
+                        self.state.notify(Toast::error(message));
+                        self.focus_deploy_field(DeployField::ProxyPrefix, window, cx);
+                        cx.notify();
+                        return;
+                    }
+                };
+                let upstream = match deploy_model::normalize_upstream(upstream) {
+                    Ok(upstream) => upstream,
+                    Err(message) => {
+                        self.state.notify(Toast::error(message));
+                        self.focus_deploy_field(DeployField::ProxyUpstream, window, cx);
+                        cx.notify();
+                        return;
+                    }
+                };
+                proxies.push(deploy_model::ProxyRule {
+                    prefix,
+                    upstream,
+                    strip_prefix: values.proxy_strip,
+                });
+            }
+            let extra = match deploy_model::parse_proxy_rules(&values.proxy_more) {
+                Ok(rules) => rules,
+                Err(message) => {
+                    self.state.notify(Toast::error(message));
+                    self.focus_deploy_field(DeployField::ProxyMore, window, cx);
+                    cx.notify();
+                    return;
+                }
+            };
+            proxies.extend(extra);
+            // nginx 的 `duplicate location` 是**配置校验**错误，不是运行时错误；
+            // 在这里拦比等文件都铺完、`nginx -t` 失败再回滚更好（还能把焦点送回
+            // 「更多反代」那一格）。
+            let mut seen = BTreeSet::new();
+            for rule in &proxies {
+                if !seen.insert(rule.prefix.clone()) {
+                    self.state.notify(Toast::error(format!(
+                        "反代前缀 {} 重复了 —— 同一个前缀只能有一条规则",
+                        rule.prefix
+                    )));
+                    self.focus_deploy_field(DeployField::ProxyMore, window, cx);
+                    cx.notify();
+                    return;
+                }
+            }
+            Some(DeploySite {
+                server_name,
+                spa: values.site_spa,
+                proxies,
+                conf: deploy_model::conf_path(&values.app),
+            })
+        } else {
+            None
+        };
+        // 上一次真的写进容器的那份（站点开→关时要删、失败了要保留它）。
+        let previous_site = editing
+            .as_ref()
+            .and_then(|app| self.state.deploy_store.get(&container, app.as_str()))
+            .and_then(|record| record.site.clone());
+
+        if process_shape || site.is_some() {
             if let Some(owner) = self
                 .state
                 .deploy_store
@@ -4650,10 +4897,12 @@ impl Shell {
             artifact: artifact.clone(),
             port,
             members: member_names,
+            site: previous_site.clone(),
         };
         let app = values.app.clone();
         let target = values.target.clone();
         let command = values.command.clone();
+        let auto_connect = values.auto_connect;
         let port = record.port;
         // 改目标目录时，旧进程的 pidfile 在**旧**目录里 —— 必须用旧目标停，
         // 否则新目录里找不到 pid，旧进程会一直活着（多应用/迁移时很容易踩）。
@@ -4777,7 +5026,166 @@ impl Shell {
                 }
             };
 
-            // ---- ⑥ 启动（只有进程形态要）----
+            // ---- ⑥ 站点配置（nginx，站点开 / 关）----
+            //
+            // 放在复制**之后**：conf 的 `root` 指向的就是刚铺好的目录；`-t`
+            // 不过时文件还在，回滚的只是 conf，不会把站点文件删掉。
+            let site_step = {
+                let wslc = wslc.clone();
+                let container = container.clone();
+                let app = app.clone();
+                let target = target.clone();
+                let desired = site.clone();
+                let previous = previous_site.clone();
+                let container_networks = container_networks.clone();
+                if runtime != AppRuntime::Nginx || (desired.is_none() && previous.is_none()) {
+                    SiteStep {
+                        site: None,
+                        warning: None,
+                        note: None,
+                        error: None,
+                    }
+                } else {
+                    let _ = this.update_in(cx, |shell, _window, cx| {
+                        if shell.deploy_page_is(&container) {
+                            shell.set_deploy_phase(DeployPhase::Configuring, cx);
+                        }
+                    });
+                    cx.background_executor()
+                        .spawn(async move {
+                            let mut step = SiteStep {
+                                site: previous.clone(),
+                                warning: None,
+                                note: None,
+                                error: None,
+                            };
+                            if let Some(desired) = desired.as_ref() {
+                                // 反代预检：上游是**容器名**时，先把两个容器接到
+                                // 同一个用户网络 —— 默认 bridge 解析不了名字
+                                // （实测 `getent` rc=2），否则 conf 写得再对也是 502。
+                                if auto_connect {
+                                    let mut left = if container_networks.is_empty() {
+                                        inspect_container(&wslc, &container, false)
+                                            .ok()
+                                            .map(|inspect| {
+                                                inspect
+                                                    .networks()
+                                                    .into_iter()
+                                                    .map(|(name, _, _, _)| name)
+                                                    .collect::<Vec<_>>()
+                                            })
+                                            .unwrap_or_default()
+                                    } else {
+                                        container_networks.clone()
+                                    };
+                                    let mut seen_hosts: Vec<String> = Vec::new();
+                                    let mut notes: Vec<String> = Vec::new();
+                                    let mut warnings: Vec<String> = Vec::new();
+                                    for rule in &desired.proxies {
+                                        let host =
+                                            deploy_model::upstream_host(&rule.upstream);
+                                        let is_ip = host.parse::<std::net::IpAddr>().is_ok();
+                                        if host == container.as_str()
+                                            || host == "localhost"
+                                            || is_ip
+                                            || seen_hosts.iter().any(|item| item.as_str() == host)
+                                        {
+                                            continue;
+                                        }
+                                        seen_hosts.push(host.to_owned());
+                                        // 找不到同名容器 → 按"外部主机"处理，
+                                        // 不吓用户（上游可能是外部域名）。
+                                        let Ok(peer) = inspect_container(&wslc, host, false) else {
+                                            continue;
+                                        };
+                                        let peer_networks: Vec<String> = peer
+                                            .networks()
+                                            .into_iter()
+                                            .map(|(name, _, _, _)| name)
+                                            .collect();
+                                        match network_cmd::ensure_shared_network(
+                                            &wslc,
+                                            &container,
+                                            &left,
+                                            host,
+                                            &peer_networks,
+                                        ) {
+                                            Ok(network) => {
+                                                // ⚠️ 接上之后要更新 `left`：下一条规则
+                                                // 再 ensure 时如果 `left` 还是旧的，会
+                                                // 对同一个网络重复 `connect`，第二个
+                                                // peer 就会报"already connected"。
+                                                if !left.iter().any(|item| item == &network) {
+                                                    left.push(network.clone());
+                                                }
+                                                notes.push(format!(
+                                                    "已确认 {container} 和 {host} 在同一个网络 {network}"
+                                                ));
+                                            }
+                                            Err(error) => {
+                                                // 只警告、不阻断：conf 本身有效，网络没接上
+                                                // 只是 502；阻断的话用户连"先部署、后接网络"
+                                                // 都做不到。
+                                                warnings.push(format!(
+                                                    "自动接通 {host} 的网络失败：{error} — 反代可能 502；\
+                                                     手动 `wslc network connect {} {host}`",
+                                                    deploy_model::PANEL_NETWORK
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    if !notes.is_empty() {
+                                        step.note = Some(notes.join("；"));
+                                    }
+                                    if !warnings.is_empty() {
+                                        step.warning = Some(warnings.join("；"));
+                                    }
+                                }
+                                let resolv = deploy_cmd::read_resolv_conf(&wslc, &container)
+                                    .unwrap_or_default();
+                                let resolver = deploy_model::first_nameserver(&resolv)
+                                    .unwrap_or_else(|| "127.0.0.11".to_owned());
+                                match deploy_cmd::apply_site(
+                                    &wslc,
+                                    &container,
+                                    &app,
+                                    desired,
+                                    &target,
+                                    port,
+                                    Some(&resolver),
+                                ) {
+                                    Ok(result) => {
+                                        step.site = Some(desired.clone());
+                                        if result.warning.is_some() {
+                                            step.warning = result.warning;
+                                        }
+                                    }
+                                    Err(error) => {
+                                        // `-t` 没过：apply_site 已经把文件回滚了，
+                                        // 记录必须保留**上一次**的 site。
+                                        step.site = previous.clone();
+                                        step.error = Some(error.to_string());
+                                    }
+                                }
+                            } else if let Some(previous) = previous.as_ref() {
+                                match deploy_cmd::remove_site(&wslc, &container, &app, previous) {
+                                    Ok(warning) => {
+                                        step.site = None;
+                                        step.warning = warning;
+                                    }
+                                    Err(error) => {
+                                        step.site = Some(previous.clone());
+                                        step.error = Some(error.to_string());
+                                    }
+                                }
+                            }
+                            step
+                        })
+                        .await
+                }
+            };
+
+            // ---- ⑦ 启动（只有进程形态要）----
             if process_shape {
                 let _ = this.update_in(cx, |shell, _window, cx| {
                     if shell.deploy_page_is(&container) {
@@ -4804,6 +5212,40 @@ impl Shell {
                 if shell.deploy_page_is(&container) {
                     shell.clear_deploy_progress_for(&app, cx);
                 }
+
+                // 站点配置失败：文件铺好了，但 conf 没生效（`apply_site` 已经
+                // 把文件回滚成写之前的样子）。记录写**上一次**的 site ——
+                // `site_step.site` 此时就是旧值，不能把没生效的写进去
+                // （否则下次删除会去删一个不存在的 conf、站点开也会骗人）。
+                if let Some(message) = site_step.error.clone() {
+                    shell.state.deploy_store.put(
+                        &container,
+                        crate::deploys::DeployRecord {
+                            app: app.clone(),
+                            runtime: runtime.key().to_owned(),
+                            source: record.source.clone(),
+                            target: record.target.clone(),
+                            command: record.command.clone(),
+                            artifact: record.artifact.clone(),
+                            port,
+                            members: record.members.clone(),
+                            site: site_step.site.clone(),
+                        },
+                    );
+                    let _ = shell.state.save_deploy_store();
+                    shell.state.refresh_deploy_entries(&container);
+                    if shell.deploy_page_is(&container) {
+                        if let Some(deploy) = shell.state.deploy.as_mut() {
+                            deploy.fail(message.clone());
+                        }
+                    }
+                    shell.state.notify(Toast::error(format!(
+                        "文件铺好了，但站点配置没生效：{message}"
+                    )));
+                    shell.refresh_deploy_status(cx);
+                    return;
+                }
+
                 match started {
                     Ok(()) => {
                         // 写本地存档（"我们部署过什么"由面板记）。
@@ -4820,6 +5262,7 @@ impl Shell {
                                 artifact: record.artifact.clone(),
                                 port,
                                 members: record.members.clone(),
+                                site: site_step.site.clone(),
                             },
                         );
                         if let Some(error) = shell.state.save_deploy_store() {
@@ -4838,9 +5281,14 @@ impl Shell {
                                     &target,
                                 )));
                         }
-                        shell
-                            .state
-                            .notify(Toast::info(format!("已部署 {app} → {target}")));
+                        let mut message = format!("已部署 {app} → {target}");
+                        if let Some(note) = site_step.note.clone() {
+                            message.push_str(&format!("；{note}"));
+                        }
+                        if let Some(warning) = site_step.warning.clone() {
+                            message.push_str(&format!("；站点配置：{warning}"));
+                        }
+                        shell.state.notify(Toast::info(message));
                     }
                     Err(message) => {
                         // 文件铺好了、只是没起来 —— 记录照样写，
@@ -4860,6 +5308,7 @@ impl Shell {
                                 artifact: record.artifact.clone(),
                                 port,
                                 members: removals.clone(),
+                                site: site_step.site.clone(),
                             },
                         );
                         let _ = shell.state.save_deploy_store();
@@ -5060,6 +5509,187 @@ impl Shell {
         cx.notify();
     }
 
+    /// 打开「站点配置」只读浮层。
+    ///
+    /// 只有 nginx 站点开的记录有这个入口（`deploy_row_actions` 判的）；这里再
+    /// 守一道：没有 `site` 就只说一句，不开一个必然空着的浮层。
+    pub fn open_deploy_site_conf(&mut self, app: String, cx: &mut Context<Self>) {
+        let Some(action) = self.deploy_action(&app) else {
+            return;
+        };
+        let Some(site) = action.site.clone() else {
+            self.state
+                .notify(Toast::info("这个部署没有站点配置（站点关）"));
+            return;
+        };
+        if let Some(deploy) = self.state.deploy.as_mut() {
+            deploy.site_conf = Some(DeploySiteConf {
+                app: app.clone(),
+                text: None,
+                busy: true,
+            });
+        }
+        cx.notify();
+
+        let wslc = self.state.wslc.clone();
+        let container = action.container.clone();
+        cx.spawn(async move |this, cx| {
+            let result = {
+                let wslc = wslc.clone();
+                let container = container.clone();
+                let app = app.clone();
+                let site = site.clone();
+                cx.background_executor()
+                    .spawn(async move {
+                        deploy_cmd::read_site_conf(&wslc, &container, &app, Some(&site))
+                            .map_err(|e| e.to_string())
+                    })
+                    .await
+            };
+            let _ = this.update(cx, |shell, cx| {
+                let Some(deploy) = shell.state.deploy.as_mut() else {
+                    return;
+                };
+                // 同日志浮层：容器 + 应用名两道守卫，否则会把结果写进别人的浮层。
+                if deploy.container != container {
+                    return;
+                }
+                let Some(conf) = deploy.site_conf.as_mut() else {
+                    return;
+                };
+                if conf.app != app {
+                    return;
+                }
+                conf.busy = false;
+                match result {
+                    Ok(text) => conf.text = Some(text),
+                    Err(message) => {
+                        conf.text = Some(format!("读配置失败：{message}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 关掉「站点配置」浮层。
+    pub fn close_deploy_site_conf(&mut self, cx: &mut Context<Self>) {
+        if let Some(deploy) = self.state.deploy.as_mut() {
+            deploy.site_conf = None;
+        }
+        cx.notify();
+    }
+
+    /// 重写当前应用的站点配置（容器重建后 conf 丢了时用）。
+    ///
+    /// 只写 conf、**不重新铺文件**；也不重新接网络（容器重建后网络连接也会丢，
+    /// 需要重新部署或手动 `wslc network connect` —— 浮层说明里写了）。
+    ///
+    /// # 为什么不做"自动补写"
+    ///
+    /// 容器重建后网络连接也丢了；自动重写 conf 会让人以为"已经好了"，其实反代
+    /// 还是 502。手动点一次，失败 / 警告能停在浮层里。
+    pub fn reapply_deploy_site(&mut self, app: String, cx: &mut Context<Self>) {
+        let Some(action) = self.deploy_action(&app) else {
+            return;
+        };
+        let Some(site) = action.site.clone() else {
+            self.state
+                .notify(Toast::info("这个部署没有站点配置（站点关）"));
+            return;
+        };
+        if self
+            .state
+            .deploy
+            .as_ref()
+            .is_some_and(|d| d.progress.is_some())
+        {
+            self.deploy_busy_notice(cx);
+            return;
+        }
+        if let Some(deploy) = self.state.deploy.as_mut() {
+            if let Some(conf) = deploy.site_conf.as_mut() {
+                conf.busy = true;
+            } else {
+                deploy.site_conf = Some(DeploySiteConf {
+                    app: app.clone(),
+                    text: None,
+                    busy: true,
+                });
+            }
+        }
+        cx.notify();
+
+        let wslc = self.state.wslc.clone();
+        let container = action.container.clone();
+        let target = action.target.clone();
+        let port = action.port;
+        cx.spawn(async move |this, cx| {
+            let result = {
+                let wslc = wslc.clone();
+                let container = container.clone();
+                let app = app.clone();
+                let site = site.clone();
+                let target = target.clone();
+                cx.background_executor()
+                    .spawn(async move {
+                        let resolv = deploy_cmd::read_resolv_conf(&wslc, &container)
+                            .unwrap_or_default();
+                        let resolver = deploy_model::first_nameserver(&resolv)
+                            .unwrap_or_else(|| "127.0.0.11".to_owned());
+                        let applied = deploy_cmd::apply_site(
+                            &wslc,
+                            &container,
+                            &app,
+                            &site,
+                            &target,
+                            port,
+                            Some(&resolver),
+                        )
+                        .map_err(|e| e.to_string())?;
+                        let text = deploy_cmd::read_site_conf(&wslc, &container, &app, Some(&site))
+                            .map_err(|e| e.to_string())?;
+                        Ok::<(Option<String>, String), String>((applied.warning, text))
+                    })
+                    .await
+            };
+            let _ = this.update(cx, |shell, cx| {
+                let Some(deploy) = shell.state.deploy.as_mut() else {
+                    return;
+                };
+                if deploy.container != container {
+                    return;
+                }
+                let Some(conf) = deploy.site_conf.as_mut() else {
+                    return;
+                };
+                if conf.app != app {
+                    return;
+                }
+                conf.busy = false;
+                match result {
+                    Ok((warning, text)) => {
+                        conf.text = Some(text);
+                        let mut message = "站点配置已重写".to_owned();
+                        if let Some(warning) = warning {
+                            message.push_str(&format!("；{warning}"));
+                        }
+                        shell.state.notify(Toast::info(message));
+                    }
+                    Err(message) => {
+                        conf.text = Some(format!("重写失败：{message}"));
+                        shell
+                            .state
+                            .notify(Toast::error(format!("重写站点配置失败：{message}")));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// 让容器里的 nginx 重载配置（内容形态的「重载 nginx」）。
     pub fn reload_nginx_in_container(&mut self, cx: &mut Context<Self>) {
         let Some(deploy) = self.state.deploy.as_ref() else {
@@ -5177,10 +5807,13 @@ impl Shell {
         let wslc = self.state.wslc.clone();
         let container = action.container.clone();
         let is_process = action.is_process;
+        let site = action.site.clone();
         cx.spawn(async move |this, cx| {
             let result = {
                 let wslc = wslc.clone();
                 let container = container.clone();
+                let app = app.clone();
+                let site = site.clone();
                 cx.background_executor()
                     .spawn(async move {
                         if is_process {
@@ -5194,7 +5827,21 @@ impl Shell {
                             &action.target,
                             &action.members,
                         )
-                        .map_err(|e| e.to_string())
+                        .map_err(|e| e.to_string())?;
+                        // 文件删掉之后再删 conf：conf 的 root 指的就是这个目录。
+                        // 删不掉**不阻断**记录删除（文件已经没了；把记录留下只会
+                        // 让「删除」永远失败），但必须说出来。
+                        let mut warnings = Vec::new();
+                        if let Some(site) = site.as_ref() {
+                            match deploy_cmd::remove_site(&wslc, &container, &app, site) {
+                                Ok(Some(warning)) => warnings.push(warning),
+                                Ok(None) => {}
+                                Err(error) => {
+                                    warnings.push(format!("站点配置没删掉：{error}"));
+                                }
+                            }
+                        }
+                        Ok::<Vec<String>, String>(warnings)
                     })
                     .await
             };
@@ -5204,7 +5851,7 @@ impl Shell {
                     shell.clear_deploy_progress_for(&app, cx);
                 }
                 match result {
-                    Ok(()) => {
+                    Ok(warnings) => {
                         // 只有容器那边真的清掉了才删本地记录 —— 否则用户会
                         // "记录没了、东西还在"
                         shell.state.deploy_store.remove(&container, &app);
@@ -5212,11 +5859,12 @@ impl Shell {
                             shell.state.notify(Toast::error(error));
                         }
                         shell.state.refresh_deploy_entries(&container);
-                        shell
-                            .state
-                            .notify(Toast::info(format!(
-                                "已删除 {app} 的部署（只删了面板铺进去的文件）"
-                            )));
+                        let mut message =
+                            format!("已删除 {app} 的部署（只删了面板铺进去的文件）");
+                        if !warnings.is_empty() {
+                            message.push_str(&format!("；{}", warnings.join("；")));
+                        }
+                        shell.state.notify(Toast::info(message));
                     }
                     Err(message) => {
                         if shell.deploy_page_is(&container) {
@@ -5268,11 +5916,13 @@ impl Shell {
         Some(DeployAction {
             container: deploy.container.clone(),
             target: entry.record.target.clone(),
+            port: entry.record.port,
             command: entry.record.command.clone(),
             is_process: entry
                 .runtime
                 .is_some_and(|runtime| runtime.kind() == DeployKind::Process),
             members: entry.record.members.clone(),
+            site: entry.record.site.clone(),
         })
     }
 
@@ -8011,6 +8661,15 @@ impl Render for Shell {
             Some(logs) => views::deploy_logs_overlay(logs, &entity),
             None => div().into_any_element(),
         };
+        // 「站点配置」也是**纯数据**（只读），和日志并列。
+        let deploy_site_conf: AnyElement = match state
+            .deploy
+            .as_ref()
+            .and_then(|d| d.site_conf.as_ref())
+        {
+            Some(conf) => views::deploy_site_conf_overlay(conf, &entity),
+            None => div().into_any_element(),
+        };
         let deploy_confirm: AnyElement =
             match state.deploy.as_ref().and_then(|d| d.confirm_remove.as_ref()) {
                 Some(app) => views::deploy_remove_confirm_overlay(app, state.deploy.as_ref(), &entity),
@@ -8158,6 +8817,7 @@ impl Render for Shell {
             // 所以插在数据库弹窗**之前**。
             .child(deploy_dialog)
             .child(deploy_logs)
+            .child(deploy_site_conf)
             // 删除确认排在日志之后：它是最后点的那个动作，应该在最上面
             //（日志浮层与它可能同时开着 —— 用户看着日志觉得该删了）。
             .child(deploy_confirm)

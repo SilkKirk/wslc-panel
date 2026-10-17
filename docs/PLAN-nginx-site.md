@@ -8,6 +8,37 @@
 > 另外 nginx 的默认目标目录改成 `<web_root>/<app>`（本文写的是单应用时的 Web 根）。
 > 下面保留原文是为了记录当时的取舍，不要照抄这三处。
 
+> **实施进度（2026-10-17，PR #76，栈在 #75 上）**
+>
+> **已落地**：`DeploySite` / `ProxyRule` + 记录 `site`；`conf_path` /
+> `site_conf` / `normalize_upstream` / `valid_proxy_prefix` /
+> `first_nameserver` / `filter_nginx_noise`（带单测）；`apply_site`
+> （标记检查 → 备份 → 写 → `nginx -t` → 回滚 / reload）/ `remove_site` /
+> `read_resolv_conf`；部署弹窗的站点区（SPA + **一条**反代 + 去前缀）；
+> `record_binds_port` 改成「nginx 站点开才算 bind」；删除部署连 conf 一起删；
+> `DeployPhase::Configuring`；「重载 nginx」过滤 `conflicting server name`；
+> **站点反代的网络预检**：上游是容器名时找共同用户网络，没有就建/接
+> `wslc-panel`（只接缺的一边），找不到同名容器按外部主机处理，失败只警告；
+> 界面「自动接通」默认开；**只读配置浮层**：站点开的行有「站点配置」按钮，
+> 读容器里的 conf（等宽、可滚、不 strip / 不重排）；**重建后重写**：浮层里
+> 「重写配置」只写 conf（不铺文件 / 不接网络）；**端口列 URL**：进程型 /
+> 站点开的 nginx 显示 `http://localhost:<主机端口>`，站点关的 nginx 只标
+> 「已发布；站点关，由默认站点提供」（默认站点的 path 是 target 相对 Web 根，
+> 不一定等于 app 名，不猜）；**页头已发布端口**：容器级 `主机 URL → 容器端口`
+> 清单；**建容器多端口提示**：创建容器弹窗的端口格下面写了"一个容器多个应用时，
+> 建容器这一刻就要把每个应用的端口都发布出去（`-p` 之后改不了）"；
+> **多条反代 + 自定义 `server_name`**：第一条用前缀/上游/去前缀三格，更多规则用
+> `;` 分隔的一格文本（`/auth/ => http://auth:9000; /ws/ => http://ws:9001 strip`），
+> 提交时查重前缀；`server_name` 可填域名（默认 localhost，单个主机名）。
+>
+> **未落地**：HTTPS、负载均衡（同一前缀多个上游）、容器重建后**自动**补写
+> （手动重写已有；不做自动是因为网络连接也会丢，自动重写容易让人误以为已经好了）。
+>
+> **真实 nginx 验证**（`docker.1panel.live/library/nginx:latest`）：一个容器
+> 两个 `server` 块（8080/8081）各带自己的 `resolver`，`nginx -t` 通过；
+> SPA 的 `/foo` 回退到 `index.html`，A/B 内容各自正确；`/api/x` 在 `api`
+> 未解析时是 **502**（不是 500，也不是配置校验失败）。
+
 > **触发问题**：「nginx 的部署管理是不是有点问题？nginx 部署的前端怎么反代到后端？」
 >
 > **结论：不是操作错了，是功能缺一层。** 现在的「部署管理」对 nginx 只做一件事：
