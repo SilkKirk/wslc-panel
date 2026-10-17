@@ -166,15 +166,28 @@ mod tests {
     use wslc_core::model::{ContainerListItem, ContainerSummary};
 
     /// 造一条只带筛选相关字段的容器。
+    ///
+    /// 端口 / 网络只给 `web` 填：`query_matches_...` 要证明"搜端口/网络也只命中
+    /// 那一条"。如果四条都填同一个 `8080` / `bridge`，那个测试就会正确地
+    /// 命中四条 —— 测的就不再是"字段匹配"，而是"同名值也算匹配"。
     fn summary(name: &str, image: &str, state: &str) -> ContainerSummary {
+        let is_web = name == "web";
         ContainerSummary {
             item: ContainerListItem {
                 names: name.to_owned(),
                 image: image.to_owned(),
                 id: format!("id-{name}"),
                 state: state.to_owned(),
-                ports: "8080:80/tcp".to_owned(),
-                networks: "bridge".to_owned(),
+                ports: if is_web {
+                    "8080:80/tcp".to_owned()
+                } else {
+                    String::new()
+                },
+                networks: if is_web {
+                    "bridge".to_owned()
+                } else {
+                    "backend".to_owned()
+                },
                 ..Default::default()
             },
             stats: None,
