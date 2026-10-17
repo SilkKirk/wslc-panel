@@ -621,12 +621,30 @@ impl DbUser {
         format!("'{}'@'{}'", self.user, self.host)
     }
 
-    /// 是不是 MySQL 自带的内部账号（`mysql.sys` / `mysql.session` / `mysql.infoschema`）。
+    /// 是不是 MySQL / MariaDB 自带的内部账号
+    /// （`mysql.sys` / `mysql.session` / `mysql.infoschema` / `mariadb.sys`）。
     pub fn is_system(&self) -> bool {
         matches!(
             self.user.as_str(),
-            "mysql.sys" | "mysql.session" | "mysql.infoschema"
+            "mysql.sys" | "mysql.session" | "mysql.infoschema" | "mariadb.sys"
         )
+    }
+
+    /// 是不是 root 账号。
+    ///
+    /// 用户名在 MySQL 里理论上区分大小写，但 `root` 是安装时建的固定名字；
+    /// 这里按不区分大小写处理，避免有人手工建了 `Root` 时被当成业务账号。
+    pub fn is_root(&self) -> bool {
+        self.user.eq_ignore_ascii_case("root")
+    }
+
+    /// 用户列表默认要不要藏起来。
+    ///
+    /// 系统账号（`mysql.*`）和 root 是 MySQL 自己建的：日常建库 / 建业务用户时
+    /// 它们只会占满列表，而且 root 的「删除 / 改密码」误点代价很大。
+    /// 所以默认隐藏；用户需要改 root 时，界面上有「显示系统账号」开关。
+    pub fn is_hidden_by_default(&self) -> bool {
+        self.is_system() || self.is_root()
     }
 }
 
@@ -1740,6 +1758,37 @@ mod tests {
         assert_eq!(users[4].plugin, "caching_sha2_password");
         assert!(users[0].is_system());
         assert!(!users[4].is_system());
+        assert!(users[4].is_root());
+    }
+
+    #[test]
+    fn system_and_root_are_hidden_by_default_but_normal_users_are_not() {
+        let users = parse_users(USERS_TSV);
+        // 夹具里正好是 3 个 mysql.* + 2 个 root，全部属于"默认藏起来"
+        assert_eq!(
+            users.iter().filter(|u| u.is_hidden_by_default()).count(),
+            5,
+            "{users:?}"
+        );
+        assert!(users.iter().all(|u| u.is_hidden_by_default()));
+
+        let business = DbUser {
+            user: "djxm_user".to_owned(),
+            host: "%".to_owned(),
+            plugin: "caching_sha2_password".to_owned(),
+            super_priv: false,
+        };
+        assert!(!business.is_system());
+        assert!(!business.is_root());
+        assert!(!business.is_hidden_by_default());
+
+        // MariaDB 的 `mariadb.sys` 也算系统账号
+        let mariadb = DbUser {
+            user: "mariadb.sys".to_owned(),
+            ..business.clone()
+        };
+        assert!(mariadb.is_system());
+        assert!(mariadb.is_hidden_by_default());
     }
 
     #[test]

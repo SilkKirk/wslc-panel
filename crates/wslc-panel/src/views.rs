@@ -46,7 +46,7 @@ use wslc_core::model::mysql as mysql_model;
 // 列表行每帧都要判断"这一行该不该画「部署管理」按钮"。
 use wslc_core::model::deploy as deploy_model;
 use wslc_core::model::{
-    ContainerListItem, ContainerState, ContainerSummary, Distro, DistroState, GrantKind,
+    ContainerListItem, ContainerState, ContainerSummary, DbUser, Distro, DistroState, GrantKind,
 };
 // 镜像仓库（Registry V2）的纯逻辑：常用镜像清单、引用/主机名校验、体积累加。
 use wslc_core::registry;
@@ -1966,8 +1966,11 @@ fn db_users_card(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
             })
     };
 
-    let rows: Vec<AnyElement> = db
-        .users
+    // 只画业务账号：系统账号（`mysql.*` / `mariadb.sys`）和 root 不显示。
+    // 判定在 `DbUser::is_hidden_by_default()`，这里只消费。
+    let visible: Vec<&DbUser> = db.visible_users().collect();
+
+    let rows: Vec<AnyElement> = visible
         .iter()
         .map(|user| {
             let user_name = user.user.clone();
@@ -2036,10 +2039,6 @@ fn db_users_card(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
                                 .truncate()
                                 .child(user.user.clone()),
                         )
-                        .children(user.is_system().then(|| {
-                            badge("内部", theme::text_dim(), theme::neutral_soft())
-                                .into_any_element()
-                        }))
                         .into_any_element(),
                     cell_muted(user.host.clone()),
                     cell_muted(user.plugin.clone()),
@@ -2061,6 +2060,11 @@ fn db_users_card(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
         })
         .collect();
 
+    let count_text = format!(
+        "共 {} 条账号记录（同一个用户名可以有多个主机）",
+        visible.len()
+    );
+
     v_flex()
         .w_full()
         .gap_3()
@@ -2074,10 +2078,7 @@ fn db_users_card(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
                     div()
                         .text_sm()
                         .text_color(theme::text_muted())
-                        .child(format!(
-                            "共 {} 条账号记录（同一个用户名可以有多个主机）",
-                            db.users.len()
-                        )),
+                        .child(count_text),
                 ),
         )
         .child(
@@ -2090,8 +2091,12 @@ fn db_users_card(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
                 .overflow_hidden()
                 .child(table_header(DB_USER_COLUMNS))
                 .child(if rows.is_empty() {
-                    empty_state("没有读到任何用户（当前账号可能没有读 mysql.user 的权限）")
-                        .into_any_element()
+                    empty_state(if db.users.is_empty() {
+                        "没有读到任何用户（当前账号可能没有读 mysql.user 的权限）"
+                    } else {
+                        "没有业务账号（系统 / root 账号不显示）"
+                    })
+                    .into_any_element()
                 } else {
                     v_flex().w_full().children(rows).into_any_element()
                 }),
