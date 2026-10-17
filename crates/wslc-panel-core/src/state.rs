@@ -2160,6 +2160,19 @@ impl DbState {
     pub fn usable(&self) -> bool {
         self.blocked.is_none()
     }
+
+    /// 用户 tab 实际要画哪些账号。
+    ///
+    /// **系统账号（`mysql.*` / `mariadb.sys`）和 root 永远不返回** ——
+    /// 它们是安装时建的，日常管业务账号时只会占地方，root 的
+    /// 「改密码 / 删除」误点代价也大。要看它们就用「SQL」控制台。
+    ///
+    /// 判定在 [`DbUser::is_hidden_by_default`] 里，只有一份。
+    pub fn visible_users(&self) -> impl Iterator<Item = &DbUser> + '_ {
+        self.users
+            .iter()
+            .filter(|user| !user.is_hidden_by_default())
+    }
 }
 
 /// 把用户敲的一行命令变成 `wslc exec` 的 argv。
@@ -5819,6 +5832,36 @@ mod tests {
         assert!(!state.loaded);
         // 兜底家族给的客户端名（权威判定由 apply_probe 覆盖）
         assert_eq!(state.client, "mysql");
+    }
+
+    #[test]
+    fn db_user_list_never_includes_system_or_root() {
+        let mut state = DbState::provisional("mysql", "mysql:8", MysqlFamily::Mysql);
+        state.users = vec![
+            DbUser {
+                user: "djxm_user".to_owned(),
+                host: "%".to_owned(),
+                plugin: "caching_sha2_password".to_owned(),
+                super_priv: false,
+            },
+            DbUser {
+                user: "mysql.sys".to_owned(),
+                host: "localhost".to_owned(),
+                plugin: "caching_sha2_password".to_owned(),
+                super_priv: false,
+            },
+            DbUser {
+                user: "root".to_owned(),
+                host: "%".to_owned(),
+                plugin: "caching_sha2_password".to_owned(),
+                super_priv: true,
+            },
+        ];
+
+        // 系统账号和 root 都不在可见列表里，没有"开关"能放出来
+        let visible: Vec<&DbUser> = state.visible_users().collect();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].user, "djxm_user");
     }
 
     #[test]
