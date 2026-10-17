@@ -34,6 +34,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use wslc_core::model::deploy::{TargetOverlap, target_overlap};
+
 /// 一条部署记录。
 ///
 /// 字段刻意都是**扁平的字符串**（运行时存的是 `"nginx"` 这种稳定键，不是
@@ -171,6 +173,137 @@ impl DeployStore {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    // -----------------------------------------------------------------------
+    // 多应用：端口 / 目录冲突（v0.9.19）
+    // -----------------------------------------------------------------------
+
+    /// 新端口能不能用；`Some(应用名)` = 已经被别的应用占了。
+    ///
+    /// 只算**真的会 bind** 的记录（见 [`record_binds_port`]）。
+    pub fn port_conflict(&self, container: &str, app: &str, port: u16) -> Option<&str> {
+        self.for_container(container)
+            .into_iter()
+            .find(|record| {
+                record.app.as_str() != app.trim()
+                    && record_binds_port(*record)
+                    && record.port == port
+            })
+            .map(|record| record.app.as_str())
+    }
+
+    /// 同一容器里**真的会 bind** 的端口（去重、升序）。
+    pub fn binding_ports(&self, container: &str) -> Vec<u16> {
+        let mut out: Vec<u16> = self
+            .for_container(container)
+            .into_iter()
+            .filter(|record| record_binds_port(*record) && record.port > 0)
+            .map(|record| record.port)
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// **新建**应用时能不能用这个目标目录；`None` = 可以。
+    ///
+    /// 规则（方向很重要，见 `docs/PLAN-multi-app.md` §4.3）：
+    /// - 相同 / 新目标是已有目标的父目录 → 拦；
+    /// - 新目标在旧目录里面 → 只有当"子目录第一段"不在旧应用的
+    ///   [`DeployRecord::members`] 里才放行（否则旧应用的逐名删除会带走它）。
+    pub fn target_blocker(
+        &self,
+        container: &str,
+        app: &str,
+        target: &str,
+    ) -> Option<TargetBlock> {
+        let target = normalize_target(target);
+        for record in self.for_container(container) {
+            if record.app.as_str() == app.trim() {
+                continue;
+            }
+            let existing = normalize_target(&record.target);
+            match target_overlap(target, existing) {
+                Some(TargetOverlap::Same) => {
+                    return Some(TargetBlock::Same(record.app.clone()));
+                }
+                Some(TargetOverlap::ExistingInsideNew) => {
+                    return Some(TargetBlock::CoversExisting(record.app.clone()));
+                }
+                Some(TargetOverlap::NewInsideExisting) => {
+                    if let Some(name) = first_segment_under(target, existing) {
+                        if record.members.iter().any(|member| member.trim() == name) {
+                            return Some(TargetBlock::InsideMember {
+                                existing: record.app.clone(),
+                                name: name.to_owned(),
+                            });
+                        }
+                    }
+                }
+                None => {}
+            }
+        }
+        None
+    }
+}
+
+/// 一条记录会不会真的在容器里 bind 一个端口。
+///
+/// - 进程型（`java` / `node` / `go`）会；
+/// - **nginx 的内容形态目前不会**（它靠容器里的 nginx 进程，`port` 只是信息）。
+///   等「站点开」（`DeploySite`）落地之后，这里要变成
+///   `record.runtime != "nginx" || record.site.is_some()`。
+/// - 认不出来的运行时键按"会 bind"算（保守：宁可多拦一个端口，
+///   不要让两个应用真的撞上）。
+fn record_binds_port(record: &DeployRecord) -> bool {
+    record.runtime.trim() != "nginx"
+}
+
+/// 去掉尾部 `/`；空串（或全 `/`）归一成 `/`。
+fn normalize_target(path: &str) -> &str {
+    let trimmed = path.trim().trim_end_matches('/');
+    if trimmed.is_empty() { "/" } else { trimmed }
+}
+
+/// `path` 在 `parent` 底下的**第一段**。
+fn first_segment_under<'a>(path: &'a str, parent: &str) -> Option<&'a str> {
+    let rest = if parent == "/" {
+        path.strip_prefix('/')?
+    } else {
+        path.strip_prefix(parent)?.strip_prefix('/')?
+    };
+    rest.split('/').next().filter(|name| !name.is_empty())
+}
+
+/// `target_blocker` 给出的三种"不能这么做"。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TargetBlock {
+    /// 同一个目录。
+    Same(String),
+    /// 新目标是已有目标的父目录。
+    CoversExisting(String),
+    /// 新目标在旧目录里，而"第一段"正是旧应用铺过的名字。
+    InsideMember { existing: String, name: String },
+}
+
+impl TargetBlock {
+    /// 给用户看的一句话（`target` 是用户填的那个目录）。
+    pub fn message(&self, target: &str) -> String {
+        match self {
+            Self::Same(app) => format!(
+                "目标目录 {target} 已经被「{app}」用了 —— 一个应用一个目录；\
+                 换个目录（比如 /opt/<你的应用名> 或 Web 根下的子目录）"
+            ),
+            Self::CoversExisting(app) => format!(
+                "这个目录是「{app}」的父目录 —— 新应用铺进去可能把它的子目录当自己的\
+                 文件删掉；换一个更具体的目录"
+            ),
+            Self::InsideMember { existing, name } => format!(
+                "「{existing}」铺过「{name}」—— 新应用铺到这个子目录，会被它的\
+                 重新部署删掉；换个应用名/目录"
+            ),
+        }
+    }
 }
 
 /// 默认的存档路径：`<数据目录>/deployments.json`。
@@ -257,6 +390,26 @@ mod tests {
             artifact: app.to_owned(),
             port: 8080,
             members: vec![app.to_owned()],
+        }
+    }
+
+    /// 多应用测试用的记录：运行时 / 端口 / 目录 / 铺过的名字都能指定。
+    fn record_of(
+        app: &str,
+        runtime: &str,
+        port: u16,
+        target: &str,
+        members: &[&str],
+    ) -> DeployRecord {
+        DeployRecord {
+            app: app.to_owned(),
+            runtime: runtime.to_owned(),
+            source: format!(r"E:\build\{app}"),
+            target: target.to_owned(),
+            command: String::new(),
+            artifact: String::new(),
+            port,
+            members: members.iter().map(|name| (*name).to_owned()).collect(),
         }
     }
 
@@ -368,5 +521,84 @@ mod tests {
         assert!(store.get("web", "site").is_none());
         assert!(store.get("web", "api").is_some());
         assert_eq!(store.remove("web", "site"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // 多应用：端口 / 目录冲突（v0.9.19）
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn nginx_content_records_do_not_own_a_port_yet() {
+        // nginx 的内容形态不 bind 端口（靠容器里的 nginx 进程）；
+        // 进程型才是真的占端口。站点开（DeploySite）落地后这条要改。
+        let mut store = DeployStore::default();
+        store.put(
+            "web",
+            record_of("site", "nginx", 80, "/srv/site", &["index.html"]),
+        );
+        store.put(
+            "web",
+            record_of("api", "java", 8080, "/opt/api", &["app.jar"]),
+        );
+        assert_eq!(store.binding_ports("web"), vec![8080]);
+        assert_eq!(store.port_conflict("web", "new", 80), None);
+        assert_eq!(store.port_conflict("web", "new", 8080), Some("api"));
+        // 同一个应用重新部署不算冲突
+        assert_eq!(store.port_conflict("web", "api", 8080), None);
+    }
+
+    #[test]
+    fn target_blocker_allows_the_old_root_to_migrate() {
+        // 老记录铺在 Web 根、新应用铺到它的子目录 —— 这是**迁移路径**，必须放行
+        let mut store = DeployStore::default();
+        store.put(
+            "web",
+            record_of("site", "nginx", 80, "/root", &["index.html"]),
+        );
+        assert!(store.target_blocker("web", "app-2", "/root/app-2").is_none());
+        assert!(store.target_blocker("web", "app-2", "/root/app-2/").is_none());
+        assert!(store.target_blocker("web", "app-2", "/root-other").is_none());
+    }
+
+    #[test]
+    fn target_blocker_rejects_same_parent_and_owned_names() {
+        let mut same = DeployStore::default();
+        same.put(
+            "web",
+            record_of("site", "nginx", 80, "/root", &["index.html"]),
+        );
+        assert_eq!(
+            same.target_blocker("web", "app", "/root/"),
+            Some(TargetBlock::Same("site".to_owned()))
+        );
+        assert_eq!(
+            same.target_blocker("web", "app", "/"),
+            Some(TargetBlock::CoversExisting("site".to_owned()))
+        );
+
+        let mut owned = DeployStore::default();
+        owned.put(
+            "web",
+            record_of("assets", "nginx", 80, "/root", &["assets"]),
+        );
+        assert_eq!(
+            owned.target_blocker("web", "app", "/root/assets"),
+            Some(TargetBlock::InsideMember {
+                existing: "assets".to_owned(),
+                name: "assets".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn target_block_messages_name_the_other_app() {
+        let block = TargetBlock::InsideMember {
+            existing: "site".to_owned(),
+            name: "assets".to_owned(),
+        };
+        let message = block.message("/root/assets");
+        assert!(message.contains("site"), "{message}");
+        assert!(message.contains("assets"), "{message}");
+        assert!(message.contains("/root/assets"), "{message}");
     }
 }

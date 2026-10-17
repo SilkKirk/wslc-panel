@@ -3663,6 +3663,18 @@ pub fn deploy_dialog_overlay(
                 )),
         )
         .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                // 多应用的规矩要在**填的时候**说，不要等提交报错才说。
+                .child(crate::util::strip_md(
+                    "多应用：一个应用 = 一个名字 + 一个目录 + 一个端口。\
+                     nginx 的默认目标已经改成 Web 根下的子目录（`<Web 根>/<应用名>`）；\
+                     进程型应用要自己绑这一格填的端口（Java 用 `--server.port=…`，\
+                     Node 读 `PORT`），面板不会替你改启动命令。",
+                )),
+        )
+        .child(
             h_flex()
                 .w_full()
                 .justify_end()
