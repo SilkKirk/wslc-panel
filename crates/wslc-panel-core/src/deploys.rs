@@ -299,7 +299,7 @@ impl TargetBlock {
                  文件删掉；换一个更具体的目录"
             ),
             Self::InsideMember { existing, name } => format!(
-                "「{existing}」铺过「{name}」—— 新应用铺到这个子目录，会被它的\
+                "「{existing}」铺过「{name}」—— 新应用铺到 {target} 会被它的\
                  重新部署删掉；换个应用名/目录"
             ),
         }
