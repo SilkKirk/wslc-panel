@@ -3522,6 +3522,10 @@ pub fn deploy_dialog_overlay(
         .w(px(560.0))
         .gap_3()
         .p_4()
+        // 站点块出现后弹窗会高出一截；带 id 的滚动容器（AGENTS §7.5）。
+        .id("deploy-dialog-scroll")
+        .max_h(px(760.0))
+        .overflow_y_scroll()
         .rounded_lg()
         .bg(theme::bg_card())
         .border_1()
@@ -3651,8 +3655,117 @@ pub fn deploy_dialog_overlay(
         )
     };
 
+    // nginx 的站点块：勾上才会写 conf。放在端口**前面** —— 端口在站点开时
+    // 就是 `listen`，先解释"要不要站点"再让用户填端口。
+    let site_block: Option<AnyElement> = if runtime == wslc_core::model::AppRuntime::Nginx {
+        Some(
+            v_flex()
+                .w_full()
+                .gap_2()
+                .p_3()
+                .rounded_md()
+                .bg(theme::bg())
+                .border_1()
+                .border_color(theme::border())
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_3()
+                        .items_center()
+                        .child({
+                            let entity = entity.clone();
+                            Checkbox::new("deploy-site-enabled")
+                                .label("生成站点配置（SPA / 反代）")
+                                .checked(form.site_enabled)
+                                .on_change(move |checked: &bool, _, cx| {
+                                    let enabled = *checked;
+                                    entity.update(cx, |shell, cx| {
+                                        shell.set_deploy_site_enabled(enabled, cx)
+                                    });
+                                })
+                        }),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child(crate::util::strip_md(
+                            "站点开 = 面板写一份 `/etc/nginx/conf.d/00-wslc-panel-<应用名>.conf`，\
+                             让这个应用 `listen <端口>`；端口 80 会接管默认站点。\
+                             不勾 = 只铺文件，由默认站点在 `/<应用名>/` 提供。",
+                        )),
+                )
+                .children(form.site_enabled.then(|| {
+                    v_flex()
+                        .w_full()
+                        .gap_2()
+                        .child({
+                            let entity = entity.clone();
+                            Checkbox::new("deploy-site-spa")
+                                .label("单页应用回退（找不到的路径交给 index.html）")
+                                .checked(form.site_spa)
+                                .on_change(move |checked: &bool, _, cx| {
+                                    let enabled = *checked;
+                                    entity.update(cx, |shell, cx| {
+                                        shell.set_deploy_site_spa(enabled, cx)
+                                    });
+                                })
+                        })
+                        .child(form_field(
+                            "deploy-proxy-prefix",
+                            "反代路径前缀（可选）",
+                            &form.proxy_prefix,
+                            cx,
+                            true,
+                        ))
+                        .child(form_field(
+                            "deploy-proxy-upstream",
+                            "反代上游（可选）",
+                            &form.proxy_upstream,
+                            cx,
+                            true,
+                        ))
+                        .child({
+                            let entity = entity.clone();
+                            Checkbox::new("deploy-proxy-strip")
+                                .label("转发时去掉前缀（后端收到 /foo 而不是 /api/foo）")
+                                .checked(form.proxy_strip)
+                                .on_change(move |checked: &bool, _, cx| {
+                                    let enabled = *checked;
+                                    entity.update(cx, |shell, cx| {
+                                        shell.set_deploy_proxy_strip(enabled, cx)
+                                    });
+                                })
+                        })
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::text_dim())
+                                .child(crate::util::strip_md(
+                                    "上游是另一个容器时，两个容器要在**同一个用户网络**里\
+                                     （默认 bridge 解析不了名字）：先用 \
+                                     `wslc network connect <网络> <容器>` 接一下；\
+                                     这一版不自动接通。上游停着也能保存配置（不会让 \
+                                     `nginx -t` 失败），请求会在它起来后恢复。",
+                                )),
+                        )
+                        .into_any_element()
+                }))
+                .into_any_element(),
+        )
+    } else {
+        None
+    };
+
     let card = card
-        .child(form_field("deploy-port", "端口（信息性）", &form.port, cx, true))
+        .children(site_block)
+        .child(form_field(
+            "deploy-port",
+            "端口（应用监听；站点开时是 listen）",
+            &form.port,
+            cx,
+            true,
+        ))
         .child(
             div()
                 .text_xs()

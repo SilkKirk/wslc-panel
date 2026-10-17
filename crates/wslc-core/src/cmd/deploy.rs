@@ -28,7 +28,7 @@ use std::time::Duration;
 use crate::cli::Wslc;
 use crate::error::{Error, Result};
 use crate::model::deploy::{
-    self, AppRuntime, DeployKind, PortMap, ProbeResult, SourceKind,
+    self, AppRuntime, DeployKind, DeploySite, PortMap, ProbeResult, SourceKind,
 };
 
 /// 复制文件的超时。
@@ -339,8 +339,215 @@ pub fn read_log(wslc: &Wslc, container: &str, dir: &str) -> Result<String> {
 }
 
 /// 重载容器里的 nginx（内容形态特有的动作）。
+///
+/// 输出过一遍 [`deploy::filter_nginx_noise`]：端口 80 上接管 `default.conf`
+/// 时必然出现 `conflicting server name "localhost" ... ignored`，exit code
+/// 仍是 0 —— 不过滤的话每次重载都像报了个错。
 pub fn reload_nginx(wslc: &Wslc, container: &str) -> Result<String> {
-    run_script(wslc, container, &deploy::reload_nginx_script())
+    let output = run_script(wslc, container, &deploy::reload_nginx_script())?;
+    Ok(deploy::filter_nginx_noise(&output))
+}
+
+/// `read_resolv_conf` / 站点配置也走这条超时（都是几秒的事）。
+pub fn read_resolv_conf(wslc: &Wslc, container: &str) -> Result<String> {
+    run_script(wslc, container, "cat /etc/resolv.conf 2>/dev/null")
+}
+
+// ---------------------------------------------------------------------------
+// nginx 站点配置：写 / 校验 / 回滚 / 删
+// ---------------------------------------------------------------------------
+
+/// 一次 `apply_site` 的结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplySite {
+    /// 非致命警告（配置已生效，但 `nginx -s reload` 失败/有噪音）。
+    ///
+    /// `nginx -s reload` 失败**不代表**读不到新配置：实测 reload 在 stop 之后
+    /// 再 start 会读新 conf。所以这里只警告，`site` 仍然写进记录。
+    pub warning: Option<String>,
+}
+
+/// 把一份 `server{}` 块写进容器、`nginx -t` 校验、reload；不通过就回滚。
+///
+/// 返回 `Ok` = 配置**已经生效**（可能带 reload 警告）；`Err` = `-t` 没过，
+/// 文件已经恢复成写之前的样子 —— 调用方**不能**把新的 `site` 写进记录。
+///
+/// # 顺序（每一步都有实测理由）
+///
+/// 1. 读首行标记：不是 `# wslc-panel:site:<app>` 就拒绝覆盖（用户可能手写了
+///    同名 conf）；
+/// 2. 备份旧文件到 `/tmp`；
+/// 3. 写新文件（本地临时文件 + `wslc container cp` —— `cp` 要求目标目录存在，
+///    `/etc/nginx/conf.d/` 是镜像自带的）；
+/// 4. `nginx -t`；失败 → 恢复备份、再 `-t` 一次（尽力），把**原来的错误**返回；
+/// 5. `nginx -s reload`；失败只进 `warning`（见 [`ApplySite::warning`]）；
+/// 6. 删备份。
+pub fn apply_site(
+    wslc: &Wslc,
+    container: &str,
+    app: &str,
+    site: &DeploySite,
+    root: &str,
+    listen: u16,
+    resolver: Option<&str>,
+) -> Result<ApplySite> {
+    let path = conf_path_for(app, site);
+    if !is_our_conf(&path) {
+        return Err(invalid(format!(
+            "拒绝写这个路径（不是面板的 conf 目录）：{path}"
+        )));
+    }
+    let marker = deploy::conf_marker(app);
+    let first = read_first_line(wslc, container, &path)?;
+    if !first.trim().is_empty() && first.trim() != marker.as_str() {
+        return Err(invalid(format!(
+            "{path} 已经存在，而且不是面板生成的（首行不是 `{marker}`）—— 拒绝覆盖"
+        )));
+    }
+
+    let backup = format!("/tmp/wslc-panel-{app}.conf.bak");
+    run_script(wslc, container, &backup_script(&path, &backup))?;
+
+    let text = deploy::site_conf(app, site, root, listen, resolver);
+    write_conf(wslc, container, &path, &text)?;
+
+    if let Err(error) = run_script(wslc, container, &deploy::nginx_test_script()) {
+        // 回滚：旧文件有就恢复，没有就删掉这次新写的
+        let _ = run_script(wslc, container, &restore_script(&path, &backup));
+        let _ = run_script(wslc, container, &deploy::nginx_test_script());
+        let _ = run_script(wslc, container, &rm_script(&backup));
+        return Err(error);
+    }
+
+    let warning = match run_script(wslc, container, &deploy::reload_nginx_script()) {
+        Ok(output) => {
+            let clean = deploy::filter_nginx_noise(&output);
+            if clean.is_empty() {
+                None
+            } else {
+                Some(clean)
+            }
+        }
+        Err(error) => Some(format!("配置已写入，但重载失败：{error}")),
+    };
+    let _ = run_script(wslc, container, &rm_script(&backup));
+    Ok(ApplySite { warning })
+}
+
+/// 删掉一个应用的 conf（站点关 / 删除部署）。
+///
+/// 返回 `Ok(None)` = 删干净了；`Ok(Some(warning))` = 文件已经删了，但
+/// `nginx -t` / reload 有问题（**不能**因此把记录留下：文件已经不在了）；
+/// `Err` = 文件不是面板的 / 删不掉，调用方要保留 `site` 记录。
+pub fn remove_site(
+    wslc: &Wslc,
+    container: &str,
+    app: &str,
+    site: &DeploySite,
+) -> Result<Option<String>> {
+    let path = conf_path_for(app, site);
+    if !is_our_conf(&path) {
+        return Err(invalid(format!(
+            "拒绝删除这个路径（不是面板的 conf 目录）：{path}"
+        )));
+    }
+    let marker = deploy::conf_marker(app);
+    let first = read_first_line(wslc, container, &path)?;
+    if !first.trim().is_empty() && first.trim() != marker.as_str() {
+        return Err(invalid(format!(
+            "{path} 不是面板生成的（首行不是 `{marker}`）—— 拒绝删除"
+        )));
+    }
+    run_script(wslc, container, &rm_script(&path))?;
+
+    let mut warnings: Vec<String> = Vec::new();
+    match run_script(wslc, container, &deploy::nginx_test_script()) {
+        Ok(_) => {
+            if let Err(error) = run_script(wslc, container, &deploy::reload_nginx_script()) {
+                warnings.push(format!("配置已删，但重载失败：{error}"));
+            }
+        }
+        Err(error) => warnings.push(format!("配置已删，但 nginx -t 失败：{error}")),
+    }
+    if warnings.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(warnings.join("；")))
+    }
+}
+
+/// 记录里的 `conf` 优先（老档可能没写 → 按应用名重算）。
+fn conf_path_for(app: &str, site: &DeploySite) -> String {
+    let path = site.conf.trim();
+    if path.is_empty() {
+        deploy::conf_path(app)
+    } else {
+        path.to_owned()
+    }
+}
+
+fn is_our_conf(path: &str) -> bool {
+    path.starts_with("/etc/nginx/conf.d/00-wslc-panel-") && path.ends_with(".conf")
+}
+
+fn invalid(message: impl Into<String>) -> Error {
+    Error::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        message.into(),
+    ))
+}
+
+/// 读文件第一行；文件不存在时是空串（`head ... || true`）。
+fn read_first_line(wslc: &Wslc, container: &str, path: &str) -> Result<String> {
+    let script = format!(
+        "head -n 1 {} 2>/dev/null || true",
+        deploy::shell_quote(path)
+    );
+    let output = run_script(wslc, container, &script)?;
+    Ok(output.lines().next().unwrap_or_default().to_owned())
+}
+
+fn backup_script(path: &str, backup: &str) -> String {
+    format!(
+        "if test -f {path}; then cp -f {path} {backup}; else rm -f {backup}; fi",
+        path = deploy::shell_quote(path),
+        backup = deploy::shell_quote(backup),
+    )
+}
+
+fn restore_script(path: &str, backup: &str) -> String {
+    format!(
+        "if test -f {backup}; then cp -f {backup} {path}; else rm -f {path}; fi",
+        path = deploy::shell_quote(path),
+        backup = deploy::shell_quote(backup),
+    )
+}
+
+fn rm_script(path: &str) -> String {
+    format!("rm -f {}", deploy::shell_quote(path))
+}
+
+/// 把文本写成容器里的一个文件。
+///
+/// 走 `wslc container cp`（本仓库唯一的搬运方式）：先写本地临时文件，再
+/// `cp` 到 `/etc/nginx/conf.d/` —— **目标目录必须存在**（镜像是有的），
+/// 文件名保持 `00-wslc-panel-<app>.conf`（`cp` 会保留源文件的 basename）。
+fn write_conf(wslc: &Wslc, container: &str, path: &str, text: &str) -> Result<()> {
+    let name = path
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| invalid(format!("conf 路径取不出文件名：{path}")))?;
+    let dir = std::env::temp_dir().join(format!("wslc-panel-site-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let local = dir.join(name);
+    std::fs::write(&local, text)?;
+    let args = deploy::cp_args(&local, container, "/etc/nginx/conf.d/");
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let result = wslc.run_with_timeout(&refs, QUICK_TIMEOUT);
+    let _ = std::fs::remove_dir_all(&dir);
+    result?.into_result()?;
+    Ok(())
 }
 
 /// 删除一次部署（「删除」按钮）。

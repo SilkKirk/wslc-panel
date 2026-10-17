@@ -2257,6 +2257,11 @@ pub enum DeployPhase {
     /// 合成一档而不是拆成四档：这四步在界面上**都是"在搬东西"**，
     /// 而它们的耗时完全由体积决定 —— 拆开只会让按钮文案闪来闪去。
     Uploading,
+    /// 文件到位了，正在写 / 校验站点配置（nginx 站点开 / 关都会走这一档）。
+    ///
+    /// 单独一档是因为它可能失败在 `nginx -t`：用户要能看出"文件已经铺好了、
+    /// 卡在配置上"，而不是以为整个部署都没做。
+    Configuring,
     /// 文件到位了，正在起进程（进程形态）/ 这一步内容形态没有。
     Starting,
     /// 正在停掉那个受 pidfile 管的进程（「停止」，只发 `TERM`）。
@@ -2273,6 +2278,7 @@ impl DeployPhase {
     pub fn label(self) -> &'static str {
         match self {
             Self::Uploading => "正在上传…",
+            Self::Configuring => "正在写入站点配置…",
             Self::Starting => "正在启动…",
             Self::Stopping => "正在停止…",
             Self::Removing => "正在删除…",
@@ -5616,6 +5622,7 @@ mod tests {
                 artifact: app.to_owned(),
                 port: 8080,
                 members: vec![app.to_owned()],
+                site: None,
             },
             runtime: AppRuntime::from_key(runtime_key),
             process: None,
@@ -5746,6 +5753,7 @@ mod tests {
         assert_eq!(DeployPhase::Stopping.label(), "正在停止…");
         assert_ne!(DeployPhase::Stopping.label(), DeployPhase::Starting.label());
         assert_eq!(DeployPhase::Uploading.label(), "正在上传…");
+        assert_eq!(DeployPhase::Configuring.label(), "正在写入站点配置…");
         assert_eq!(DeployPhase::Removing.label(), "正在删除…");
     }
 
