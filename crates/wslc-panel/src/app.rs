@@ -954,6 +954,11 @@ enum DeployField {
     Target,
     /// 启动命令。
     Command,
+    /// 应用监听的端口（多应用下它要唯一）。
+    ///
+    /// v0.9.19 补的：端口校验失败时得把焦点送回这一格 —— 早先枚举里没有它，
+    /// 端口填错只能靠用户自己找。
+    Port,
 }
 
 /// 从「添加部署」弹窗里读出来的值。
@@ -966,7 +971,8 @@ struct DeployFormValues {
     target: String,
     /// 启动命令。
     command: String,
-    /// 端口（留空 / 解析不出来时是 `None`，由调用方回落到运行时的默认端口）。
+    /// 端口。空 / 解析不出来时是 `None` —— 调用方**必须**报错：
+    /// 多应用下静默回落到运行时默认端口会撞（v0.9.19 改）。
     port: Option<u16>,
 }
 
@@ -4121,31 +4127,40 @@ impl Shell {
         let runtime = deploy.runtime;
         let web_root = deploy.web_root.clone();
         let container = deploy.container.clone();
+        let ports = deploy.ports.clone();
         let record = editing
             .as_ref()
             .and_then(|app| self.state.deploy_store.get(&container, app).cloned());
 
+        // 多应用：新应用的名字 / 端口不能和已有的撞。应用名撞了会**覆盖**那一条
+        // （`DeployStore::put` 按 `<容器>/<应用>` 索引），端口撞了两个进程会
+        // 在容器里抢同一个 bind —— 两件都是"部署成功但原来那个不见了"的来源。
+        let existing_names: Vec<String> = self
+            .state
+            .deploy_store
+            .for_container(&container)
+            .into_iter()
+            .map(|record| record.app.clone())
+            .collect();
+        let existing_ports = self.state.deploy_store.binding_ports(&container);
+        let published_ports = deploy_model::published_container_ports(&ports);
+
         // ⚠️ 默认应用名**不是**运行时键（`java` → `/opt/java`，正是 §15 那次
         // 把镜像自带 JDK 删掉的路径）。理由写在 `DEFAULT_APP_NAME` 那儿。
+        // 多应用时再点一次「添加部署」，`suggest_app_name` 会给出 `app-2`。
         let app_value = record
             .as_ref()
             .map(|r| r.app.clone())
-            .unwrap_or_else(|| deploy_model::DEFAULT_APP_NAME.to_owned());
+            .unwrap_or_else(|| deploy_model::suggest_app_name(&existing_names));
         let source_value = record
             .as_ref()
             .map(|r| r.source.clone())
             .unwrap_or_default();
         let target_value = record.as_ref().map(|r| r.target.clone()).unwrap_or_else(|| {
-            // nginx 的目标必须**跟着挂载点走**：实测那个容器的站点落在一个卷上
-            //（`webdata → /usr/share/nginx/html`）。写死默认值会在"用户自己挂了
-            // 别的目录"时把文件铺到**没人读**的地方。
-            if runtime == AppRuntime::Nginx {
-                web_root
-                    .clone()
-                    .unwrap_or_else(|| runtime.default_target_dir(&app_value))
-            } else {
-                runtime.default_target_dir(&app_value)
-            }
+            // nginx 的目标必须**跟着挂载点走**，而且**每个应用一个子目录**：
+            // 所有应用铺进同一个 Web 根时，`removals_script` 的逐名删除会把
+            // 另一个应用的同名文件删掉（见 `docs/PLAN-multi-app.md` §1.3）。
+            deploy_model::default_app_target(runtime, &app_value, web_root.as_deref())
         });
         // 存档里有就用存档的；没有就从来源路径推（Java / Go 的默认启动命令
         // 要的是**源文件的名字**，不是应用名）
@@ -4171,7 +4186,14 @@ impl Shell {
         let port_value = record
             .as_ref()
             .map(|r| r.port.to_string())
-            .unwrap_or_else(|| runtime.default_port().to_string());
+            .unwrap_or_else(|| {
+                deploy_model::suggest_app_port(
+                    &existing_ports,
+                    &published_ports,
+                    runtime.default_port(),
+                )
+                .to_string()
+            });
 
         // `InputState::new` 要 `&mut Window` → 只能在这里（有 window）建。
         let app = cx.new(|cx| InputState::new(window, cx).placeholder("site"));
@@ -4317,6 +4339,7 @@ impl Shell {
             DeployField::Source => &form.source,
             DeployField::Target => &form.target,
             DeployField::Command => &form.command,
+            DeployField::Port => &form.port,
         };
         let handle = input.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
@@ -4373,6 +4396,7 @@ impl Shell {
         // 站点目录要和 `container` 一起先拿出来：下面那些 `self.state.notify(…)`
         // 要 `&mut self`，`deploy` 那个借用在最后用到它的地方就得结束。
         let web_root = deploy.web_root.clone();
+        let ports = deploy.ports.clone();
         let Some(values) = self.read_deploy_form(cx) else {
             return;
         };
@@ -4389,6 +4413,18 @@ impl Shell {
             self.state.notify(Toast::error(
                 "应用名只能是字母 / 数字 / 下划线 / 连字符，长度 1~64",
             ));
+            self.focus_deploy_field(DeployField::App, window, cx);
+            cx.notify();
+            return;
+        }
+        // 多应用：新建时应用名不能和已有的撞 —— 撞了 `DeployStore::put` 会
+        // **覆盖**那一条（同一个 `<容器>/<应用>` 键），看起来像"部署成功，
+        // 但原来那个不见了"。想覆盖必须走那一行的「重新部署」。
+        if editing.is_none() && self.state.deploy_store.get(&container, &values.app).is_some() {
+            self.state.notify(Toast::error(format!(
+                "已经有叫「{}」的部署 —— 想覆盖请用那一行的「重新部署」，或者换个名字",
+                values.app
+            )));
             self.focus_deploy_field(DeployField::App, window, cx);
             cx.notify();
             return;
@@ -4420,6 +4456,37 @@ impl Shell {
             self.focus_deploy_field(DeployField::Target, window, cx);
             cx.notify();
             return;
+        }
+        // 多应用：目标目录不能和别的应用重叠到会互删的程度。
+        //
+        // 方向很重要：**老记录铺在 Web 根、新应用铺到根下的子目录**是迁移路径，
+        // 要放行；只有"新目标是旧目标的父目录 / 同一个目录"，或者子目录名正好
+        // 是旧应用铺过的名字（会被它的逐名删除带走）时才拦。
+        // 见 `docs/PLAN-multi-app.md` §4.3。
+        let previous_target = editing
+            .as_ref()
+            .and_then(|app| self.state.deploy_store.get(&container, app.as_str()))
+            .map(|record| record.target.clone());
+        let target_changed = previous_target
+            .as_deref()
+            .map(|old| old.trim_end_matches('/') != values.target.trim_end_matches('/'))
+            .unwrap_or(true);
+        let mut target_warning: Option<String> = None;
+        if let Some(block) = self
+            .state
+            .deploy_store
+            .target_blocker(&container, &values.app, &values.target)
+        {
+            if target_changed {
+                self.state.notify(Toast::error(block.message(&values.target)));
+                self.focus_deploy_field(DeployField::Target, window, cx);
+                cx.notify();
+                return;
+            }
+            // 目标没变、但和别的应用共用一个目录（老记录）：只警告不拦 ——
+            // 拦住的话老记录就永远改不了了。**先记下来**，等端口那条警告说完
+            // 再弹（`Toast` 只有一个槽，后弹的会盖掉先弹的；这条更重要）。
+            target_warning = Some(block.message(&values.target));
         }
         let process_shape = runtime.kind() == DeployKind::Process;
         if process_shape && values.command.is_empty() {
@@ -4461,6 +4528,48 @@ impl Shell {
             self.focus_deploy_field(DeployField::Source, window, cx);
             cx.notify();
             return;
+        }
+
+        // 多应用：端口必须是用户明确填的。以前空着会静默回落到运行时默认，
+        // 多应用下那必然和第一条撞；进程型还要查"同一个容器里有没有别人占了"。
+        //
+        // nginx 的内容形态目前不 bind 端口（靠容器里的 nginx 进程），所以
+        // 冲突检查只对进程形态做；「站点开」（DeploySite）落地后再补 nginx。
+        let Some(port) = values.port else {
+            self.state.notify(Toast::error("请填一个端口（1~65535）"));
+            self.focus_deploy_field(DeployField::Port, window, cx);
+            cx.notify();
+            return;
+        };
+        if port == 0 {
+            self.state.notify(Toast::error("端口不能是 0"));
+            self.focus_deploy_field(DeployField::Port, window, cx);
+            cx.notify();
+            return;
+        }
+        if process_shape {
+            if let Some(owner) = self
+                .state
+                .deploy_store
+                .port_conflict(&container, &values.app, port)
+            {
+                self.state.notify(Toast::error(format!(
+                    "端口 {port} 已经被「{owner}」用了 —— 同一个容器里的应用不能共用一个端口"
+                )));
+                self.focus_deploy_field(DeployField::Port, window, cx);
+                cx.notify();
+                return;
+            }
+            if !deploy_model::port_is_published(&ports, port) {
+                self.state.notify(Toast::info(format!(
+                    "{port} 没发布到主机 —— 应用只能在容器/其它容器里访问；\
+                     要外部访问得重建容器并加 -p {port}:{port}"
+                )));
+            }
+        }
+        // 共用目录的警告放在最后弹：它比"端口没发布"更该被看见。
+        if let Some(message) = target_warning {
+            self.state.notify(Toast::info(format!("注意：{message}")));
         }
 
         // 要 `chmod +x` 的文件名：只有"要被执行的文件"才需要（见
@@ -4539,13 +4648,18 @@ impl Shell {
             target: values.target.clone(),
             command: values.command.clone(),
             artifact: artifact.clone(),
-            port: values.port.unwrap_or_else(|| runtime.default_port()),
+            port,
             members: member_names,
         };
         let app = values.app.clone();
         let target = values.target.clone();
         let command = values.command.clone();
         let port = record.port;
+        // 改目标目录时，旧进程的 pidfile 在**旧**目录里 —— 必须用旧目标停，
+        // 否则新目录里找不到 pid，旧进程会一直活着（多应用/迁移时很容易踩）。
+        let stop_target = previous_target
+            .clone()
+            .unwrap_or_else(|| target.clone());
 
         // 目标目录是**我们自己铺的**吗？
         //
@@ -4586,6 +4700,7 @@ impl Shell {
                 let wslc = wslc.clone();
                 let container = container.clone();
                 let target = target.clone();
+                let stop_target = stop_target.clone();
                 let source = source_path.clone();
                 let chmod_path = chmod_path.clone();
                 // 删除列表要借给后台闭包用，而后台闭包是 `async move` ——
@@ -4596,7 +4711,7 @@ impl Shell {
                     .spawn(async move {
                         if stop_first {
                             // 失败**不算数**：可能本来就没在跑（pidfile 不在）
-                            let _ = deploy_cmd::stop(&wslc, &container, &target);
+                            let _ = deploy_cmd::stop(&wslc, &container, &stop_target);
                         }
                         // 准备目录 —— 它顺带把"容器没在运行"报出来
                         //（`cp` 在那种情况下**静默成功**，见 `cmd::deploy`）。

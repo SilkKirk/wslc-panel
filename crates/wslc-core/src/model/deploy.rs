@@ -47,6 +47,7 @@
 //! 后台组**外面**去 —— 它和 `mkdir` 之间于是有了竞态。实测踩到过：
 //! `cannot create …: Directory nonexistent`，而命令"看起来成功了"。
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use super::{image_last_segment, ContainerInspect, ContainerListItem};
@@ -1114,6 +1115,173 @@ pub fn render_log_output(stdout: &str) -> String {
         return "（日志是空的 —— 应用启动了，但还没有任何输出）".to_owned();
     }
     trimmed.to_owned()
+}
+
+// ---------------------------------------------------------------------------
+// 多应用：应用名 / 端口 / 目标目录的分配（v0.9.19）
+// ---------------------------------------------------------------------------
+
+/// 新应用的默认名字：`app` / `app-2` / `app-3` ……
+///
+/// # 为什么需要它
+///
+/// 「添加部署」以前永远预填 [`DEFAULT_APP_NAME`]。同一个容器里再点一次，应用名
+/// 还是 `app` —— `DeployStore::put` 按 `<容器>/<应用>` 覆盖，于是**第二条部署
+/// 会静默替换第一条**，看起来像"部署成功，但原来那个不见了"。
+///
+/// `app-2` 这种带后缀的名字既满足 [`valid_app_name`]，又让"第二条"一眼可读。
+/// 认不出来时（理论上到不了）返回 `app`。
+pub fn suggest_app_name(existing: &[String]) -> String {
+    let used: BTreeSet<&str> = existing
+        .iter()
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .collect();
+    if !used.contains(DEFAULT_APP_NAME) {
+        return DEFAULT_APP_NAME.to_owned();
+    }
+    let mut n: u32 = 2;
+    while n < u32::MAX {
+        let candidate = format!("{DEFAULT_APP_NAME}-{n}");
+        if !used.contains(candidate.as_str()) {
+            return candidate;
+        }
+        n += 1;
+    }
+    DEFAULT_APP_NAME.to_owned()
+}
+
+/// 新应用的默认端口。
+///
+/// 优先用**已发布到主机、且没被记录占用**的容器端口（升序里第一个）；
+/// 都占了就退回 `default` 往上找第一个没被占用的 —— 这时候**不保证已发布**，
+/// 调用方要据此提醒用户"只能在容器内访问"。
+///
+/// `existing` 只应该包含**真的会 bind** 的端口（见
+/// `wslc_panel_core::deploys::DeployStore::binding_ports`）：nginx 站点关的
+/// 记录不监听端口，不该占掉一个号。
+pub fn suggest_app_port(existing: &[u16], published: &[u16], default: u16) -> u16 {
+    let used: BTreeSet<u16> = existing.iter().copied().filter(|p| *p > 0).collect();
+
+    let mut published: Vec<u16> = published.iter().copied().filter(|p| *p > 0).collect();
+    published.sort_unstable();
+    published.dedup();
+    for port in published {
+        if !used.contains(&port) {
+            return port;
+        }
+    }
+
+    let mut port = default.max(1);
+    while used.contains(&port) {
+        match port.checked_add(1) {
+            Some(next) => port = next,
+            // 65535 都占满了：返回 default，让上层校验/警告去说。
+            None => return default.max(1),
+        }
+    }
+    port
+}
+
+/// `inspect.Ports` → **已发布的容器 TCP 端口**（升序、去重）。
+///
+/// 三条判据：
+/// - 键必须是 `<端口>/tcp`（应用监听 TCP；`/udp` 不算）；
+/// - **必须有 bindings**：`inspect` 在"容器声明了端口但没映射"时给的是空数组；
+/// - 端口 0 丢掉。
+pub fn published_container_ports(ports: &PortMap) -> Vec<u16> {
+    let mut out: Vec<u16> = ports
+        .iter()
+        .filter(|item| item.0.ends_with("/tcp") && !item.1.is_empty())
+        .filter_map(|item| item.0.split('/').next()?.parse::<u16>().ok())
+        .filter(|port| *port > 0)
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// 主机上能打开这个应用的 URL（`None` = 这个容器端口没发布）。
+///
+/// `127.0.0.1` / `0.0.0.0` / `::` / `::1` / 空都算"本机" → 用 `localhost`：
+/// 实测 `wslc` 的发布绑在 **`127.0.0.1`** 上（不是 `0.0.0.0`），直接拿它拼
+/// URL 也能用，但用户看着会以为是外网地址。
+pub fn app_url(ports: &PortMap, container_port: u16) -> Option<String> {
+    let key = format!("{container_port}/tcp");
+    let (_, bindings) = ports.iter().find(|item| item.0.as_str() == key.as_str())?;
+    let (host, port) = bindings.first()?;
+    let host = match host.trim() {
+        "" | "0.0.0.0" | "127.0.0.1" | "::" | "::1" => "localhost",
+        other => other,
+    };
+    let port = port.trim();
+    if port.is_empty() {
+        return None;
+    }
+    Some(format!("http://{host}:{port}"))
+}
+
+/// 新应用的默认目标目录。
+///
+/// - nginx：`<web_root>/<app>`（**不是 Web 根本身** —— 多应用必须一应用一个
+///   子目录，否则 `removals_script` 的逐名删除会把另一个应用的同名文件删掉）；
+///   `web_root` 推不出来时用官方镜像的 `/usr/share/nginx/html`。
+/// - 其余：`/opt/<app>`（和 [`AppRuntime::default_target_dir`] 一致）。
+pub fn default_app_target(runtime: AppRuntime, app: &str, web_root: Option<&str>) -> String {
+    match runtime {
+        AppRuntime::Nginx => {
+            let root = web_root
+                .map(str::trim)
+                .filter(|root| !root.is_empty())
+                .unwrap_or("/usr/share/nginx/html");
+            container_join(root, app)
+        }
+        _ => format!("/opt/{app}"),
+    }
+}
+
+/// 两个目标目录的**方向**关系。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetOverlap {
+    /// 完全同一个目录。
+    Same,
+    /// 新目标在已有目标**里面**（`/root/app2` vs `/root`）—— 迁移时要允许。
+    NewInsideExisting,
+    /// 新目标是已有目标的**父目录**（`/root` vs `/root/app2`）—— 危险。
+    ExistingInsideNew,
+}
+
+/// 比较"新目标"和"已有目标"的方向关系；没有重叠返回 `None`。
+///
+/// 只看路径边界：`/opt/a` 和 `/opt/ab` **没有**重叠。
+/// 尾部 `/` 会归一化，所以 `/opt/a/` 和 `/opt/a` 是 [`TargetOverlap::Same`]。
+pub fn target_overlap(new_target: &str, existing_target: &str) -> Option<TargetOverlap> {
+    let new = normalize_target(new_target);
+    let old = normalize_target(existing_target);
+    if new == old {
+        return Some(TargetOverlap::Same);
+    }
+    if is_under(new, old) {
+        return Some(TargetOverlap::NewInsideExisting);
+    }
+    if is_under(old, new) {
+        return Some(TargetOverlap::ExistingInsideNew);
+    }
+    None
+}
+
+/// 去掉尾部 `/`；空串（或全 `/`）归一成 `/`。
+fn normalize_target(path: &str) -> &str {
+    let trimmed = path.trim().trim_end_matches('/');
+    if trimmed.is_empty() { "/" } else { trimmed }
+}
+
+/// `path` 是不是在 `parent` 里面（按路径边界）。
+fn is_under(path: &str, parent: &str) -> bool {
+    if parent == "/" {
+        return path != "/" && path.starts_with('/');
+    }
+    path.starts_with(parent) && path.as_bytes().get(parent.len()) == Some(&b'/')
 }
 
 // ---------------------------------------------------------------------------
@@ -2278,5 +2446,133 @@ mod tests {
         );
         // 一个映射都没有时不 panic
         assert!(!port_is_published(&[], 80));
+    }
+
+    // -----------------------------------------------------------------------
+    // 多应用：分配 / 冲突
+    // -----------------------------------------------------------------------
+
+    /// 造一份 `inspect.Ports` 形状的夹具。
+    fn ports_map(entries: &[(&str, Vec<(&str, &str)>)]) -> PortMap {
+        entries
+            .iter()
+            .map(|(key, binds)| {
+                (
+                    (*key).to_owned(),
+                    binds
+                        .iter()
+                        .map(|(host, port)| ((*host).to_owned(), (*port).to_owned()))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn suggest_app_name_picks_the_first_free_suffix() {
+        assert_eq!(suggest_app_name(&[]), "app");
+        assert_eq!(suggest_app_name(&["app".to_owned()]), "app-2");
+        assert_eq!(
+            suggest_app_name(&["app".to_owned(), "app-2".to_owned()]),
+            "app-3"
+        );
+        // 名字里的空白不该让它"看起来不冲突"
+        assert_eq!(suggest_app_name(&[" app ".to_owned()]), "app-2");
+        assert_eq!(suggest_app_name(&["other".to_owned()]), "app");
+    }
+
+    #[test]
+    fn suggest_app_port_prefers_published_free_ports() {
+        assert_eq!(suggest_app_port(&[], &[80, 8080], 8080), 80);
+        assert_eq!(suggest_app_port(&[80], &[80, 8080], 8080), 8080);
+        // 已发布的都占了 → 从 default 往上找第一个空的
+        assert_eq!(suggest_app_port(&[80, 8080], &[80, 8080], 8080), 8081);
+        assert_eq!(suggest_app_port(&[], &[], 3000), 3000);
+        assert_eq!(suggest_app_port(&[3000, 3001], &[], 3000), 3002);
+        // 0 永远不返回
+        assert_eq!(suggest_app_port(&[], &[0], 0), 1);
+    }
+
+    #[test]
+    fn published_container_ports_only_counts_published_tcp() {
+        let ports = ports_map(&[
+            ("80/tcp", vec![("127.0.0.1", "8080")]),
+            ("8080/tcp", vec![]),
+            ("8081/udp", vec![("127.0.0.1", "8081")]),
+            ("8082/tcp", vec![("127.0.0.1", "8082")]),
+        ]);
+        assert_eq!(published_container_ports(&ports), vec![80, 8082]);
+    }
+
+    #[test]
+    fn app_url_maps_loopback_bindings_to_localhost() {
+        let ports = ports_map(&[
+            ("80/tcp", vec![("127.0.0.1", "18080")]),
+            ("8080/tcp", vec![("0.0.0.0", "18081")]),
+            ("8081/tcp", vec![]),
+            ("8082/tcp", vec![("::1", "18082")]),
+        ]);
+        assert_eq!(
+            app_url(&ports, 80).as_deref(),
+            Some("http://localhost:18080")
+        );
+        assert_eq!(
+            app_url(&ports, 8080).as_deref(),
+            Some("http://localhost:18081")
+        );
+        assert_eq!(app_url(&ports, 8081), None, "空 bindings 不算发布");
+        assert_eq!(
+            app_url(&ports, 8082).as_deref(),
+            Some("http://localhost:18082")
+        );
+        assert_eq!(app_url(&ports, 9999), None);
+    }
+
+    #[test]
+    fn default_app_target_puts_nginx_apps_in_their_own_subdir() {
+        // ⚠️ 这条是多应用的核心：nginx 的默认目标**不是** Web 根本身。
+        assert_eq!(
+            default_app_target(AppRuntime::Nginx, "api", Some("/data/www")),
+            "/data/www/api"
+        );
+        assert_eq!(
+            default_app_target(AppRuntime::Nginx, "api", Some("/data/www/")),
+            "/data/www/api"
+        );
+        assert_eq!(
+            default_app_target(AppRuntime::Nginx, "api", None),
+            "/usr/share/nginx/html/api"
+        );
+        assert_eq!(
+            default_app_target(AppRuntime::Java, "api", Some("/data/www")),
+            "/opt/api"
+        );
+        assert_eq!(default_app_target(AppRuntime::Node, "api", None), "/opt/api");
+    }
+
+    #[test]
+    fn target_overlap_compares_by_path_boundary() {
+        assert_eq!(
+            target_overlap("/root/app2", "/root"),
+            Some(TargetOverlap::NewInsideExisting)
+        );
+        assert_eq!(
+            target_overlap("/root", "/root/app2"),
+            Some(TargetOverlap::ExistingInsideNew)
+        );
+        assert_eq!(
+            target_overlap("/root", "/root/"),
+            Some(TargetOverlap::Same),
+            "尾部 / 要归一化"
+        );
+        assert_eq!(target_overlap("/root", "/root2"), None, "按路径边界，不是前缀");
+        assert_eq!(
+            target_overlap("/", "/root"),
+            Some(TargetOverlap::ExistingInsideNew)
+        );
+        assert_eq!(
+            target_overlap("/root", "/"),
+            Some(TargetOverlap::NewInsideExisting)
+        );
     }
 }
