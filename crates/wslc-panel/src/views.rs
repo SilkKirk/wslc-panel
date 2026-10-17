@@ -7355,6 +7355,17 @@ pub fn create_dialog_overlay(
                         false,
                     )),
             )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child(crate::util::strip_md(
+                        "一个容器放多个应用时，**建容器这一刻**就要把每个应用的端口都\
+                         发布出去（`-p` 之后改不了），例如 `8080:8080, 8081:8081`。\
+                         应用自己监听的端口由部署弹窗的「端口」那一格决定，面板不会\
+                         替你改启动命令。",
+                    )),
+            )
             .child(image_env_hint(dialog, cx))
             .child(
                 h_flex()
