@@ -5024,6 +5024,9 @@ impl Shell {
                                                         ));
                                                     }
                                                     Err(error) => {
+                                                        // ⚠️ 只**警告**、不阻断：conf 本身
+                                                        // 有效，网络没接上只是 502；阻断的话
+                                                        // 用户连"先部署、后接网络"都做不到。
                                                         step.warning = Some(format!(
                                                             "自动接通网络失败：{error} — 反代可能 502；\
                                                              手动 `wslc network connect {} {host}`",
