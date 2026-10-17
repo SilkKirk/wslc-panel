@@ -65,7 +65,8 @@ use wslc_core::{Wsl, Wslc};
 
 use crate::state::{
     self, AppState, BackupState, ConfirmAction, DbFailure, DbState, DbTab, DeployFailure,
-    DeployLogs, DeployPhase, DeployProgress, DeployState, DetailInspect, DistroAction, ExecState,
+    DeployLogs, DeployPhase, DeployProgress, DeploySiteConf, DeployState, DetailInspect, DistroAction,
+    ExecState,
     ExportProgress, ImmediateAction, ImportState, InstallOutcome, InstallProgress,
     InstallSourceKind, LogsState, MirrorChoice, MirrorProbeResult, Page, PendingAction, PromptKind,
     Toast, ToastKind, create_command, exec_argv,
@@ -5406,6 +5407,78 @@ impl Shell {
         cx.notify();
     }
 
+    /// 打开「站点配置」只读浮层。
+    ///
+    /// 只有 nginx 站点开的记录有这个入口（`deploy_row_actions` 判的）；这里再
+    /// 守一道：没有 `site` 就只说一句，不开一个必然空着的浮层。
+    pub fn open_deploy_site_conf(&mut self, app: String, cx: &mut Context<Self>) {
+        let Some(action) = self.deploy_action(&app) else {
+            return;
+        };
+        let Some(site) = action.site.clone() else {
+            self.state
+                .notify(Toast::info("这个部署没有站点配置（站点关）"));
+            return;
+        };
+        if let Some(deploy) = self.state.deploy.as_mut() {
+            deploy.site_conf = Some(DeploySiteConf {
+                app: app.clone(),
+                text: None,
+                busy: true,
+            });
+        }
+        cx.notify();
+
+        let wslc = self.state.wslc.clone();
+        let container = action.container.clone();
+        cx.spawn(async move |this, cx| {
+            let result = {
+                let wslc = wslc.clone();
+                let container = container.clone();
+                let app = app.clone();
+                let site = site.clone();
+                cx.background_executor()
+                    .spawn(async move {
+                        deploy_cmd::read_site_conf(&wslc, &container, &app, Some(&site))
+                            .map_err(|e| e.to_string())
+                    })
+                    .await
+            };
+            let _ = this.update(cx, |shell, cx| {
+                let Some(deploy) = shell.state.deploy.as_mut() else {
+                    return;
+                };
+                // 同日志浮层：容器 + 应用名两道守卫，否则会把结果写进别人的浮层。
+                if deploy.container != container {
+                    return;
+                }
+                let Some(conf) = deploy.site_conf.as_mut() else {
+                    return;
+                };
+                if conf.app != app {
+                    return;
+                }
+                conf.busy = false;
+                match result {
+                    Ok(text) => conf.text = Some(text),
+                    Err(message) => {
+                        conf.text = Some(format!("读配置失败：{message}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 关掉「站点配置」浮层。
+    pub fn close_deploy_site_conf(&mut self, cx: &mut Context<Self>) {
+        if let Some(deploy) = self.state.deploy.as_mut() {
+            deploy.site_conf = None;
+        }
+        cx.notify();
+    }
+
     /// 让容器里的 nginx 重载配置（内容形态的「重载 nginx」）。
     pub fn reload_nginx_in_container(&mut self, cx: &mut Context<Self>) {
         let Some(deploy) = self.state.deploy.as_ref() else {
@@ -8376,6 +8449,15 @@ impl Render for Shell {
             Some(logs) => views::deploy_logs_overlay(logs, &entity),
             None => div().into_any_element(),
         };
+        // 「站点配置」也是**纯数据**（只读），和日志并列。
+        let deploy_site_conf: AnyElement = match state
+            .deploy
+            .as_ref()
+            .and_then(|d| d.site_conf.as_ref())
+        {
+            Some(conf) => views::deploy_site_conf_overlay(conf, &entity),
+            None => div().into_any_element(),
+        };
         let deploy_confirm: AnyElement =
             match state.deploy.as_ref().and_then(|d| d.confirm_remove.as_ref()) {
                 Some(app) => views::deploy_remove_confirm_overlay(app, state.deploy.as_ref(), &entity),
@@ -8523,6 +8605,7 @@ impl Render for Shell {
             // 所以插在数据库弹窗**之前**。
             .child(deploy_dialog)
             .child(deploy_logs)
+            .child(deploy_site_conf)
             // 删除确认排在日志之后：它是最后点的那个动作，应该在最上面
             //（日志浮层与它可能同时开着 —— 用户看着日志觉得该删了）。
             .child(deploy_confirm)

@@ -2411,6 +2411,8 @@ pub struct DeployState {
     /// 纯数据（应用名 + 文本 + 忙不忙），所以能住在这里；
     /// 它是个**只读浮层**，里面一个输入框都没有 —— 和 `LogsState` 同一个理由。
     pub logs: Option<DeployLogs>,
+    /// 正在看哪个应用的站点配置（`None` = 浮层没开）。
+    pub site_conf: Option<DeploySiteConf>,
     /// 等待二次确认的删除（要删哪个应用；`None` = 没在确认）。
     ///
     /// ⚠️ 刻意**不用** `ConfirmAction` 那套：那个的 `execute` 是"跑一条 `wslc`
@@ -2426,6 +2428,21 @@ pub struct DeployLogs {
     /// 看的是哪个应用。
     pub app: String,
     /// 日志内容（`None` = 还在读）。
+    pub text: Option<String>,
+    /// 正在后台读。
+    pub busy: bool,
+}
+
+/// 正在看的站点配置（只读浮层）。
+///
+/// 和 [`DeployLogs`] 同一个形状：纯数据（没有输入框），所以能住在这里；
+/// 和日志分开是因为标题 / 说明 / 打开入口不同，塞进 `DeployLogs` 只会多一个
+/// "这是哪种文本"的布尔。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeploySiteConf {
+    /// 看的是哪个应用。
+    pub app: String,
+    /// conf 内容（`None` = 还在读）。
     pub text: Option<String>,
     /// 正在后台读。
     pub busy: bool,
@@ -2463,6 +2480,7 @@ impl DeployState {
             entries: Vec::new(),
             progress: None,
             logs: None,
+            site_conf: None,
             confirm_remove: None,
         }
     }

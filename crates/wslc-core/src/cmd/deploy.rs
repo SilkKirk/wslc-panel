@@ -559,6 +559,29 @@ fn write_conf(wslc: &Wslc, container: &str, path: &str, text: &str) -> Result<()
     Ok(())
 }
 
+/// 读一个应用的站点 conf（只读浮层用）。
+///
+/// 记录里有 `conf` 就用它，没有就按应用名重算（老记录 / 手改过的存档）。
+/// 文件不存在时 `cat` 会失败，错误原文交给界面 —— 用户至少知道"没有这份文件"，
+/// 而不是看到一片空白。
+pub fn read_site_conf(
+    wslc: &Wslc,
+    container: &str,
+    app: &str,
+    site: Option<&DeploySite>,
+) -> Result<String> {
+    let path = site
+        .map(|site| site.conf.trim())
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| deploy::conf_path(app));
+    run_script(
+        wslc,
+        container,
+        &format!("cat {} 2>&1", deploy::shell_quote(&path)),
+    )
+}
+
 /// 删除一次部署（「删除」按钮）。
 ///
 /// `members` 是**上一次真的铺进去的名字**（`DeployRecord::members`）——

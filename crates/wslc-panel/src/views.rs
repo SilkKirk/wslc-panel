@@ -73,10 +73,10 @@ use crate::columns::{
 };
 use crate::presets::presets_for;
 use crate::state::{
-    AppState, DashboardStats, DbFailure, DbState, DbTab, DeployEntry, DeployLogs, DeployState,
-    DistroAction, ImmediateAction, InstallOutcome, InstallProgress, InstallSourceKind, LogsState,
-    OnlineListSource, Page, PendingAction, PromptKind, PullProgress, SettingsTab, WslConfState,
-    format_bytes,
+    AppState, DashboardStats, DbFailure, DbState, DbTab, DeployEntry, DeployLogs, DeploySiteConf,
+    DeployState, DistroAction, ImmediateAction, InstallOutcome, InstallProgress, InstallSourceKind,
+    LogsState, OnlineListSource, Page, PendingAction, PromptKind, PullProgress, SettingsTab,
+    WslConfState, format_bytes,
 };
 use crate::theme;
 // 基本信息页那排圆环用的纯逻辑：用量分档（≥60% 黄、≥85% 红）。
@@ -3429,6 +3429,21 @@ fn deploy_row_actions(
         );
     }
 
+    // 站点配置（只有 nginx 站点开的记录有 —— 站点关没有面板生成的 conf）
+    if !is_process && entry.record.site.is_some() {
+        actions.push(
+            overlay_button(
+                &format!("deploy-site-{app}"),
+                "站点配置",
+                {
+                    let app = app.clone();
+                    move |shell, _, cx| shell.open_deploy_site_conf(app.clone(), cx)
+                },
+                entity,
+            ),
+        );
+    }
+
     // 进程形态才需要"重新部署"（内容形态上面那个就是它）
     if is_process {
         actions.push(
@@ -3881,6 +3896,86 @@ pub fn deploy_logs_overlay(logs: &DeployLogs, entity: &Entity<Shell>) -> AnyElem
         }));
 
     modal_scrim("deploy-logs-scrim", card).into_any_element()
+}
+
+/// 「站点配置」只读浮层。
+///
+/// 文本**不**过 `strip_md`、不逐行重排：conf 里的缩进 / `#` / 空行都是有意义的，
+/// 逐行处理只会让用户没法对照 `nginx -t` 的错误行。
+pub fn deploy_site_conf_overlay(conf: &DeploySiteConf, entity: &Entity<Shell>) -> AnyElement {
+    let body: AnyElement = if conf.busy {
+        div()
+            .text_sm()
+            .text_color(theme::text_muted())
+            .child("正在读取…")
+            .into_any_element()
+    } else {
+        match conf.text.as_deref() {
+            Some(text) if !text.trim().is_empty() => v_flex()
+                .id("deploy-site-conf-text")
+                .w_full()
+                .max_h(px(420.))
+                .overflow_y_scroll()
+                .rounded_md()
+                .bg(theme::bg())
+                .p_3()
+                .child(
+                    div()
+                        .font_family("Consolas")
+                        .text_xs()
+                        .text_color(theme::text())
+                        .child(text.to_owned()),
+                )
+                .into_any_element(),
+            Some(_) => empty_state("（配置是空的）").into_any_element(),
+            None => div()
+                .text_sm()
+                .text_color(theme::text_dim())
+                .child("正在加载…")
+                .into_any_element(),
+        }
+    };
+
+    let card = v_flex()
+        .w(px(720.0))
+        .max_h(px(560.0))
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .bg(theme::bg_card())
+        .border_1()
+        .border_color(theme::border())
+        .child(
+            v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .text_lg()
+                        .font_semibold()
+                        .child(format!("站点配置 · {}", conf.app)),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child(crate::util::strip_md(
+                            "容器里的 `/etc/nginx/conf.d/00-wslc-panel-<应用名>.conf`（只读）。\
+                             重新部署会整份覆盖；要改就改部署弹窗里的站点区，别直接改这个文件。",
+                        )),
+                ),
+        )
+        .child(body)
+        .child(h_flex().w_full().justify_end().child({
+            let entity = entity.clone();
+            Button::new("deploy-site-conf-close")
+                .label("关闭")
+                .small()
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |shell, cx| shell.close_deploy_site_conf(cx));
+                })
+        }));
+
+    modal_scrim("deploy-site-conf-scrim", card).into_any_element()
 }
 
 /// 删除二次确认。
