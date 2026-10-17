@@ -4764,6 +4764,9 @@ impl Shell {
                 }
             };
             proxies.extend(extra);
+            // nginx 的 `duplicate location` 是**配置校验**错误，不是运行时错误；
+            // 在这里拦比等文件都铺完、`nginx -t` 失败再回滚更好（还能把焦点送回
+            // 「更多反代」那一格）。
             let mut seen = BTreeSet::new();
             for rule in &proxies {
                 if !seen.insert(rule.prefix.clone()) {
