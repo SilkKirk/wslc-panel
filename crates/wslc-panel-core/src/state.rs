@@ -27,6 +27,7 @@ use wslc_core::model::install::{
 // 「在线清单来自哪儿」是**数据**（`wsl -l -o` 还是兜底 JSON），
 // 定义在 `wslc-core` 里；这里转出去，界面按它显示那句说明。
 pub use wslc_core::model::install::OnlineListSource;
+use wslc_core::model::wslconf;
 use wslc_core::model::{
     AppRuntime, ContainerSummary, DbEntry, DbUser, DeployErrorKind, DeploySignal, Distro,
     ImageListItem, MysqlCreds, MysqlErrorKind, MysqlFamily, NetworkListItem, ProcessStatus,
@@ -3355,6 +3356,8 @@ pub struct WslConfState {
     pub errors: Vec<String>,
     /// 要不要显示"实际会写进去的内容"。
     pub show_preview: bool,
+    /// 每次打开按当前文档初始化，避免承接其他发行版的展开状态。
+    expanded_sections: BTreeSet<&'static str>,
 }
 
 impl WslConfState {
@@ -3364,13 +3367,79 @@ impl WslConfState {
         doc: wslc_core::model::wslconf::WslConfDoc,
         wsl_version: impl Into<String>,
     ) -> Self {
+        let wsl_version = wsl_version.into();
+        let expanded_sections = wslconf::SECTIONS
+            .iter()
+            .filter(|section| wslconf::section_supported(section.name, &wsl_version))
+            .filter(|section| {
+                matches!(section.name, "network" | "user")
+                    || wslconf::FIELDS.iter().any(|field| {
+                        field.section == section.name && doc.is_explicit(field.section, field.key)
+                    })
+            })
+            .map(|section| section.name)
+            .collect();
         Self {
             distro: distro.into(),
             doc,
-            wsl_version: wsl_version.into(),
+            wsl_version,
             busy: false,
             errors: Vec::new(),
             show_preview: false,
+            expanded_sections,
+        }
+    }
+
+    /// 当前是否展开；不随文档变化重算，保留用户手动收起的选择。
+    pub fn section_open(&self, section: &str) -> bool {
+        self.expanded_sections.contains(section)
+    }
+
+    pub fn set_section_open(&mut self, section: &'static str, open: bool) {
+        if wslconf::find_section(section).is_none() {
+            return;
+        }
+        if open {
+            self.expanded_sections.insert(section);
+        } else {
+            self.expanded_sections.remove(section);
+        }
+    }
+
+    pub fn toggle_section(&mut self, section: &'static str) {
+        self.set_section_open(section, !self.section_open(section));
+    }
+
+    /// 只汇总面板认识的显式字段，未知键由原文保留。
+    pub fn section_summary(&self, section: &str) -> String {
+        let values: Vec<String> = wslconf::FIELDS
+            .iter()
+            .filter(|field| field.section == section && self.doc.is_explicit(section, field.key))
+            .map(|field| format!("{}={}", field.label, self.doc.effective(section, field.key)))
+            .collect();
+        if values.is_empty() {
+            "默认".to_owned()
+        } else {
+            values.join(" · ")
+        }
+    }
+
+    /// 预览与保存共用，避免未触碰的预填默认值落入显式配置。
+    pub fn apply_text_value(&mut self, section: &str, key: &str, value: &str) {
+        let Some(field) = wslconf::find_field(section, key) else {
+            return;
+        };
+        if field.kind != wslconf::FieldKind::Text || field.read_only {
+            return;
+        }
+        let value = value.trim();
+        if value == self.doc.effective(section, key).trim() {
+            return;
+        }
+        if value.is_empty() {
+            self.doc.clear(section, key);
+        } else {
+            self.doc.set(section, key, value);
         }
     }
 }
@@ -4230,6 +4299,196 @@ mod tests {
         }
         // 反方向：表里没有的东西不该拿到"看起来合法"的 id
         assert_eq!(wslconf_field_id("nope", "nope"), "wslconf-unknown");
+    }
+
+    fn wslconf_state(text: &str) -> WslConfState {
+        WslConfState::new("Ubuntu", wslconf::WslConfDoc::parse(text), "2.6.1.0")
+    }
+
+    #[test]
+    fn wslconf_common_sections_start_open() {
+        let state = wslconf_state("");
+        assert!(state.section_open("network"));
+        assert!(state.section_open("user"));
+    }
+
+    #[test]
+    fn wslconf_implicit_infrequent_sections_start_closed() {
+        let state = wslconf_state("[automount]\nfutureKey = keep-me\n");
+        for section in ["automount", "interop", "boot", "gpu", "time"] {
+            assert!(!state.section_open(section), "{section}");
+        }
+    }
+
+    #[test]
+    fn wslconf_explicit_fields_open_their_section_including_systemd() {
+        for field in wslconf::FIELDS {
+            let mut doc = wslconf::WslConfDoc::parse("");
+            doc.set(field.section, field.key, field.default);
+            let state = WslConfState::new("Ubuntu", doc, "2.6.1.0");
+            assert!(
+                state.section_open(field.section),
+                "{}.{}",
+                field.section,
+                field.key
+            );
+        }
+    }
+
+    #[test]
+    fn wslconf_initial_expansion_respects_versions_and_unknown_version_semantics() {
+        let doc = wslconf::WslConfDoc::parse(
+            "[boot]\nsystemd = true\n[gpu]\nenabled = false\n[time]\nuseWindowsTimezone = false\n",
+        );
+        for version in ["0.60.0", "0.67.6", "2.6.1.0", "", "版本未知"] {
+            let state = WslConfState::new("Ubuntu", doc.clone(), version);
+            for section in ["boot", "gpu", "time"] {
+                assert_eq!(
+                    state.section_open(section),
+                    wslconf::section_supported(section, version),
+                    "{section}: {version}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wslconf_sections_can_be_closed_and_reopened() {
+        let mut state = wslconf_state("[boot]\nsystemd = true\n");
+        let doc = state.doc.clone();
+        for section in wslconf::SECTIONS {
+            state.set_section_open(section.name, false);
+            assert!(!state.section_open(section.name));
+            state.toggle_section(section.name);
+            assert!(state.section_open(section.name));
+            state.toggle_section(section.name);
+            assert!(!state.section_open(section.name));
+            state.set_section_open(section.name, true);
+            assert!(state.section_open(section.name));
+        }
+        assert_eq!(state.doc, doc);
+        assert!(!state.doc.is_dirty());
+    }
+
+    #[test]
+    fn wslconf_unknown_sections_do_not_change_expansion_state() {
+        let mut state = wslconf_state("");
+        let before = state.clone();
+        state.set_section_open("unknown", true);
+        state.toggle_section("unknown");
+        state.set_section_open("Network", true);
+        assert!(!state.section_open("unknown"));
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn wslconf_new_instances_have_independent_expansion_state() {
+        let mut first = wslconf_state("");
+        first.set_section_open("network", false);
+        first.set_section_open("automount", true);
+        let mut second = WslConfState::new("Debian", wslconf::WslConfDoc::parse(""), "2.6.1.0");
+        assert!(second.section_open("network"));
+        assert!(!second.section_open("automount"));
+        second.set_section_open("user", false);
+        assert!(first.section_open("user"));
+        assert!(!first.section_open("network"));
+        assert!(first.section_open("automount"));
+    }
+
+    #[test]
+    fn wslconf_section_summary_lists_only_explicit_supported_fields() {
+        let state = wslconf_state(
+            "[automount]\nroot = /data/\noptions = metadata\nfutureKey = keep-me\n\
+             [boot]\nsystemd = true\n[network]\nfutureKey = keep-me\n",
+        );
+        assert_eq!(
+            state.section_summary("automount"),
+            "挂载根目录=/data/ · 挂载参数=metadata"
+        );
+        assert_eq!(state.section_summary("boot"), "启用 systemd=true");
+        for section in ["network", "interop", "user", "gpu", "time", "unknown"] {
+            assert_eq!(state.section_summary(section), "默认", "{section}");
+        }
+    }
+
+    #[test]
+    fn wslconf_untouched_text_defaults_stay_implicit_and_clean() {
+        for text in [
+            "",
+            "[network]\nhostname = my-box\n",
+            "[network]\r\nhostname = my-box",
+        ] {
+            let mut state = wslconf_state(text);
+            let before = state.doc.clone();
+            for field in wslconf::FIELDS
+                .iter()
+                .filter(|field| field.kind == wslconf::FieldKind::Text)
+            {
+                let effective = state.doc.effective(field.section, field.key);
+                state.apply_text_value(field.section, field.key, &format!("  {effective}  "));
+            }
+            assert_eq!(state.doc, before);
+            assert_eq!(state.doc.render(), text);
+            assert!(!state.doc.is_dirty());
+            assert!(!state.doc.is_explicit("automount", "root"));
+        }
+    }
+
+    #[test]
+    fn wslconf_text_changes_and_clears_follow_the_model() {
+        let mut state = wslconf_state("[automount]\nroot = /data/\n[user]\ndefault = ubuntu\n");
+        state.apply_text_value("automount", "root", "  /data/  ");
+        assert!(!state.doc.is_dirty());
+        state.apply_text_value("automount", "root", "  /win/  ");
+        assert_eq!(state.doc.get("automount", "root"), Some("/win/"));
+        assert!(state.doc.is_dirty());
+        state.apply_text_value("automount", "root", " /mnt/ ");
+        assert_eq!(state.doc.get("automount", "root"), Some("/mnt/"));
+        state.apply_text_value("automount", "root", " \t ");
+        state.apply_text_value("user", "default", "");
+        assert!(!state.doc.is_explicit("automount", "root"));
+        assert_eq!(state.doc.effective("automount", "root"), "/mnt/");
+        assert!(!state.doc.is_explicit("user", "default"));
+        assert_eq!(state.doc.render(), "[automount]\n[user]\n");
+    }
+
+    #[test]
+    fn wslconf_text_api_ignores_readonly_bool_and_unknown_fields() {
+        let mut state = wslconf_state("[boot]\nsystemd = true\n[interop]\nenabled = false\n");
+        let before = state.doc.clone();
+        for field in wslconf::FIELDS
+            .iter()
+            .filter(|field| field.read_only || field.kind != wslconf::FieldKind::Text)
+        {
+            state.apply_text_value(field.section, field.key, "changed");
+            state.apply_text_value(field.section, field.key, "");
+        }
+        for (section, key) in [
+            ("unknown", "hostname"),
+            ("network", "unknown"),
+            ("Network", "hostname"),
+        ] {
+            state.apply_text_value(section, key, "changed");
+        }
+        assert_eq!(state.doc, before);
+        assert!(!state.doc.is_dirty());
+    }
+
+    #[test]
+    fn wslconf_preview_and_save_preserve_comments_unknown_keys_and_systemd() {
+        let text = "# 保留手写注释\n[boot]\nsystemd = true\nfutureKey = keep-me\n\n\
+                    [automount]\nroot = /data/\n; 挂载说明\n[future]\ncustom = untouched\n";
+        let mut state = wslconf_state(text);
+        state.set_section_open("automount", false);
+        let mut preview = state.clone();
+        preview.apply_text_value("automount", "root", " /win/ ");
+        assert_eq!(state.doc.render(), text);
+        assert!(!state.doc.is_dirty());
+        state.apply_text_value("automount", "root", " /win/ ");
+        let rendered = state.doc.render();
+        assert_eq!(rendered, preview.doc.render());
+        assert_eq!(rendered, text.replace("root = /data/", "root = /win/"));
+        assert_eq!(wslconf::WslConfDoc::parse(&rendered).render(), rendered);
     }
 
     #[test]

@@ -405,6 +405,8 @@ struct KeepAlive {
 /// 里的常量，所以不用 `String`，也就不会有拼写不一致的问题。
 pub(crate) struct WslConfDialog {
     pub(crate) inputs: std::collections::HashMap<(&'static str, &'static str), Entity<InputState>>,
+    // 让折叠摘要与预览随草稿更新，退出弹窗后退订。
+    _input_subs: Vec<Subscription>,
 }
 
 impl KeepAlive {
@@ -7467,7 +7469,20 @@ impl Shell {
                             inputs.insert((field.section, field.key), input);
                         }
 
-                        shell.wslconf_dialog = Some(WslConfDialog { inputs });
+                        let input_subs = inputs
+                            .values()
+                            .map(|input| {
+                                cx.subscribe(input, |_, _, event: &InputEvent, cx| {
+                                    if matches!(event, InputEvent::Change) {
+                                        cx.notify();
+                                    }
+                                })
+                            })
+                            .collect();
+                        shell.wslconf_dialog = Some(WslConfDialog {
+                            inputs,
+                            _input_subs: input_subs,
+                        });
                         shell.state.wslconf = Some(state::WslConfState::new(name, doc, version));
                     }
                     Err(e) => shell
@@ -7543,12 +7558,8 @@ impl Shell {
             return;
         };
         for (section, key, value) in updates {
-            // 清空 = 恢复默认（保存时把那一行删掉）
-            if value.is_empty() {
-                state.doc.clear(section, key);
-            } else {
-                state.doc.set(section, key, value);
-            }
+            // 与预览共用，未改动的预填默认值不写成显式配置。
+            state.apply_text_value(section, key, &value);
         }
 
         if !state.doc.is_dirty() {
@@ -7614,6 +7625,11 @@ impl Shell {
                         if let Some(state) = shell.state.wslconf.as_mut() {
                             state.busy = false;
                             state.errors = errors;
+                            if !state.errors.is_empty() {
+                                // 当前后台校验涉及默认用户和启动命令，报错时展开相关组。
+                                state.set_section_open("user", true);
+                                state.set_section_open("boot", true);
+                            }
                         }
                         saved
                     }
@@ -8944,7 +8960,7 @@ impl Render for Shell {
         let export_overlay: AnyElement = views::export_overlay(state, &entity);
 
         // 发行版配置（/etc/wsl.conf）弹窗。要 `cx` 才能读输入框的值。
-        let wslconf_dialog: AnyElement = views::wslconf_overlay(self, &entity);
+        let wslconf_dialog: AnyElement = views::wslconf_overlay(self, &entity, cx);
 
         // 容器日志浮层（状态全在 `AppState::logs` 里，不需要 `cx`）。
         let logs_dialog: AnyElement = views::logs_overlay(state, &entity);

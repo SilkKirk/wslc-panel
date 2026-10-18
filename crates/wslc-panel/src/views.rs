@@ -359,12 +359,12 @@ fn cell_muted(text: impl Into<SharedString>) -> AnyElement {
 
 /// 正常色的「可悬停看全文」单元格（表格里的主要标识，比如镜像引用）。
 fn cell_text_full(key: impl Into<SharedString>, text: impl Into<SharedString>) -> AnyElement {
-    cell_full(key, text, false)
+    cell_full(key, text, false, None)
 }
 
 /// 次要色的「可悬停看全文」单元格（镜像、安装位置、挂载点这类长文本）。
 fn cell_muted_full(key: impl Into<SharedString>, text: impl Into<SharedString>) -> AnyElement {
-    cell_full(key, text, true)
+    cell_full(key, text, true, None)
 }
 
 /// 会截断的单元格：省略号 + **悬停显示全文**。
@@ -389,6 +389,7 @@ fn cell_full(
     key: impl Into<SharedString>,
     text: impl Into<SharedString>,
     muted: bool,
+    tip: Option<SharedString>,
 ) -> AnyElement {
     let key: SharedString = key.into();
     let text: SharedString = text.into();
@@ -400,7 +401,7 @@ fn cell_full(
 
     Button::new(SharedString::from(format!("cell-tip-{key}")))
         .text()
-        .tooltip(text.clone())
+        .tooltip(tip.unwrap_or_else(|| text.clone()))
         // 纯展示（"文字 + tooltip"），不是动作，别进 Tab 顺序
         .tab_stop(false)
         .w_full()
@@ -890,10 +891,14 @@ fn status_card(state: &AppState, stats: &DashboardStats) -> AnyElement {
                     );
                 }
             }
-            cell_muted_full(
-                "session-storage",
-                format!("会话存储：{path} · 盘剩余 {free}{extra}"),
-            )
+            let used = storage
+                .vhd_bytes
+                .map(format_bytes)
+                .unwrap_or_else(|| "—".to_owned());
+            // 数字放在前面，长路径只进 tooltip，窄窗口也先读到盘剩余与会话占用。
+            let summary = format!("盘剩余 {free} · 当前会话 {used}{extra}");
+            let tip = format!("会话存储路径：{path}\n{summary}");
+            cell_full("session-storage", summary, true, Some(tip.into()))
         }
     };
 
@@ -1402,42 +1407,39 @@ pub fn containers(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> impl IntoE
         format!("显示 {} / 共 {all_count}", visible.len())
     };
 
-    let prune = {
+    let bulk_actions = {
         let entity = entity.clone();
-        Button::new("prune")
-            .label("清理已停止")
+        Button::new("container-bulk-actions")
+            .label("批量操作")
+            .tooltip("作用于全部容器，不受当前筛选影响")
             .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| {
-                    shell.request(PendingAction::PruneContainers, cx);
-                });
+            .dropdown_menu(move |mut menu, _, _| {
+                if running > 0 {
+                    let entity = entity.clone();
+                    menu = menu
+                        .item(
+                            PopupMenuItem::new(format!("停止全部运行中容器（{running} 个）"))
+                                .on_click(move |_, _, cx| {
+                                    entity.update(cx, |shell, cx| {
+                                        shell.request(
+                                            PendingAction::StopAllContainers { running },
+                                            cx,
+                                        );
+                                    });
+                                }),
+                        )
+                        .item(PopupMenuItem::separator());
+                }
+                let entity = entity.clone();
+                menu.item(
+                    PopupMenuItem::new("清理全部已停止容器").on_click(move |_, _, cx| {
+                        entity.update(cx, |shell, cx| {
+                            shell.request(PendingAction::PruneContainers, cx)
+                        });
+                    }),
+                )
             })
     };
-
-    // 「停止全部」和发行版页的「关停全部」是同一类东西：**页面级**动作
-    // （一次影响所有容器），所以放工具栏，不放进任何一行 —— 放进行里
-    // 会让人以为只影响那一行（`AGENTS.md` §5）。
-    //
-    // 一个都没在跑时干脆不显示：这时点它什么也做不了（执行侧会直接
-    // 回一句"没有正在运行的容器"），让用户去确认一个没有效果的动作
-    // 只会让人怀疑自己是不是看错了。
-    //
-    // ⚠️ 用 `then(..)` + `.children(..)`，**不**像实例页那样拿一个空 `div()`
-    // 占位：那边它两边没有兄弟，而这里左边是那句计数、右边是「清理已停止」
-    // —— 空元素夹在中间会让 `gap_2` 多出一份间距（8px 变 16px），
-    // "一个都没在跑"的时候那两颗按钮之间的缝一眼就不对。
-    let stop_all = (running > 0).then(|| {
-        let entity = entity.clone();
-        Button::new("stop-all")
-            .label("停止全部")
-            .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| {
-                    shell.request(PendingAction::StopAllContainers { running }, cx);
-                });
-            })
-            .into_any_element()
-    });
 
     // 筛选后为空：不要显示成"没有任何容器"（那是在说"你机器上没容器"）。
     let empty: AnyElement = if rows.is_empty() {
@@ -1499,13 +1501,7 @@ pub fn containers(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> impl IntoE
                         .children(search)
                         .children(clear),
                 )
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .children(stop_all)
-                        .child(prune),
-                ),
+                .child(bulk_actions),
         )
         .child(
             h_flex()
@@ -8905,7 +8901,7 @@ fn wslconf_row(
                 div()
                     .text_xs()
                     .text_color(theme::text_dim())
-                    .child(field.hint),
+                    .child(crate::util::strip_md(field.hint)),
             )
             .into_any_element();
     }
@@ -8953,7 +8949,7 @@ fn wslconf_row(
                     div()
                         .text_xs()
                         .text_color(theme::text_dim())
-                        .child(field.hint),
+                        .child(crate::util::strip_md(field.hint)),
                 );
             }
             row.into_any_element()
@@ -8965,11 +8961,19 @@ fn wslconf_row(
 ///
 /// 表单是**表驱动**的：遍历 [`wslconf::SECTIONS`] / [`wslconf::FIELDS`] 画出来，
 /// 所以加字段不用改这里 —— 改 `wslc-core` 的那两张表就够了。
-pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
-    let (Some(state), Some(dialog)) = (shell.state.wslconf.as_ref(), shell.wslconf_dialog.as_ref())
+pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyElement {
+    let (Some(saved_state), Some(dialog)) =
+        (shell.state.wslconf.as_ref(), shell.wslconf_dialog.as_ref())
     else {
         return div().into_any_element();
     };
+
+    // 预览和摘要读取当前输入；克隆上应用草稿，不让渲染改变保存状态。
+    let mut draft = saved_state.clone();
+    for ((section, key), input) in &dialog.inputs {
+        draft.apply_text_value(section, key, input.read(cx).value().trim());
+    }
+    let state = &draft;
 
     // -- 表单正文：按节分组 --
     let mut sections: Vec<AnyElement> = Vec::new();
@@ -8992,8 +8996,7 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             continue;
         }
 
-        // 布尔项**两两一行**。16 个字段里一半是开关，一列排下来弹窗太长
-        // （用户反馈"上下太长"）—— 勾选框本身很窄，并排一点也不挤。
+        // 布尔项两两一行，在分组内共享可用宽度，文本项单独占行。
         let bool_fields: Vec<&'static wslconf::Field> = fields
             .iter()
             .copied()
@@ -9012,7 +9015,8 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                     .iter()
                     .map(|f| {
                         div()
-                            .w(px(350.))
+                            .flex_1()
+                            .min_w_0()
                             .child(wslconf_row(state, dialog, f, entity))
                             .into_any_element()
                     })
@@ -9021,23 +9025,50 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             })
             .collect();
 
+        let entity_toggle = entity.clone();
+        let name = section.name;
+        let open = state.section_open(name);
+        let toggle = Button::new(SharedString::from(format!("wslconf-section-{name}")))
+            .label(format!(
+                "{} {}",
+                if open { "▾" } else { "▸" },
+                section.label
+            ))
+            .small()
+            .on_click(move |_, _, cx| {
+                entity_toggle.update(cx, |shell, cx| {
+                    if let Some(state) = shell.state.wslconf.as_mut() {
+                        state.toggle_section(name);
+                    }
+                    cx.notify();
+                });
+            });
         sections.push(
-            v_flex()
+            Collapsible::new()
+                .open(open)
                 .w_full()
-                .gap_2()
                 .child(
-                    div()
-                        .text_sm()
-                        .font_semibold()
-                        .text_color(theme::text())
-                        .child(section.label),
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .items_center()
+                        .child(toggle)
+                        .child(div().flex_1().min_w_0().child(cell_muted_full(
+                            format!("wslconf-summary-{name}"),
+                            state.section_summary(name),
+                        ))),
                 )
-                .children(bool_rows)
-                .children(
-                    other_fields
-                        .iter()
-                        .map(|f| wslconf_row(state, dialog, f, entity))
-                        .collect::<Vec<_>>(),
+                .content(
+                    v_flex()
+                        .w_full()
+                        .gap_2()
+                        .pt_2()
+                        .children(bool_rows)
+                        .children(
+                            other_fields
+                                .iter()
+                                .map(|f| wslconf_row(state, dialog, f, entity)),
+                        ),
                 )
                 .into_any_element(),
         );
@@ -9057,26 +9088,28 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         .collect();
 
     // -- 预览：实际会写进去的内容 --
-    let preview: AnyElement = if state.show_preview {
-        v_flex()
-            // 滚动容器必须先有 id
-            .id("wslconf-preview")
-            .w_full()
-            .max_h(px(220.))
-            .overflow_y_scroll()
-            .rounded_md()
-            .bg(theme::bg())
-            .p_3()
-            .child(
-                div()
-                    .font_family("Consolas")
-                    .text_xs()
-                    .text_color(theme::text_muted())
-                    .child(state.doc.render()),
-            )
-            .into_any_element()
+    let preview: Option<AnyElement> = if state.show_preview {
+        Some(
+            v_flex()
+                // 滚动容器必须先有 id
+                .id("wslconf-preview")
+                .w_full()
+                .max_h(px(220.))
+                .overflow_y_scroll()
+                .rounded_md()
+                .bg(theme::bg())
+                .p_3()
+                .child(
+                    div()
+                        .font_family("Consolas")
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child(state.doc.render()),
+                )
+                .into_any_element(),
+        )
     } else {
-        div().into_any_element()
+        None
     };
 
     let preview_btn = {
@@ -9116,7 +9149,6 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         Button::new("wslconf-save-restart")
             .label("保存并重启发行版")
             .small()
-            .primary()
             .on_click(move |_, _, cx| {
                 entity.update(cx, |shell, cx| shell.save_wslconf(true, cx));
             })
@@ -9147,12 +9179,9 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         "wslconf",
         v_flex()
             .id("wslconf-card")
-            // 高度上限卡在 620：16 个字段全展开会顶满整屏
-            // （用户反馈"上下太长"）。超了就滚 —— 与其把窗口撑到
-            // 遮住上下文，不如让用户滚动。
+            // 只有正文滚动，保存区固定在卡片底部，展开配置也不把按钮挤走。
             .w(px(780.))
             .max_h(px(620.))
-            .overflow_y_scroll()
             .gap_4()
             .p_4()
             .rounded_lg()
@@ -9179,18 +9208,39 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                         }
                     ))),
             )
-            .child(v_flex().w_full().gap_4().children(sections))
-            .child(v_flex().w_full().gap_1().children(errors))
-            .child(preview)
             .child(
-                h_flex()
+                v_flex()
+                    .id("wslconf-body")
                     .w_full()
+                    .min_h_0()
+                    .max_h(px(420.))
+                    .overflow_y_scroll()
+                    .gap_3()
+                    .children(errors)
+                    .children(sections)
+                    .children(preview),
+            )
+            .child(
+                v_flex()
+                    .w_full()
+                    .flex_none()
                     .gap_2()
-                    .justify_end()
-                    .child(preview_btn)
-                    .child(cancel)
-                    // 保存中这两个按钮会消失、换成"正在保存…"（见 `save_actions`）
-                    .children(save_actions),
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_dim())
+                            .child("仅保存需下次启动才生效；重启会中断此发行版中正在运行的任务。"),
+                    )
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap_2()
+                            .flex_wrap()
+                            .justify_end()
+                            .child(preview_btn)
+                            .child(cancel)
+                            .children(save_actions),
+                    ),
             ),
     )
     .into_any_element()
