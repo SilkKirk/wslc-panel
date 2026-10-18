@@ -206,6 +206,8 @@ pub enum UiSection {
     WslHelp,
     DeployProxy,
     DeployProxyMore,
+    PullSource,
+    DbEncoding,
 }
 
 /// 「添加实例」页里选中的**来源类型**。
@@ -3520,6 +3522,17 @@ impl RegistryState {
         self.loading = true;
     }
 
+    /// 编辑新输入后不再复用旧 tag 或旧拉取目标。
+    pub fn matches_inputs(&self, host: &str, input: &str) -> bool {
+        let host = registry::normalize_host(host);
+        let host = if host.is_empty() {
+            registry::DEFAULT_REGISTRY
+        } else {
+            host.as_str()
+        };
+        self.host == host && self.input.trim() == input.trim()
+    }
+
     /// 清掉"上一次查询的结果"，但保留 registry 与用户输入。
     pub fn clear_results(&mut self) {
         self.tags.clear();
@@ -4347,6 +4360,52 @@ mod tests {
         assert!(state.loaded.is_none());
         assert!(!state.loading);
         assert!(state.error.is_some());
+    }
+
+    #[test]
+    fn registry_state_matches_inputs_after_host_normalization() {
+        let mut state = RegistryState::new();
+        state.begin_query(
+            "docker.m.daocloud.io",
+            "  nginx:1.27  ",
+            "library/nginx",
+            Some("1.27".to_owned()),
+        );
+        let before = state.clone();
+        for host in [
+            "docker.m.daocloud.io",
+            "  docker.m.daocloud.io  ",
+            "https://docker.m.daocloud.io/",
+            "http://Docker.M.Daocloud.IO/",
+        ] {
+            assert!(state.matches_inputs(host, "  nginx:1.27  "), "{host}");
+            assert!(state.matches_inputs(host, "nginx:1.27"), "{host}");
+        }
+        assert_eq!(state, before, "匹配检查不能改动查询状态");
+    }
+
+    #[test]
+    fn registry_state_rejects_changed_hosts_repositories_and_tags() {
+        let mut state = RegistryState::new();
+        state.begin_query(
+            "docker.m.daocloud.io",
+            "nginx:1.27",
+            "library/nginx",
+            Some("1.27".to_owned()),
+        );
+        assert!(!state.matches_inputs(registry::DEFAULT_REGISTRY, "nginx:1.27"));
+        assert!(!state.matches_inputs("docker.m.daocloud.io", "redis:1.27"));
+        assert!(!state.matches_inputs("docker.m.daocloud.io", "nginx:1.29"));
+        assert!(!state.matches_inputs("docker.m.daocloud.io", "nginx"));
+    }
+
+    #[test]
+    fn registry_state_matches_an_empty_host_as_the_default_registry() {
+        let mut state = RegistryState::new();
+        state.begin_query(registry::DEFAULT_REGISTRY, "alpine", "library/alpine", None);
+        for host in ["", "  ", registry::DEFAULT_REGISTRY] {
+            assert!(state.matches_inputs(host, "alpine"), "{host:?}");
+        }
     }
 
     #[test]
@@ -5712,6 +5771,8 @@ mod tests {
             UiSection::WslHelp,
             UiSection::DeployProxy,
             UiSection::DeployProxyMore,
+            UiSection::PullSource,
+            UiSection::DbEncoding,
         ] {
             assert!(!state.section_open(section), "{section:?} 应默认折叠");
         }
@@ -5729,6 +5790,25 @@ mod tests {
         assert!(!state.section_open(UiSection::DeployProxy));
         assert!(state.section_open(UiSection::DeployProxyMore));
         assert!(!state.section_open(UiSection::CreateAdvanced));
+    }
+
+    #[test]
+    fn pull_source_and_db_encoding_sections_are_independent() {
+        let mut state = AppState::new(Wslc::new(), Wsl::new());
+        state.set_section_open(UiSection::CreateAdvanced, true);
+        for (section, other) in [
+            (UiSection::PullSource, UiSection::DbEncoding),
+            (UiSection::DbEncoding, UiSection::PullSource),
+        ] {
+            state.set_section_open(section, true);
+            assert!(state.section_open(section));
+            assert!(!state.section_open(other));
+            assert!(state.section_open(UiSection::CreateAdvanced));
+            state.toggle_section(section);
+            assert!(!state.section_open(section));
+            assert!(!state.section_open(other));
+            assert!(state.section_open(UiSection::CreateAdvanced));
+        }
     }
 
     #[test]

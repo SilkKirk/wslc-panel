@@ -2525,6 +2525,97 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
                 h_flex()
                     .w_full()
                     .gap_3()
+                    .items_center()
+                    .child(
+                        Checkbox::new("db-dialog-create-user")
+                            .label("同时创建用户并授权")
+                            .checked(dialog.create_user)
+                            .on_change({
+                                let entity = entity.clone();
+                                move |checked: &bool, _, cx| {
+                                    let create_user = *checked;
+                                    entity.update(cx, |shell, cx| {
+                                        shell.set_db_create_user(create_user, cx)
+                                    });
+                                }
+                            }),
+                    )
+                    .children(dialog.create_user.then(|| {
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_dim())
+                            .child("主机 %（允许远程连接）")
+                    }))
+                    .into_any_element(),
+            );
+            if dialog.create_user {
+                // 用户名保持手填；建议只在明确点击后写入，不随库名自动改动。
+                let database = dialog.database.read(cx).value().trim().to_owned();
+                let hint = if database.is_empty() {
+                    "先填写库名，再使用建议用户名".to_owned()
+                } else {
+                    format!("填入 {}", mysql_model::default_user_for(&database))
+                };
+                let suggest = {
+                    let entity = entity.clone();
+                    Button::new("db-dialog-suggest-user")
+                        .label("用建议值")
+                        .tooltip(hint)
+                        .small()
+                        .on_click(move |_, window, cx| {
+                            entity.update(cx, |shell, cx| shell.fill_db_username(window, cx));
+                        })
+                };
+                fields.push(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .items_end()
+                        .child(div().flex_1().min_w_0().child(form_field(
+                            "db-dialog-db-user",
+                            "数据库用户名",
+                            &dialog.db_user,
+                            cx,
+                            true,
+                        )))
+                        .child(suggest)
+                        .into_any_element(),
+                );
+                fields.push(form_field(
+                    "db-dialog-password",
+                    "密码（已随机生成，可修改）",
+                    &dialog.password,
+                    cx,
+                    true,
+                ));
+            }
+            let charset = dialog.charset.read(cx).value().trim().to_owned();
+            let collation = dialog.collation.read(cx).value().trim().to_owned();
+            let summary = if charset.is_empty() && collation.is_empty() {
+                "字符集与排序规则 · 服务器默认".to_owned()
+            } else {
+                format!(
+                    "字符集 {} · 排序规则 {}",
+                    if charset.is_empty() {
+                        "服务器默认"
+                    } else {
+                        charset.as_str()
+                    },
+                    if collation.is_empty() {
+                        "默认"
+                    } else {
+                        collation.as_str()
+                    }
+                )
+            };
+            fields.push(disclosure(
+                UiSection::DbEncoding,
+                summary,
+                &shell.state,
+                entity,
+                h_flex()
+                    .w_full()
+                    .gap_3()
                     .child(form_field(
                         "db-dialog-charset",
                         "字符集（可留空）",
@@ -2538,90 +2629,8 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
                         &dialog.collation,
                         cx,
                         false,
-                    ))
-                    .into_any_element(),
-            );
-
-            // 「同时创建用户」是 v0.8 的主路径：建库的人几乎总要一个连它的账号。
-            // ⚠️ v0.9.3 起**用户名由用户手填**（以前是按库名推的 `<库名>_user`，
-            // 弹窗里只画一行"跟库名走"）—— 实机反馈"创建数据库的创建用户名
-            // 这里让手填，不要自动生成"。密码仍然预填随机值（那个是真猜不出来）。
-            if dialog.create_user {
-                fields.push(
-                    h_flex()
-                        .w_full()
-                        .gap_3()
-                        .items_center()
-                        .child(
-                            Checkbox::new("db-dialog-create-user")
-                                .label("同时创建用户并授权")
-                                .checked(dialog.create_user)
-                                // `Checkbox` 是**受控**组件：`on_change` 给的是
-                                // "请求的新值"，存回 Shell 再 notify（和 wslconf 同一写法）
-                                .on_change({
-                                    let entity = entity.clone();
-                                    move |checked: &bool, _, cx| {
-                                        let create_user = *checked;
-                                        entity.update(cx, |shell, cx| {
-                                            shell.set_db_create_user(create_user, cx)
-                                        });
-                                    }
-                                }),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme::text_dim())
-                                .child("主机 %（允许远程连接）"),
-                        )
-                        .into_any_element(),
-                );
-                // 用户名输入框 + 一个「用建议值」。
-                // 按钮**只填一次**、不联动：用户点了之后自己改库名也不会被覆盖
-                //（"不要自动生成"那条反馈要的就是这个）。
-                fields.push(form_field(
-                    "db-dialog-db-user",
-                    "数据库用户名",
-                    &dialog.db_user,
-                    cx,
-                    false,
-                ));
-                let suggest = {
-                    let entity = entity.clone();
-                    Button::new("db-dialog-suggest-user")
-                        .label("用建议值")
-                        .small()
-                        .on_click(move |_, window, cx| {
-                            entity.update(cx, |shell, cx| shell.fill_db_username(window, cx));
-                        })
-                };
-                // 建议值本身显示在提示里，让用户知道点下去会填什么
-                //（按钮标签是静态的 —— `.label()` 在本仓库一律收 `&'static str`）。
-                let suggested =
-                    mysql_model::default_user_for(dialog.database.read(cx).value().trim());
-                let hint = if suggested == "_user" {
-                    // 库名还没填：算出来是 `_user`，别把这种半成品显示给用户
-                    "要手填。填好库名后点「用建议值」会自动算成「库名_user」".to_owned()
-                } else {
-                    format!("要手填。「用建议值」会填：{suggested}")
-                };
-                fields.push(
-                    h_flex()
-                        .w_full()
-                        .gap_2()
-                        .items_center()
-                        .child(suggest)
-                        .child(div().text_xs().text_color(theme::text_dim()).child(hint))
-                        .into_any_element(),
-                );
-                fields.push(form_field(
-                    "db-dialog-password",
-                    "该用户的密码（已生成随机值，可改）",
-                    &dialog.password,
-                    cx,
-                    true,
-                ));
-            }
+                    )),
+            ));
         }
         DbDialogKind::NewUser => {
             fields.push(
@@ -2792,7 +2801,10 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
     modal_scrim(
         "db-dialog",
         v_flex()
+            .id("db-dialog-card")
             .w(px(680.))
+            .max_h(px(820.))
+            .overflow_y_scroll()
             .gap_4()
             .p_5()
             .rounded_lg()
@@ -4533,11 +4545,12 @@ pub fn pull_dialog_overlay(
     form: &ImageForm,
     state: &AppState,
     entity: &Entity<Shell>,
+    cx: &App,
 ) -> AnyElement {
     let pulling = state.pulling.is_some();
     let body: AnyElement = match &state.pulling {
         Some(progress) => pull_progress_body(progress, entity),
-        None => pull_dialog_form(form, state, entity),
+        None => pull_dialog_form(form, state, entity, cx),
     };
 
     let mut card = v_flex()
@@ -4582,281 +4595,228 @@ pub fn pull_dialog_overlay(
 /// 弹窗里那张**表单**（没在拉取时）。
 ///
 /// 拆成独立函数只是为了让 [`pull_dialog_overlay`] 的两种形态一眼看得清。
-fn pull_dialog_form(form: &ImageForm, state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+fn pull_dialog_form(
+    form: &ImageForm,
+    state: &AppState,
+    entity: &Entity<Shell>,
+    cx: &App,
+) -> AnyElement {
     let page = &state.registry;
+    let typed_host = form.host.read(cx).value().trim().to_owned();
+    let typed_repository = form.repository.read(cx).value().trim().to_owned();
+    let normalized_host = registry::normalize_host(&typed_host);
+    let shown_host = if normalized_host.is_empty() {
+        registry::DEFAULT_REGISTRY
+    } else {
+        normalized_host.as_str()
+    };
+    let inputs_match = page.matches_inputs(&typed_host, &typed_repository);
 
-    let presets: Vec<AnyElement> = registry::COMMON_IMAGES
-        .iter()
-        .map(|name| {
-            // `COMMON_IMAGES` 是 `&[&str]`，`iter()` 给的是 `&&str` ——
-            // 解一层引用拿到 `&'static str`（它 `Copy`，`move` 闭包直接拷进去）。
-            //
-            // ⚠️ 写成 `let name = *name;` 而**不是** `let name: &'static str = *name;`：
-            // 后者 clippy 会报 `explicit_auto_deref`（CI 的 lint 任务实测报过它）。
-            let name = *name;
-            let entity = entity.clone();
-            Button::new(SharedString::from(format!("image-preset-{name}")))
-                .label(name)
-                .small()
-                .on_click(move |_, window, cx| {
-                    entity.update(cx, |shell, cx| {
-                        shell.apply_registry_preset(name, window, cx);
-                    });
-                })
-                .into_any_element()
-        })
-        .collect();
-
-    let query_row = h_flex()
-        .w_full()
-        .gap_2()
-        .items_center()
-        .child(
-            v_flex()
-                .gap_1()
-                .w(px(240.))
-                .flex_none()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_dim())
-                        .child("registry（默认内置加速站）"),
-                )
-                .child(Input::new(&form.host).id("image-host").w_full()),
-        )
-        .child(
-            v_flex()
-                .gap_1()
-                .flex_1()
-                .min_w_0()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_dim())
-                        .child("仓库名（可带 `:tag`，也可以粘完整引用或整条 URL）"),
-                )
-                .child(Input::new(&form.repository).id("image-repository").w_full()),
-        )
-        .child({
-            let entity = entity.clone();
-            // 点下去按钮先变成「查询中…」—— 从点击到结果出来之间，
-            // 界面上必须有变化（`AGENTS.md` §7.1：没有它，用户会以为按钮坏了
-            // 然后去点第二次）。
-            Button::new("image-query")
-                .label(if page.loading {
-                    "查询中…"
-                } else {
-                    "查询"
-                })
-                .primary()
-                .small()
-                .on_click(move |_, window, cx| {
-                    entity.update(cx, |shell, cx| shell.query_registry(window, cx));
-                })
-        });
-
-    let tag_picker = v_flex()
-        .w_full()
-        .gap_1()
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme::text_dim())
-                .child("tag（可以打字搜索）"),
-        )
-        .child(
-            Select::new(&form.tags_select)
-                .placeholder("先查一个仓库；查不到也能按上面的完整引用直接拉")
-                .w_full()
-                .menu_max_h(px(360.)),
-        );
-
-    // 状态行：说清"现在是什么情况"
-    let status: AnyElement = if page.loading {
-        div()
-            .text_sm()
-            .text_color(theme::text_muted())
-            .child("正在拉取 tag 列表…")
-            .into_any_element()
-    } else if let Some(error) = page.error.as_ref() {
+    let presets = {
+        let entity = entity.clone();
+        Button::new("image-presets")
+            .label("常用镜像")
+            .small()
+            .dropdown_menu(move |mut menu, _, _| {
+                for &name in registry::COMMON_IMAGES {
+                    let entity = entity.clone();
+                    menu = menu.item(PopupMenuItem::new(name).on_click(move |_, window, cx| {
+                        entity.update(cx, |shell, cx| {
+                            shell.apply_registry_preset(name, window, cx)
+                        });
+                    }));
+                }
+                menu
+            })
+    };
+    let query = {
+        let entity = entity.clone();
+        Button::new("image-query")
+            .label(if page.loading {
+                "查询中…"
+            } else {
+                "查询"
+            })
+            .primary()
+            .small()
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |shell, cx| shell.query_registry(window, cx));
+            })
+    };
+    let source = disclosure(
+        UiSection::PullSource,
+        format!("更换镜像源 · {shown_host}"),
+        state,
+        entity,
         v_flex()
             .w_full()
             .gap_1()
+            .child(form_field("image-host", "镜像源地址", &form.host, cx, true))
             .child(
                 div()
-                    .text_sm()
-                    .text_color(theme::danger())
-                    .child(error.clone()),
-            )
-            .child(div().text_xs().text_color(theme::text_dim()).child(
-                // 文案是 Markdown 风格 → 过一遍 `strip_md`（否则屏幕上真的显示
-                // `**` 和反引号）。这一处 v0.9.13 之前一直漏着。
-                crate::util::strip_md(
-                    "换一个仓库名再试；只有支持 Registry V2 的 `tags/list` 才列得出来\
-                     （私有的多半要认证）。**列不出来也能拉**：把 tag 写在仓库名后面\
-                     （`nginx:1.27`），或者直接粘完整引用。",
-                ),
-            ))
-            .into_any_element()
-    } else if let Some(loaded) = page.loaded.as_ref() {
-        let note = page
-            .normalization_note()
-            .map(|note| format!("（{note}）"))
-            .unwrap_or_default();
-        let mut text = format!("{loaded}：{} 个 tag{note}", page.tags.len());
-        // 用户打的 tag 不在列表里 —— 这件事**必须说出来**，否则用户会以为
-        // 自己要的那个 tag 不存在（实机反馈："我想拉取 openjdk:8-jre-slim，
-        // 结果啥东东都出来了"）。实测这个镜像源的 tags/list 确实可能不全：
-        // `library/openjdk` 回 17282 个，里面没有 `8-jre-slim` 也没有 `latest`，
-        // 但两者的 manifest 都是 200（能拉）。
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child("留空使用默认镜像源；修改后重新查询。"),
+            ),
+    );
+
+    // 编辑后的输入不再对应旧 tag 列表：保留表单，隐藏旧结果直到再次查询。
+    let status: Option<AnyElement> = if !inputs_match && !typed_repository.is_empty() {
+        Some(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child("输入已修改，请重新查询。")
+                .into_any_element(),
+        )
+    } else if !inputs_match || page.loading {
+        None
+    } else if let Some(error) = page.error.as_ref() {
+        Some(
+            v_flex()
+                .w_full()
+                .gap_1()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme::danger())
+                        .child(error.clone()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child("tag 列表不可用时，可在名称中指定 :tag 后尝试拉取。"),
+                )
+                .into_any_element(),
+        )
+    } else if page.loaded.is_some() {
+        let mut text = format!("{} 个 tag", page.tags.len());
+        if let Some(note) = page.normalization_note() {
+            text.push_str(&format!(" · {note}"));
+        }
         if let Some(tag) = page
             .effective_tag()
             .filter(|tag| !page.tags.iter().any(|t| t.as_str() == *tag))
         {
-            text.push_str(&format!(
-                " —— 你要的 {tag} 不在这个列表里。这个镜像源的列表可能不全\
-                 （它的 manifest 存在时照样能拉，只是体积可能量不出来）"
-            ));
+            text.push_str(&format!(" · {tag} 不在列表中，仍可尝试拉取"));
         }
-        div()
-            .text_sm()
-            .text_color(theme::text_muted())
-            .child(text)
-            .into_any_element()
+        Some(
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child(text)
+                .into_any_element(),
+        )
     } else {
-        div()
-            .text_sm()
-            .text_color(theme::text_dim())
-            .child("填一个仓库名，或者点上面的常用镜像。tag 列表按「latest 优先、版本倒序」排过。")
-            .into_any_element()
+        None
     };
 
-    // 选中了什么、能不能拉
-    let action: AnyElement = match page.selected_reference() {
-        // 一个 tag 都没有时给一句说明，别让用户以为按钮没画出来。
-        // 这里也是"别的 registry 列不出 tag"时的出口。
-        None => div()
-            .text_xs()
-            .text_color(theme::text_dim())
-            .child("选一个 tag（或者在仓库名后面写上 `:tag`）之后，这里会出现「拉取」。")
-            .into_any_element(),
-        Some(reference) => {
-            // 已经在本地了就顺手给一个「创建容器」：镜像名预填，用户不用再手打一遍。
-            //
-            // 没拉下来时**不放**这个按钮（只给一句说明）：`wslc run` 的拉取策略是
-            // `Never`，点了必然失败 —— 那是"界面上点了没反应"里最差的一种。
-            // 拉取完成后 `start_pull` 会刷新快照，按钮自己就出现了。
-            let pulled = state
-                .snapshot
-                .images
-                .iter()
-                .any(|img| img.reference() == reference);
-
-            let size_line: AnyElement = if page.sizing {
-                div()
-                    .text_xs()
-                    .text_color(theme::text_dim())
-                    .child("正在量体积…")
-                    .into_any_element()
-            } else if let Some(label) = page.size_label() {
-                // ⚠️ 措辞是「**下载约**」：这是 manifest 累加的**压缩后**大小，
-                // 不是落盘占用。同机 nginx 实测 60.9 MB，而「本地镜像」表里
-                // `wslc images` 的 `Size` 是 163 MB（差 2.7 倍）——
-                // 写成"大小"用户拿它一对就会当 bug 报上来。
-                div()
-                    .text_xs()
-                    .text_color(theme::text_muted())
-                    .child(label)
-                    .into_any_element()
-            } else if let Some(error) = page.size_error.as_ref() {
-                // 量不出来**不挡住拉取**：说清原因，拉不拉由用户决定。
+    let tag_picker = (inputs_match
+        && !page.loading
+        && (!page.tags.is_empty() || page.effective_tag().is_some()))
+    .then(|| {
+        v_flex()
+            .w_full()
+            .gap_1()
+            .child(div().text_xs().text_color(theme::text_dim()).child("tag"))
+            .child(
+                Select::new(&form.tags_select)
+                    .placeholder("选择或搜索 tag")
+                    .w_full()
+                    .menu_max_h(px(360.)),
+            )
+            .into_any_element()
+    });
+    let reference = if inputs_match {
+        page.selected_reference()
+    } else {
+        None
+    };
+    let action = reference.map(|reference| {
+        let pulled = state
+            .snapshot
+            .images
+            .iter()
+            .any(|image| image.reference() == reference);
+        let size_line = if page.sizing {
+            Some(cell_muted("正在获取下载体积…"))
+        } else if let Some(label) = page.size_label() {
+            // manifest 是压缩后的下载体积，与本地镜像占用不同。
+            Some(cell_muted(label))
+        } else {
+            page.size_error.as_ref().map(|error| {
                 div()
                     .text_xs()
                     .text_color(theme::warning())
-                    .child(format!("体积量不出来：{error}"))
+                    .child(format!("无法获取下载体积：{error}"))
                     .into_any_element()
-            } else {
-                div().into_any_element()
-            };
-
-            let pull = {
-                let entity = entity.clone();
-                Button::new("image-pull")
-                    .label("拉取")
-                    .primary()
-                    .small()
-                    .on_click(move |_, _, cx| {
-                        entity.update(cx, |shell, cx| shell.pull_registry_selection(cx));
-                    })
-            };
-
-            let create: AnyElement = if pulled {
-                let entity = entity.clone();
-                let image = reference.clone();
-                Button::new("image-create")
-                    .label("用这个镜像创建容器")
-                    .small()
-                    .on_click(move |_, window, cx| {
-                        // ⚠️ 走 `use_pulled_image` 而不是直接开创建弹窗：
-                        // 它会**先关掉这个弹窗** —— 两层遮罩叠在一起没有任何好处。
-                        let image = image.clone();
-                        entity.update(cx, |shell, cx| {
-                            shell.use_pulled_image(image, window, cx);
-                        });
-                    })
-                    .into_any_element()
-            } else {
-                div()
-                    .text_xs()
-                    .text_color(theme::text_dim())
-                    .child("拉下来之后，这里会出现「用这个镜像创建容器」。")
-                    .into_any_element()
-            };
-
-            v_flex()
-                .w_full()
-                .gap_2()
-                .child(
-                    h_flex()
-                        .w_full()
-                        .gap_2()
-                        .items_center()
-                        .min_w_0()
-                        .child(div().text_sm().text_color(theme::text()).child("将拉取"))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme::text_muted())
-                                .child(reference),
-                        ),
-                )
-                .child(
-                    h_flex()
-                        .w_full()
-                        .gap_3()
-                        .items_center()
-                        .child(size_line)
-                        .child(pull)
-                        .child(create),
-                )
+            })
+        };
+        let pull = {
+            let entity = entity.clone();
+            Button::new("image-pull")
+                .label("拉取")
+                .primary()
+                .small()
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |shell, cx| shell.pull_registry_selection(cx));
+                })
+        };
+        let create = pulled.then(|| {
+            let entity = entity.clone();
+            let image = reference.clone();
+            Button::new("image-create")
+                .label("创建容器")
+                .small()
+                .on_click(move |_, window, cx| {
+                    let image = image.clone();
+                    entity.update(cx, |shell, cx| shell.use_pulled_image(image, window, cx));
+                })
                 .into_any_element()
-        }
-    };
+        });
+        v_flex()
+            .w_full()
+            .gap_2()
+            .child(cell_text_full(
+                "pull-selected-reference",
+                format!("将拉取 {reference}"),
+            ))
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_3()
+                    .items_center()
+                    .flex_wrap()
+                    .children(size_line)
+                    .child(pull)
+                    .children(create),
+            )
+            .into_any_element()
+    });
 
     v_flex()
         .w_full()
         .gap_3()
-        .child(div().text_xs().text_color(theme::text_dim()).child(
-            "实测这台机器上 Docker Hub 直连不通（registry-1.docker.io 超时），\
-             所以默认用上面那个加速站（它有完整的 Registry V2 接口）。\
-             换别的 registry 就直接改上面那格地址 —— 列不出 tag 也能拉：\
-             把 tag 写在仓库名后面（`nginx:1.27`），或者粘一整条完整引用。",
-        ))
-        .child(h_flex().w_full().gap_2().flex_wrap().children(presets))
-        .child(query_row)
-        .child(tag_picker)
-        .child(status)
-        .child(action)
+        .child(
+            h_flex()
+                .w_full()
+                .gap_2()
+                .items_end()
+                .child(div().flex_1().min_w_0().child(form_field(
+                    "image-repository",
+                    "镜像名称或完整引用（如 nginx:1.27）",
+                    &form.repository,
+                    cx,
+                    true,
+                )))
+                .child(query)
+                .child(presets),
+        )
+        .child(source)
+        .children(tag_picker)
+        .children(status)
+        .children(action)
         .into_any_element()
 }
 
@@ -8706,36 +8666,6 @@ pub fn exec_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEleme
             .into_any_element()
     };
 
-    let open_shell = {
-        let entity = entity.clone();
-        let name = exec.container.clone();
-        Button::new("exec-open-shell")
-            .label("打开终端")
-            .small()
-            .on_click(move |_, _, cx| {
-                let name = name.clone();
-                entity.update(cx, |shell, cx| {
-                    shell.run_immediate(ImmediateAction::OpenContainerShell(name), cx);
-                });
-            })
-            .into_any_element()
-    };
-
-    let attach = {
-        let entity = entity.clone();
-        let name = exec.container.clone();
-        Button::new("exec-attach")
-            .label("attach 主进程")
-            .small()
-            .on_click(move |_, _, cx| {
-                let name = name.clone();
-                entity.update(cx, |shell, cx| {
-                    shell.run_immediate(ImmediateAction::AttachContainer(name), cx);
-                });
-            })
-            .into_any_element()
-    };
-
     let close = {
         let entity = entity.clone();
         Button::new("exec-close")
@@ -8813,8 +8743,7 @@ pub fn exec_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEleme
                             .child(format!("执行命令 —— {}", exec.container)),
                     )
                     .child(div().text_xs().text_color(theme::text_dim()).child(
-                        "命令交给容器里的 /bin/sh 执行，所以管道、重定向、&& 都能用。\
-                         没有 TTY —— vi、top、less 这类要用终端的程序请点「打开终端」。",
+                        "使用 /bin/sh 执行，支持管道和重定向，不提供 TTY；交互程序请用容器列表「更多 → 终端」。",
                     )),
             )
             .child(form_field("exec-command", "命令", input, cx, true))
@@ -8824,9 +8753,7 @@ pub fn exec_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEleme
                     .gap_2()
                     .flex_wrap()
                     .items_center()
-                    .child(run_area)
-                    .child(open_shell)
-                    .child(attach),
+                    .child(run_area),
             )
             .children(echo)
             .child(output)

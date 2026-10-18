@@ -774,6 +774,8 @@ pub(crate) struct DbDialog {
     /// [`DbDialogKind::ImportSql`] 的 `database` 里（用户要的是"导入这个库的
     /// 数据"，给一个能改的框只会多一个填错的机会）。
     pub(crate) import_path: Entity<InputState>,
+    // 保留订阅，让编码摘要及用户名建议随输入更新。
+    _input_subs: Vec<Subscription>,
 }
 
 /// 这次连数据库要用哪个账号。
@@ -1539,7 +1541,17 @@ impl Shell {
                 }
             },
         );
-        self.image_subs = vec![tags_sub];
+        let host_sub = cx.subscribe(&host, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        });
+        let repository_sub = cx.subscribe(&repository, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        });
+        self.image_subs = vec![tags_sub, host_sub, repository_sub];
 
         self.image_form = Some(ImageForm {
             host,
@@ -1562,6 +1574,7 @@ impl Shell {
             return;
         }
         self.ensure_image_form(window, cx);
+        self.state.set_section_open(UiSection::PullSource, false);
         // 下拉框里得有上一次查到的 tag（表单是留着的，但列表来自状态）。
         self.fill_tag_select(window, cx);
         self.pull_open = true;
@@ -1674,6 +1687,9 @@ impl Shell {
         // ⚠️ 校验必须在**发请求之前**：`host` 会拼进 URL，再作为裸 argv 交给
         // `curl.exe`（判据只有 `registry::is_valid_host` 一处）。
         if !wslc_core::registry::is_valid_host(&host) {
+            self.state.set_section_open(UiSection::PullSource, true);
+            let handle = host_input.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
             self.state
                 .notify(Toast::error(format!("registry 地址不合法：{host}")));
             cx.notify();
@@ -1816,13 +1832,24 @@ impl Shell {
     /// 「镜像」页点「拉取」：把将要拉的那个引用拉下来。
     ///
     /// v0.6.2 起这是**唯一**的拉取入口（原先还有「拉取镜像」弹窗）——
-    /// 所以这里不再有"读输入框 + 校验"那一层，
     /// 引用由 [`RegistryState::selected_reference`] 从
     /// registry / 仓库名 / tag 三件东西拼出来。
     pub fn pull_registry_selection(&mut self, cx: &mut Context<Self>) {
         if self.state.pulling.is_some() {
             self.state
                 .notify(Toast::info("已经有一个拉取在跑了，等它结束"));
+            cx.notify();
+            return;
+        }
+        // 输入可能刚在这一帧改变；提交时再次核对，不能拉取上次查询的旧目标。
+        let inputs_match = self.image_form.as_ref().is_some_and(|form| {
+            self.state.registry.matches_inputs(
+                form.host.read(cx).value().trim(),
+                form.repository.read(cx).value().trim(),
+            )
+        });
+        if !inputs_match {
+            self.state.notify(Toast::error("输入已修改，请先查询镜像"));
             cx.notify();
             return;
         }
@@ -3434,6 +3461,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.state.set_section_open(UiSection::DbEncoding, false);
         let database = cx.new(|cx| InputState::new(window, cx).placeholder("shop"));
         let charset = cx.new(|cx| {
             InputState::new(window, cx).placeholder("留空 = 服务器默认（一般为 utf8mb4）")
@@ -3458,9 +3486,8 @@ impl Shell {
             host.update(cx, |state, cx| state.set_value("%".to_owned(), window, cx));
         }
         // 「新建数据库」默认**同时建用户**（v0.8 的主路径），密码先给一个
-        // 随机值（用户可见可改）。用户名**不在弹窗里给输入框**：
-        // 它按「库名 + _user」在提交时由库名推 —— 库名还没填呢，现在预填
-        // 只会是空串；规则写在弹窗里，改名跟着变的逻辑也因此免费。
+        // 随机值（用户可见可改）。用户名保持手填，只有点击「用建议值」才填写，
+        // 后续修改库名也不覆盖已经填写的用户名。
         let mut create_user = false;
         if kind == DbDialogKind::NewDatabase {
             create_user = true;
@@ -3480,7 +3507,18 @@ impl Shell {
         let handle = first.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
 
+        let input_subs = [&database, &charset, &collation]
+            .into_iter()
+            .map(|input| {
+                cx.subscribe(input, |_, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        cx.notify();
+                    }
+                })
+            })
+            .collect();
         self.db_dialog = Some(DbDialog {
+            _input_subs: input_subs,
             kind,
             database,
             charset,
@@ -3889,8 +3927,24 @@ impl Shell {
             Ok(None) => return,
             Ok(Some(prepared)) => prepared,
             Err(e) => {
-                // 不关弹窗：用户就在那一格上，改一个字比重打一遍强
-                self.state.notify(Toast::error(e.to_string()));
+                // 编码字段折叠后，校验错误仍应把用户带到可见的输入框。
+                let message = e.to_string();
+                let encoding_input = self.db_dialog.as_ref().and_then(|dialog| {
+                    if message.contains("字符集") {
+                        Some(dialog.charset.clone())
+                    } else if message.contains("排序规则") {
+                        Some(dialog.collation.clone())
+                    } else {
+                        None
+                    }
+                });
+                if let Some(input) = encoding_input {
+                    self.state.set_section_open(UiSection::DbEncoding, true);
+                    let handle = input.read(cx).focus_handle(cx);
+                    window.focus(&handle, cx);
+                }
+                // 不关弹窗，保留输入供用户直接修正。
+                self.state.notify(Toast::error(message));
                 cx.notify();
                 return;
             }
@@ -8857,7 +8911,7 @@ impl Render for Shell {
         // 「拉取镜像」弹窗。表单住在 `Shell::image_form` 里（不在 `state` 里），
         // 所以只有这里能画它。
         let pull_dialog: AnyElement = match (self.pull_open, self.image_form.as_ref()) {
-            (true, Some(form)) => views::pull_dialog_overlay(form, state, &entity),
+            (true, Some(form)) => views::pull_dialog_overlay(form, state, &entity, cx),
             // `pull_open` 为真时表单一定在（`open_pull_dialog` 先建再置位）——
             // 真走到这里也只是什么都不画，不 panic。
             _ => div().into_any_element(),
