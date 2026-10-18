@@ -59,7 +59,8 @@ use wslc_core::cmd::distro::InstallSpec;
 use wslc_core::cmd::install::{self, InstallCancel, InstallEvent, InstallSummary, RunOptions};
 use wslc_core::mirrors;
 use wslc_core::model::install::{
-    self as install_model, InstallSource, derive_install_dir, suggest_name_from_file,
+    self as install_model, InstallFieldErrors, InstallSource, derive_install_dir,
+    suggest_name_from_file,
 };
 // 镜像仓库（Registry V2）的纯逻辑：引用规范化、URL 拼装、tag 排序、错误翻译。
 use wslc_core::registry;
@@ -134,6 +135,18 @@ pub(crate) struct InstallForm {
     /// 这么绕是因为本仓库没有"输入框内容变化"的订阅先例（本机编译不了，
     /// 猜 API 要白烧一轮 CI）—— 用"比较上次推导值"能达到同样效果。
     pub(crate) last_derived_dir: Option<String>,
+    /// 是否已经点过「开始安装」且校验没过。
+    ///
+    /// 点之前**不**在页面上常驻红字 / 错误卡：那会一直占着地方，还会和
+    /// 步骤预览里的同一句错误重复。点之后才把 [`Self::field_errors`] 对应的
+    /// 输入框标红，并把焦点送过去。
+    pub(crate) show_errors: bool,
+    /// 上一次提交失败时，哪几块输入有问题（名字 / 来源 / 安装目录）。
+    ///
+    /// 为什么不在渲染时重新算：`preflight` 里"安装目录非空"要碰文件系统
+    /// （见 `add_instance` 的说明），渲染时不能查；把提交那一刻的结论留下来，
+    /// 才能让这一帧把目录也标红。
+    pub(crate) field_errors: InstallFieldErrors,
 }
 
 /// 「镜像」页的表单（v0.6 建，v0.6.2 并进「镜像」页）。
@@ -1236,6 +1249,8 @@ impl Shell {
             } else {
                 Some(default_dir.clone())
             },
+            show_errors: false,
+            field_errors: InstallFieldErrors::default(),
         });
 
         // 预填默认安装目录本身（"名字还没填"时它就是基准）
@@ -7542,6 +7557,9 @@ impl Shell {
         }
 
         form.source = source;
+        // 换了来源，上一次的标红已经不对应新的输入了；下一次提交再重新算。
+        form.show_errors = false;
+        form.field_errors = InstallFieldErrors::default();
         if !source.supports_launch() {
             form.launch = false;
         }
@@ -8033,7 +8051,7 @@ impl Shell {
     ///    跑在后台执行器上；
     /// 3. 界面每 250 ms 把事件搬进 `AppState::installing`，
     ///    所以日志和进度是**边跑边显示**的。
-    pub fn confirm_install(&mut self, cx: &mut Context<Self>) {
+    pub fn confirm_install(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.install_run.is_some() {
             self.state
                 .notify(Toast::error("已经有一个安装在进行 —— 等它结束，或者先取消"));
@@ -8061,11 +8079,45 @@ impl Shell {
         let dir = spec.effective_install_dir(&ctx).unwrap_or_default();
         let check = self.state.preflight(&spec, dir_non_empty(&dir));
         if !check.ok() {
-            self.state.notify(Toast::error(
-                check.error_text().unwrap_or_else(|| "参数有误".to_owned()),
-            ));
+            // 不弹提示条、也不在页面上列错误清单：把"哪几块有问题"记下来，
+            // 让 `add_instance` 把对应的输入框标红；焦点送到第一块，
+            // 长表单里用户不用自己找。
+            let fields = check.field_errors();
+            let focus = self.install_form.as_ref().and_then(|form| {
+                if fields.name {
+                    Some(form.name.clone())
+                } else if fields.source {
+                    match form.source {
+                        InstallSourceKind::Local => Some(form.source_path.clone()),
+                        // 在线清单没有可聚焦的输入框（下拉框），红框会画在
+                        // 来源区块上；镜像源则把焦点送到"自定义地址"。
+                        InstallSourceKind::Online => None,
+                        InstallSourceKind::Mirror => Some(form.mirror_url.clone()),
+                    }
+                } else if fields.install_dir {
+                    Some(form.install_dir.clone())
+                } else {
+                    None
+                }
+            });
+            if let Some(form) = self.install_form.as_mut() {
+                form.show_errors = true;
+                form.field_errors = fields;
+            }
+            if let Some(input) = focus {
+                let handle = input.read(cx).focus_handle(cx);
+                window.focus(&handle, cx);
+            }
+            tracing::info!(
+                "安装参数未通过：{}",
+                check.error_text().unwrap_or_else(|| "参数有误".to_owned())
+            );
             cx.notify();
             return;
+        }
+        if let Some(form) = self.install_form.as_mut() {
+            form.show_errors = false;
+            form.field_errors = InstallFieldErrors::default();
         }
         for warning in &check.warnings {
             tracing::info!("安装提醒：{warning}");

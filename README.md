@@ -50,7 +50,7 @@
 | **WSL 配置**（设置 tab） | `.wslconfig` 原文、放错文件的键提示、用系统默认程序打开（只读） | 直接读 `%USERPROFILE%\.wslconfig` |
 | **关于**（设置 tab） | 版本 / 构建 / 会话 / 界面库 / 许可证；项目主页、问题反馈等**可点链接** | 本地常量 |
 | **实例列表** | WSL 发行版：状态、WSL 版本、是否默认、安装位置与 VHDX 虚拟大小；工具栏下面一行汇总（数量 / 运行中 / 磁盘合计 / 默认发行版 / 多少个没读到大小）；**行内**打开终端 / 启动（由本面板吊住保持运行）/ 终止 / 设为默认；**详情里**压缩磁盘、移动位置、调整大小、导出、打开安装位置、编辑 `/etc/wsl.conf`、删除 | `wsl --list --verbose` + 注册表 `Lxss` |
-| **添加实例** | **三条来源**：**本地文件**（tar / tar.gz / tar.xz / `.vhdx` / `.wsl` 一个入口，**按后缀自动分岔**装法）/ **微软商店 (Microsoft Store)**（下拉框，可搜索）/ **在线发行版（镜像源）**（下拉框，清单照 `wsl-dashboard` 的常用度排序，选中即**自动测速择优**）。装前检查（名字、重名、目录）、实时的**执行步骤预览**、装中**日志与进度**、可取消（重定位阶段除外） | `wsl --import` / `wsl --import --vhd` / `wsl --install --from-file` / `wsl --install -d`（商店）/ `curl.exe` + wslui 清单（镜像源） |
+| **添加实例** | **三条来源**：**本地文件**（tar / tar.gz / tar.xz / `.vhdx` / `.wsl` 一个入口，**按后缀自动分岔**装法）/ **微软商店 (Microsoft Store)**（下拉框，可搜索）/ **在线发行版（镜像源）**（下拉框，清单照 `wsl-dashboard` 的常用度排序，选中即**自动测速择优**）。点「开始安装」时才校验（名字、重名、目录），不通过直接把对应输入框标红并聚焦；参数通过时才显示**执行步骤预览**；装中**日志与进度**、可取消（重定位阶段除外） | `wsl --import` / `wsl --import --vhd` / `wsl --install --from-file` / `wsl --install -d`（商店）/ `curl.exe` + wslui 清单（镜像源） |
 
 > 「添加实例」只从**实例列表页上的按钮**进（侧边栏不列它）—— 那一页的输入框与
 > 两个下拉框必须在点击时创建（`InputState::new` / `SelectState::new` 都要
@@ -284,7 +284,7 @@ base, component, and assets, so a Rust application lists a single dependency.」
 正常启动时它长这样：
 
 ```text
-INFO wslc_panel: wslc-panel 启动（版本 0.9.22，构建 1c8a994）
+INFO wslc_panel: wslc-panel 启动（版本 0.9.23，构建 1c8a994）
 INFO gpui_windows::direct_write: Use Microsoft YaHei UI as UI font.
 INFO gpui_windows::directx_devices: Using GPU: Intel(R) UHD Graphics
 INFO gpui_windows::directx_devices: Created device with Direct3D 11.1 feature level.

@@ -988,6 +988,54 @@ impl Preflight {
             Some(self.errors.join("；"))
         }
     }
+
+    /// 把错误落到**具体输入框**上：界面据此给对应的框标红。
+    ///
+    /// 这里仍然按错误文案判断，而不是在 [`validate`] 里返回结构化的
+    /// `(字段, 文案)` —— 后者要改所有 `out.push(...)` 的调用点，收益只是
+    /// 省掉下面几行 `contains`；而这些文案本来就定义在本文件里，改文案时
+    /// 顺手看一眼这里即可。真正的保证在测试 `field_errors_map_...`：
+    /// 名字 / 文件或下载地址 / 安装目录三类错误必须各自落到正确的框上。
+    pub fn field_errors(&self) -> InstallFieldErrors {
+        let mut fields = InstallFieldErrors::default();
+        for error in &self.errors {
+            if error.contains("发行版名") || error.contains("已经有一个叫") {
+                fields.name = true;
+            }
+            if error.contains("文件路径")
+                || error.contains("下载地址")
+                || error.contains("在线发行版")
+            {
+                fields.source = true;
+            }
+            if error.contains("安装目录") || error.contains("目录里已经有东西") {
+                fields.install_dir = true;
+            }
+        }
+        fields
+    }
+}
+
+/// 装前检查里"哪几个输入框有问题"。
+///
+/// 只分三块：**发行版名**、**来源**（本地文件路径 / 在线发行版 / 镜像地址共用）、
+/// **安装目录**。界面不需要知道具体是哪条文案 —— 点「开始安装」时它只负责把
+/// 对应的框标红，并把焦点送过去；错误文案本身不再常驻页面。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InstallFieldErrors {
+    /// 发行版名（为空 / 非法 / 重名）。
+    pub name: bool,
+    /// 安装来源相关的输入（本地路径、在线发行版、镜像下载地址）。
+    pub source: bool,
+    /// 安装目录（为空但必填 / 相对路径 / 目录非空）。
+    pub install_dir: bool,
+}
+
+impl InstallFieldErrors {
+    /// 有没有任何一块需要标红。
+    pub fn any(&self) -> bool {
+        self.name || self.source || self.install_dir
+    }
 }
 
 /// 装前检查（界面渲染和提交前都用它，保证"看到的"和"挡住的"是同一套规则）。
@@ -2574,6 +2622,60 @@ mod tests {
         let occupied = preflight(&spec, &ctx(), &[], true);
         assert!(!occupied.ok());
         assert!(occupied.error_text().unwrap().contains("空目录"));
+    }
+
+    #[test]
+    fn field_errors_map_messages_to_the_right_input() {
+        // 名字 + 路径 + 目录三条一起错：三块都要标红。
+        let spec = InstallSpec::new(
+            "  ",
+            InstallSource::Tar {
+                path: " ".to_owned(),
+            },
+        );
+        let bare = PlanContext {
+            default_dir: None,
+            ..ctx()
+        };
+        let check = preflight(&spec, &bare, &[], false);
+        let fields = check.field_errors();
+        assert!(check.errors.len() >= 3, "{check:?}");
+        assert!(fields.name, "{check:?} / {fields:?}");
+        assert!(fields.source, "{check:?} / {fields:?}");
+        assert!(fields.install_dir, "{check:?} / {fields:?}");
+        assert!(fields.any());
+
+        // 重名只算名字，不要把目录也标红。
+        let duplicate = InstallSpec::new(
+            "Ubuntu",
+            InstallSource::Tar {
+                path: r"D:\a.tar".to_owned(),
+            },
+        );
+        let fields = preflight(&duplicate, &ctx(), &["Ubuntu".to_owned()], false).field_errors();
+        assert!(fields.name, "{fields:?}");
+        assert!(!fields.source, "{fields:?}");
+        assert!(!fields.install_dir, "{fields:?}");
+
+        // 目录已经有东西：只标目录。
+        let fields = preflight(&duplicate, &ctx(), &[], true).field_errors();
+        assert!(!fields.name, "{fields:?}");
+        assert!(!fields.source, "{fields:?}");
+        assert!(fields.install_dir, "{fields:?}");
+
+        // 在线来源没选：只标来源。
+        let online = InstallSpec::new(
+            "X",
+            InstallSource::Online {
+                id: String::new(),
+                launch: false,
+                web_download: false,
+                fallback_id: None,
+            },
+        );
+        let fields = preflight(&online, &ctx(), &[], false).field_errors();
+        assert!(!fields.name, "{fields:?}");
+        assert!(fields.source, "{fields:?}");
     }
 
     #[test]

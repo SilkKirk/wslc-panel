@@ -5497,9 +5497,14 @@ fn cell_distro_badge(state: DistroState) -> AnyElement {
 ///
 /// # 校验与预览都走纯函数
 ///
-/// 红字（[`AppState::preflight`]）和步骤预览（`install_model::plan`）都是
-/// **渲染时现算**的纯逻辑 —— 提交时用的是同两个函数，所以"看到的"和
-/// "挡住的/要跑的"不会走偏。
+/// 校验（[`AppState::preflight`]）和步骤预览（`install_model::plan`）都是
+/// **同两个纯函数**：提交时用的也是它们，所以"挡住的/要跑的"不会走偏。
+///
+/// 但**渲染时不再把校验错误铺在页面上**：平时不显示红字，只有点了
+/// 「开始安装」且没过时，[`Shell::confirm_install`] 才把
+/// `InstallForm::field_errors` 记下来；这一页据此把对应输入框
+/// 标红、把焦点送过去。参数不合法时连步骤预览都不画 —— 以前底部那张
+/// 「装前检查」卡和预览里的同一句错误，现在都没有了。
 ///
 /// ⚠️ 渲染时**不查**"安装目录非空"（那要碰文件系统，每帧查一次会在网络盘上卡住）；
 /// 那条检查在提交那一刻做，见 `Shell::confirm_install`。
@@ -5530,6 +5535,9 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
         state.prefs.install_dir.as_deref(),
     );
     let check = state.preflight(&spec, false);
+    // 只有"已经点过开始安装且没过"才标红；平时不常驻任何错误提示。
+    let show_errors = form.show_errors;
+    let field_errors = form.field_errors;
     let plan = install_model::plan(&spec, &state.plan_context());
     let running = state
         .installing
@@ -5559,12 +5567,13 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
         .collect();
 
     // -- 输入框 --
-    let mut fields: Vec<AnyElement> = vec![form_field(
+    let mut fields: Vec<AnyElement> = vec![form_field_with_error(
         "install-name",
         source.name_field_label(),
         &form.name,
         cx,
         true,
+        show_errors && field_errors.name,
     )];
 
     if let Some((label, _)) = source.file_filter() {
@@ -5585,12 +5594,13 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
                 .w_full()
                 .gap_2()
                 .items_end()
-                .child(div().flex_1().min_w_0().child(form_field(
+                .child(div().flex_1().min_w_0().child(form_field_with_error(
                     "install-path",
                     label,
                     &form.source_path,
                     cx,
                     true,
+                    show_errors && field_errors.source,
                 )))
                 .child(browse_file)
                 .into_any_element(),
@@ -5657,7 +5667,7 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
                     .w_full()
                     .gap_2()
                     .items_end()
-                    .child(div().flex_1().min_w_0().child(form_field(
+                    .child(div().flex_1().min_w_0().child(form_field_with_error(
                         "install-dir",
                         if source.requires_install_dir() {
                             "安装目录（必填）"
@@ -5667,6 +5677,7 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
                         &form.install_dir,
                         cx,
                         true,
+                        show_errors && field_errors.install_dir,
                     )))
                     .child(browse_dir)
                     .child(remember_dir),
@@ -5686,6 +5697,20 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
         mirror_block(state, form, entity, cx)
     } else {
         div().into_any_element()
+    };
+    // 在线 / 镜像的"来源"不是一个普通输入框，没法给 Input 改边框；
+    // 外面套一圈红框，效果一样，又不用把错误文案再写一遍。
+    let source_block = if show_errors && field_errors.source && !source.needs_path() {
+        div()
+            .w_full()
+            .rounded_lg()
+            .border_1()
+            .border_color(theme::danger())
+            .p_2()
+            .child(source_block)
+            .into_any_element()
+    } else {
+        source_block
     };
 
     // -- 选项 --
@@ -5768,51 +5793,48 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
         options.push(button.into_any_element());
     }
 
-    // -- 校验（红字）--
-    let mut problems: Vec<AnyElement> = Vec::new();
-    for error in &check.errors {
-        problems.push(
-            div()
-                .text_xs()
-                .text_color(theme::danger())
-                .child(format!("✘ {error}"))
-                .into_any_element(),
-        );
-    }
-    for warning in &check.warnings {
-        problems.push(
-            div()
-                .text_xs()
-                .text_color(theme::warning())
-                .child(format!("! {warning}"))
-                .into_any_element(),
-        );
-    }
-
-    // -- 步骤预览（实时；与执行读的是同一份计划）--
-    let preview_body: AnyElement = match &plan {
-        Ok(plan) => v_flex()
-            .w_full()
-            .gap_1()
-            .children(plan.preview_lines().into_iter().map(|line| {
-                div()
-                    .font_family("Consolas")
-                    .text_xs()
-                    .text_color(theme::text())
-                    .child(line)
-            }))
-            .children(plan.notes.iter().map(|note| {
-                div()
-                    .text_xs()
-                    .text_color(theme::text_dim())
-                    .child(note.clone())
-            }))
-            .into_any_element(),
-        Err(e) => div()
-            .text_xs()
-            .text_color(theme::danger())
-            .child(format!("参数还不对：{e}"))
-            .into_any_element(),
+    // -- 步骤预览（只在参数通过时显示）--
+    //
+    // 以前这里还有一张「装前检查」卡，把同样的错误再列一遍；参数不合法时
+    // 预览卡里还会再写一次 `参数还不对：…`。三处红字说的是同一件事，
+    // 所以现在：**不合法就不画预览**，等点了「开始安装」再把对应输入框标红。
+    let preview_body: Option<AnyElement> = if show_errors && field_errors.any() {
+        // 上一次提交没过：连步骤都先不画，等改完再点一次。
+        // （`plan()` 不知道"目录非空"那条，所以不能只看它是不是 Ok。）
+        None
+    } else {
+        match &plan {
+            Ok(plan) => {
+                let mut body = v_flex()
+                    .w_full()
+                    .gap_1()
+                    .children(plan.preview_lines().into_iter().map(|line| {
+                        div()
+                            .font_family("Consolas")
+                            .text_xs()
+                            .text_color(theme::text())
+                            .child(line)
+                    }))
+                    .children(plan.notes.iter().map(|note| {
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_dim())
+                            .child(note.clone())
+                    }));
+                // 提醒不是错误、也不挡提交；只在参数已经能跑时附在步骤下面，
+                // 避免和"点开始安装才校验"的红框混在一起。
+                if !check.warnings.is_empty() {
+                    body = body.children(check.warnings.iter().map(|warning| {
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_dim())
+                            .child(format!("! {}", crate::util::strip_md(warning)))
+                    }));
+                }
+                Some(body.into_any_element())
+            }
+            Err(_) => None,
+        }
     };
 
     // -- 提交 / 取消 --
@@ -5869,8 +5891,8 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
                 .w_full()
                 .justify_end()
                 .child(Button::new("do-install").label(label).primary().on_click(
-                    move |_, _, cx| {
-                        entity.update(cx, |shell, cx| shell.confirm_install(cx));
+                    move |_, window, cx| {
+                        entity.update(cx, |shell, cx| shell.confirm_install(window, cx));
                     },
                 ))
                 .into_any_element()
@@ -5908,14 +5930,10 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
         ))
         .child(card("选项", v_flex().w_full().gap_3().children(options)));
 
-    if !problems.is_empty() {
-        page = page.child(card(
-            "装前检查",
-            v_flex().w_full().gap_2().children(problems),
-        ));
+    if let Some(preview) = preview_body {
+        page = page.child(card("要执行的步骤", preview));
     }
-
-    page = page.child(card("要执行的步骤", preview_body)).child(action);
+    page = page.child(action);
 
     // 装过 / 正在装 → 显示日志（装完之后留在页面上，用户要能读它）
     if state.installing.is_some() {
@@ -7478,6 +7496,21 @@ fn form_field(
     cx: &App,
     full: bool,
 ) -> AnyElement {
+    form_field_with_error(id, label, input, cx, full, false)
+}
+
+/// [`form_field`] 的错误态版本：`invalid` 时标签和输入框边框一起变红。
+///
+/// 只给「添加实例」用：那一页点「开始安装」校验失败后，用红框指出哪一格
+/// 要改，而不是在页面底部再堆一段和步骤预览重复的错误清单。
+fn form_field_with_error(
+    id: &'static str,
+    label: &'static str,
+    input: &Entity<InputState>,
+    cx: &App,
+    full: bool,
+    invalid: bool,
+) -> AnyElement {
     let field = if full {
         v_flex().w_full()
     } else {
@@ -7486,20 +7519,23 @@ fn form_field(
 
     // 取值只为在为空时把标签调暗一点，让"必填未填"看得见。
     let empty = input.read(cx).value().trim().is_empty();
+    let label_color = if invalid {
+        theme::danger()
+    } else if empty {
+        theme::text_muted()
+    } else {
+        theme::text_dim()
+    };
+
+    let mut input_el = Input::new(input).id(id).w_full();
+    if invalid {
+        input_el = input_el.border_color(theme::danger());
+    }
 
     field
         .gap_1()
-        .child(
-            div()
-                .text_xs()
-                .text_color(if empty {
-                    theme::text_muted()
-                } else {
-                    theme::text_dim()
-                })
-                .child(label),
-        )
-        .child(Input::new(input).id(id).w_full())
+        .child(div().text_xs().text_color(label_color).child(label))
+        .child(input_el)
         .into_any_element()
 }
 
