@@ -52,7 +52,9 @@ use wslc_core::model::{AppRuntime, DeployKind, DeploySignal, DeploySite};
 // 数据库管理页（v0.7.0）：真正的活都在 `cmd::mysql` 里（起进程 + 脱敏），
 // 识别 / 拼参数 / SQL 生成是 `model::mysql` 的纯逻辑。
 use wslc_core::cmd::mysql::{MysqlProbe, run_console_sql, run_sql};
-use wslc_core::model::{GrantKind, MysqlCreds, MysqlFamily, RootCredHint, SqlMode, mysql as mysql_model};
+use wslc_core::model::{
+    GrantKind, MysqlCreds, MysqlFamily, RootCredHint, SqlMode, mysql as mysql_model,
+};
 // 安装现在是**多步计划**（见 `wslc_core::model::install` 的模块说明）：
 // `InstallSpec` 是用户填的东西，`plan()` 把它变成步骤，`run_plan` 把它做出来。
 use wslc_core::cmd::distro::InstallSpec;
@@ -70,11 +72,10 @@ use wslc_core::{Wsl, Wslc};
 
 use crate::state::{
     self, AppState, BackupState, ConfirmAction, DbFailure, DbState, DbTab, DeployFailure,
-    DeployLogs, DeployPhase, DeployProgress, DeploySiteConf, DeployState, DetailInspect, DistroAction,
-    ExecState,
-    ExportProgress, ImmediateAction, ImportState, InstallOutcome, InstallProgress,
-    InstallSourceKind, LogsState, MirrorChoice, MirrorProbeResult, Page, PendingAction, PromptKind,
-    Toast, ToastKind, create_command, exec_argv,
+    DeployLogs, DeployPhase, DeployProgress, DeploySiteConf, DeployState, DetailInspect,
+    DistroAction, ExecState, ExportProgress, ImmediateAction, ImportState, InstallOutcome,
+    InstallProgress, InstallSourceKind, LogsState, MirrorChoice, MirrorProbeResult, Page,
+    PendingAction, PromptKind, Toast, ToastKind, UiSection, create_command, exec_argv,
 };
 use crate::theme;
 // `split_list` / `split_env_list` / `refresh_label` 是纯函数，
@@ -663,6 +664,8 @@ pub(crate) struct DeployForm {
     pub(crate) proxy_more: Entity<InputState>,
     /// 上游是另一个容器时，自动把两个容器接到同一个用户网络。
     pub(crate) auto_connect: bool,
+    // 让折叠摘要随输入更新；表单关闭时自动退订。
+    _input_subs: Vec<Subscription>,
 }
 
 /// 「数据库管理」页的一次性动作弹窗在做什么。
@@ -1155,9 +1158,8 @@ impl Shell {
             return;
         }
 
-        let input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("搜索名称 / 镜像 / ID / 端口")
-        });
+        let input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("搜索名称 / 镜像 / ID / 端口"));
         let sub = cx.subscribe(&input, |_shell, _input, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
@@ -1591,12 +1593,7 @@ impl Shell {
     ///
     /// 两个浮层叠在一起没有任何好处（而且遮罩只有一层），关掉之后用户回头
     /// 还能在「本地镜像」表里看见刚拉下来的那一条。
-    pub fn use_pulled_image(
-        &mut self,
-        image: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn use_pulled_image(&mut self, image: String, window: &mut Window, cx: &mut Context<Self>) {
         self.pull_open = false;
         self.open_create_dialog_prefilled(Some(image.as_str()), window, cx);
     }
@@ -1630,11 +1627,7 @@ impl Shell {
             .into_iter()
             .map(|tag| DropdownItem::new(tag.clone(), tag))
             .collect();
-        let keep = self
-            .state
-            .registry
-            .effective_tag()
-            .map(str::to_owned);
+        let keep = self.state.registry.effective_tag().map(str::to_owned);
 
         select.update(cx, |state, cx| {
             state.set_items(items, window, cx);
@@ -2468,6 +2461,10 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.state
+            .set_section_open(UiSection::CreateAdvanced, false);
+        self.state
+            .set_section_open(UiSection::CreateCommandPreview, false);
         let image_select = cx.new(|cx| {
             SelectState::new(Vec::<DropdownItem>::new(), None, window, cx).searchable(true)
         });
@@ -2517,6 +2514,25 @@ impl Shell {
         let handle = dialog.image.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
 
+        // 输入实体自己重绘不会通知 Shell；摘要和展开后的预览需要同一帧更新。
+        for input in [
+            &dialog.image,
+            &dialog.name,
+            &dialog.command,
+            &dialog.ports,
+            &dialog.env,
+            &dialog.volumes,
+            &dialog.network,
+            &dialog.memory,
+            &dialog.cpus,
+        ] {
+            self.create_subs
+                .push(cx.subscribe(input, |_, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        cx.notify();
+                    }
+                }));
+        }
         self.create_dialog = Some(dialog);
         // 本地镜像候选：直接来自快照（每 3 秒采一次），**不起新进程**。
         self.fill_image_select(window, cx);
@@ -2666,7 +2682,9 @@ impl Shell {
         if let Some(key) = preset.prefill_env {
             let env = dialog.env.clone();
             if env.read(cx).value().trim().is_empty() {
-                env.update(cx, |state, cx| state.set_value(format!("{key}="), window, cx));
+                env.update(cx, |state, cx| {
+                    state.set_value(format!("{key}="), window, cx)
+                });
             }
         }
 
@@ -2743,8 +2761,9 @@ impl Shell {
             } else {
                 format!("（也可以改用同一组里的：{}）", alternatives.join(" / "))
             };
-            self.state
-                .notify(Toast::error(format!("{key} 还没填值 —— 这个镜像第一次启动必须有它。请在「环境变量」那格里补上{hint}")));
+            self.state.notify(Toast::error(format!(
+                "{key} 还没填值 —— 这个镜像第一次启动必须有它。请在「环境变量」那格里补上{hint}"
+            )));
 
             // 焦点直接送到环境变量那格，省得用户自己找
             if let Some(dialog) = self.create_dialog.as_ref() {
@@ -2756,6 +2775,8 @@ impl Shell {
         }
 
         if let Err(e) = spec.validate() {
+            // 错误可能来自资源或网络参数，先展开再让用户修改，避免提示指向隐藏字段。
+            self.state.set_section_open(UiSection::CreateAdvanced, true);
             self.state.notify(Toast::error(format!("参数有误：{e}")));
             cx.notify();
             return;
@@ -3098,7 +3119,9 @@ impl Shell {
         let sql = cx.new(|cx| InputState::new(window, cx).placeholder("SHOW DATABASES"));
 
         // 用户名预填 root：绝大多数人只填密码那一格。
-        user.update(cx, |state, cx| state.set_value("root".to_owned(), window, cx));
+        user.update(cx, |state, cx| {
+            state.set_value("root".to_owned(), window, cx)
+        });
         // 焦点给密码（最可能要填的就是它）。
         let handle = password.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
@@ -3126,10 +3149,7 @@ impl Shell {
         };
         // ⚠️ `value()` 返回的是 `SharedString`（gpui 的引用计数字符串），
         // 要自己转成 `String` —— `.trim()` 之后才是 `&str`，那种写法不用转。
-        (
-            user,
-            form.password.read(cx).value().trim().to_owned(),
-        )
+        (user, form.password.read(cx).value().trim().to_owned())
     }
 
     /// 打开某个容器的数据库管理页（从容器列表行的「数据库」按钮进）。
@@ -3153,16 +3173,16 @@ impl Shell {
             .is_some_and(|db| db.container == name);
 
         if !same_container {
-            let family =
-                mysql_model::family_from_image(&image).unwrap_or(MysqlFamily::Mysql);
+            let family = mysql_model::family_from_image(&image).unwrap_or(MysqlFamily::Mysql);
             self.state.db = Some(DbState::provisional(name, image, family));
             // 换了容器就要清密码：上一个容器的密码留在这儿会**连错库**
             // （两个容器恰好都有个 root 账号时，这个错误会非常难发现）。
             if let Some(form) = self.db_form.as_ref() {
                 form.password
                     .update(cx, |state, cx| state.set_value(String::new(), window, cx));
-                form.user
-                    .update(cx, |state, cx| state.set_value("root".to_owned(), window, cx));
+                form.user.update(cx, |state, cx| {
+                    state.set_value("root".to_owned(), window, cx)
+                });
             }
             self.goto_page(Page::Database, cx);
             self.load_db(window, cx);
@@ -3273,8 +3293,9 @@ impl Shell {
                 if let Some(form) = shell.db_form.as_ref() {
                     form.user
                         .update(cx, |state, cx| state.set_value(user.clone(), window, cx));
-                    form.password
-                        .update(cx, |state, cx| state.set_value(password.clone(), window, cx));
+                    form.password.update(cx, |state, cx| {
+                        state.set_value(password.clone(), window, cx)
+                    });
                 }
 
                 let databases_ok = lists.0.is_ok();
@@ -3414,7 +3435,9 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let database = cx.new(|cx| InputState::new(window, cx).placeholder("shop"));
-        let charset = cx.new(|cx| InputState::new(window, cx).placeholder("留空 = 服务器默认（一般为 utf8mb4）"));
+        let charset = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("留空 = 服务器默认（一般为 utf8mb4）")
+        });
         let collation = cx.new(|cx| InputState::new(window, cx).placeholder("留空 = 跟着字符集"));
         let user = cx.new(|cx| InputState::new(window, cx).placeholder("app"));
         let host = cx.new(|cx| InputState::new(window, cx).placeholder("%（任意主机）"));
@@ -3592,10 +3615,9 @@ impl Shell {
                 cx.background_executor()
                     .spawn(async move {
                         // ① 送进容器（目录目标 + 先 mkdir，实测见 cmd::mysql）
-                        let container_path =
-                            wslc_core::cmd::mysql::push_dump_to_container(
-                                &wslc, &container, &path,
-                            )?;
+                        let container_path = wslc_core::cmd::mysql::push_dump_to_container(
+                            &wslc, &container, &path,
+                        )?;
                         // ② 让容器里的 mysql 读它
                         wslc_core::cmd::mysql::load_sql_file(
                             &wslc,
@@ -3672,8 +3694,9 @@ impl Shell {
             .cloned();
 
         if let (Some(cred), Some(form)) = (credential.as_ref(), self.db_form.as_ref()) {
-            form.user
-                .update(cx, |state, cx| state.set_value(cred.user.clone(), window, cx));
+            form.user.update(cx, |state, cx| {
+                state.set_value(cred.user.clone(), window, cx)
+            });
             form.password.update(cx, |state, cx| {
                 state.set_value(cred.password.clone(), window, cx)
             });
@@ -3735,8 +3758,9 @@ impl Shell {
         };
         let database = dialog.database.read(cx).value().trim().to_owned();
         if database.is_empty() {
-            self.state
-                .notify(Toast::error("先填库名，再点「用建议值」（建议值就是库名 + _user）"));
+            self.state.notify(Toast::error(
+                "先填库名，再点「用建议值」（建议值就是库名 + _user）",
+            ));
             cx.notify();
             return;
         }
@@ -3783,85 +3807,82 @@ impl Shell {
         let prepared: wslc_core::Result<
             Option<(String, &'static str, Option<(String, String, String)>)>,
         > = (|| {
-                let Some(dialog) = self.db_dialog.as_ref() else {
-                    return Ok(None);
-                };
-                let text = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
+            let Some(dialog) = self.db_dialog.as_ref() else {
+                return Ok(None);
+            };
+            let text = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
 
-                match &dialog.kind {
-                    DbDialogKind::NewDatabase => {
-                        let charset = text(&dialog.charset);
-                        let collation = text(&dialog.collation);
-                        let database = text(&dialog.database);
-                        let mut parts: Vec<String> = Vec::new();
-                        parts.push(mysql_model::create_database_sql(
+            match &dialog.kind {
+                DbDialogKind::NewDatabase => {
+                    let charset = text(&dialog.charset);
+                    let collation = text(&dialog.collation);
+                    let database = text(&dialog.database);
+                    let mut parts: Vec<String> = Vec::new();
+                    parts.push(mysql_model::create_database_sql(
+                        &database,
+                        (!charset.is_empty()).then_some(charset.as_str()),
+                        (!collation.is_empty()).then_some(collation.as_str()),
+                    )?);
+                    // 用户名**由用户手填**（v0.9.3 起）。
+                    // host 固定 `%`（要远程连的账号，默认锁 localhost 反而添堵）。
+                    let mut to_record = None;
+                    if dialog.create_user {
+                        let user = text(&dialog.db_user);
+                        // 留空就拦下来：这条路径下"没填用户名"= 建了一个连不上
+                        // 的库，属于 §7.5 那种"看着填了、其实空着"的陷阱。
+                        // 报错**不关弹窗**（外面的 Err 分支只发提示），
+                        // 用户改一个字就能重试。
+                        if user.is_empty() {
+                            return Err(wslc_core::Error::InvalidArgument(
+                                "请填数据库用户名（不知道填什么就点「用建议值」）".to_owned(),
+                            ));
+                        }
+                        mysql_model::validate_ident("用户名", &user)?;
+                        let password = text(&dialog.password);
+                        parts.push(mysql_model::create_user_sql(&user, "%", &password)?);
+                        parts.push(mysql_model::grant_sql(
                             &database,
-                            (!charset.is_empty()).then_some(charset.as_str()),
-                            (!collation.is_empty()).then_some(collation.as_str()),
+                            &user,
+                            "%",
+                            GrantKind::All,
                         )?);
-                        // 用户名**由用户手填**（v0.9.3 起）。
-                        // host 固定 `%`（要远程连的账号，默认锁 localhost 反而添堵）。
-                        let mut to_record = None;
-                        if dialog.create_user {
-                            let user = text(&dialog.db_user);
-                            // 留空就拦下来：这条路径下"没填用户名"= 建了一个连不上
-                            // 的库，属于 §7.5 那种"看着填了、其实空着"的陷阱。
-                            // 报错**不关弹窗**（外面的 Err 分支只发提示），
-                            // 用户改一个字就能重试。
-                            if user.is_empty() {
-                                return Err(wslc_core::Error::InvalidArgument(
-                                    "请填数据库用户名（不知道填什么就点「用建议值」）".to_owned(),
-                                ));
-                            }
-                            mysql_model::validate_ident("用户名", &user)?;
-                            let password = text(&dialog.password);
-                            parts.push(mysql_model::create_user_sql(&user, "%", &password)?);
-                            parts.push(mysql_model::grant_sql(
-                                &database,
-                                &user,
-                                "%",
-                                GrantKind::All,
-                            )?);
-                            to_record = Some((database, user, password));
-                        }
-                        Ok(Some((parts.join("; "), dialog.kind.title(), to_record)))
+                        to_record = Some((database, user, password));
                     }
-                    DbDialogKind::NewUser => {
-                        let grant_db = text(&dialog.grant_db);
-                        let host = text(&dialog.host);
-                        let grant =
-                            (!grant_db.is_empty()).then(|| (grant_db.as_str(), dialog.grant));
-                        mysql_model::create_user_statements(
-                            &text(&dialog.user),
-                            &host,
-                            &text(&dialog.password),
-                            grant,
-                        )
-                        .map(|sql| Some((sql, dialog.kind.title(), None)))
-                    }
-                    DbDialogKind::AlterPassword { user, host } => mysql_model::alter_user_password_sql(
-                        user,
-                        host,
-                        &text(&dialog.password),
-                    )
-                    .map(|sql| Some((sql, dialog.kind.title(), None))),
-                    DbDialogKind::Grant { user, host } => {
-                        let grant_db = text(&dialog.grant_db);
-                        if grant_db.is_empty() {
-                            Err(wslc_core::Error::InvalidArgument(
-                                "请填要授权给哪个数据库".to_owned(),
-                            ))
-                        } else {
-                            mysql_model::grant_sql(&grant_db, user, host, dialog.grant)
-                                .map(|sql| Some((sql, dialog.kind.title(), None)))
-                        }
-                    }
-                    // 导入**不是**一条 SQL（它是"把文件送进容器让 mysql 读它"），
-                    // 所以确认按钮那边直接调 `start_db_import`，走不到这里。
-                    // 这一臂只是为了让 match 完备。
-                    DbDialogKind::ImportSql { .. } => Ok(None),
+                    Ok(Some((parts.join("; "), dialog.kind.title(), to_record)))
                 }
-            })();
+                DbDialogKind::NewUser => {
+                    let grant_db = text(&dialog.grant_db);
+                    let host = text(&dialog.host);
+                    let grant = (!grant_db.is_empty()).then(|| (grant_db.as_str(), dialog.grant));
+                    mysql_model::create_user_statements(
+                        &text(&dialog.user),
+                        &host,
+                        &text(&dialog.password),
+                        grant,
+                    )
+                    .map(|sql| Some((sql, dialog.kind.title(), None)))
+                }
+                DbDialogKind::AlterPassword { user, host } => {
+                    mysql_model::alter_user_password_sql(user, host, &text(&dialog.password))
+                        .map(|sql| Some((sql, dialog.kind.title(), None)))
+                }
+                DbDialogKind::Grant { user, host } => {
+                    let grant_db = text(&dialog.grant_db);
+                    if grant_db.is_empty() {
+                        Err(wslc_core::Error::InvalidArgument(
+                            "请填要授权给哪个数据库".to_owned(),
+                        ))
+                    } else {
+                        mysql_model::grant_sql(&grant_db, user, host, dialog.grant)
+                            .map(|sql| Some((sql, dialog.kind.title(), None)))
+                    }
+                }
+                // 导入**不是**一条 SQL（它是"把文件送进容器让 mysql 读它"），
+                // 所以确认按钮那边直接调 `start_db_import`，走不到这里。
+                // 这一臂只是为了让 match 完备。
+                DbDialogKind::ImportSql { .. } => Ok(None),
+            }
+        })();
 
         // 弹窗不在（理论上来不到）→ 什么都不做
         let (sql, title, to_record) = match prepared {
@@ -3949,15 +3970,8 @@ impl Shell {
                 let database = database.clone();
                 cx.background_executor()
                     .spawn(async move {
-                        run_console_sql(
-                            &wslc,
-                            &target,
-                            &bin,
-                            &creds,
-                            &sql,
-                            database.as_deref(),
-                        )
-                        .map_err(|e| e.to_string())
+                        run_console_sql(&wslc, &target, &bin, &creds, &sql, database.as_deref())
+                            .map_err(|e| e.to_string())
                     })
                     .await
             };
@@ -4039,8 +4053,7 @@ impl Shell {
             .as_ref()
             .is_some_and(|deploy| deploy.container == name);
         if !same_container {
-            self.state.deploy =
-                Some(DeployState::provisional(name, image, runtime, signal));
+            self.state.deploy = Some(DeployState::provisional(name, image, runtime, signal));
             // 弹窗一定关掉：它的预填值（运行时的来源类型、默认目标目录、启动命令）
             // 全是**上一个容器**的，留着会让用户在一张属于 A 的表单上部署到 B。
             self.deploy_form = None;
@@ -4325,12 +4338,15 @@ impl Shell {
             .as_ref()
             .map(|r| r.source.clone())
             .unwrap_or_default();
-        let target_value = record.as_ref().map(|r| r.target.clone()).unwrap_or_else(|| {
-            // nginx 的目标必须**跟着挂载点走**，而且**每个应用一个子目录**：
-            // 所有应用铺进同一个 Web 根时，`removals_script` 的逐名删除会把
-            // 另一个应用的同名文件删掉（见 `docs/PLAN-multi-app.md` §1.3）。
-            deploy_model::default_app_target(runtime, &app_value, web_root.as_deref())
-        });
+        let target_value = record
+            .as_ref()
+            .map(|r| r.target.clone())
+            .unwrap_or_else(|| {
+                // nginx 的目标必须**跟着挂载点走**，而且**每个应用一个子目录**：
+                // 所有应用铺进同一个 Web 根时，`removals_script` 的逐名删除会把
+                // 另一个应用的同名文件删掉（见 `docs/PLAN-multi-app.md` §1.3）。
+                deploy_model::default_app_target(runtime, &app_value, web_root.as_deref())
+            });
         // 存档里有就用存档的；没有就从来源路径推（Java / Go 的默认启动命令
         // 要的是**源文件的名字**，不是应用名）
         let artifact = record
@@ -4368,9 +4384,7 @@ impl Shell {
         let record_site = record.as_ref().and_then(|r| r.site.clone());
         let site_enabled = record_site.is_some();
         let site_spa = record_site.as_ref().map(|s| s.spa).unwrap_or(true);
-        let first_proxy = record_site
-            .as_ref()
-            .and_then(|site| site.proxies.first());
+        let first_proxy = record_site.as_ref().and_then(|site| site.proxies.first());
         let proxy_prefix_value = first_proxy
             .map(|rule| rule.prefix.clone())
             .unwrap_or_default();
@@ -4396,23 +4410,29 @@ impl Shell {
             })
             .unwrap_or_default();
 
+        self.state
+            .set_section_open(UiSection::DeployProxy, first_proxy.is_some());
+        self.state
+            .set_section_open(UiSection::DeployProxyMore, !proxy_more_value.is_empty());
+
         // `InputState::new` 要 `&mut Window` → 只能在这里（有 window）建。
         let app = cx.new(|cx| InputState::new(window, cx).placeholder("site"));
         let source = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(if runtime.source_kind()
-                == deploy_model::SourceKind::Directory
-            {
-                r"E:\build\site"
-            } else {
-                r"E:\build\app.jar"
-            })
+            InputState::new(window, cx).placeholder(
+                if runtime.source_kind() == deploy_model::SourceKind::Directory {
+                    r"E:\build\site"
+                } else {
+                    r"E:\build\app.jar"
+                },
+            )
         });
         let target = cx.new(|cx| InputState::new(window, cx).placeholder("/opt/site"));
         let command = cx.new(|cx| InputState::new(window, cx).placeholder("java -jar app.jar"));
         let port = cx.new(|cx| InputState::new(window, cx).placeholder("8080"));
         let server_name = cx.new(|cx| InputState::new(window, cx).placeholder("localhost"));
         let proxy_prefix = cx.new(|cx| InputState::new(window, cx).placeholder("/api/"));
-        let proxy_upstream = cx.new(|cx| InputState::new(window, cx).placeholder("http://api:8080"));
+        let proxy_upstream =
+            cx.new(|cx| InputState::new(window, cx).placeholder("http://api:8080"));
         let proxy_more = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("/auth/ => http://auth:9000; /ws/ => http://ws:9001 strip")
@@ -4451,7 +4471,18 @@ impl Shell {
         let handle = source.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
 
+        let input_subs = [&proxy_prefix, &proxy_upstream, &proxy_more]
+            .into_iter()
+            .map(|input| {
+                cx.subscribe(input, |_, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        cx.notify();
+                    }
+                })
+            })
+            .collect();
         self.deploy_form = Some(DeployForm {
+            _input_subs: input_subs,
             editing,
             app,
             source,
@@ -4586,11 +4617,23 @@ impl Shell {
     /// `&mut Context<Self>`（省掉一次降低），而它降到 `&App` / `&mut App`
     /// 都是自动的 —— 仓库里 `window.focus(&handle, cx)` 那些地方就是这么写的。
     fn focus_deploy_field(
-        &self,
+        &mut self,
         which: DeployField,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 校验报错不能把焦点送到折叠区内部却不展开。
+        if matches!(
+            &which,
+            DeployField::ProxyPrefix | DeployField::ProxyUpstream | DeployField::ProxyMore
+        ) {
+            self.state.set_section_open(UiSection::DeployProxy, true);
+        }
+        if matches!(&which, DeployField::ProxyMore) {
+            self.state
+                .set_section_open(UiSection::DeployProxyMore, true);
+        }
+        cx.notify();
         let Some(form) = self.deploy_form.as_ref() else {
             return;
         };
@@ -4693,7 +4736,13 @@ impl Shell {
         // 多应用：新建时应用名不能和已有的撞 —— 撞了 `DeployStore::put` 会
         // **覆盖**那一条（同一个 `<容器>/<应用>` 键），看起来像"部署成功，
         // 但原来那个不见了"。想覆盖必须走那一行的「重新部署」。
-        if editing.is_none() && self.state.deploy_store.get(&container, &values.app).is_some() {
+        if editing.is_none()
+            && self
+                .state
+                .deploy_store
+                .get(&container, &values.app)
+                .is_some()
+        {
             self.state.notify(Toast::error(format!(
                 "已经有叫「{}」的部署 —— 想覆盖请用那一行的「重新部署」，或者换个名字",
                 values.app
@@ -4745,13 +4794,14 @@ impl Shell {
             .map(|old| old.trim_end_matches('/') != values.target.trim_end_matches('/'))
             .unwrap_or(true);
         let mut target_warning: Option<String> = None;
-        if let Some(block) = self
-            .state
-            .deploy_store
-            .target_blocker(&container, &values.app, &values.target)
+        if let Some(block) =
+            self.state
+                .deploy_store
+                .target_blocker(&container, &values.app, &values.target)
         {
             if target_changed {
-                self.state.notify(Toast::error(block.message(&values.target)));
+                self.state
+                    .notify(Toast::error(block.message(&values.target)));
                 self.focus_deploy_field(DeployField::Target, window, cx);
                 cx.notify();
                 return;
@@ -4763,8 +4813,9 @@ impl Shell {
         }
         let process_shape = runtime.kind() == DeployKind::Process;
         if process_shape && values.command.is_empty() {
-            self.state
-                .notify(Toast::error("进程形态要有一条启动命令 —— 面板靠它把应用跑起来"));
+            self.state.notify(Toast::error(
+                "进程形态要有一条启动命令 —— 面板靠它把应用跑起来",
+            ));
             self.focus_deploy_field(DeployField::Command, window, cx);
             cx.notify();
             return;
@@ -4773,8 +4824,7 @@ impl Shell {
         // 来源必须真的存在，而且**类型要对**（目录 / 文件）—— 用一个同步的
         // 元数据查询判：它不进文件内容，微秒级，不需要丢到后台。
         let source_path = std::path::PathBuf::from(&values.source);
-        let want_directory =
-            runtime.source_kind() == deploy_model::SourceKind::Directory;
+        let want_directory = runtime.source_kind() == deploy_model::SourceKind::Directory;
         let is_dir = source_path.is_dir();
         let is_file = source_path.is_file();
         if !is_dir && !is_file {
@@ -4902,10 +4952,10 @@ impl Shell {
             .and_then(|record| record.site.clone());
 
         if process_shape || site.is_some() {
-            if let Some(owner) = self
-                .state
-                .deploy_store
-                .port_conflict(&container, &values.app, port)
+            if let Some(owner) =
+                self.state
+                    .deploy_store
+                    .port_conflict(&container, &values.app, port)
             {
                 self.state.notify(Toast::error(format!(
                     "端口 {port} 已经被「{owner}」用了 —— 同一个容器里的应用不能共用一个端口"
@@ -5013,9 +5063,7 @@ impl Shell {
         let port = record.port;
         // 改目标目录时，旧进程的 pidfile 在**旧**目录里 —— 必须用旧目标停，
         // 否则新目录里找不到 pid，旧进程会一直活着（多应用/迁移时很容易踩）。
-        let stop_target = previous_target
-            .clone()
-            .unwrap_or_else(|| target.clone());
+        let stop_target = previous_target.clone().unwrap_or_else(|| target.clone());
 
         // 目标目录是**我们自己铺的**吗？
         //
@@ -5441,7 +5489,12 @@ impl Shell {
         let Some(action) = self.deploy_action(&app) else {
             return;
         };
-        if self.state.deploy.as_ref().is_some_and(|d| d.progress.is_some()) {
+        if self
+            .state
+            .deploy
+            .as_ref()
+            .is_some_and(|d| d.progress.is_some())
+        {
             // ⚠️ 别静默 return：**别的行**这时照样画着按钮（忙碌是按应用名算的，
             // 见 `views::deploy_row_actions`），用户点了必须知道为什么没反应。
             self.deploy_busy_notice(cx);
@@ -5503,7 +5556,12 @@ impl Shell {
         // ⚠️ 这条守卫是 v0.9.13 补的：早先它**没有**，于是 A 正在跑动作时点 B 的
         // 「停止」会直接覆盖掉 A 的进度（A 的回调回来时又把 B 的「正在…」清掉，
         // B 的按钮提前复活、能再点一次）。同 `start_deployment` 的理由。
-        if self.state.deploy.as_ref().is_some_and(|d| d.progress.is_some()) {
+        if self
+            .state
+            .deploy
+            .as_ref()
+            .is_some_and(|d| d.progress.is_some())
+        {
             self.deploy_busy_notice(cx);
             return;
         }
@@ -5741,8 +5799,8 @@ impl Shell {
                 let target = target.clone();
                 cx.background_executor()
                     .spawn(async move {
-                        let resolv = deploy_cmd::read_resolv_conf(&wslc, &container)
-                            .unwrap_or_default();
+                        let resolv =
+                            deploy_cmd::read_resolv_conf(&wslc, &container).unwrap_or_default();
                         let resolver = deploy_model::first_nameserver(&resolv)
                             .unwrap_or_else(|| "127.0.0.11".to_owned());
                         let applied = deploy_cmd::apply_site(
@@ -5891,7 +5949,12 @@ impl Shell {
         let Some(action) = self.deploy_action(&app) else {
             return;
         };
-        if self.state.deploy.as_ref().is_some_and(|d| d.progress.is_some()) {
+        if self
+            .state
+            .deploy
+            .as_ref()
+            .is_some_and(|d| d.progress.is_some())
+        {
             // 同 `start_deployment`：别的行的按钮还在，点了必须有一句反馈。
             // 确认框先关掉（用户已经表达过意图了，留着它只会挡住别的操作）。
             if let Some(deploy) = self.state.deploy.as_mut() {
@@ -5966,8 +6029,7 @@ impl Shell {
                             shell.state.notify(Toast::error(error));
                         }
                         shell.state.refresh_deploy_entries(&container);
-                        let mut message =
-                            format!("已删除 {app} 的部署（只删了面板铺进去的文件）");
+                        let mut message = format!("已删除 {app} 的部署（只删了面板铺进去的文件）");
                         if !warnings.is_empty() {
                             message.push_str(&format!("；{}", warnings.join("；")));
                         }
@@ -6211,7 +6273,8 @@ impl Shell {
             return;
         }
         let Some(backup_dir) = self.state.backup_dir.clone() else {
-            self.state.notify(Toast::error("LOCALAPPDATA 未设置，备份没地方放"));
+            self.state
+                .notify(Toast::error("LOCALAPPDATA 未设置，备份没地方放"));
             cx.notify();
             return;
         };
@@ -6246,7 +6309,8 @@ impl Shell {
                 last_message: None,
             });
         }
-        self.state.notify(Toast::info(format!("正在备份数据库 {database}…")));
+        self.state
+            .notify(Toast::info(format!("正在备份数据库 {database}…")));
         cx.notify();
 
         let wslc = self.state.wslc.clone();
@@ -6263,12 +6327,7 @@ impl Shell {
                 cx.background_executor()
                     .spawn(async move {
                         wslc_core::cmd::mysql::backup_database(
-                            &wslc,
-                            &container,
-                            &bin,
-                            &creds,
-                            &database,
-                            &paths,
+                            &wslc, &container, &bin, &creds, &database, &paths,
                         )
                         .map(|_| ())
                         .map_err(|e| e.to_string())
@@ -6293,7 +6352,9 @@ impl Shell {
                     }
                     (Ok(()), None) => {
                         // 备份完成但页面已切走：文件是好的，一句话说明
-                        shell.state.notify(Toast::info("备份完成（数据库页已切走）"));
+                        shell
+                            .state
+                            .notify(Toast::info("备份完成（数据库页已切走）"));
                     }
                     (Err(message), _) => {
                         if let Some(db) = shell.state.db.as_mut() {
@@ -6346,8 +6407,9 @@ impl Shell {
             .cloned();
 
         if let (Some(cred), Some(form)) = (credential.as_ref(), self.db_form.as_ref()) {
-            form.user
-                .update(cx, |state, cx| state.set_value(cred.user.clone(), window, cx));
+            form.user.update(cx, |state, cx| {
+                state.set_value(cred.user.clone(), window, cx)
+            });
             form.password.update(cx, |state, cx| {
                 state.set_value(cred.password.clone(), window, cx)
             });
@@ -6459,13 +6521,10 @@ impl Shell {
     /// 在文件管理器里打开备份目录（「打开位置」）。
     ///
     /// 同步 `explorer.exe`：它不等待、不捕获输出 —— `AGENTS.md` §7.1 允许。
-    pub fn reveal_backup_dir(
-        &mut self,
-        dir: Option<std::path::PathBuf>,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn reveal_backup_dir(&mut self, dir: Option<std::path::PathBuf>, cx: &mut Context<Self>) {
         let Some(dir) = dir.filter(|d| d.is_dir()) else {
-            self.state.notify(Toast::error("备份目录不存在（可能已被清空）"));
+            self.state
+                .notify(Toast::error("备份目录不存在（可能已被清空）"));
             cx.notify();
             return;
         };
@@ -6732,11 +6791,7 @@ impl Shell {
         // 先把三个旗标取出来，`self.state.deploy` 的借用就在这里结束 ——
         // 下面要 `&mut self`（借用检查器看得见这个顺序）。
         let (action_running, busy, loaded) = match self.state.deploy.as_ref() {
-            Some(deploy) => (
-                deploy.progress.is_some(),
-                deploy.busy,
-                deploy.loaded,
-            ),
+            Some(deploy) => (deploy.progress.is_some(), deploy.busy, deploy.loaded),
             None => return,
         };
         if action_running || busy || !loaded {
@@ -6994,7 +7049,9 @@ impl Shell {
         // 一个连不上的用户名 / 密码（就算哪天重建同名库，密码也对不上了）。
         let dropped_database = match &action {
             ConfirmAction::Container(PendingAction::DropDatabase {
-                container, database, ..
+                container,
+                database,
+                ..
             }) => Some((container.clone(), database.clone())),
             _ => None,
         };
@@ -8384,9 +8441,8 @@ impl Shell {
                 crate::prefs::TerminalStartDir::Custom(dir) => dir.clone(),
                 _ => String::new(),
             };
-            let input = cx.new(|cx| {
-                InputState::new(window, cx).placeholder("/home/wt/project 或 ~")
-            });
+            let input =
+                cx.new(|cx| InputState::new(window, cx).placeholder("/home/wt/project 或 ~"));
             // `set_value` 也要 `&mut Window`，所以只能在这儿做。
             input.update(cx, |state, cx| state.set_value(current, window, cx));
             self.terminal_dir_input = Some(input);
@@ -8681,19 +8737,18 @@ impl Render for Shell {
                 );
             } else if expanded {
                 // 滚动容器必须先有 id（`overflow_y_scroll` 只对带 id 的元素可用）。
-                body = body.child(
-                    v_flex()
-                        .id("error-list")
-                        .w_full()
-                        .max_h(px(160.))
-                        .overflow_y_scroll()
-                        .gap_1()
-                        .children(
-                            errors
-                                .iter()
-                                .map(|e| div().text_xs().text_color(theme::danger()).child(e.clone())),
-                        ),
-                );
+                body =
+                    body.child(
+                        v_flex()
+                            .id("error-list")
+                            .w_full()
+                            .max_h(px(160.))
+                            .overflow_y_scroll()
+                            .gap_1()
+                            .children(errors.iter().map(|e| {
+                                div().text_xs().text_color(theme::danger()).child(e.clone())
+                            })),
+                    );
                 body = body.child(h_flex().w_full().justify_end().child(toggle("收起")));
             } else {
                 body = body.child(
@@ -8849,12 +8904,10 @@ impl Render for Shell {
 
         // 「基础信息」（连接卡）—— 只有浮层开着、且确实在数据库页时才画。
         let db_info: AnyElement = match &state.db {
-            Some(db) if self.db_info_open => {
-                match self.db_form.as_ref() {
-                    Some(form) => views::db_info_overlay(db, form, &entity, cx),
-                    None => div().into_any_element(),
-                }
-            }
+            Some(db) if self.db_info_open => match self.db_form.as_ref() {
+                Some(form) => views::db_info_overlay(db, form, &entity, cx),
+                None => div().into_any_element(),
+            },
             _ => div().into_any_element(),
         };
 
@@ -8894,19 +8947,19 @@ impl Render for Shell {
             None => div().into_any_element(),
         };
         // 「站点配置」也是**纯数据**（只读），和日志并列。
-        let deploy_site_conf: AnyElement = match state
-            .deploy
-            .as_ref()
-            .and_then(|d| d.site_conf.as_ref())
-        {
-            Some(conf) => views::deploy_site_conf_overlay(conf, &entity),
-            None => div().into_any_element(),
-        };
-        let deploy_confirm: AnyElement =
-            match state.deploy.as_ref().and_then(|d| d.confirm_remove.as_ref()) {
-                Some(app) => views::deploy_remove_confirm_overlay(app, state.deploy.as_ref(), &entity),
+        let deploy_site_conf: AnyElement =
+            match state.deploy.as_ref().and_then(|d| d.site_conf.as_ref()) {
+                Some(conf) => views::deploy_site_conf_overlay(conf, &entity),
                 None => div().into_any_element(),
             };
+        let deploy_confirm: AnyElement = match state
+            .deploy
+            .as_ref()
+            .and_then(|d| d.confirm_remove.as_ref())
+        {
+            Some(app) => views::deploy_remove_confirm_overlay(app, state.deploy.as_ref(), &entity),
+            None => div().into_any_element(),
+        };
 
         // 页面渲染要 `&Shell`（不只是 `&AppState`）——「添加实例」页有输入框，
         // 而输入框的 `InputState` 住在 `Shell` 里。
@@ -8923,11 +8976,14 @@ impl Render for Shell {
         let page_body: AnyElement = v_flex()
             .w_full()
             .child(
-                div().w_full().child(views::page(self, cx, &entity)).with_animation(
-                    state.page.label(),
-                    Animation::new(Duration::from_millis(120)),
-                    |el, delta| el.opacity(delta),
-                ),
+                div()
+                    .w_full()
+                    .child(views::page(self, cx, &entity))
+                    .with_animation(
+                        state.page.label(),
+                        Animation::new(Duration::from_millis(120)),
+                        |el, delta| el.opacity(delta),
+                    ),
             )
             .into_any_element();
 
@@ -9194,7 +9250,8 @@ fn confirm_overlay(action: &ConfirmAction, entity: &Entity<Shell>) -> AnyElement
             })
     };
 
-    views::modal_scrim("confirm",
+    views::modal_scrim(
+        "confirm",
         v_flex()
             .w(px(460.))
             .gap_4()

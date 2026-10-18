@@ -171,10 +171,7 @@ impl Page {
     /// 的分支，而那正是 v0.4 删掉 `Page::Config` / `Page::WslConfig` 时清掉的
     /// 那种垃圾。同理，「镜像」的拉取表单在弹窗里，也不在这里。
     pub fn needs_window_to_enter(self) -> bool {
-        matches!(
-            self,
-            Page::AddInstance | Page::Database | Page::Containers
-        )
+        matches!(self, Page::AddInstance | Page::Database | Page::Containers)
     }
 
     /// 这一页在侧边栏里应该高亮哪一项。
@@ -198,6 +195,17 @@ impl Page {
     pub fn highlights_nav(self, nav: Page) -> bool {
         self == nav || self.nav_parent() == Some(nav)
     }
+}
+
+/// 仅控制界面展开，不影响实际表单参数。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum UiSection {
+    CreateAdvanced,
+    CreateCommandPreview,
+    ConfigRaw,
+    WslHelp,
+    DeployProxy,
+    DeployProxyMore,
 }
 
 /// 「添加实例」页里选中的**来源类型**。
@@ -498,7 +506,9 @@ impl Snapshot {
                 // 上限取"任一个报出来的"：同一个虚拟机里的容器报的是同一个数。
                 // 上限是 `0B`（这是 `wslc` 在容器刚起来时的样子）就当没有。
                 if mem_limit.is_none() {
-                    mem_limit = parse_size(limit).filter(|bytes| *bytes > 0.0).map(|b| b as u64);
+                    mem_limit = parse_size(limit)
+                        .filter(|bytes| *bytes > 0.0)
+                        .map(|b| b as u64);
                 }
             }
         }
@@ -539,12 +549,7 @@ impl Snapshot {
             if !seen.insert(key) {
                 continue;
             }
-            bytes = bytes.saturating_add(
-                image
-                    .size_bytes()
-                    .unwrap_or(0.0)
-                    .max(0.0) as u64,
-            );
+            bytes = bytes.saturating_add(image.size_bytes().unwrap_or(0.0).max(0.0) as u64);
         }
 
         (seen.len(), bytes)
@@ -964,7 +969,11 @@ impl PendingAction {
                  已经授出去的权限一并消失。已经建立的连接不会立刻断开，\
                  但之后它就连不上了。此操作不可撤销。"
             ),
-            PendingAction::RestoreDatabase { database, windows_path, .. } => format!(
+            PendingAction::RestoreDatabase {
+                database,
+                windows_path,
+                ..
+            } => format!(
                 "将把备份 `{}` 恢复进数据库 **{database}** ——\
                  这个库**现在的全部数据会被覆盖**（dump 是 `--databases` 形式，\
                  恢复只能回原库）。此操作不可撤销。",
@@ -3703,6 +3712,8 @@ pub struct AppState {
     pub wsl: Wsl,
     /// 当前页面。
     pub page: Page,
+    /// 仅记本次界面的展开状态，不保存偏好，也不影响实际表单参数。
+    expanded_sections: BTreeSet<UiSection>,
     /// 容器页的筛选 / 排序状态。
     ///
     /// **页面状态，不是偏好**：不写 `prefs.json`，重启后回到「全部 + 默认排序」。
@@ -3933,6 +3944,7 @@ impl AppState {
             wslc,
             wsl,
             page: Page::Dashboard,
+            expanded_sections: BTreeSet::new(),
             container_view: crate::listview::ContainerView::default(),
             snapshot: Snapshot::default(),
             distro_status: None,
@@ -3968,6 +3980,25 @@ impl AppState {
             deploy_store,
             deploy_store_error,
         }
+    }
+
+    /// 查询界面区域是否展开。
+    pub fn section_open(&self, section: UiSection) -> bool {
+        self.expanded_sections.contains(&section)
+    }
+
+    /// 只改变显示状态，保留实际表单参数。
+    pub fn set_section_open(&mut self, section: UiSection, open: bool) {
+        if open {
+            self.expanded_sections.insert(section);
+        } else {
+            self.expanded_sections.remove(&section);
+        }
+    }
+
+    /// 切换界面区域的展开状态。
+    pub fn toggle_section(&mut self, section: UiSection) {
+        self.set_section_open(section, !self.section_open(section));
     }
 
     /// 现有的发行版名（装前查重名用）。
@@ -5134,20 +5165,23 @@ mod tests {
         let stats = snap.dashboard_stats();
         assert_eq!(stats.running, 2);
         assert_eq!(stats.total, 4);
-        assert!((stats.cpu_percent - 0.69).abs() < 1e-9, "{}", stats.cpu_percent);
+        assert!(
+            (stats.cpu_percent - 0.69).abs() < 1e-9,
+            "{}",
+            stats.cpu_percent
+        );
         // 内存是**字节**：MiB 是 1024 进制
         let mib = 1024.0 * 1024.0;
-        assert_eq!(
-            stats.mem_used,
-            (27.45 * mib) as u64 + (514.1 * mib) as u64
-        );
+        assert_eq!(stats.mem_used, (27.45 * mib) as u64 + (514.1 * mib) as u64);
         // 上限取容器报的那个（同一个虚拟机，各容器一致）
         assert_eq!(stats.mem_limit, Some((15.48 * 1024.0 * mib) as u64));
 
         // ⚠️ 这条是这一整块存在的理由：CPU 合计 **不是**整机占用率。
         // `wslc stats` 用的是 Docker 那条公式，100% ≈ 1 个核 ——
         // 0.69% ÷ 32 核 ≈ 0.022%，而不是 0.69%。
-        let whole = stats.cpu_whole_machine_percent().expect("给了核数就该算得出来");
+        let whole = stats
+            .cpu_whole_machine_percent()
+            .expect("给了核数就该算得出来");
         assert!((whole - 0.69 / 32.0).abs() < 1e-9, "{whole}");
         // 环下面那行小字（`0.0069 / 32 核`）
         assert!((stats.cpu_cores_used() - 0.0069).abs() < 1e-9);
@@ -5164,7 +5198,9 @@ mod tests {
         let disk = stats.disk.expect("给了 storage 就该有盘");
         assert_eq!(disk.total, 1000);
         assert_eq!(stats.vhd_bytes, Some(120));
-        let vhd_percent = stats.vhd_percent_of_disk().expect("有 VHD、有盘总量就算得出来");
+        let vhd_percent = stats
+            .vhd_percent_of_disk()
+            .expect("有 VHD、有盘总量就算得出来");
         assert!((vhd_percent - 12.0).abs() < 1e-9, "{vhd_percent}");
     }
 
@@ -5250,7 +5286,10 @@ mod tests {
         snap.all = snap.running.clone();
 
         let stats = snap.dashboard_stats();
-        assert_eq!(stats.running, 3, "运行中数的是**列表**，不是有 stats 的那几个");
+        assert_eq!(
+            stats.running, 3,
+            "运行中数的是**列表**，不是有 stats 的那几个"
+        );
         assert_eq!(stats.cpu_percent, 1.0, "NaN 与缺失都不该进合计");
         assert_eq!(stats.mem_used, (1.0 * 1024.0 * 1024.0) as u64 * 2);
     }
@@ -5347,7 +5386,10 @@ mod tests {
 
     #[test]
     fn stop_all_summary_lists_names_and_truncates() {
-        assert_eq!(stopped_all_message(&["web".to_owned()]), "已停止 1 个容器：web");
+        assert_eq!(
+            stopped_all_message(&["web".to_owned()]),
+            "已停止 1 个容器：web"
+        );
 
         // 5 个是上限：正好 5 个不加"等"，第 6 个开始截断
         let five: Vec<String> = (0..5).map(|i| format!("c{i}")).collect();
@@ -5661,6 +5703,65 @@ mod tests {
     }
 
     #[test]
+    fn ui_sections_start_collapsed() {
+        let state = AppState::new(Wslc::new(), Wsl::new());
+        for section in [
+            UiSection::CreateAdvanced,
+            UiSection::CreateCommandPreview,
+            UiSection::ConfigRaw,
+            UiSection::WslHelp,
+            UiSection::DeployProxy,
+            UiSection::DeployProxyMore,
+        ] {
+            assert!(!state.section_open(section), "{section:?} 应默认折叠");
+        }
+    }
+
+    #[test]
+    fn ui_sections_are_independent() {
+        let mut state = AppState::new(Wslc::new(), Wsl::new());
+        state.set_section_open(UiSection::DeployProxy, true);
+        assert!(!state.section_open(UiSection::DeployProxyMore));
+        assert!(!state.section_open(UiSection::CreateAdvanced));
+
+        state.set_section_open(UiSection::DeployProxyMore, true);
+        state.set_section_open(UiSection::DeployProxy, false);
+        assert!(!state.section_open(UiSection::DeployProxy));
+        assert!(state.section_open(UiSection::DeployProxyMore));
+        assert!(!state.section_open(UiSection::CreateAdvanced));
+    }
+
+    #[test]
+    fn ui_sections_can_close_and_reopen() {
+        let mut state = AppState::new(Wslc::new(), Wsl::new());
+        let section = UiSection::CreateAdvanced;
+        state.set_section_open(section, false);
+        assert!(!state.section_open(section));
+        state.set_section_open(section, true);
+        state.set_section_open(section, true);
+        assert!(state.section_open(section));
+        state.set_section_open(section, false);
+        state.set_section_open(section, false);
+        assert!(!state.section_open(section));
+        state.set_section_open(section, true);
+        assert!(state.section_open(section));
+    }
+
+    #[test]
+    fn ui_sections_toggle_without_affecting_other_sections() {
+        let mut state = AppState::new(Wslc::new(), Wsl::new());
+        state.set_section_open(UiSection::ConfigRaw, true);
+        for section in [UiSection::CreateCommandPreview, UiSection::WslHelp] {
+            state.toggle_section(section);
+            assert!(state.section_open(section));
+            assert!(state.section_open(UiSection::ConfigRaw));
+            state.toggle_section(section);
+            assert!(!state.section_open(section));
+            assert!(state.section_open(UiSection::ConfigRaw));
+        }
+    }
+
+    #[test]
     fn confirm_can_be_requested_and_cancelled() {
         let mut state = AppState::new(Wslc::new(), Wsl::new());
 
@@ -5832,7 +5933,11 @@ mod tests {
         );
         state.set_records(&[deploy_entry("weird", "rust").record]);
 
-        assert_eq!(state.entries.len(), 1, "认不出来也要留在列表里，不能悄悄藏起来");
+        assert_eq!(
+            state.entries.len(),
+            1,
+            "认不出来也要留在列表里，不能悄悄藏起来"
+        );
         assert_eq!(state.entries[0].runtime, None);
         assert_eq!(state.entries[0].status_label(), "类型认不出来");
         assert!(!state.entries[0].is_process());
@@ -5903,9 +6008,18 @@ mod tests {
         // Web 根是从挂载点推出来的（内容形态的默认目标目录用它）
         assert_eq!(state.web_root.as_deref(), Some("/usr/share/nginx/html"));
         // 判端口发布用的是**唯一那份**纯函数（界面和这里调的是同一个）
-        assert!(wslc_core::model::deploy::port_is_published(&probe.ports, 80));
-        assert!(!wslc_core::model::deploy::port_is_published(&probe.ports, 8080));
-        assert!(!state.busy, "探测回来必须把忙清掉，否则按钮永远是「读取中…」");
+        assert!(wslc_core::model::deploy::port_is_published(
+            &probe.ports,
+            80
+        ));
+        assert!(!wslc_core::model::deploy::port_is_published(
+            &probe.ports,
+            8080
+        ));
+        assert!(
+            !state.busy,
+            "探测回来必须把忙清掉，否则按钮永远是「读取中…」"
+        );
     }
 
     #[test]
@@ -5992,7 +6106,8 @@ mod tests {
 
     #[test]
     fn db_state_takes_the_root_password_from_the_container_env() {
-        let state = DbState::from_probe(&probe_with(RootCredHint::Password("pw".into())), "mysql:8");
+        let state =
+            DbState::from_probe(&probe_with(RootCredHint::Password("pw".into())), "mysql:8");
         assert_eq!(state.creds.user, "root");
         assert_eq!(state.creds.password, "pw");
         assert!(state.cred_note.is_some(), "要说清密码是哪来的");
@@ -6030,7 +6145,10 @@ mod tests {
     fn db_state_debug_never_shows_the_password() {
         // ⚠️ `AppState` 是 `#[derive(Debug)]`，它会一路打印到 `DbState` 和
         // 里面的 `MysqlCreds` —— 这条守住"密码不进日志"。
-        let state = DbState::from_probe(&probe_with(RootCredHint::Password("s3cret-pw".into())), "mysql:8");
+        let state = DbState::from_probe(
+            &probe_with(RootCredHint::Password("s3cret-pw".into())),
+            "mysql:8",
+        );
         let text = format!("{state:?}");
         assert!(!text.contains("s3cret-pw"), "{text}");
         assert!(text.contains("***"), "{text}");
@@ -6207,10 +6325,13 @@ mod tests {
 
         // 把它"变老"到超过自己的寿命，就该被收掉、并且报告 true
         if let Some(t) = state.toast.as_mut() {
-            t.shown_at = std::time::Instant::now()
-                - (t.lifetime() + std::time::Duration::from_millis(1));
+            t.shown_at =
+                std::time::Instant::now() - (t.lifetime() + std::time::Duration::from_millis(1));
         }
-        assert!(state.clear_expired_toast(), "过期的提示应当被收掉并报告 true");
+        assert!(
+            state.clear_expired_toast(),
+            "过期的提示应当被收掉并报告 true"
+        );
         assert!(state.toast.is_none());
         // 已经空了：再来一次不该报 true
         assert!(!state.clear_expired_toast());

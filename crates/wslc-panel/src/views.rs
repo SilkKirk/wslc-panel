@@ -8,6 +8,7 @@
 // 光导入 `Button` 是不够的 —— 这里用 glob 把 button 模块全带上。
 use gpui_kit::component::button::*;
 // `StyledExt` 提供 `font_bold` / `font_semibold` 等字重方法（由宏生成）。
+use gpui_kit::component::collapsible::Collapsible;
 use gpui_kit::component::input::{Input, InputState};
 // 「微软商店」与「在线发行版」两张清单都是**下拉框**（参考实现也是
 // `CustomComboBox`，不是我们原先那种按钮列表）。
@@ -79,7 +80,7 @@ use crate::state::{
     AppState, DashboardStats, DbFailure, DbState, DbTab, DeployEntry, DeployLogs, DeploySiteConf,
     DeployState, DistroAction, ImmediateAction, InstallOutcome, InstallProgress, InstallSourceKind,
     LogsState, OnlineListSource, Page, PendingAction, PromptKind, PullProgress, SettingsTab,
-    WslConfState, format_bytes,
+    UiSection, WslConfState, format_bytes,
 };
 use crate::theme;
 // 基本信息页那排圆环用的纯逻辑：用量分档（≥60% 黄、≥85% 红）。
@@ -108,6 +109,35 @@ fn card(title: &'static str, body: impl IntoElement) -> impl IntoElement {
                 .child(title),
         )
         .child(body)
+}
+
+/// 展开状态只控制展示，折叠不会清空表单实体里的参数。
+fn disclosure(
+    section: UiSection,
+    title: impl Into<String>,
+    state: &AppState,
+    entity: &Entity<Shell>,
+    body: impl IntoElement,
+) -> AnyElement {
+    let open = state.section_open(section);
+    let title = title.into();
+    let entity = entity.clone();
+    Collapsible::new()
+        .open(open)
+        .w_full()
+        .child(
+            Button::new(SharedString::from(format!("section-{section:?}")))
+                .label(format!("{} {title}", if open { "▾" } else { "▸" }))
+                .small()
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |shell, cx| {
+                        shell.state.toggle_section(section);
+                        cx.notify();
+                    });
+                }),
+        )
+        .content(v_flex().w_full().gap_3().pt_2().child(body))
+        .into_any_element()
 }
 
 /// 模态浮层的**外壳**：满屏遮罩 + 居中的卡片槽。
@@ -147,7 +177,11 @@ pub fn modal_scrim(id: &'static str, card: impl IntoElement) -> AnyElement {
         // 一次性入场淡入：GPUI 在这 140ms 里逐帧请求重绘，结束后**保持终值**
         // （不再请求帧）。系统开了"减弱动态效果"时 GPUI 直接给终值 ——
         // 这是 `AnimationExt` 自己遵守的偏好，我们不用另外判断。
-        .with_animation(id, Animation::new(Duration::from_millis(140)), |el, delta| el.opacity(delta))
+        .with_animation(
+            id,
+            Animation::new(Duration::from_millis(140)),
+            |el, delta| el.opacity(delta),
+        )
         .into_any_element()
 }
 
@@ -732,16 +766,12 @@ fn gauge(
             // 用 `justify_center` 而不是 `text_center()`：前者本仓库到处在用，
             // 后者一次都没用过 —— 本机没工具链，不赌没验证过的 API（AGENTS.md §1）。
             // `overflow_hidden` 兜住"比格子还长"的那种小字（居中裁掉两头，不越界）。
-            h_flex()
-                .w_full()
-                .justify_center()
-                .overflow_hidden()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_muted())
-                        .child(caption),
-                ),
+            h_flex().w_full().justify_center().overflow_hidden().child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child(caption),
+            ),
         )
         .into_any_element()
 }
@@ -777,8 +807,8 @@ fn status_card(state: &AppState, stats: &DashboardStats) -> AnyElement {
     let has_running = stats.running > 0;
 
     // 数量那一环：全部为 0 时没有"比例"可言，`None` 让环空着。
-    let count_percent = (stats.total > 0)
-        .then(|| stats.running as f64 / stats.total as f64 * 100.0);
+    let count_percent =
+        (stats.total > 0).then(|| stats.running as f64 / stats.total as f64 * 100.0);
 
     // CPU 环：拿不到核数时**照样报原始合计**（那一行小字会说明"拿不到核数"），
     // 但绝不把它当"整机占用率"—— 多核机器上 400% 是四个核跑满。
@@ -913,12 +943,7 @@ fn status_card(state: &AppState, stats: &DashboardStats) -> AnyElement {
                     )),
             )
             .child(storage_line)
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme::text_dim())
-                    .child(note),
-            ),
+            .child(div().text_xs().text_color(theme::text_dim()).child(note)),
     )
     .into_any_element()
 }
@@ -939,9 +964,21 @@ fn overview_tiles(state: &AppState) -> impl IntoElement {
             snap.distros.len().to_string(),
             theme::text(),
         ))
-        .child(stat_tile("镜像", snap.images.len().to_string(), theme::text()))
-        .child(stat_tile("网络", snap.networks.len().to_string(), theme::text()))
-        .child(stat_tile("卷", snap.volumes.len().to_string(), theme::text()))
+        .child(stat_tile(
+            "镜像",
+            snap.images.len().to_string(),
+            theme::text(),
+        ))
+        .child(stat_tile(
+            "网络",
+            snap.networks.len().to_string(),
+            theme::text(),
+        ))
+        .child(stat_tile(
+            "卷",
+            snap.volumes.len().to_string(),
+            theme::text(),
+        ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1110,13 +1147,7 @@ fn container_row_actions(item: &ContainerListItem, entity: &Entity<Shell>) -> An
                 // 运行时名也不进按钮文案 —— 页面顶上写着"Nginx · 按镜像名判断"。
                 "部署管理",
                 move |shell, _, cx| {
-                    shell.open_deploy_page(
-                        target.clone(),
-                        image.clone(),
-                        runtime,
-                        signal,
-                        cx,
-                    )
+                    shell.open_deploy_page(target.clone(), image.clone(), runtime, signal, cx)
                 },
                 entity,
             ));
@@ -1330,17 +1361,15 @@ pub fn containers(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> impl IntoE
                 ContainerScope::NotRunning => not_running_count,
             };
             let shell_entity = entity.clone();
-            let mut button = Button::new(SharedString::from(format!(
-                "container-scope-{scope:?}"
-            )))
-            .label(format!("{} {}", scope.label(), count))
-            .small()
-            .on_click(move |_, _, cx| {
-                shell_entity.update(cx, |shell, cx| {
-                    shell.state.container_view.scope = scope;
-                    cx.notify();
+            let mut button = Button::new(SharedString::from(format!("container-scope-{scope:?}")))
+                .label(format!("{} {}", scope.label(), count))
+                .small()
+                .on_click(move |_, _, cx| {
+                    shell_entity.update(cx, |shell, cx| {
+                        shell.state.container_view.scope = scope;
+                        cx.notify();
+                    });
                 });
-            });
             if view.scope == scope {
                 button = button.primary();
             }
@@ -1356,14 +1385,12 @@ pub fn containers(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> impl IntoE
             .dropdown_menu(move |mut menu, _window, _cx| {
                 for sort in ContainerSort::ALL {
                     let shell_entity = entity.clone();
-                    menu = menu.item(PopupMenuItem::new(sort.label()).on_click(
-                        move |_, _, cx| {
-                            shell_entity.update(cx, |shell, cx| {
-                                shell.state.container_view.sort = sort;
-                                cx.notify();
-                            });
-                        },
-                    ));
+                    menu = menu.item(PopupMenuItem::new(sort.label()).on_click(move |_, _, cx| {
+                        shell_entity.update(cx, |shell, cx| {
+                            shell.state.container_view.sort = sort;
+                            cx.notify();
+                        });
+                    }));
                 }
                 menu
             })
@@ -1428,9 +1455,7 @@ pub fn containers(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> impl IntoE
                         cx.notify();
                     });
                     if let Some(input) = input.as_ref() {
-                        input.update(cx, |state, cx| {
-                            state.set_value(String::new(), window, cx)
-                        });
+                        input.update(cx, |state, cx| state.set_value(String::new(), window, cx));
                     }
                 });
             v_flex()
@@ -1474,7 +1499,13 @@ pub fn containers(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> impl IntoE
                         .children(search)
                         .children(clear),
                 )
-                .child(h_flex().gap_2().items_center().children(stop_all).child(prune)),
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .children(stop_all)
+                        .child(prune),
+                ),
         )
         .child(
             h_flex()
@@ -1646,20 +1677,13 @@ pub fn db_info_overlay(
                             .text_color(theme::text())
                             .child("基础信息"),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::text_dim())
-                            .child(format!(
-                                "容器 {} · {} · {} · 客户端 {}",
-                                db.container,
-                                db.family.label(),
-                                db.image,
-                                db.client_version
-                                    .as_deref()
-                                    .unwrap_or(db.client.as_str()),
-                            )),
-                    ),
+                    .child(div().text_xs().text_color(theme::text_dim()).child(format!(
+                        "容器 {} · {} · {} · 客户端 {}",
+                        db.container,
+                        db.family.label(),
+                        db.image,
+                        db.client_version.as_deref().unwrap_or(db.client.as_str()),
+                    ))),
             )
             // 连接卡本体照旧用它自己那份渲染（表单 + 说明都在里面）
             .child(db_connection_card(db, form, cx))
@@ -1799,19 +1823,14 @@ fn db_header(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
                         .font_semibold()
                         .child(format!("容器 {}", db.container)),
                 )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_dim())
-                        .child(format!(
-                            "{} · {} · 客户端 {}",
-                            db.family.label(),
-                            db.image,
-                            db.client_version.as_deref().unwrap_or(db.client.as_str()),
-                        )),
-                ),
+                .child(div().text_xs().text_color(theme::text_dim()).child(format!(
+                    "{} · {} · 客户端 {}",
+                    db.family.label(),
+                    db.image,
+                    db.client_version.as_deref().unwrap_or(db.client.as_str()),
+                ))),
         )
-        .child(h_flex().gap_2().child(back).child(reload))
+        .child(h_flex().gap_2().child(back).child(info).child(reload))
         .into_any_element()
 }
 
@@ -1823,22 +1842,19 @@ fn db_header(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
 /// 那条取舍被这条反馈推翻了：那一页最有价值的是两张表，而顶部 ~250px 花在
 /// 一份很少改的连接信息上。
 fn db_connection_card(db: &DbState, form: &DbPageForm, cx: &App) -> AnyElement {
-    let mut body = v_flex()
-        .w_full()
-        .gap_3()
-        .child(
-            h_flex()
-                .w_full()
-                .gap_3()
-                .child(form_field("db-user", "用户名", &form.user, cx, false))
-                .child(form_field(
-                    "db-password",
-                    "密码（只存在内存里）",
-                    &form.password,
-                    cx,
-                    false,
-                )),
-        );
+    let mut body = v_flex().w_full().gap_3().child(
+        h_flex()
+            .w_full()
+            .gap_3()
+            .child(form_field("db-user", "用户名", &form.user, cx, false))
+            .child(form_field(
+                "db-password",
+                "密码（只存在内存里）",
+                &form.password,
+                cx,
+                false,
+            )),
+    );
 
     if let Some(note) = db.cred_note.clone() {
         body = body.child(
@@ -1849,19 +1865,14 @@ fn db_connection_card(db: &DbState, form: &DbPageForm, cx: &App) -> AnyElement {
         );
     }
 
-    body = body.child(
-        div()
-            .text_xs()
-            .text_color(theme::text_muted())
-            .child(
-                // Markdown 文案 → 渲染处统一清标记（`util::strip_md`）
-                crate::util::strip_md(
-                    "面板靠**容器自带的** mysql / mariadb 客户端执行 SQL —— 所以容器要在运行、\
+    body = body.child(div().text_xs().text_color(theme::text_muted()).child(
+        // Markdown 文案 → 渲染处统一清标记（`util::strip_md`）
+        crate::util::strip_md(
+            "面板靠**容器自带的** mysql / mariadb 客户端执行 SQL —— 所以容器要在运行、\
                      镜像里得有客户端（不要求把端口发布到主机）。密码走 MYSQL_PWD 环境变量，\
                      不进命令行；改完点右上角「重新读取」生效。",
-                ),
-            ),
-    );
+        ),
+    ));
 
     card("连接", body).into_any_element()
 }
@@ -1889,16 +1900,11 @@ fn db_blocked_card(failure: &DbFailure) -> AnyElement {
                 .text_color(theme::text())
                 .child(crate::util::strip_md(&failure.summary())),
         )
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme::text_muted())
-                .child(
-                    "面板不自己连 3306，而是驱动容器里的客户端 —— 所以它不依赖端口有没有\
+        .child(div().text_xs().text_color(theme::text_muted()).child(
+            "面板不自己连 3306，而是驱动容器里的客户端 —— 所以它不依赖端口有没有\
                      发布出来，但要求那个客户端存在。想自己进去看，用「容器」页那一行\
                      「更多」菜单里的「终端」。",
-                ),
-        )
+        ))
         .child(log_text(Some(&failure.detail), "db-blocked-detail"))
         .into_any_element()
 }
@@ -1936,7 +1942,12 @@ fn db_store_warning(text: &str) -> AnyElement {
         .bg(theme::danger_soft())
         .border_1()
         .border_color(theme::danger_edge())
-        .child(div().text_sm().text_color(theme::danger()).child(text.to_owned()))
+        .child(
+            div()
+                .text_sm()
+                .text_color(theme::danger())
+                .child(text.to_owned()),
+        )
         .into_any_element()
 }
 
@@ -2000,9 +2011,11 @@ fn db_name_cell(entry: &wslc_core::model::DbEntry) -> AnyElement {
                 .truncate()
                 .child(entry.name.clone()),
         )
-        .children(entry.is_system().then(|| {
-            badge("系统", theme::text_dim(), theme::neutral_soft()).into_any_element()
-        }))
+        .children(
+            entry.is_system().then(|| {
+                badge("系统", theme::text_dim(), theme::neutral_soft()).into_any_element()
+            }),
+        )
         .into_any_element()
 }
 
@@ -2061,9 +2074,7 @@ fn db_databases_card(
                 "备份",
                 {
                     let name = entry.name.clone();
-                    move |shell, window, cx| {
-                        shell.open_db_backup_dialog(name.clone(), window, cx)
-                    }
+                    move |shell, window, cx| shell.open_db_backup_dialog(name.clone(), window, cx)
                 },
                 entity,
             );
@@ -2074,9 +2085,7 @@ fn db_databases_card(
                 "SQL",
                 {
                     let name = entry.name.clone();
-                    move |shell, window, cx| {
-                        shell.open_db_console_for(name.clone(), window, cx)
-                    }
+                    move |shell, window, cx| shell.open_db_console_for(name.clone(), window, cx)
                 },
                 entity,
             );
@@ -2089,7 +2098,9 @@ fn db_databases_card(
                     let name = entry.name.clone();
                     move |shell, window, cx| {
                         shell.open_db_dialog(
-                            DbDialogKind::ImportSql { database: name.clone() },
+                            DbDialogKind::ImportSql {
+                                database: name.clone(),
+                            },
                             window,
                             cx,
                         )
@@ -2468,10 +2479,9 @@ fn db_console_card(
                         .justify_between()
                         .items_center()
                         .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme::text_muted())
-                                .child("SHOW / SELECT / DDL 都能跑；输出是 mysql 客户端的表格形态。"),
+                            div().text_xs().text_color(theme::text_muted()).child(
+                                "SHOW / SELECT / DDL 都能跑；输出是 mysql 客户端的表格形态。",
+                            ),
                         )
                         .child(run),
                 ),
@@ -2495,18 +2505,33 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
     };
 
     let kind = dialog.kind.clone();
-    let locked_user = matches!(kind, DbDialogKind::AlterPassword { .. } | DbDialogKind::Grant { .. });
+    let locked_user = matches!(
+        kind,
+        DbDialogKind::AlterPassword { .. } | DbDialogKind::Grant { .. }
+    );
 
     // 按动作画不同的字段
     let mut fields: Vec<AnyElement> = Vec::new();
     match &kind {
         DbDialogKind::NewDatabase => {
-            fields.push(form_field("db-dialog-name", "库名", &dialog.database, cx, true));
+            fields.push(form_field(
+                "db-dialog-name",
+                "库名",
+                &dialog.database,
+                cx,
+                true,
+            ));
             fields.push(
                 h_flex()
                     .w_full()
                     .gap_3()
-                    .child(form_field("db-dialog-charset", "字符集（可留空）", &dialog.charset, cx, false))
+                    .child(form_field(
+                        "db-dialog-charset",
+                        "字符集（可留空）",
+                        &dialog.charset,
+                        cx,
+                        false,
+                    ))
                     .child(form_field(
                         "db-dialog-collation",
                         "排序规则（可留空）",
@@ -2603,11 +2628,29 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
                 h_flex()
                     .w_full()
                     .gap_3()
-                    .child(form_field("db-dialog-user", "用户名", &dialog.user, cx, false))
-                    .child(form_field("db-dialog-host", "主机", &dialog.host, cx, false))
+                    .child(form_field(
+                        "db-dialog-user",
+                        "用户名",
+                        &dialog.user,
+                        cx,
+                        false,
+                    ))
+                    .child(form_field(
+                        "db-dialog-host",
+                        "主机",
+                        &dialog.host,
+                        cx,
+                        false,
+                    ))
                     .into_any_element(),
             );
-            fields.push(form_field("db-dialog-password", "密码", &dialog.password, cx, true));
+            fields.push(form_field(
+                "db-dialog-password",
+                "密码",
+                &dialog.password,
+                cx,
+                true,
+            ));
             fields.push(form_field(
                 "db-dialog-grant-db",
                 "授权到哪个库（可留空）",
@@ -2622,10 +2665,18 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
                 div()
                     .text_xs()
                     .text_color(theme::text_dim())
-                    .child(format!("账号：'{user}'@'{host}'（用户名和主机不能在这里改）"))
+                    .child(format!(
+                        "账号：'{user}'@'{host}'（用户名和主机不能在这里改）"
+                    ))
                     .into_any_element(),
             );
-            fields.push(form_field("db-dialog-password", "新密码", &dialog.password, cx, true));
+            fields.push(form_field(
+                "db-dialog-password",
+                "新密码",
+                &dialog.password,
+                cx,
+                true,
+            ));
         }
         DbDialogKind::Grant { user, host } => {
             fields.push(
@@ -2758,11 +2809,7 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
                             .text_color(theme::text())
                             .child(kind.title()),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::text_dim())
-                            .child(format!(
+                    .child(div().text_xs().text_color(theme::text_dim()).child(format!(
                                 "在容器 {} 上执行 —— 用的是数据库页连接卡里那个账号。",
                                 shell
                                     .state
@@ -2770,8 +2817,7 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
                                     .as_ref()
                                     .map(|db| db.container.clone())
                                     .unwrap_or_default()
-                            )),
-                    ),
+                            ))),
             )
             .children(fields)
             .child(
@@ -2810,12 +2856,7 @@ fn grant_kind_row(current: GrantKind, entity: &Entity<Shell>) -> AnyElement {
         .w_full()
         .gap_2()
         .items_center()
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme::text_dim())
-                .child("权限"),
-        )
+        .child(div().text_xs().text_color(theme::text_dim()).child("权限"))
         .children(buttons)
         .into_any_element()
 }
@@ -2867,18 +2908,21 @@ pub fn db_backup_progress(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
                             .child(format!("目标文件：{}", state.windows_path.display())),
                     ),
             )
-            .child(
-                div().text_sm().text_color(theme::text_muted()).child(
-                    "在容器里执行 mysqldump，一般几十秒内结束（大库会久一些）。\
+            .child(div().text_sm().text_color(theme::text_muted()).child(
+                "在容器里执行 mysqldump，一般几十秒内结束（大库会久一些）。\
                      完成后会在 Windows 侧存一份档案，容器内 /tmp 也留一份用于恢复。",
-                ),
-            )
+            ))
             .child(
                 h_flex()
                     .w_full()
                     .justify_end()
                     .gap_2()
-                    .child(div().text_sm().text_color(theme::text_muted()).child("备份中…"))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(theme::text_muted())
+                            .child("备份中…"),
+                    )
                     .child(cancel),
             ),
     )
@@ -2928,24 +2972,19 @@ pub fn db_import_progress(db: &DbState, _entity: &Entity<Shell>) -> AnyElement {
                             .text_color(theme::text())
                             .child(format!("正在导入 {}", state.file_name)),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::text_dim())
-                            .child(target),
-                    ),
+                    .child(div().text_xs().text_color(theme::text_dim()).child(target)),
             )
-            .child(
-                div().text_sm().text_color(theme::text_muted()).child(
-                    "先把文件送进容器，再让容器里的 mysql 读它。\
+            .child(div().text_sm().text_color(theme::text_muted()).child(
+                "先把文件送进容器，再让容器里的 mysql 读它。\
                      大文件会慢一些 —— 完成后这里会自动关掉，列表也会重读一次。",
-                ),
-            )
+            ))
             .child(
-                h_flex()
-                    .w_full()
-                    .justify_end()
-                    .child(div().text_sm().text_color(theme::text_muted()).child("导入中…")),
+                h_flex().w_full().justify_end().child(
+                    div()
+                        .text_sm()
+                        .text_color(theme::text_muted())
+                        .child("导入中…"),
+                ),
             ),
     )
     .into_any_element()
@@ -3111,23 +3150,17 @@ pub fn db_backup_dialog_overlay(
                             .child(start),
                     )
                     .child(account)
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::text_dim())
-                            .child(
-                                crate::util::strip_md(
-                                    "列表是 Windows 侧的存档（容器删了它们还在），\
+                    .child(div().text_xs().text_color(theme::text_dim()).child(
+                        crate::util::strip_md(
+                            "列表是 Windows 侧的存档（容器删了它们还在），\
                                      也是**恢复的输入**：恢复时会把这份文件送进容器再导入，\
                                      所以容器重建过也照样能恢复。\
                                      恢复**覆盖**这个库现有的全部数据。",
-                                ),
-                            ),
-                    ),
+                        ),
+                    )),
             )
             .child(if rows.is_empty() {
-                empty_state("还没有备份 —— 点右上角的「立即备份」生成第一份")
-                    .into_any_element()
+                empty_state("还没有备份 —— 点右上角的「立即备份」生成第一份").into_any_element()
             } else {
                 v_flex()
                     .w_full()
@@ -3235,8 +3268,7 @@ fn deploy_published_line(deploy: &DeployState) -> String {
     let items: Vec<String> = ports
         .iter()
         .filter_map(|port| {
-            deploy_model::app_url(&deploy.ports, *port)
-                .map(|url| format!("{url} → 容器 {port}"))
+            deploy_model::app_url(&deploy.ports, *port).map(|url| format!("{url} → 容器 {port}"))
         })
         .collect();
     if items.is_empty() {
@@ -3330,17 +3362,12 @@ fn deploy_header(deploy: &DeployState, entity: &Entity<Shell>) -> AnyElement {
                         .font_semibold()
                         .child(format!("容器 {}", deploy.container)),
                 )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_dim())
-                        .child(format!(
-                            "{} · {} · {}",
-                            deploy.runtime.label(),
-                            deploy.image,
-                            deploy.signal.label(),
-                        )),
-                )
+                .child(div().text_xs().text_color(theme::text_dim()).child(format!(
+                    "{} · {} · {}",
+                    deploy.runtime.label(),
+                    deploy.image,
+                    deploy.signal.label(),
+                )))
                 .child(
                     div()
                         .text_xs()
@@ -3396,19 +3423,12 @@ fn deploy_blocked_card(deploy: &DeployState, failure: &crate::state::DeployFailu
                 .text_color(theme::text())
                 .child(crate::util::strip_md(&failure.summary())),
         )
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme::text_muted())
-                .child(note),
-        )
+        .child(div().text_xs().text_color(theme::text_muted()).child(note))
         .child(log_text(Some(&failure.detail), "deploy-blocked-detail"))
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme::text_dim())
-                .child(format!("刚才是在读容器 {} 的时候失败的。", deploy.container)),
-        )
+        .child(div().text_xs().text_color(theme::text_dim()).child(format!(
+            "刚才是在读容器 {} 的时候失败的。",
+            deploy.container
+        )))
         .into_any_element()
 }
 
@@ -3579,11 +3599,13 @@ fn deploy_status_cell(entry: &DeployEntry, deploy: &DeployState) -> AnyElement {
     let label = entry.status_label();
     div()
         .text_sm()
-        .text_color(if entry.process == Some(wslc_core::model::ProcessStatus::Running) {
-            theme::text()
-        } else {
-            theme::text_muted()
-        })
+        .text_color(
+            if entry.process == Some(wslc_core::model::ProcessStatus::Running) {
+                theme::text()
+            } else {
+                theme::text_muted()
+            },
+        )
         .child(format!("{label}{extra}"))
         .into_any_element()
 }
@@ -3615,20 +3637,12 @@ fn deploy_port_cell(
         // ⚠️ 不拼 URL 的具体理由：默认站点的 path 是 `<target 相对 Web 根>`，
         // 不一定等于 `<app>`；老记录还可能直接铺在 Web 根（path 就是 `/`）。
         if is_nginx && entry.record.site.is_none() {
-            return cell_muted_full(
-                key,
-                format!("{port}（已发布；站点关，由默认站点提供）"),
-            );
+            return cell_muted_full(key, format!("{port}（已发布；站点关，由默认站点提供）"));
         }
         if let Some(url) = deploy_model::app_url(&deploy.ports, port) {
             // URL 直接可点：部署完最自然的下一步就是打开看一眼。
             // 单元格仍然保留 tooltip，长 URL 被截断时悬停能看全。
-            return cell_link(
-                key,
-                format!("{url}（容器 {port}）"),
-                url,
-                entity,
-            );
+            return cell_link(key, format!("{url}（容器 {port}）"), url, entity);
         }
         cell_text(format!("{port}（已发布）"))
     } else {
@@ -3674,17 +3688,15 @@ fn deploy_row_actions(
     // 类型认不出来：**不猜**该用哪套动作（见 `DeployEntry::runtime` 的说明），
     // 只给「删除记录」并说明为什么别的按钮没有。
     if entry.runtime.is_none() {
-        actions.push(
-            deploy_danger_button(
-                &format!("deploy-forget-{app}"),
-                "删除记录",
-                {
-                    let app = app.clone();
-                    move |shell, cx| shell.forget_deployment_record(app.clone(), cx)
-                },
-                entity,
-            ),
-        );
+        actions.push(deploy_danger_button(
+            &format!("deploy-forget-{app}"),
+            "删除记录",
+            {
+                let app = app.clone();
+                move |shell, cx| shell.forget_deployment_record(app.clone(), cx)
+            },
+            entity,
+        ));
         actions.push(
             div()
                 .text_xs()
@@ -3726,79 +3738,65 @@ fn deploy_row_actions(
         }
     } else {
         // 内容形态：铺进去就生效，这里给的是"我改完本地文件想再传一次"
-        actions.push(
-            overlay_button(
-                &format!("deploy-redeploy-{app}"),
-                "重新上传",
-                {
-                    let app = app.clone();
-                    move |shell, window, cx| {
-                        shell.open_deploy_dialog(Some(app.clone()), window, cx)
-                    }
-                },
-                entity,
-            ),
-        );
+        actions.push(overlay_button(
+            &format!("deploy-redeploy-{app}"),
+            "重新上传",
+            {
+                let app = app.clone();
+                move |shell, window, cx| shell.open_deploy_dialog(Some(app.clone()), window, cx)
+            },
+            entity,
+        ));
     }
 
     // 日志（只有进程形态有 —— 内容形态的产物是文件，没有我们起的进程）
     if is_process {
-        actions.push(
-            overlay_button(
-                &format!("deploy-logs-{app}"),
-                "日志",
-                {
-                    let app = app.clone();
-                    move |shell, _, cx| shell.open_deploy_logs(app.clone(), cx)
-                },
-                entity,
-            ),
-        );
+        actions.push(overlay_button(
+            &format!("deploy-logs-{app}"),
+            "日志",
+            {
+                let app = app.clone();
+                move |shell, _, cx| shell.open_deploy_logs(app.clone(), cx)
+            },
+            entity,
+        ));
     }
 
     // 站点配置（只有 nginx 站点开的记录有 —— 站点关没有面板生成的 conf）
     if !is_process && entry.record.site.is_some() {
-        actions.push(
-            overlay_button(
-                &format!("deploy-site-{app}"),
-                "站点配置",
-                {
-                    let app = app.clone();
-                    move |shell, _, cx| shell.open_deploy_site_conf(app.clone(), cx)
-                },
-                entity,
-            ),
-        );
+        actions.push(overlay_button(
+            &format!("deploy-site-{app}"),
+            "站点配置",
+            {
+                let app = app.clone();
+                move |shell, _, cx| shell.open_deploy_site_conf(app.clone(), cx)
+            },
+            entity,
+        ));
     }
 
     // 进程形态才需要"重新部署"（内容形态上面那个就是它）
     if is_process {
-        actions.push(
-            overlay_button(
-                &format!("deploy-redeploy-{app}"),
-                "重新部署",
-                {
-                    let app = app.clone();
-                    move |shell, window, cx| {
-                        shell.open_deploy_dialog(Some(app.clone()), window, cx)
-                    }
-                },
-                entity,
-            ),
-        );
-    }
-
-    actions.push(
-        deploy_danger_button(
-            &format!("deploy-remove-{app}"),
-            "删除",
+        actions.push(overlay_button(
+            &format!("deploy-redeploy-{app}"),
+            "重新部署",
             {
                 let app = app.clone();
-                move |shell, cx| shell.request_remove_deployment(app.clone(), cx)
+                move |shell, window, cx| shell.open_deploy_dialog(Some(app.clone()), window, cx)
             },
             entity,
-        ),
-    );
+        ));
+    }
+
+    actions.push(deploy_danger_button(
+        &format!("deploy-remove-{app}"),
+        "删除",
+        {
+            let app = app.clone();
+            move |shell, cx| shell.request_remove_deployment(app.clone(), cx)
+        },
+        entity,
+    ));
 
     h_flex()
         .gap_2()
@@ -3846,11 +3844,7 @@ fn deploy_danger_button(
 ///   `model::deploy::removals_script`）；
 /// - 「启动命令会原样交给 /bin/sh -c」：它**不做**引号转义（刻意的，
 ///   见 `model::deploy::start_script`），不说清楚用户会以为它是参数。
-pub fn deploy_dialog_overlay(
-    shell: &Shell,
-    entity: &Entity<Shell>,
-    cx: &App,
-) -> AnyElement {
+pub fn deploy_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyElement {
     let Some(form) = shell.deploy_form.as_ref() else {
         return div().into_any_element();
     };
@@ -3875,19 +3869,11 @@ pub fn deploy_dialog_overlay(
         .child(
             v_flex()
                 .gap_1()
-                .child(
-                    div()
-                        .text_lg()
-                        .font_semibold()
-                        .child(if re_deploy {
-                            format!(
-                                "重新部署 {}",
-                                form.editing.clone().unwrap_or_default()
-                            )
-                        } else {
-                            format!("添加部署 · {}", runtime.label())
-                        }),
-                )
+                .child(div().text_lg().font_semibold().child(if re_deploy {
+                    format!("重新部署 {}", form.editing.clone().unwrap_or_default())
+                } else {
+                    format!("添加部署 · {}", runtime.label())
+                }))
                 .child(
                     div()
                         .text_xs()
@@ -3900,10 +3886,7 @@ pub fn deploy_dialog_overlay(
     // 和「数据库管理」的「改密码 / 授权」锁定用户名 / 主机是同一个手法
     //（改了名字就是另一个部署了，那应该走「添加部署」）。
     let card = if re_deploy {
-        card.child(kv_block(
-            "应用名",
-            form.editing.clone().unwrap_or_default(),
-        ))
+        card.child(kv_block("应用名", form.editing.clone().unwrap_or_default()))
     } else {
         card.child(form_field("deploy-app", "应用名", &form.app, cx, true))
     };
@@ -3916,7 +3899,11 @@ pub fn deploy_dialog_overlay(
                 .items_end()
                 .child(form_field(
                     "deploy-source",
-                    "本地来源",
+                    if runtime.source_kind() == deploy_model::SourceKind::Directory {
+                        "本地目录"
+                    } else {
+                        "本地文件"
+                    },
                     &form.source,
                     cx,
                     false,
@@ -3927,27 +3914,9 @@ pub fn deploy_dialog_overlay(
                         .label("浏览…")
                         .small()
                         .on_click(move |_, window, cx| {
-                            entity.update(cx, |shell, cx| {
-                                shell.browse_deploy_source(window, cx)
-                            });
+                            entity.update(cx, |shell, cx| shell.browse_deploy_source(window, cx));
                         })
                 }),
-        )
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme::text_dim())
-                // ⚠️ 这一整块（以及下面几处说明）都要过 `strip_md`：
-                // 文案是 Markdown 风格写的，而 `div` 画的是纯文本 ——
-                // 不过一遍，屏幕上就真的显示 `**` 和反引号（v0.9.13 修）。
-                .child(crate::util::strip_md(&format!(
-                    "{} 部署的是一个**{}**。",
-                    runtime.label(),
-                    match runtime.source_kind() {
-                        deploy_model::SourceKind::Directory => "目录（只打目录的**内容**）",
-                        deploy_model::SourceKind::File => "文件",
-                    }
-                ))),
         )
         .child(form_field(
             "deploy-target",
@@ -3961,10 +3930,8 @@ pub fn deploy_dialog_overlay(
                 .text_xs()
                 .text_color(theme::danger())
                 .child(crate::util::strip_md(
-                    "「部署」会**替换掉面板上次铺进去的那几个文件**（不多删别的：\
-                     镜像自带的文件、你自己放的东西都留着），所以要填一个专门放这个应用的\
-                     目录。目标目录只允许填在 /opt、/srv、/app、/var/www、\
-                     /usr/share/nginx 这些地方，不能是系统目录。",
+                    "部署会替换面板上次写入的文件，保留其他文件。请使用独立应用目录；\
+                     仅允许 /opt、/srv、/app、/var/www、/usr/share/nginx 下的路径。",
                 )),
         );
 
@@ -3982,8 +3949,7 @@ pub fn deploy_dialog_overlay(
                 .text_xs()
                 .text_color(theme::text_dim())
                 .child(crate::util::strip_md(
-                    "这一行会**原样**交给容器里的 `/bin/sh -c`（不做转义）—— \
-                     所以可以写管道、`&&`、环境变量。日志落在目标目录的 app.log。",
+                    "命令原样交给 /bin/sh -c，支持管道与 &&；日志位于目标目录的 app.log。",
                 )),
         )
     } else {
@@ -3991,206 +3957,145 @@ pub fn deploy_dialog_overlay(
             div()
                 .text_xs()
                 .text_color(theme::text_muted())
-                .child(
-                    "内容形态没有「启动命令」—— nginx 每个请求都从磁盘读，铺完就生效。",
-                ),
+                .child("静态文件上传后生效。"),
         )
     };
 
-    // nginx 的站点块：勾上才会写 conf。放在端口**前面** —— 端口在站点开时
-    // 就是 `listen`，先解释"要不要站点"再让用户填端口。
-    let site_block: Option<AnyElement> = if runtime == wslc_core::model::AppRuntime::Nginx {
-        Some(
-            v_flex()
-                .w_full()
-                .gap_2()
-                .p_3()
-                .rounded_md()
-                .bg(theme::bg())
-                .border_1()
-                .border_color(theme::border())
-                .child(
-                    h_flex()
-                        .w_full()
-                        .gap_3()
-                        .items_center()
-                        .child({
-                            let entity = entity.clone();
-                            Checkbox::new("deploy-site-enabled")
-                                .label("生成站点配置（SPA / 反代）")
-                                .checked(form.site_enabled)
-                                .on_change(move |checked: &bool, _, cx| {
-                                    let enabled = *checked;
-                                    entity.update(cx, |shell, cx| {
-                                        shell.set_deploy_site_enabled(enabled, cx)
-                                    });
-                                })
-                        }),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_dim())
-                        .child(crate::util::strip_md(
-                            "站点开 = 面板写一份 `/etc/nginx/conf.d/00-wslc-panel-<应用名>.conf`，\
-                             让这个应用 `listen <端口>`；端口 80 会接管默认站点。\
-                             不勾 = 只铺文件，由默认站点在 `/<应用名>/` 提供。",
-                        )),
-                )
-                .children(form.site_enabled.then(|| {
-                    v_flex()
-                        .w_full()
-                        .gap_2()
-                        .child({
-                            let entity = entity.clone();
-                            Checkbox::new("deploy-site-spa")
-                                .label("单页应用回退（找不到的路径交给 index.html）")
-                                .checked(form.site_spa)
-                                .on_change(move |checked: &bool, _, cx| {
-                                    let enabled = *checked;
-                                    entity.update(cx, |shell, cx| {
-                                        shell.set_deploy_site_spa(enabled, cx)
-                                    });
-                                })
-                        })
-                        .child(form_field(
-                            "deploy-server-name",
-                            "server_name（域名 / localhost）",
-                            &form.server_name,
-                            cx,
-                            true,
-                        ))
-                        .child(form_field(
-                            "deploy-proxy-prefix",
-                            "反代路径前缀（可选）",
-                            &form.proxy_prefix,
-                            cx,
-                            true,
-                        ))
-                        .child(form_field(
-                            "deploy-proxy-upstream",
-                            "反代上游（可选）",
-                            &form.proxy_upstream,
-                            cx,
-                            true,
-                        ))
-                        .child({
-                            let entity = entity.clone();
-                            Checkbox::new("deploy-proxy-strip")
-                                .label("转发时去掉前缀（后端收到 /foo 而不是 /api/foo）")
-                                .checked(form.proxy_strip)
-                                .on_change(move |checked: &bool, _, cx| {
-                                    let enabled = *checked;
-                                    entity.update(cx, |shell, cx| {
-                                        shell.set_deploy_proxy_strip(enabled, cx)
-                                    });
-                                })
-                        })
-                        .child(form_field(
-                            "deploy-proxy-more",
-                            "更多反代（; 分隔：/auth/ => http://auth:9000 [strip]）",
-                            &form.proxy_more,
-                            cx,
-                            true,
-                        ))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme::text_dim())
-                                .child(crate::util::strip_md(
-                                    "第一条规则用上面两格；更多规则用 `;` 分隔，例如 \
-                                     `/auth/ => http://auth:9000; /ws/ => http://ws:9001 strip`。\
-                                     同一个前缀只能出现一次（nginx 会报 duplicate location）。",
-                                )),
-                        )
-                        .child({
-                            let entity = entity.clone();
-                            Checkbox::new("deploy-auto-connect")
-                                .label("自动接通上游容器的用户网络")
-                                .checked(form.auto_connect)
-                                .on_change(move |checked: &bool, _, cx| {
-                                    let enabled = *checked;
-                                    entity.update(cx, |shell, cx| {
-                                        shell.set_deploy_auto_connect(enabled, cx)
-                                    });
-                                })
-                        })
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme::text_dim())
-                                .child(crate::util::strip_md(
-                                    "上游是另一个容器时，面板会**逐个**找共同用户网络；\
-                                     没有就创建/接到 `wslc-panel`（勾选「自动接通」时）。\
-                                     取消勾选就只能手动 `wslc network connect <网络> <容器>`。\
-                                     默认 bridge 解析不了名字（实测 `getent` rc=2）。\
-                                     上游停着也能保存配置（不会让 `nginx -t` 失败），\
-                                     请求会在它起来后恢复。",
-                                )),
-                        )
-                        .into_any_element()
-                }))
-                .into_any_element(),
-        )
+    // 反代是可选配置；已保存的规则在打开表单时自动展开，折叠不丢参数。
+    let proxy_filled = !form.proxy_prefix.read(cx).value().trim().is_empty()
+        || !form.proxy_upstream.read(cx).value().trim().is_empty()
+        || !form.proxy_more.read(cx).value().trim().is_empty();
+    let more_filled = !form.proxy_more.read(cx).value().trim().is_empty();
+    let proxy_block = disclosure(
+        UiSection::DeployProxy,
+        if proxy_filled { "反向代理 · 已填写" } else { "反向代理 · 未配置" },
+        &shell.state, entity,
+        v_flex().w_full().gap_2()
+            .child(form_field("deploy-proxy-prefix", "路径前缀（如 /api/）", &form.proxy_prefix, cx, true))
+            .child(form_field("deploy-proxy-upstream", "上游地址（如 http://api:8080）", &form.proxy_upstream, cx, true))
+            .child({
+                let entity = entity.clone();
+                Checkbox::new("deploy-proxy-strip")
+                    .label("转发时去掉路径前缀")
+                    .checked(form.proxy_strip)
+                    .on_change(move |checked: &bool, _, cx| {
+                        let enabled = *checked;
+                        entity.update(cx, |shell, cx| shell.set_deploy_proxy_strip(enabled, cx));
+                    })
+            })
+            .child(disclosure(
+                UiSection::DeployProxyMore,
+                if more_filled { "更多规则 · 已填写" } else { "添加更多规则" },
+                &shell.state, entity,
+                v_flex().w_full().gap_1()
+                    .child(form_field("deploy-proxy-more", "更多反代规则", &form.proxy_more, cx, true))
+                    .child(div().text_xs().text_color(theme::text_dim())
+                        .child("用分号分隔，例如 /auth/ => http://auth:9000; /ws/ => http://ws:9001 strip。路径前缀不能重复。")),
+            ))
+            .child({
+                let entity = entity.clone();
+                Checkbox::new("deploy-auto-connect")
+                    .label("自动接通上游容器的用户网络")
+                    .checked(form.auto_connect)
+                    .on_change(move |checked: &bool, _, cx| {
+                        let enabled = *checked;
+                        entity.update(cx, |shell, cx| shell.set_deploy_auto_connect(enabled, cx));
+                    })
+            })
+            .child(div().text_xs().text_color(theme::text_dim())
+                .child("上游容器需网络可达；关闭自动接通后须自行连接用户网络。")),
+    );
+    let site_block = if runtime == wslc_core::model::AppRuntime::Nginx {
+        Some(v_flex().w_full().gap_2().p_3().rounded_md()
+            .bg(theme::bg()).border_1().border_color(theme::border())
+            .child({
+                let entity = entity.clone();
+                Checkbox::new("deploy-site-enabled")
+                    .label("启用独立站点")
+                    .checked(form.site_enabled)
+                    .on_change(move |checked: &bool, _, cx| {
+                        let enabled = *checked;
+                        entity.update(cx, |shell, cx| shell.set_deploy_site_enabled(enabled, cx));
+                    })
+            })
+            .child(div().text_xs().text_color(theme::text_dim())
+                .child("开启后生成站点配置；使用 80 端口会接管默认站点。关闭时由默认站点提供 /应用名/。"))
+            .children(form.site_enabled.then(|| {
+                v_flex().w_full().gap_2()
+                    .child({
+                        let entity = entity.clone();
+                        Checkbox::new("deploy-site-spa")
+                            .label("单页应用回退到 index.html")
+                            .checked(form.site_spa)
+                            .on_change(move |checked: &bool, _, cx| {
+                                let enabled = *checked;
+                                entity.update(cx, |shell, cx| shell.set_deploy_site_spa(enabled, cx));
+                            })
+                    })
+                    .child(form_field("deploy-server-name", "域名（server_name）", &form.server_name, cx, true))
+                    .child(proxy_block)
+                    .into_any_element()
+            }))
+            .into_any_element())
     } else {
         None
     };
 
-    let card = card
-        .children(site_block)
-        .child(form_field(
-            "deploy-port",
-            "端口（应用监听；站点开时是 listen）",
-            &form.port,
-            cx,
-            true,
-        ))
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme::text_dim())
-                .child(crate::util::strip_md(
-                    "端口只用来**提示有没有发布到主机**：已建好的容器改不了端口发布\
-                     （`-p` 只能在建容器时给）。",
-                )),
-        )
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme::text_dim())
-                // 多应用的规矩要在**填的时候**说，不要等提交报错才说。
-                .child(crate::util::strip_md(
-                    "多应用：一个应用 = 一个名字 + 一个目录 + 一个端口。\
-                     nginx 的默认目标已经改成 Web 根下的子目录（`<Web 根>/<应用名>`）；\
-                     进程型应用要自己绑这一格填的端口（Java 用 `--server.port=…`，\
-                     Node 读 `PORT`），面板不会替你改启动命令。",
-                )),
-        )
-        .child(
-            h_flex()
-                .w_full()
-                .justify_end()
-                .gap_2()
-                .child({
-                    let entity = entity.clone();
-                    Button::new("deploy-cancel")
-                        .label("取消")
-                        .small()
-                        .on_click(move |_, _, cx| {
-                            entity.update(cx, |shell, cx| shell.close_deploy_dialog(cx));
-                        })
-                })
-                .child({
-                    let entity = entity.clone();
-                    Button::new("deploy-submit")
-                        .label(if re_deploy { "重新部署" } else { "部署" })
-                        .small()
-                        .primary()
-                        .on_click(move |_, window, cx| {
-                            entity.update(cx, |shell, cx| shell.submit_deploy(window, cx));
-                        })
+    let card =
+        card.children(site_block)
+            .child(form_field(
+                "deploy-port",
+                if runtime == wslc_core::model::AppRuntime::Nginx {
+                    if form.site_enabled {
+                        "站点监听端口"
+                    } else {
+                        "端口（检查主机映射）"
+                    }
+                } else {
+                    "应用监听端口"
+                },
+                &form.port,
+                cx,
+                true,
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child("每个应用使用独立名称、目录和端口；主机端口映射须在创建容器时设置。"),
+            )
+            .children(
+                (runtime.kind() == wslc_core::model::DeployKind::Process).then(|| {
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child("启动命令须监听此端口，面板不会自动修改命令。")
                 }),
-        );
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_end()
+                    .gap_2()
+                    .child({
+                        let entity = entity.clone();
+                        Button::new("deploy-cancel").label("取消").small().on_click(
+                            move |_, _, cx| {
+                                entity.update(cx, |shell, cx| shell.close_deploy_dialog(cx));
+                            },
+                        )
+                    })
+                    .child({
+                        let entity = entity.clone();
+                        Button::new("deploy-submit")
+                            .label(if re_deploy { "重新部署" } else { "部署" })
+                            .small()
+                            .primary()
+                            .on_click(move |_, window, cx| {
+                                entity.update(cx, |shell, cx| shell.submit_deploy(window, cx));
+                            })
+                    }),
+            );
 
     modal_scrim("deploy-dialog-scrim", card).into_any_element()
 }
@@ -4207,44 +4112,42 @@ pub fn deploy_logs_overlay(logs: &DeployLogs, entity: &Entity<Shell>) -> AnyElem
         log_text(logs.text.as_deref(), "deploy-logs-text")
     };
 
-    let card = v_flex()
-        .w(px(680.0))
-        .max_h(px(520.0))
-        .gap_3()
-        .p_4()
-        .rounded_lg()
-        .bg(theme::bg_card())
-        .border_1()
-        .border_color(theme::border())
-        .child(
-            v_flex()
-                .gap_1()
-                .child(
-                    div()
-                        .text_lg()
-                        .font_semibold()
-                        .child(format!("日志 · {}", logs.app)),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_dim())
-                        .child(crate::util::strip_md(
+    let card =
+        v_flex()
+            .w(px(680.0))
+            .max_h(px(520.0))
+            .gap_3()
+            .p_4()
+            .rounded_lg()
+            .bg(theme::bg_card())
+            .border_1()
+            .border_color(theme::border())
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_semibold()
+                            .child(format!("日志 · {}", logs.app)),
+                    )
+                    .child(div().text_xs().text_color(theme::text_dim()).child(
+                        crate::util::strip_md(
                             "是这个应用**自己**的输出（启动时把它重定向到了目标目录的 \
                              app.log）—— 不是容器主进程的日志，那个在「日志」按钮里。",
-                        )),
-                ),
-        )
-        .child(body)
-        .child(h_flex().w_full().justify_end().child({
-            let entity = entity.clone();
-            Button::new("deploy-logs-close")
-                .label("关闭")
-                .small()
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |shell, cx| shell.close_deploy_logs(cx));
-                })
-        }));
+                        ),
+                    )),
+            )
+            .child(body)
+            .child(h_flex().w_full().justify_end().child({
+                let entity = entity.clone();
+                Button::new("deploy-logs-close")
+                    .label("关闭")
+                    .small()
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |shell, cx| shell.close_deploy_logs(cx));
+                    })
+            }));
 
     modal_scrim("deploy-logs-scrim", card).into_any_element()
 }
@@ -4302,60 +4205,55 @@ pub fn deploy_site_conf_overlay(conf: &DeploySiteConf, entity: &Entity<Shell>) -
             .into_any_element()
     };
 
-    let card = v_flex()
-        .w(px(720.0))
-        .max_h(px(560.0))
-        .gap_3()
-        .p_4()
-        .rounded_lg()
-        .bg(theme::bg_card())
-        .border_1()
-        .border_color(theme::border())
-        .child(
-            v_flex()
-                .gap_1()
-                .child(
-                    div()
-                        .text_lg()
-                        .font_semibold()
-                        .child(format!("站点配置 · {}", conf.app)),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_dim())
-                        .child(crate::util::strip_md(
+    let card =
+        v_flex()
+            .w(px(720.0))
+            .max_h(px(560.0))
+            .gap_3()
+            .p_4()
+            .rounded_lg()
+            .bg(theme::bg_card())
+            .border_1()
+            .border_color(theme::border())
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_semibold()
+                            .child(format!("站点配置 · {}", conf.app)),
+                    )
+                    .child(div().text_xs().text_color(theme::text_dim()).child(
+                        crate::util::strip_md(
                             "容器里的 `/etc/nginx/conf.d/00-wslc-panel-<应用名>.conf`（只读）。\
                              重新部署会整份覆盖；要改就改部署弹窗里的站点区，别直接改这个文件。",
-                        )),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_dim())
-                        .child(crate::util::strip_md(
+                        ),
+                    ))
+                    .child(div().text_xs().text_color(theme::text_dim()).child(
+                        crate::util::strip_md(
                             "容器重建后这份 conf 会丢 —— 可以点「重写配置」补回来\
                              （只写 conf，不重新铺文件 / 不重新接网络）。",
-                        )),
-                ),
-        )
-        .child(body)
-        .child(
-            h_flex()
-                .w_full()
-                .justify_end()
-                .gap_2()
-                .child(reapply)
-                .child({
-                    let entity = entity.clone();
-                    Button::new("deploy-site-conf-close")
-                        .label("关闭")
-                        .small()
-                        .on_click(move |_, _, cx| {
-                            entity.update(cx, |shell, cx| shell.close_deploy_site_conf(cx));
-                        })
-                }),
-        );
+                        ),
+                    )),
+            )
+            .child(body)
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_end()
+                    .gap_2()
+                    .child(reapply)
+                    .child({
+                        let entity = entity.clone();
+                        Button::new("deploy-site-conf-close")
+                            .label("关闭")
+                            .small()
+                            .on_click(move |_, _, cx| {
+                                entity.update(cx, |shell, cx| shell.close_deploy_site_conf(cx));
+                            })
+                    }),
+            );
 
     modal_scrim("deploy-site-conf-scrim", card).into_any_element()
 }
@@ -4432,9 +4330,7 @@ pub fn deploy_remove_confirm_overlay(
                         .label("取消")
                         .small()
                         .on_click(move |_, _, cx| {
-                            entity.update(cx, |shell, cx| {
-                                shell.cancel_remove_deployment(cx)
-                            });
+                            entity.update(cx, |shell, cx| shell.cancel_remove_deployment(cx));
                         })
                 })
                 .child({
@@ -4446,9 +4342,7 @@ pub fn deploy_remove_confirm_overlay(
                         .danger()
                         .on_click(move |_, _, cx| {
                             let app = app.clone();
-                            entity.update(cx, |shell, cx| {
-                                shell.confirm_remove_deployment(app, cx)
-                            });
+                            entity.update(cx, |shell, cx| shell.confirm_remove_deployment(app, cx));
                         })
                 }),
         );
@@ -4540,7 +4434,12 @@ pub fn images(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                 .justify_between()
                 .items_center()
                 .child(open_pull)
-                .child(div().text_sm().text_color(theme::text_muted()).child(status)),
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme::text_muted())
+                        .child(status),
+                ),
         )
         .child(
             v_flex()
@@ -4593,14 +4492,12 @@ fn image_row_actions(ix: usize, reference: &str, entity: &Entity<Shell>) -> AnyE
         .dropdown_menu(move |mut menu, _window, _cx| {
             let shell_entity = entity.clone();
             let image = create_ref.clone();
-            menu = menu.item(
-                PopupMenuItem::new("用这个镜像创建容器").on_click(move |_, window, cx| {
+            menu = menu.item(PopupMenuItem::new("用这个镜像创建容器").on_click(
+                move |_, window, cx| {
                     let image = image.clone();
-                    shell_entity.update(cx, |shell, cx| {
-                        shell.use_pulled_image(image, window, cx)
-                    });
-                }),
-            );
+                    shell_entity.update(cx, |shell, cx| shell.use_pulled_image(image, window, cx));
+                },
+            ));
 
             let shell_entity = entity.clone();
             let image = remove_ref.clone();
@@ -4738,11 +4635,7 @@ fn pull_dialog_form(form: &ImageForm, state: &AppState, entity: &Entity<Shell>) 
                         .text_color(theme::text_dim())
                         .child("仓库名（可带 `:tag`，也可以粘完整引用或整条 URL）"),
                 )
-                .child(
-                    Input::new(&form.repository)
-                        .id("image-repository")
-                        .w_full(),
-                ),
+                .child(Input::new(&form.repository).id("image-repository").w_full()),
         )
         .child({
             let entity = entity.clone();
@@ -4750,7 +4643,11 @@ fn pull_dialog_form(form: &ImageForm, state: &AppState, entity: &Entity<Shell>) 
             // 界面上必须有变化（`AGENTS.md` §7.1：没有它，用户会以为按钮坏了
             // 然后去点第二次）。
             Button::new("image-query")
-                .label(if page.loading { "查询中…" } else { "查询" })
+                .label(if page.loading {
+                    "查询中…"
+                } else {
+                    "查询"
+                })
                 .primary()
                 .small()
                 .on_click(move |_, window, cx| {
@@ -4925,12 +4822,7 @@ fn pull_dialog_form(form: &ImageForm, state: &AppState, entity: &Entity<Shell>) 
                         .gap_2()
                         .items_center()
                         .min_w_0()
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(theme::text())
-                                .child("将拉取"),
-                        )
+                        .child(div().text_sm().text_color(theme::text()).child("将拉取"))
                         .child(
                             div()
                                 .text_xs()
@@ -4989,8 +4881,16 @@ pub fn networks(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                 vec![
                     cell_text(net.name.clone()),
                     cell_muted(net.driver.clone()),
-                    cell_muted(if net.ipv4_enabled() { "启用" } else { "关闭" }),
-                    cell_muted(if net.ipv6_enabled() { "启用" } else { "关闭" }),
+                    cell_muted(if net.ipv4_enabled() {
+                        "启用"
+                    } else {
+                        "关闭"
+                    }),
+                    cell_muted(if net.ipv6_enabled() {
+                        "启用"
+                    } else {
+                        "关闭"
+                    }),
                     cell_muted(if net.is_internal() { "是" } else { "否" }),
                     op,
                 ],
@@ -5848,55 +5748,54 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
         .map(|progress| progress.cancellable)
         .unwrap_or(true);
 
-    let action: AnyElement =
-        if running && cancellable {
-            let entity_cancel = entity.clone();
-            h_flex()
-                .w_full()
-                .items_center()
-                .gap_3()
-                .child(
-                    Button::new("cancel-install")
-                        .label("取消安装")
-                        .small()
-                        .danger()
-                        .on_click(move |_, _, cx| {
-                            entity_cancel.update(cx, |shell, cx| shell.cancel_install(cx));
-                        }),
-                )
-                .child(elapsed_label(state))
-                .into_any_element()
-        } else if running {
-            h_flex()
-                .w_full()
-                .items_center()
-                .gap_3()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::warning())
-                        .child("正在改名/挪位置 —— 这一步不能取消（中途停下会把刚装好的东西删掉）"),
-                )
-                .child(elapsed_label(state))
-                .into_any_element()
+    let action: AnyElement = if running && cancellable {
+        let entity_cancel = entity.clone();
+        h_flex()
+            .w_full()
+            .items_center()
+            .gap_3()
+            .child(
+                Button::new("cancel-install")
+                    .label("取消安装")
+                    .small()
+                    .danger()
+                    .on_click(move |_, _, cx| {
+                        entity_cancel.update(cx, |shell, cx| shell.cancel_install(cx));
+                    }),
+            )
+            .child(elapsed_label(state))
+            .into_any_element()
+    } else if running {
+        h_flex()
+            .w_full()
+            .items_center()
+            .gap_3()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::warning())
+                    .child("正在改名/挪位置 —— 这一步不能取消（中途停下会把刚装好的东西删掉）"),
+            )
+            .child(elapsed_label(state))
+            .into_any_element()
+    } else {
+        // 取消过 / 装完之后按钮要能再点一次：文案跟着状态走。
+        let label = if state.installing.is_some() {
+            "再装一个"
         } else {
-            // 取消过 / 装完之后按钮要能再点一次：文案跟着状态走。
-            let label = if state.installing.is_some() {
-                "再装一个"
-            } else {
-                "开始安装"
-            };
-            let entity = entity.clone();
-            h_flex()
-                .w_full()
-                .justify_end()
-                .child(Button::new("do-install").label(label).primary().on_click(
-                    move |_, window, cx| {
-                        entity.update(cx, |shell, cx| shell.confirm_install(window, cx));
-                    },
-                ))
-                .into_any_element()
+            "开始安装"
         };
+        let entity = entity.clone();
+        h_flex()
+            .w_full()
+            .justify_end()
+            .child(Button::new("do-install").label(label).primary().on_click(
+                move |_, window, cx| {
+                    entity.update(cx, |shell, cx| shell.confirm_install(window, cx));
+                },
+            ))
+            .into_any_element()
+    };
 
     let mut page = v_flex()
         .w_full()
@@ -6638,7 +6537,7 @@ pub fn config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
             .w_full()
             .gap_4()
             .child(card(
-                "wlsc 配置",
+                "wslc 配置",
                 v_flex()
                     .w_full()
                     .gap_3()
@@ -6682,8 +6581,7 @@ pub fn config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                     },
                 ))
                 .child(div().text_xs().text_color(theme::text_dim()).child(
-                    "所有配置项的默认值在文件里都是注释状态，表示使用 wslc 内置默认值。\
-                             保存前会自动做一次时间戳备份。",
+                    "使用内置默认值的配置以注释保存。自定义值请使用系统编辑器；保存前自动备份。",
                 ))
                 .child(
                     h_flex()
@@ -6695,8 +6593,11 @@ pub fn config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                 ),
         ))
         .child(card("配置项", v_flex().w_full().gap_2().children(rows)))
-        .child(card(
-            "原始 YAML",
+        .child(disclosure(
+            UiSection::ConfigRaw,
+            "查看原始 YAML",
+            state,
+            entity,
             // 同 app.rs：滚动容器必须先有 id。
             v_flex()
                 .id("settings-raw-yaml")
@@ -6796,19 +6697,14 @@ pub fn wsl_config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     };
 
     let misplaced: AnyElement = if info.misplaced.is_empty() {
-        v_flex()
-            .w_full()
-            .gap_2()
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme::text_dim())
-                    .child("没有发现实测已知的「键放错文件」写法。"),
-            )
-            .child(div().text_xs().text_color(theme::text_dim()).child(
-                "⚠️ 这并不等于配置没问题 —— 这里只比对实测确认过的那几条，\
-                 不是 WSL 的完整键表。宁可少报，不要错报：错报会让人改坏本来正常的配置。",
-            ))
+        div()
+            .text_xs()
+            .text_color(theme::text_dim())
+            .child(if info.text.is_some() {
+                "未发现已知的错位键（仅静态检查，不代表完整校验通过）。"
+            } else {
+                "文件内容不可用，尚未进行静态检查。"
+            })
             .into_any_element()
     } else {
         let rows: Vec<AnyElement> = info
@@ -6853,37 +6749,29 @@ pub fn wsl_config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
 
     v_flex()
         .w_full()
-        .gap_4()
+        .gap_3()
         .child(card(
-            "文件",
-            v_flex()
-                .w_full()
-                .gap_2()
-                .child(kv_block("位置", path_text).into_any_element())
-                .child(div().text_xs().text_color(theme::text_dim()).child(
-                    "这是 WSL 本身的全局配置（管 WSL2 虚拟机：内存、网络模式、内核命令行……）。\
-                     发行版自己的配置是各发行版里的 /etc/wsl.conf，两者互不相干、键也不能混用。",
-                )),
+            "WSL 全局配置",
+            v_flex().w_full().gap_2()
+                .child(kv_block("位置", path_text))
+                .child(div().text_xs().text_color(theme::text_dim())
+                    .child("管理 WSL2 虚拟机；发行版配置请到实例详情中编辑。"))
+                .child(h_flex().justify_end().child(open)),
         ))
         .child(card("内容", body))
-        .child(card("放错文件的键", misplaced))
-        .child(card(
-            "为什么这里没有「一键校验」",
-            v_flex()
-                .w_full()
-                .gap_2()
-                .child(div().text_xs().text_color(theme::text_muted()).child(
-                    "实测（WSL 3.0.1.0）：wsl --status / --version / -l -v / --terminate \
-                         都不报配置告警；只有 wsl --shutdown 之后第一条进发行版的命令会报，\
-                         紧接着的第二、三条就静默了。",
-                ))
-                .child(div().text_xs().text_color(theme::text_muted()).child(
-                    "也就是说这些告警来自 WSL2 虚拟机启动时读一次 .wslconfig。\
-                         想主动触发就得先 wsl --shutdown —— 那会打断所有正在跑的发行版。\
-                         为了校验一个配置文件付这个代价不值得，所以这里只做不依赖 WSL 的静态检查。",
-                )),
+        .child(misplaced)
+        .child(div().text_xs().text_color(theme::text_dim())
+            .child("配置在 WSL 启动时读取；关闭 WSL 以重新加载会中断正在运行的任务。"))
+        .child(disclosure(
+            UiSection::WslHelp, "检查范围与生效方式", state, entity,
+            v_flex().w_full().gap_2()
+                .child(div().text_xs().text_color(theme::text_dim())
+                    .child("这里只检查已知的错位键，不是 WSL 的完整键表。发现问题时会显示行号、原文及应放置的位置。"))
+                .child(div().text_xs().text_color(theme::text_dim())
+                    .child("WSL 只在虚拟机启动时报告配置告警，读取状态或刷新列表不会触发完整校验。本页不会为校验而关闭所有实例。"))
+                .child(div().text_xs().text_color(theme::text_dim())
+                    .child("全局配置文件是 Windows 用户目录下的 .wslconfig；发行版内部的 /etc/wsl.conf 管理默认用户、挂载和网络等，两者的键不能混用。")),
         ))
-        .child(h_flex().w_full().justify_end().child(open))
         .into_any_element()
 }
 
@@ -6896,54 +6784,44 @@ fn setting_row(
     let is_default = effective.is_none();
     let shown = effective.unwrap_or_else(|| format!("默认（{}）", key.default));
 
-    let mut actions = h_flex().flex_none().gap_2();
-
-    // 枚举型：每个候选值一个按钮。
-    if key.kind == SettingKind::Enum {
-        for choice in key.choices.iter().copied() {
-            let entity = entity.clone();
-            actions = actions.child(
-                Button::new(SharedString::from(format!("set-{}-{}", key.key, choice)))
-                    .label(choice)
-                    .small()
-                    .on_click(move |_, _, cx| {
-                        entity.update(cx, |shell, cx| {
-                            shell.set_setting(key, Some(choice), cx);
-                        });
-                    }),
-            );
-        }
-    }
-
-    // 常用预设值。
-    for preset in presets_for(key).iter().copied() {
-        let entity = entity.clone();
-        actions = actions.child(
-            Button::new(SharedString::from(format!("preset-{}-{}", key.key, preset)))
-                .label(preset)
-                .small()
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |shell, cx| {
-                        shell.set_setting(key, Some(preset), cx);
-                    });
-                }),
-        );
-    }
-
-    // 非默认状态才显示"用默认"。
-    if !is_default {
-        let entity = entity.clone();
-        actions = actions.child(
-            Button::new(SharedString::from(format!("reset-{}", key.key)))
-                .label("用默认")
-                .small()
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |shell, cx| {
-                        shell.set_setting(key, None, cx);
-                    });
-                }),
-        );
-    }
+    let choices = if key.kind == SettingKind::Enum {
+        key.choices
+    } else {
+        presets_for(key)
+    };
+    let actions: AnyElement = if choices.is_empty() && is_default {
+        // 没有候选值的路径项用页面唯一的系统编辑器入口修改。
+        cell_muted_full(format!("setting-help-{}", key.key), "使用系统编辑器修改")
+    } else {
+        let shell_entity = entity.clone();
+        Button::new(SharedString::from(format!("edit-setting-{}", key.key)))
+            .label("修改")
+            .tooltip(format!(
+                "{}（{}）",
+                crate::util::strip_md(key.help),
+                key.key
+            ))
+            .small()
+            .dropdown_menu(move |mut menu, _window, _cx| {
+                for choice in choices.iter().copied() {
+                    let entity = shell_entity.clone();
+                    menu = menu.item(PopupMenuItem::new(choice).on_click(move |_, _, cx| {
+                        entity.update(cx, |shell, cx| shell.set_setting(key, Some(choice), cx));
+                    }));
+                }
+                if !is_default {
+                    if !choices.is_empty() {
+                        menu = menu.item(PopupMenuItem::separator());
+                    }
+                    let entity = shell_entity.clone();
+                    menu = menu.item(PopupMenuItem::new("恢复默认值").on_click(move |_, _, cx| {
+                        entity.update(cx, |shell, cx| shell.set_setting(key, None, cx));
+                    }));
+                }
+                menu
+            })
+            .into_any_element()
+    };
 
     let warning: AnyElement = if key.needs_warning {
         div()
@@ -6989,12 +6867,6 @@ fn setting_row(
                         .child(shown),
                 )
                 .child(actions),
-        )
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme::text_dim())
-                .child(format!("{}（{}）", key.help, key.key)),
         )
         .child(warning)
         .into_any_element()
@@ -7223,20 +7095,26 @@ fn terminal_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                     .child(Input::new(input).id("terminal-dir").w(px(360.)))
                     .child(apply),
             )
-            .child(div().text_xs().text_color(theme::text_dim()).child(
-                crate::util::strip_md(
-                    "填发行版里的路径（`/home/wt/project` 或 `~`）—— Windows 路径不认，\
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child(crate::util::strip_md(
+                        "填发行版里的路径（`/home/wt/project` 或 `~`）—— Windows 路径不认，\
                      那是「面板所在目录」那一档的事。写错的路径 `wsl.exe` 不报错，只会落在 `/`。",
-                ),
-            ));
+                    )),
+            );
     }
 
-    body = body.child(div().text_xs().text_color(theme::text_dim()).child(
-        crate::util::strip_md(
-            "容器的「打开终端」走 `wslc exec -w`，只对**绝对路径**生效：容器里没有\
+    body = body.child(
+        div()
+            .text_xs()
+            .text_color(theme::text_dim())
+            .child(crate::util::strip_md(
+                "容器的「打开终端」走 `wslc exec -w`，只对**绝对路径**生效：容器里没有\
              「Linux home」这个概念，`~` 交给镜像自己的工作目录决定。改动只影响之后新开的终端。",
-        ),
-    ));
+            )),
+    );
 
     card("终端", body).into_any_element()
 }
@@ -7390,15 +7268,14 @@ fn image_facts_hint(dialog: &CreateDialog) -> AnyElement {
                         facts.command
                     )
                 };
-                body = body
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::text_dim())
-                            // 这两句里都有 Markdown（`**没有默认命令**` /
-                            // `**必须自己填**` / 反引号）→ 渲染处统一清掉
-                            .child(crate::util::strip_md(&text)),
-                    );
+                body = body.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        // 这两句里都有 Markdown（`**没有默认命令**` /
+                        // `**必须自己填**` / 反引号）→ 渲染处统一清掉
+                        .child(crate::util::strip_md(&text)),
+                );
             }
             body.into_any_element()
         }
@@ -7474,7 +7351,9 @@ fn image_env_hint(dialog: &CreateDialog, cx: &App) -> AnyElement {
     let text = if raw.contains(&format!("{prefill}=")) {
         format!("这个镜像第一次启动必须给 {prefill}：变量名已经预填，把值补上{or_else}")
     } else {
-        format!("这个镜像第一次启动必须给 {prefill}，请在环境变量里加上 `{prefill}=你的值`{or_else}")
+        format!(
+            "这个镜像第一次启动必须给 {prefill}，请在环境变量里加上 `{prefill}=你的值`{or_else}"
+        )
     };
 
     div()
@@ -7631,6 +7510,72 @@ pub fn create_dialog_overlay(
     // 预览和实际执行读同一个函数，所以不会不一致。
     let spec = dialog.to_spec(&state.container_names(), cx);
     let image_missing = spec.image.trim().is_empty();
+    let command_required = matches!(&dialog.facts, FactsState::Ready(facts) if !facts.has_cmd);
+    let mut advanced = v_flex().w_full().gap_3();
+    if !command_required {
+        advanced = advanced.child(form_field(
+            "create-command",
+            "启动命令（留空使用镜像默认命令）",
+            &dialog.command,
+            cx,
+            true,
+        ));
+    }
+    advanced = advanced
+        .child(form_field(
+            "create-network",
+            "网络（默认 bridge）",
+            &dialog.network,
+            cx,
+            true,
+        ))
+        .child(
+            h_flex()
+                .w_full()
+                .gap_3()
+                .child(form_field(
+                    "create-memory",
+                    "内存上限（如 512M）",
+                    &dialog.memory,
+                    cx,
+                    false,
+                ))
+                .child(form_field(
+                    "create-cpus",
+                    "CPU 数（如 0.5）",
+                    &dialog.cpus,
+                    cx,
+                    false,
+                )),
+        )
+        .child(pull_policy_row(&dialog.pull, entity));
+    if !matches!(&dialog.pull, PullPolicy::Never) {
+        advanced = advanced.child(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child("拉取镜像需要网络可达；也可先在镜像页拉取，再选择只用本地镜像。"),
+        );
+    }
+    let pull_label = match &dialog.pull {
+        PullPolicy::Never => "仅本地",
+        PullPolicy::Missing => "缺失时拉取",
+        PullPolicy::Always => "始终拉取",
+    };
+    let mut advanced_summary = vec![format!(
+        "网络 {}",
+        spec.network.as_deref().unwrap_or("bridge")
+    )];
+    if let Some(memory) = spec.memory.as_deref() {
+        advanced_summary.push(format!("内存 {memory}"));
+    }
+    if let Some(cpus) = spec.cpus.as_deref() {
+        advanced_summary.push(format!("CPU {cpus}"));
+    }
+    if !spec.command.is_empty() && !command_required {
+        advanced_summary.push("自定义启动命令".to_owned());
+    }
+    advanced_summary.push(pull_label.to_owned());
 
     let cancel = {
         let entity = entity.clone();
@@ -7654,7 +7599,8 @@ pub fn create_dialog_overlay(
             })
     };
 
-    modal_scrim("create-dialog",
+    modal_scrim(
+        "create-dialog",
         v_flex()
             // 字段多，窗口矮时允许滚动，别把底部按钮挤没
             .id("create-dialog-card")
@@ -7733,13 +7679,15 @@ pub fn create_dialog_overlay(
                 true,
             ))
             .child(auto_name_hint(dialog, state, cx))
-            .child(form_field(
-                "create-command",
-                "启动命令（留空用镜像自己的，支持管道与 &&）",
-                &dialog.command,
-                cx,
-                true,
-            ))
+            .children(command_required.then(|| {
+                form_field(
+                    "create-command",
+                    "启动命令（镜像没有默认命令，必填）",
+                    &dialog.command,
+                    cx,
+                    true,
+                )
+            }))
             .child(
                 h_flex()
                     .w_full()
@@ -7763,70 +7711,30 @@ pub fn create_dialog_overlay(
                 div()
                     .text_xs()
                     .text_color(theme::text_dim())
-                    .child(crate::util::strip_md(
-                        "一个容器放多个应用时，**建容器这一刻**就要把每个应用的端口都\
-                         发布出去（`-p` 之后改不了），例如 `8080:8080, 8081:8081`。\
-                         应用自己监听的端口由部署弹窗的「端口」那一格决定，面板不会\
-                         替你改启动命令。",
-                    )),
+                    .child("端口映射需在创建时设置，创建后不能直接修改。"),
             )
             .child(image_env_hint(dialog, cx))
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap_3()
-                    .child(form_field(
-                        "create-volumes",
-                        "卷挂载 卷名:/容器内路径",
-                        &dialog.volumes,
-                        cx,
-                        false,
-                    ))
-                    .child(form_field(
-                        "create-network",
-                        "网络（留空用 bridge）",
-                        &dialog.network,
-                        cx,
-                        false,
-                    )),
-            )
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap_3()
-                    .child(form_field(
-                        "create-memory",
-                        "内存上限（如 512M）",
-                        &dialog.memory,
-                        cx,
-                        false,
-                    ))
-                    .child(form_field(
-                        "create-cpus",
-                        "CPU 数（如 0.5）",
-                        &dialog.cpus,
-                        cx,
-                        false,
-                    )),
-            )
-            .child(pull_policy_row(&dialog.pull, entity))
-            .child(
-                v_flex()
-                    .w_full()
-                    .gap_1()
-                    .rounded_md()
-                    .bg(theme::bg())
-                    .p_3()
-                    .child(div().text_xs().text_color(theme::text_muted()).child(
-                        "容器以「后台方式」(-d) 启动。前台模式会一直占着子进程，\
-                                       超时后连容器一起被杀，所以这里不提供。",
-                    ))
-                    .child(div().text_xs().text_color(theme::warning()).child(
-                        "实测本机连不上 Docker Hub：请先在「镜像」页用加速地址\
-                                       拉好镜像，再把这里的策略选成「只用本地镜像」。",
-                    )),
-            )
-            .child(command_preview(&spec))
+            .child(form_field(
+                "create-volumes",
+                "卷挂载（卷名:/容器内路径）",
+                &dialog.volumes,
+                cx,
+                true,
+            ))
+            .child(disclosure(
+                UiSection::CreateAdvanced,
+                format!("高级设置 · {}", advanced_summary.join(" · ")),
+                state,
+                entity,
+                advanced,
+            ))
+            .child(disclosure(
+                UiSection::CreateCommandPreview,
+                "查看等效命令",
+                state,
+                entity,
+                command_preview(&spec),
+            ))
             .child(
                 h_flex()
                     .w_full()
@@ -8063,7 +7971,10 @@ pub fn container_detail_overlay(
     // 健康检查为空 = 这个镜像没定义 HEALTHCHECK；非空就原样报出来
     // （`healthy` 在列表里被刻意隐去，详情里要能看到事实）。
     if !item.health_status.trim().is_empty() {
-        rows.insert(3, kv("健康检查", item.health_status.clone()).into_any_element());
+        rows.insert(
+            3,
+            kv("健康检查", item.health_status.clone()).into_any_element(),
+        );
     }
 
     if let Some(stats) = summary.stats.as_ref() {
@@ -8073,7 +7984,8 @@ pub fn container_detail_overlay(
         rows.push(kv("PID", stats.pids.to_string()).into_any_element());
     }
 
-    modal_scrim("container-detail",
+    modal_scrim(
+        "container-detail",
         v_flex()
             .id("detail-card")
             .w(px(700.))
@@ -8162,84 +8074,66 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
     // 「打开终端 / 启动 / 终止」，把它漏了。实机看出来之后删掉：
     // 它的条件（`!is_default && !transitional`）和列表行那一份完全一样，
     // 删掉不丢任何能力。
-    let mut actions: Vec<AnyElement> = Vec::new();
-
-    // `--compact` 要求发行版处于**已停止**状态；运行中给出这个按钮是误导。
-    // WSL 1 根本没有 VHDX，压缩无从谈起。
-    if !running && !transitional && !is_wsl1 {
-        actions.push(
-            danger_button_distro(
-                "distro-detail-compact",
-                "压缩磁盘",
-                DistroAction::Compact(name.to_owned()),
-                entity,
-            )
-            .into_any_element(),
-        );
-    }
-
-    // -- `wsl --manage` 的另外几项（P4）--
-    //
-    // 低频操作，所以只出现在详情里，不塞进列表行。
-    // （「打开终端 / 启动 / 终止」反过来 —— 高频，只在列表行里。）
-    if !transitional {
-        actions.push(prompt_button(
-            "distro-detail-move",
-            "移动位置",
-            PromptKind::MoveDistro,
-            name,
-            entity,
-        ));
-
-        // 调整大小是**VHDX 专属**的，WSL 1 上没有意义
-        if !is_wsl1 {
-            actions.push(prompt_button(
-                "distro-detail-resize",
-                "调整大小",
-                PromptKind::ResizeDistro,
-                name,
-                entity,
-            ));
-        }
-
-        // 「默认用户」搬去 `/etc/wsl.conf` 的编辑弹窗了（`[user] default`）。
-        // 两个入口会让人不知道该改哪个，所以这里只留那一个。
-
-        // 导出对 WSL 1 / 2 都成立（它只是把根文件系统打成 tar），
-        // 所以**不**受 `is_wsl1` 限制。
-        actions.push(prompt_button(
-            "distro-detail-export",
-            "导出",
-            PromptKind::ExportDistro,
-            name,
-            entity,
-        ));
-
-        // 稀疏开关按需求去掉了。日常要开它走 `.wslconfig` 的
-        // `[experimental] sparseVhd=true`（见「应用设置 → WSL」）；
-        // 单个发行版想临时改，手动跑 `wsl --manage <名字> --set-sparse` 也能做。
-    }
-
-    // 这里**没有**「转为 WSL 1/2」：本项目只支持 WSL 2，
-    // 不做版本转换（也就没有那条要搬整个根文件系统、几十分钟的操作）。
-    //
-    // 但如果机器上真有个 WSL 1 发行版，得让用户明白**为什么**它的
-    // 磁盘操作是灰的 —— 那句说明在下面的「信息」区里。
-
-    if !transitional {
-        actions.push(
-            danger_button_distro(
-                "distro-detail-unregister",
-                "删除",
-                DistroAction::Unregister {
-                    name: name.to_owned(),
-                    vhdx_bytes: distro.vhdx_bytes,
-                },
-                entity,
-            )
-            .into_any_element(),
-        );
-    }
+    let more = if transitional {
+        None
+    } else {
+        let entity = entity.clone();
+        let target = name.to_owned();
+        let vhdx_bytes = distro.vhdx_bytes;
+        Some(
+            Button::new("distro-detail-more")
+                .label("更多操作")
+                .small()
+                .dropdown_menu(move |mut menu, _, _| {
+                    if !running && !is_wsl1 {
+                        let entity = entity.clone();
+                        let target = target.clone();
+                        menu =
+                            menu.item(PopupMenuItem::new("压缩磁盘").on_click(move |_, _, cx| {
+                                let target = target.clone();
+                                entity.update(cx, |shell, cx| {
+                                    shell.request_distro(DistroAction::Compact(target), cx)
+                                });
+                            }));
+                    }
+                    for (label, kind) in [
+                        ("移动位置", PromptKind::MoveDistro),
+                        ("调整大小", PromptKind::ResizeDistro),
+                        ("导出", PromptKind::ExportDistro),
+                    ] {
+                        if is_wsl1 && kind == PromptKind::ResizeDistro {
+                            continue;
+                        }
+                        let entity = entity.clone();
+                        let target = target.clone();
+                        menu =
+                            menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                                let target = target.clone();
+                                entity.update(cx, |shell, cx| {
+                                    shell.open_prompt(kind, target, window, cx)
+                                });
+                            }));
+                    }
+                    let entity = entity.clone();
+                    let target = target.clone();
+                    menu.item(PopupMenuItem::separator()).item(
+                        PopupMenuItem::new("删除发行版").on_click(move |_, _, cx| {
+                            let target = target.clone();
+                            entity.update(cx, |shell, cx| {
+                                shell.request_distro(
+                                    DistroAction::Unregister {
+                                        name: target,
+                                        vhdx_bytes,
+                                    },
+                                    cx,
+                                )
+                            });
+                        }),
+                    )
+                })
+                .into_any_element(),
+        )
+    };
 
     // 「打开安装位置」是**只读**操作，所以和其他动作分开摆到左边。
     let reveal = {
@@ -8264,7 +8158,8 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
         let entity = entity.clone();
         let target = name.to_owned();
         Button::new("distro-detail-wslconf")
-            .label("编辑配置（/etc/wsl.conf）")
+            .label("编辑配置")
+            .tooltip("编辑发行版内的 /etc/wsl.conf")
             .small()
             .on_click(move |_, window, cx| {
                 let target = target.clone();
@@ -8345,9 +8240,10 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
 
     let mut buttons: Vec<AnyElement> =
         vec![reveal.into_any_element(), edit_conf.into_any_element()];
-    buttons.extend(actions);
+    buttons.extend(more);
 
-    modal_scrim("distro-detail",
+    modal_scrim(
+        "distro-detail",
         v_flex()
             .id("distro-detail-card")
             .w(px(760.))
@@ -8373,7 +8269,7 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
                         div()
                             .text_xs()
                             .text_color(theme::text_dim())
-                            .child("低频动作都收在这里；列表行里只留了最常用的几个。"),
+                            .child("磁盘维护、导出与删除位于「更多操作」。"),
                     ),
             )
             .child(v_flex().w_full().gap_2().children(rows))
@@ -8473,7 +8369,8 @@ pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEle
             .into_any_element()
     });
 
-    modal_scrim("prompt",
+    modal_scrim(
+        "prompt",
         v_flex()
             .w(px(620.))
             .gap_4()
@@ -8707,25 +8604,25 @@ pub fn logs_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     // 所以这里是空的、而且永远会是空的。而应用自己的输出**不在这里**：
     // 进程形态的部署把它重定向到了目标目录的 `app.log`（「部署管理」里那一行的
     // 「日志」）。不写这两句，用户只会以为日志功能坏了。
-    let empty_hint: AnyElement = if logs.error.is_none()
-        && logs.text.as_deref().is_none_or(|t| t.trim().is_empty())
-    {
-        div()
-            .w_full()
-            .text_sm()
-            .text_color(theme::text_dim())
-            .child(
-                "容器主进程没有往 stdout / stderr 写东西时就是这个样子 —— 比如面板为了\
+    let empty_hint: AnyElement =
+        if logs.error.is_none() && logs.text.as_deref().is_none_or(|t| t.trim().is_empty()) {
+            div()
+                .w_full()
+                .text_sm()
+                .text_color(theme::text_dim())
+                .child(
+                    "容器主进程没有往 stdout / stderr 写东西时就是这个样子 —— 比如面板为了\
                  「吊住」容器而起的 `tail -f /dev/null`，它本身不打印任何东西。\
                  部署的应用日志不在这一份里：那是应用自己的输出，在「部署管理」\
                  那一行的「日志」里看。",
-            )
-            .into_any_element()
-    } else {
-        div().into_any_element()
-    };
+                )
+                .into_any_element()
+        } else {
+            div().into_any_element()
+        };
 
-    modal_scrim("logs",
+    modal_scrim(
+        "logs",
         v_flex()
             .id("logs-card")
             .w(px(820.))
@@ -8893,7 +8790,8 @@ pub fn exec_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEleme
             .into_any_element()
     });
 
-    modal_scrim("exec",
+    modal_scrim(
+        "exec",
         v_flex()
             .id("exec-card")
             .w(px(760.))
@@ -8971,7 +8869,8 @@ pub fn export_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
             })
     };
 
-    modal_scrim("export",
+    modal_scrim(
+        "export",
         v_flex()
             .w(px(680.))
             .gap_4()
@@ -9317,7 +9216,8 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         vec![save.into_any_element(), save_restart.into_any_element()]
     };
 
-    modal_scrim("wslconf",
+    modal_scrim(
+        "wslconf",
         v_flex()
             .id("wslconf-card")
             // 高度上限卡在 620：16 个字段全展开会顶满整屏
