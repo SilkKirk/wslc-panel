@@ -1407,39 +1407,34 @@ pub fn containers(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> impl IntoE
         format!("显示 {} / 共 {all_count}", visible.len())
     };
 
-    let bulk_actions = {
+    // 页面级动作只有两个：停止全部运行中容器、清理已停止容器。
+    // 它们影响所有容器（不受筛选影响），但没必要再套一层菜单；
+    // 直接显示，点击后仍走统一的二次确认。
+    let prune = {
         let entity = entity.clone();
-        Button::new("container-bulk-actions")
-            .label("批量操作")
-            .tooltip("作用于全部容器，不受当前筛选影响")
+        Button::new("prune")
+            .label("清理已停止")
             .small()
-            .dropdown_menu(move |mut menu, _, _| {
-                if running > 0 {
-                    let entity = entity.clone();
-                    menu = menu
-                        .item(
-                            PopupMenuItem::new(format!("停止全部运行中容器（{running} 个）"))
-                                .on_click(move |_, _, cx| {
-                                    entity.update(cx, |shell, cx| {
-                                        shell.request(
-                                            PendingAction::StopAllContainers { running },
-                                            cx,
-                                        );
-                                    });
-                                }),
-                        )
-                        .item(PopupMenuItem::separator());
-                }
-                let entity = entity.clone();
-                menu.item(
-                    PopupMenuItem::new("清理全部已停止容器").on_click(move |_, _, cx| {
-                        entity.update(cx, |shell, cx| {
-                            shell.request(PendingAction::PruneContainers, cx)
-                        });
-                    }),
-                )
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| {
+                    shell.request(PendingAction::PruneContainers, cx);
+                });
             })
     };
+
+    // 一个都没在跑时不显示「停止全部」：点它什么也做不了。
+    let stop_all = (running > 0).then(|| {
+        let entity = entity.clone();
+        Button::new("stop-all")
+            .label("停止全部")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| {
+                    shell.request(PendingAction::StopAllContainers { running }, cx);
+                });
+            })
+            .into_any_element()
+    });
 
     // 筛选后为空：不要显示成"没有任何容器"（那是在说"你机器上没容器"）。
     let empty: AnyElement = if rows.is_empty() {
@@ -1501,7 +1496,13 @@ pub fn containers(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> impl IntoE
                         .children(search)
                         .children(clear),
                 )
-                .child(bulk_actions),
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .children(stop_all)
+                        .child(prune),
+                ),
         )
         .child(
             h_flex()
@@ -4485,38 +4486,35 @@ fn image_usage_cell(image: &ImageListItem) -> AnyElement {
     }
 }
 
-/// 镜像行末的「更多」：创建容器 / 删除。
+/// 镜像行末：**直接**给「创建容器 / 删除」两个按钮。
 ///
-/// 创建容器走现成的 [`Shell::use_pulled_image`]（它会关掉拉取弹窗、
-/// 按镜像引用预填创建表单）。删除仍然要二次确认，颜色由确认框承担。
+/// 只有两个动作，而且是这一行专属的入口；再套一层「更多」只会让用户
+/// 多点一次。容器列表行不一样（那里最多 4 个动作），「更多」只留那处。
 fn image_row_actions(ix: usize, reference: &str, entity: &Entity<Shell>) -> AnyElement {
     let create_ref = reference.to_owned();
     let remove_ref = reference.to_owned();
-    let entity = entity.clone();
+    let entity_for_create = entity.clone();
 
-    Button::new(SharedString::from(format!("more-image-{ix}")))
-        .label("更多")
+    let create = Button::new(SharedString::from(format!("image-create-{ix}")))
+        .label("创建容器")
+        .tooltip("用这个镜像创建容器")
         .small()
-        .dropdown_menu(move |mut menu, _window, _cx| {
-            let shell_entity = entity.clone();
+        .on_click(move |_, window, cx| {
             let image = create_ref.clone();
-            menu = menu.item(PopupMenuItem::new("用这个镜像创建容器").on_click(
-                move |_, window, cx| {
-                    let image = image.clone();
-                    shell_entity.update(cx, |shell, cx| shell.use_pulled_image(image, window, cx));
-                },
-            ));
+            entity_for_create.update(cx, |shell, cx| shell.use_pulled_image(image, window, cx));
+        });
 
-            let shell_entity = entity.clone();
-            let image = remove_ref.clone();
-            menu.item(PopupMenuItem::separator())
-                .item(PopupMenuItem::new("删除").on_click(move |_, _, cx| {
-                    let image = image.clone();
-                    shell_entity.update(cx, |shell, cx| {
-                        shell.request(PendingAction::RemoveImage(image), cx)
-                    });
-                }))
-        })
+    h_flex()
+        .w_full()
+        .gap_2()
+        .flex_wrap()
+        .child(create)
+        .child(danger_button(
+            &format!("remove-image-{ix}"),
+            "删除",
+            PendingAction::RemoveImage(remove_ref),
+            entity,
+        ))
         .into_any_element()
 }
 
@@ -4881,24 +4879,15 @@ pub fn networks(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
         )
 }
 
-/// 网络行末的「更多」：删除（内置网络不画这个按钮）。
+/// 网络行末：**直接**显示删除；内置网络仍只给一行说明。
 fn network_row_actions(ix: usize, name: &str, entity: &Entity<Shell>) -> AnyElement {
-    let name = name.to_owned();
-    let entity = entity.clone();
-    Button::new(SharedString::from(format!("more-network-{ix}")))
-        .label("更多")
-        .small()
-        .dropdown_menu(move |menu, _window, _cx| {
-            let shell_entity = entity.clone();
-            let target = name.clone();
-            menu.item(PopupMenuItem::new("删除").on_click(move |_, _, cx| {
-                let target = target.clone();
-                shell_entity.update(cx, |shell, cx| {
-                    shell.request(PendingAction::RemoveNetwork(target), cx)
-                });
-            }))
-        })
-        .into_any_element()
+    danger_button(
+        &format!("remove-network-{ix}"),
+        "删除",
+        PendingAction::RemoveNetwork(name.to_owned()),
+        entity,
+    )
+    .into_any_element()
 }
 
 /// 卷页。
@@ -4994,24 +4983,15 @@ fn volume_usage_cell(volume: &VolumeListItem) -> AnyElement {
     }
 }
 
-/// 卷行末的「更多」：删除。
+/// 卷行末：**直接**显示删除。
 fn volume_row_actions(ix: usize, name: &str, entity: &Entity<Shell>) -> AnyElement {
-    let name = name.to_owned();
-    let entity = entity.clone();
-    Button::new(SharedString::from(format!("more-volume-{ix}")))
-        .label("更多")
-        .small()
-        .dropdown_menu(move |menu, _window, _cx| {
-            let shell_entity = entity.clone();
-            let target = name.clone();
-            menu.item(PopupMenuItem::new("删除").on_click(move |_, _, cx| {
-                let target = target.clone();
-                shell_entity.update(cx, |shell, cx| {
-                    shell.request(PendingAction::RemoveVolume(target), cx)
-                });
-            }))
-        })
-        .into_any_element()
+    danger_button(
+        &format!("remove-volume-{ix}"),
+        "删除",
+        PendingAction::RemoveVolume(name.to_owned()),
+        entity,
+    )
+    .into_any_element()
 }
 
 // ---------------------------------------------------------------------------
@@ -8030,66 +8010,56 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
     // 「打开终端 / 启动 / 终止」，把它漏了。实机看出来之后删掉：
     // 它的条件（`!is_default && !transitional`）和列表行那一份完全一样，
     // 删掉不丢任何能力。
-    let more = if transitional {
-        None
-    } else {
-        let entity = entity.clone();
-        let target = name.to_owned();
-        let vhdx_bytes = distro.vhdx_bytes;
-        Some(
-            Button::new("distro-detail-more")
-                .label("更多操作")
-                .small()
-                .dropdown_menu(move |mut menu, _, _| {
-                    if !running && !is_wsl1 {
-                        let entity = entity.clone();
-                        let target = target.clone();
-                        menu =
-                            menu.item(PopupMenuItem::new("压缩磁盘").on_click(move |_, _, cx| {
-                                let target = target.clone();
-                                entity.update(cx, |shell, cx| {
-                                    shell.request_distro(DistroAction::Compact(target), cx)
-                                });
-                            }));
-                    }
-                    for (label, kind) in [
-                        ("移动位置", PromptKind::MoveDistro),
-                        ("调整大小", PromptKind::ResizeDistro),
-                        ("导出", PromptKind::ExportDistro),
-                    ] {
-                        if is_wsl1 && kind == PromptKind::ResizeDistro {
-                            continue;
-                        }
-                        let entity = entity.clone();
-                        let target = target.clone();
-                        menu =
-                            menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
-                                let target = target.clone();
-                                entity.update(cx, |shell, cx| {
-                                    shell.open_prompt(kind, target, window, cx)
-                                });
-                            }));
-                    }
-                    let entity = entity.clone();
-                    let target = target.clone();
-                    menu.item(PopupMenuItem::separator()).item(
-                        PopupMenuItem::new("删除发行版").on_click(move |_, _, cx| {
-                            let target = target.clone();
-                            entity.update(cx, |shell, cx| {
-                                shell.request_distro(
-                                    DistroAction::Unregister {
-                                        name: target,
-                                        vhdx_bytes,
-                                    },
-                                    cx,
-                                )
-                            });
-                        }),
-                    )
-                })
+    // 详情页本身就不挤，低频动作直接摆出来；只有容器列表行才需要「更多」。
+    let mut actions: Vec<AnyElement> = Vec::new();
+    if !transitional {
+        if !running && !is_wsl1 {
+            actions.push(
+                danger_button_distro(
+                    "distro-detail-compact",
+                    "压缩磁盘",
+                    DistroAction::Compact(name.to_owned()),
+                    entity,
+                )
                 .into_any_element(),
-        )
-    };
+            );
+        }
+        actions.push(prompt_button(
+            "distro-detail-move",
+            "移动位置",
+            PromptKind::MoveDistro,
+            name,
+            entity,
+        ));
+        if !is_wsl1 {
+            actions.push(prompt_button(
+                "distro-detail-resize",
+                "调整大小",
+                PromptKind::ResizeDistro,
+                name,
+                entity,
+            ));
+        }
+        actions.push(prompt_button(
+            "distro-detail-export",
+            "导出",
+            PromptKind::ExportDistro,
+            name,
+            entity,
+        ));
+        actions.push(
+            danger_button_distro(
+                "distro-detail-unregister",
+                "删除",
+                DistroAction::Unregister {
+                    name: name.to_owned(),
+                    vhdx_bytes: distro.vhdx_bytes,
+                },
+                entity,
+            )
+            .into_any_element(),
+        );
+    }
 
     // 「打开安装位置」是**只读**操作，所以和其他动作分开摆到左边。
     let reveal = {
@@ -8196,7 +8166,7 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
 
     let mut buttons: Vec<AnyElement> =
         vec![reveal.into_any_element(), edit_conf.into_any_element()];
-    buttons.extend(more);
+    buttons.extend(actions);
 
     modal_scrim(
         "distro-detail",
@@ -8225,7 +8195,7 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
                         div()
                             .text_xs()
                             .text_color(theme::text_dim())
-                            .child("磁盘维护、导出与删除位于「更多操作」。"),
+                            .child("磁盘维护、导出与删除都在这里；删除不可撤销。"),
                     ),
             )
             .child(v_flex().w_full().gap_2().children(rows))
