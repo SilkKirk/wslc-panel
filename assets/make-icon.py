@@ -1,145 +1,160 @@
 #!/usr/bin/env python3
-"""生成 wslc-panel 的图标（`assets/wslc-panel.ico` + 一张预览 png）。
+"""生成 wslc-panel 的图标（从 `assets/source-art.png` 截取角色头部）。
 
-# 为什么要有这个脚本
+# 为什么是"截头部"而不是整张插画
 
-图标是**画出来的**，不是找来的：
+`source-art.png` 是一张 1067×600 的横版立绘。整张缩进图标的话，32px 下只剩
+一团淡紫 + 浅蓝的色块 —— 这是插画转图标最典型的失败方式。
 
-- 参考项目（`E:\\cnb\\wsl-dashboard-ref`）的图标是 **GPL-3.0-only**，
-  按 `AGENTS.md` §6 一行都不能进本仓库；
-- 也不能随手拿个网图 —— 许可证说不清。
+桌面上的 March7th Launcher 给了正确的示范：**只截头部**。脸在小尺寸下仍然可辨，
+而且有辨识度。
 
-所以用 Pillow 把图形**程序化**画出来，脚本就是图形的源码，
-改配色 / 改形状都只改它再重跑。
+# 为什么不再用代码画
 
-用法：`python assets/make-icon.py`（在仓库根执行；依赖 Pillow）
+前六版都是在这个脚本里用 Pillow 手绘（汉堡菜单 → 深色面板 → `>_` 提示符 →
+集装箱 → 层叠板 → 六边形 → 涟漪 / 波 / 点阵 / 螺旋），全部被否。
+结论：**用代码拼图标到不了专业完成度**。所以改成"用户给图 + 自动裁切"。
 
-# 设计：一个字形，不是一整个界面
+# 它是怎么做的
 
-**这是第三版，前两版都被判"丑"，值得把教训写下来：**
+1. 从 `source-art.png` 裁出头部方框（坐标见 `CROP`，写的是**相对值**，
+   换分辨率不用改）；
+2. 缩放到目标尺寸 —— **每档都从裁好的大图单独缩**，逐级缩会累积模糊；
+3. 套 22% 圆角的遮罩（Windows 11 应用图标的圆角比例）；
+4. 加一道极淡的内高光 —— Windows 11 那套图标都有，不加会显得"贴上去的"。
 
-| 版本 | 画了什么 | 为什么不行 |
-|---|---|---|
-| v1 | 三块堆叠的集装箱横条 | 读起来像"汉堡菜单"或数据库图标，不像一个面板 |
-| v2 | 深色底 + 面板窗口 + 侧边栏 + 三行列表 | ① 深底在**暗色任务栏**上糊成一片（实机截图确认）；② 信息密度太高，32px 以下碎成一团 |
-| **v3** | **亮蓝底 + 白色 `>_`** | 见下 |
-
-关键教训是**信息密度**：在图标里画"面板 + 侧边栏 + 三行列表"，
-在 16/32px 上必然退化成几个色块。隔壁那排好认的图标（Outlook 的信封、
-bilibili 的电视、dev-sidecar 的分子）都是**一个大而粗的形状**。
-
-# 现在这个图形
-
-**亮蓝渐变底 + 白色 `>_` 提示符。**
-
-- `>_` 是这个程序本质的直接表达：它是 `wslc.exe` / `wsl.exe` 的图形外壳；
-- 只有两个笔画（一条折线 + 一个圆点），**16px 下仍然成立**；
-- **亮底**：Windows 任务栏默认是深色，深底图标会融进背景（这是 v2 被否掉
-  的直接原因）。参考那排成功的图标也全是亮底。
-- 四周留白：箭头没有顶到边，缩小后不会和圆角打架。
-
-# 尺寸
-
-7 档 16/24/32/48/64/128/256 —— Windows 按 DPI 与场景挑最合适的那层，
-缺哪层就缩放（会糊）。
+用法：`python assets/make-icon.py`
 """
 
+from __future__ import annotations
+
+import argparse
+import sys
 from pathlib import Path
 
 from PIL import Image, ImageDraw
 
 SIZES = [16, 24, 32, 48, 64, 128, 256]
 
-# 亮蓝渐变。上面亮、下面略暗，给平涂的形状一点体积感；
-# 色相不动，只是明度差 —— 换色相会让白色字形的对比度在某一端塌掉。
-BG_TOP = (59, 130, 246)     # #3B82F6
-BG_BOTTOM = (29, 78, 216)   # #1D4ED8
-WHITE = (255, 255, 255)
+# 头部裁切框，相对坐标（左, 上, 右, 下）。
+#
+# 这三个值是在 `source-art.png` 上试了三版定下来的：
+#   · 更紧（0.255 / 0.10 / 0.445 / 0.52）会切掉额头；
+#   · 更宽（0.170 / 0.02 / 0.520 / 0.60）脸在图标里太小；
+#   · 现在这组：脸完整、带发饰与一点肩膀，32px 仍能认出是个人物。
+CROP = (0.225, 0.06, 0.475, 0.56)
+
+# 圆角半径占边长的比例。Windows 11 的应用图标大致在这个量级（22%~23%），
+# 和相邻的 Outlook / 商店应用属于同一套视觉语言。
+CORNER_RATIO = 0.22
+
+# 内高光：白色、极低透明度、贴着圆角内侧一圈。
+# 这一层是"看起来像系统图标"和"看起来像一张图片"的分界。
+INNER_GLOW_ALPHA = 46
+
+SS = 4  # 超采样倍数：先按 4 倍画，最后缩回去，边缘才干净
+
+# 预览图的两种背景：任务栏默认深色 + 资源管理器浅色。
+DARK_BG = (32, 32, 32, 255)
+LIGHT_BG = (243, 243, 243, 255)
 
 
-def _lerp(a, b, t):
-    return tuple(round(x + (y - x) * t) for x, y in zip(a, b))
+def crop_head(src: Image.Image) -> Image.Image:
+    """按 `CROP` 裁出正方形头部图。"""
+    w, h = src.size
+    left, top, right, bottom = CROP
+    box = (int(left * w), int(top * h), int(right * w), int(bottom * h))
+    crop = src.crop(box)
+
+    # 裁出来的框不一定正方（原图比例会变），以短边为准居中。
+    cw, ch = crop.size
+    side = min(cw, ch)
+    return crop.crop(
+        ((cw - side) // 2, (ch - side) // 2, (cw - side) // 2 + side, (ch - side) // 2 + side)
+    )
 
 
-def _tile(size):
-    """竖向渐变的圆角方块（画布）。"""
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    grad = Image.new("RGBA", (size, size))
-    d = ImageDraw.Draw(grad)
-    for y in range(size):
-        d.line([(0, y), (size, y)], fill=_lerp(BG_TOP, BG_BOTTOM, y / max(size - 1, 1)) + (255,))
-    mask = Image.new("L", (size, size), 0)
+def render(head: Image.Image, size: int) -> Image.Image:
+    """把头部图渲染成 size×size 的圆角图标。"""
+    canvas = size * SS
+    body = head.resize((canvas, canvas), Image.LANCZOS)
+
+    mask = Image.new("L", (canvas, canvas), 0)
     ImageDraw.Draw(mask).rounded_rectangle(
-        [0, 0, size - 1, size - 1],
-        radius=max(2, round(size * 0.23)),
-        fill=255,
-    )
-    img.paste(grad, (0, 0), mask)
-    return img
-
-
-def _stroke(d, points, width, color=WHITE):
-    """粗折线 + **圆头**。
-
-    PIL 的 `line` 有 `joint="curve"`（拐点圆滑）但**端点仍然是方的**，
-    小尺寸下方头会显得毛糙。所以两端各补一个半径为半线宽的圆点。
-    """
-    d.line(points, fill=color + (255,), width=width, joint="curve")
-    radius = width / 2
-    for x, y in (points[0], points[-1]):
-        d.ellipse([x - radius, y - radius, x + radius, y + radius], fill=color + (255,))
-
-
-def draw_icon(size):
-    """画一张 size×size 的图标。"""
-    img = _tile(size)
-    d = ImageDraw.Draw(img)
-
-    # 统一从 16 单位网格换算（`u = size / 16`），保证任何尺寸下比例一致 ——
-    # 这是小尺寸还能认出来的前提。
-    u = size / 16.0
-
-    # 线宽：16px 时 1.9u ≈ 1.9px，取整到 2px 才不会消失。
-    width = max(2, round(1.9 * u))
-
-    # `>`：从左上到中右再回左下。
-    _stroke(d, [(5.4 * u, 5.2 * u), (8.9 * u, 8.0 * u), (5.4 * u, 10.8 * u)], width)
-
-    # `_`：一个粗圆点（不是短横线 —— 短横线在 16px 下会和箭头糊成一块）。
-    d.rounded_rectangle(
-        [10.4 * u, 10.6 * u, 13.2 * u, 10.6 * u + width],
-        radius=width / 2,
-        fill=WHITE + (255,),
+        [0, 0, canvas - 1, canvas - 1], radius=round(canvas * CORNER_RATIO), fill=255
     )
 
-    return img
+    out = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
+    out.paste(body, (0, 0), mask)
+
+    # 内高光：贴着圆角内缘一圈，宽度也按画布缩放
+    glow_layer = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
+    inset = max(1, round(canvas * 0.012))
+    ImageDraw.Draw(glow_layer).rounded_rectangle(
+        [inset, inset, canvas - inset, canvas - inset],
+        radius=round(canvas * (CORNER_RATIO - 0.006)),
+        outline=(255, 255, 255, INNER_GLOW_ALPHA),
+        width=max(1, round(canvas * 0.010)),
+    )
+    out = Image.alpha_composite(out, glow_layer)
+
+    return out.resize((size, size), Image.LANCZOS)
 
 
-def main():
+def write_preview(frames: list[Image.Image], out: Path) -> None:
+    """各尺寸并排，深色与浅色两种背景各一行 —— 图标必须在两边都成立。"""
+    pad = 10
+    # 每个格子按**最大档**的宽度算，图标居中。
+    # ⚠️ 不能"逐个累加宽度"：那会让小格挤在一起、大格互相重叠。
+    cell = max(SIZES) + pad
+    total_w = cell * len(SIZES) + pad
+    row_h = max(SIZES) + pad * 2
+
+    sheet = Image.new("RGBA", (total_w, row_h * 2), DARK_BG)
+    for row, bg in enumerate((DARK_BG, LIGHT_BG)):
+        y0 = row * row_h
+        ImageDraw.Draw(sheet).rectangle([0, y0, total_w, y0 + row_h], fill=bg)
+        for i, frame in enumerate(frames):
+            x = pad + i * cell + (max(SIZES) - frame.width) // 2
+            y = y0 + pad + (max(SIZES) - frame.height) // 2
+            sheet.paste(frame, (x, y), frame)
+    sheet.save(out)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="从立绘截取头部生成 wslc-panel 的 .ico")
+    ap.add_argument(
+        "--from",
+        dest="source",
+        type=Path,
+        default=None,
+        help="源图（默认 assets/source-art.png）",
+    )
+    args = ap.parse_args()
+
     root = Path(__file__).resolve().parent.parent
     assets = root / "assets"
-    assets.mkdir(exist_ok=True)
+    source = args.source or (assets / "source-art.png")
+    if not source.exists():
+        sys.exit(f"找不到源图：{source}")
 
-    frames = [draw_icon(s) for s in SIZES]
+    src = Image.open(source).convert("RGBA")
+    head = crop_head(src)
+
+    # 存一份裁好的 256 方图：以后调尺寸/调边距不必重新算裁切框
+    head.resize((256, 256), Image.LANCZOS).save(assets / "wslc-panel-256.png")
+
+    frames = [render(head, s) for s in SIZES]
 
     ico = assets / "wslc-panel.ico"
-    # Pillow 写 ICO：小尺寸存 BMP 层、256 存 PNG 层（Windows 两者都认）。
+    # 小尺寸存 BMP、256 存 PNG —— 这是 ICO 的标准做法，Pillow 自动处理。
     frames[-1].save(ico, format="ICO", sizes=[(s, s) for s in SIZES])
-    print(f"写出 {ico}  ({ico.stat().st_size} 字节)")
+    print(f"源图 : {source.name}")
+    print(f"写出 : {ico}  ({ico.stat().st_size} 字节，{len(SIZES)} 档)")
 
-    # 预览图：各尺寸并排，方便在 PR 里肉眼确认（**不参与构建**）。
-    # 背景涂成深灰 —— 任务栏默认就是这个色，图标必须在它上面成立。
-    pad = 8
-    total_w = sum(SIZES) + pad * (len(SIZES) + 1)
-    max_h = max(SIZES)
-    sheet = Image.new("RGBA", (total_w, max_h + pad * 2), (32, 32, 32, 255))
-    x = pad
-    for frame in frames:
-        sheet.paste(frame, (x, pad + (max_h - frame.height) // 2), frame)
-        x += frame.width + pad
     preview = assets / "wslc-panel-icon-preview.png"
-    sheet.save(preview)
-    print(f"写出 {preview}  ({preview.stat().st_size} 字节)")
+    write_preview(frames, preview)
+    print(f"预览 : {preview}")
 
 
 if __name__ == "__main__":
