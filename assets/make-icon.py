@@ -9,49 +9,52 @@
   按 `AGENTS.md` §6 一行都不能进本仓库；
 - 也不能随手拿个网图 —— 许可证说不清。
 
-所以这里用 Pillow 把图形**程序化**画出来，脚本就是图形的源码，
-以后改配色 / 改形状都只改它再重跑：`python assets/make-icon.py`。
-
-# 图形是什么意思
-
-- 深色圆角底 = 面板窗口；
-- 左边一条蓝色高亮带 = **侧边栏**（这个程序是"侧边栏 + 内容区"的形状）；
-- 右边三行**长度错开**的横条 = 容器列表，首行青色 = 当前选中的那一行；
-- 第三行半透明 = 列表没铺满，暗示"还能往下滚"。
-
-**不是**集装箱、也不是企鹅：
-- 企鹅是 Linux 的通用符号，会和同类工具撞脸（参考项目已经用了）；
-- 集装箱方块在小尺寸下会糊成一个色块，而"侧边栏 + 列表"在 16px 上
-  仍然能读出"左边一条、右边几行"的结构 —— 这是选它的主要原因。
-
-# 小尺寸可读性（这是设计的硬约束）
-
-16×16 只有 256 个像素，所以：
-
-- 所有尺寸都从同一个 **16 单位网格**换算（`u = size / 16`），比例不会走样；
-- 侧边栏做成一条**竖直矩形**，而不是带圆角的胶囊（圆角在 16px 上会吃掉 2px，
-  剩下的宽度不足以看出"这是一条"）；
-- 圆角半径随尺寸缩放，16px 时只给 3。
+所以用 Pillow 把图形**程序化**画出来，脚本就是图形的源码，
+改配色 / 改形状都只改它再重跑。
 
 用法：`python assets/make-icon.py`（在仓库根执行；依赖 Pillow）
+
+# 设计：一个字形，不是一整个界面
+
+**这是第三版，前两版都被判"丑"，值得把教训写下来：**
+
+| 版本 | 画了什么 | 为什么不行 |
+|---|---|---|
+| v1 | 三块堆叠的集装箱横条 | 读起来像"汉堡菜单"或数据库图标，不像一个面板 |
+| v2 | 深色底 + 面板窗口 + 侧边栏 + 三行列表 | ① 深底在**暗色任务栏**上糊成一片（实机截图确认）；② 信息密度太高，32px 以下碎成一团 |
+| **v3** | **亮蓝底 + 白色 `>_`** | 见下 |
+
+关键教训是**信息密度**：在图标里画"面板 + 侧边栏 + 三行列表"，
+在 16/32px 上必然退化成几个色块。隔壁那排好认的图标（Outlook 的信封、
+bilibili 的电视、dev-sidecar 的分子）都是**一个大而粗的形状**。
+
+# 现在这个图形
+
+**亮蓝渐变底 + 白色 `>_` 提示符。**
+
+- `>_` 是这个程序本质的直接表达：它是 `wslc.exe` / `wsl.exe` 的图形外壳；
+- 只有两个笔画（一条折线 + 一个圆点），**16px 下仍然成立**；
+- **亮底**：Windows 任务栏默认是深色，深底图标会融进背景（这是 v2 被否掉
+  的直接原因）。参考那排成功的图标也全是亮底。
+- 四周留白：箭头没有顶到边，缩小后不会和圆角打架。
+
+# 尺寸
+
+7 档 16/24/32/48/64/128/256 —— Windows 按 DPI 与场景挑最合适的那层，
+缺哪层就缩放（会糊）。
 """
 
 from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-# 尺寸：Windows 按 DPI 与场景挑最合适的那一层，缺哪层就缩放（会糊）。
-# 16 = 任务栏 / 小列表；32 = 桌面；48 = 中等图标；256 = 大图标 / 安装包。
 SIZES = [16, 24, 32, 48, 64, 128, 256]
 
-# 配色：和 `theme.rs` 的深色系同一个方向，但刻意更饱和一点 ——
-# 图标在浅色桌面上也要立得住。
-BG_TOP = (30, 41, 59)       # #1E293B
-BG_BOTTOM = (12, 18, 30)    # 接近纯黑，让高亮色更跳
-PANEL = (37, 51, 71)        # #253347 窗口主体
-SIDEBAR = (59, 130, 246)    # #3B82F6 侧边栏
-ROW_ACTIVE = (56, 189, 248)  # #38BDF8 选中行
-ROW = (100, 116, 139)       # #64748B 普通行
+# 亮蓝渐变。上面亮、下面略暗，给平涂的形状一点体积感；
+# 色相不动，只是明度差 —— 换色相会让白色字形的对比度在某一端塌掉。
+BG_TOP = (59, 130, 246)     # #3B82F6
+BG_BOTTOM = (29, 78, 216)   # #1D4ED8
+WHITE = (255, 255, 255)
 
 
 def _lerp(a, b, t):
@@ -68,11 +71,23 @@ def _tile(size):
     mask = Image.new("L", (size, size), 0)
     ImageDraw.Draw(mask).rounded_rectangle(
         [0, 0, size - 1, size - 1],
-        radius=max(2, round(size * 0.22)),
+        radius=max(2, round(size * 0.23)),
         fill=255,
     )
     img.paste(grad, (0, 0), mask)
     return img
+
+
+def _stroke(d, points, width, color=WHITE):
+    """粗折线 + **圆头**。
+
+    PIL 的 `line` 有 `joint="curve"`（拐点圆滑）但**端点仍然是方的**，
+    小尺寸下方头会显得毛糙。所以两端各补一个半径为半线宽的圆点。
+    """
+    d.line(points, fill=color + (255,), width=width, joint="curve")
+    radius = width / 2
+    for x, y in (points[0], points[-1]):
+        d.ellipse([x - radius, y - radius, x + radius, y + radius], fill=color + (255,))
 
 
 def draw_icon(size):
@@ -80,36 +95,22 @@ def draw_icon(size):
     img = _tile(size)
     d = ImageDraw.Draw(img)
 
-    # 统一从 16 单位网格换算（见模块说明"小尺寸可读性"）。
+    # 统一从 16 单位网格换算（`u = size / 16`），保证任何尺寸下比例一致 ——
+    # 这是小尺寸还能认出来的前提。
     u = size / 16.0
-    r = lambda n: max(1, round(n * u))  # noqa: E731 - 局部小助手，不值得单开函数
 
-    # 1) 窗口主体
+    # 线宽：16px 时 1.9u ≈ 1.9px，取整到 2px 才不会消失。
+    width = max(2, round(1.9 * u))
+
+    # `>`：从左上到中右再回左下。
+    _stroke(d, [(5.4 * u, 5.2 * u), (8.9 * u, 8.0 * u), (5.4 * u, 10.8 * u)], width)
+
+    # `_`：一个粗圆点（不是短横线 —— 短横线在 16px 下会和箭头糊成一块）。
     d.rounded_rectangle(
-        [1.8 * u, 2.2 * u, 14.2 * u, 13.8 * u],
-        radius=r(1.5),
-        fill=PANEL + (255,),
+        [10.4 * u, 10.6 * u, 13.2 * u, 10.6 * u + width],
+        radius=width / 2,
+        fill=WHITE + (255,),
     )
-
-    # 2) 侧边栏：一条竖矩形，上下各留 1.5u 让窗口的圆角露出来。
-    #    先铺整条，再把上下两小段用窗口色盖回去 —— 比"只画矩形中间一段"
-    #    少一处坐标计算，效果一样。
-    d.rectangle([1.8 * u, 3.7 * u, 5.1 * u, 12.3 * u], fill=SIDEBAR + (255,))
-    d.rectangle([1.8 * u, 2.2 * u, 5.1 * u, 3.7 * u], fill=PANEL + (255,))
-    d.rectangle([1.8 * u, 12.3 * u, 5.1 * u, 13.8 * u], fill=PANEL + (255,))
-
-    # 3) 三行列表：长度错开（像真实内容），首行高亮。
-    rows = [
-        (6.3, 4.7, 12.7, ROW_ACTIVE, 255),
-        (6.3, 8.0, 11.6, ROW, 255),
-        (6.3, 11.3, 13.1, ROW, 170),  # 半透明 = 还没铺满
-    ]
-    for x0, y0, x1, color, alpha in rows:
-        d.rounded_rectangle(
-            [x0 * u, y0 * u, x1 * u, (y0 + 1.7) * u],
-            radius=r(0.5),
-            fill=color + (alpha,),
-        )
 
     return img
 
@@ -127,10 +128,11 @@ def main():
     print(f"写出 {ico}  ({ico.stat().st_size} 字节)")
 
     # 预览图：各尺寸并排，方便在 PR 里肉眼确认（**不参与构建**）。
+    # 背景涂成深灰 —— 任务栏默认就是这个色，图标必须在它上面成立。
     pad = 8
     total_w = sum(SIZES) + pad * (len(SIZES) + 1)
     max_h = max(SIZES)
-    sheet = Image.new("RGBA", (total_w, max_h + pad * 2), (245, 245, 245, 255))
+    sheet = Image.new("RGBA", (total_w, max_h + pad * 2), (32, 32, 32, 255))
     x = pad
     for frame in frames:
         sheet.paste(frame, (x, pad + (max_h - frame.height) // 2), frame)
