@@ -97,6 +97,18 @@ jobs:
           # 记录大小到日志，便于对比不同版本
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| 项目 | 值 |`n|---|---|`n| exe | ``$exe`` |`n| 大小 | $([math]::Round($item.Length/1MB,2)) MB |"
 
+      - name: 确认图标真的嵌进 exe 了
+        # ⚠️ 这一步是**必须**的，不是锦上添花。
+        #
+        # v0.10.0 的 exe 没有任何资源段 —— 桌面上一张白纸，而当时 CI 和 release
+        # 全是绿的。原因有两层：
+        #   ① `cargo check` 只做类型检查，**根本不链接**，资源段编不编得出来它不管；
+        #   ② `build.rs` 里用了 `manifest_optional()`，资源编译失败会**静默降级**
+        #      （这正是它的语义：资源是可选的装饰）。
+        # 两者叠加 = "图标没了但没人知道"。所以这里直接读 PE 资源表。
+        shell: pwsh
+        run: ./scripts/verify-exe-icon.ps1 -Path "target/release/$env:BIN_NAME.exe"
+
       - name: 准备产物（exe + zip）
         shell: pwsh
         run: |
