@@ -197,10 +197,25 @@ jobs:
 
           # 资产清单：setup 只在打了 v 标签时才编得出来（见上一步的 if），
           # 所以这里按"存在就带上"来拼，不要在手动 dispatch 的 dev 构建上炸。
+          #
+          # ⚠️ **不要拼文件名**。v0.10.0 首跑就是栽在这上面：这里写成
+          # `wslc-panel-$env:TAG-setup-x64.exe`（TAG 带 `v`），而
+          # `build-installer.ps1` 生成的叫 `wslc-panel-0.10.0-setup-x64.exe`
+          # （它已经把 `v` 剥掉了 —— 版本号里不该有 `v`，否则 Inno 的
+          # `AppVersion` 就不合法）。`Test-Path` 判否 → 静默走了"只发 exe + zip"
+          # 分支，**安装包明明编出来了却没上传**，而且整轮 release 还是绿的。
+          #
+          # 所以改成**查找产物**：安装包的那个 `$Version` 由脚本自己决定，
+          # 我们只认 `dist\*-setup-*.exe` 这个形状。这样两边各自独立，
+          # 不存在"谁记得同步改名字"的问题。
           $assets = @($env:EXE, $env:ZIP)
-          $setup = "dist/wslc-panel-$env:TAG-setup-x64.exe"
-          if (Test-Path $setup) { $assets += $setup }
-          else { Write-Output "没有安装包（tag=$env:TAG 不是 vX.Y.Z？）—— 只发 exe + zip" }
+          $setups = @(Get-ChildItem -Path dist -Filter '*-setup-*.exe' -File -ErrorAction SilentlyContinue)
+          if ($setups.Count -gt 0) {
+            $assets += $setups.FullName
+            Write-Output "带上安装包：$($setups.Name -join ', ')"
+          } else {
+            Write-Output "dist 里没有安装包 —— 只发 exe + zip（检查上一步的日志）"
+          }
 
           # 幂等：Release 可能已经存在 —— 比如同一个标签重跑工作流，
           # 或者用它给已存在的标签补资产。直接 `gh release create` 会报
