@@ -104,17 +104,42 @@
 **前置条件**：Windows 上装有 **WSL 3.0 以上版本**（提供 `wslc.exe`）。
 若安装在非默认路径，设置环境变量 `WSLC_PATH` 指向 `wslc.exe`。
 
-### 方式一：直接下载（推荐）
+### 方式一：安装包（推荐）
 
-到 [Releases](https://github.com/SilkKirk/wslc-panel/releases) 下载 **`wslc-panel.exe`**
-（单文件，直接运行，**不用解压**）。
+到 [Releases](https://github.com/SilkKirk/wslc-panel/releases) 下载
+**`wslc-panel-vX.Y.Z-setup-x64.exe`**，双击安装。
 
-`wslc-panel-vX.Y.Z-windows-x64.zip` 是同一个程序的压缩包，里面多带了 README 与 `docs/`，
-要归档或离线分发时用它 —— 两者内容相同，不需要都下。
+- **per-user 安装**（装到 `%LOCALAPPDATA%\Programs\wslc-panel`），**不需要管理员权限**，
+  不弹 UAC；
+- 带开始菜单快捷方式、可选桌面图标，以及「应用和功能」里的卸载项；
+- 卸载时会问一句**要不要连数据一起删**（默认保留）。数据在
+  `%LOCALAPPDATA%\wslc-panel`，里面有偏好、日志、部署记录和数据库账号 ——
+  后者是**明文密码**，所以那一问写清了会删掉什么。
 
-无需安装、不依赖 WebView2 或任何运行时。
+### 方式二：绿色单文件（免安装）
 
-### 方式二：从源码编译
+不想要安装包就用同一个发布页里的 **`wslc-panel.exe`**：
+单文件，直接运行，**不用解压、不用安装**，不依赖 WebView2 或任何运行时。
+
+`wslc-panel-vX.Y.Z-windows-x64.zip` 是同一程序的压缩包，里面多带了 README 与 `docs/`，
+要归档或离线分发时用它 —— 三者内容相同，不需要都下。
+
+> 安装版和绿色版可以共存（装到两个不同位置），但它们**共用**同一份
+> `%LOCALAPPDATA%\wslc-panel` 数据目录。
+
+### 关于「检查更新」
+
+「应用设置 → 关于」里有一张**更新**卡：启动 8 秒后自动查一次（24 小时最多一次，
+可在卡里关掉），发现新版本就提示一句，并给一个**「打开发布页」**按钮。
+
+**它不会自己下载或替换文件** —— 更新请到发布页取新的 exe / 安装包
+（要走加速站的话，就在浏览器里换源下载，和手动更新没有区别）。
+
+> 唯一的外发请求是 `GET https://api.github.com/repos/SilkKirk/wslc-panel/releases/latest`
+> （不带任何身份信息，只有一句 `User-Agent: wslc-panel/<版本>`）。
+> 查失败**不会**在界面上报错（只写日志）；只有手动点「检查更新」才会把错误告诉你。
+
+### 方式三：从源码编译
 
 > ⚠️ 需要 Rust 工具链 + MSVC 链接器（约数 GB）。本机当前**两者都没有**。
 
@@ -135,7 +160,7 @@ cargo test --workspace --exclude wslc-panel
 cargo run -p wslc-panel
 ```
 
-### 方式三：用 CI 验证（本机没有工具链时）
+### 方式四：用 CI 验证（本机没有工具链时）
 
 仓库里的 GitHub Actions 就是为此准备的 —— Windows runner 自带 Rust 与 MSVC：
 

@@ -6279,7 +6279,7 @@ pub fn app_settings(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         // 内容一行没改，只是不再各占一个侧边栏入口。
         SettingsTab::Advanced => config(state, entity),
         SettingsTab::Wsl => wsl_config(state, entity),
-        SettingsTab::About => settings_about(state, entity),
+        SettingsTab::About => settings_about(shell, entity),
     };
 
     v_flex()
@@ -6339,11 +6339,15 @@ fn settings_general(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         .into_any_element()
 }
 
-/// 「应用设置 → 关于」tab：应用介绍、版本、构建、会话、地址。
+/// 「应用设置 → 关于」tab：应用介绍、版本、构建、会话、地址，以及**更新**。
 ///
-/// 它从独立页面收进来（v0.9.22）：这里**没有任何开关**，占一个侧边栏入口
-/// 太贵；放进设置也不会让人误以为能改东西 —— 它已经是最后一个 tab 了。
-pub fn settings_about(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+/// 它从独立页面收进来（v0.9.22）：这里几乎没有开关，占一个侧边栏入口太贵；
+/// 放进设置也不会让人误以为能改东西 —— 它已经是最后一个 tab 了。
+///
+/// v0.10 起这一页多了「更新」卡，所以它开始收 `&Shell`（要发起动作、
+/// 要读 `Phase`）—— 和「常规」tab 同一个理由。
+pub fn settings_about(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
+    let state = &shell.state;
     const LINKS: &[(&str, &str)] = &[
         ("项目主页", "https://github.com/SilkKirk/wslc-panel"),
         ("问题反馈", "https://github.com/SilkKirk/wslc-panel/issues"),
@@ -6393,8 +6397,148 @@ pub fn settings_about(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                      只用来理解机制，没有代码进入本仓库。",
                 )),
         ))
+        .child(update_card(shell, entity))
         .child(card("地址", v_flex().w_full().gap_3().children(rows)))
         .into_any_element()
+}
+
+/// 「更新」卡。
+///
+/// # 只有一个动作入口
+///
+/// 「检查更新」「打开发布页」「跳过这个版本」全在这一张卡里（`AGENTS.md` §5
+/// 的"同一个动作只给一个入口"）。启动时查到新版本只发一条 toast 指向这里，
+/// 不在页头再摆一颗按钮。
+///
+/// # 为什么不做"下载并安装"
+///
+/// 用户要的是**提示**，下载他自己挑加速站（`docs/PLAN-install-update.md` §9）。
+/// 而且实测本机到 release 资产只有 11–15 KB/s，30 MB 要 40 分钟 ——
+/// 应用内下载只会更糟。
+fn update_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
+    use crate::update::Phase;
+
+    let state = &shell.state;
+    let phase = &state.update;
+    let now = crate::util::now_secs();
+    let status = crate::update::status_line(phase, now);
+    let checking = matches!(phase, Phase::Checking);
+
+    let mut body = v_flex().w_full().gap_3();
+
+    // 状态行。检查中/有新版时用正文色，其余用次要色 —— 一眼能看出"有情况"。
+    // 用 guard 而不是 `skipped: false` 字面量模式：`phase` 是引用，
+    // 在引用上匹配字段字面量要绕一层解引用，guard 更直白也不会写错。
+    let emphasise =
+        checking || matches!(phase, Phase::Available { skipped, .. } if !*skipped);
+    body = body.child(
+        div()
+            .text_sm()
+            .text_color(if emphasise {
+                theme::text()
+            } else {
+                theme::text_dim()
+            })
+            // 文案里没有 Markdown 标记，但这条规矩是守卫而不是一次修补：
+            // 以后改文案的人可能顺手写上 `**…**`（见 `AGENTS.md` §5）。
+            .child(crate::util::strip_md(&status)),
+    );
+
+    // 有新版时把发布说明的开头一小段露出来 —— 用户要据此决定"值不值得更新"。
+    if let Phase::Available { release, .. } = phase {
+        if !release.notes_head.is_empty() {
+            body = body.child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child(crate::util::strip_md(&release.notes_head)),
+            );
+        }
+    }
+
+    // 按钮行。
+    let mut buttons: Vec<AnyElement> = Vec::new();
+
+    if checking {
+        // 检查中就不给按钮（全项目不用 `.disabled()`，见 `AGENTS.md` §7.5）。
+        buttons.push(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child("正在检查…")
+                .into_any_element(),
+        );
+    } else {
+        let mut check = Button::new("update-check")
+            .label("检查更新")
+            .small()
+            .on_click({
+                let entity = entity.clone();
+                move |_, _, cx| {
+                    entity.update(cx, |shell, cx| shell.check_update(true, cx));
+                }
+            });
+        // 还没查过 / 查失败时，"检查更新"是主按钮。
+        if matches!(phase, Phase::Idle | Phase::Failed { .. }) {
+            check = check.primary();
+        }
+        buttons.push(check.into_any_element());
+
+        if let Phase::Available { skipped, .. } = phase {
+            let open = Button::new("update-open")
+                .label("打开发布页")
+                .small()
+                .primary()
+                .on_click({
+                    let entity = entity.clone();
+                    move |_, _, cx| {
+                        entity.update(cx, |shell, cx| shell.open_release_page(cx));
+                    }
+                });
+            buttons.push(open.into_any_element());
+
+            if !*skipped {
+                let skip = Button::new("update-skip")
+                    .label("跳过这个版本")
+                    .small()
+                    .on_click({
+                        let entity = entity.clone();
+                        move |_, _, cx| {
+                            entity.update(cx, |shell, cx| shell.skip_update_version(cx));
+                        }
+                    });
+                buttons.push(skip.into_any_element());
+            }
+        }
+    }
+
+    // 「启动时自动检查」是个**开关**，用一颗按钮表达（不用 Checkbox：
+    // 全项目只在 wsl.conf 页用过它，这一格不值得为它引一个新组件的用法）。
+    let auto_on = state.prefs.auto_check_update;
+    let auto = Button::new("update-auto-check")
+        .label(if auto_on {
+            "启动时自动检查：开"
+        } else {
+            "启动时自动检查：关"
+        })
+        .small()
+        .on_click({
+            let entity = entity.clone();
+            move |_, _, cx| {
+                let next = !auto_on;
+                entity.update(cx, |shell, cx| shell.set_auto_check_update(next, cx));
+            }
+        });
+    buttons.push(auto.into_any_element());
+
+    body = body
+        .child(h_flex().w_full().gap_2().flex_wrap().children(buttons))
+        .child(div().text_xs().text_color(theme::text_dim()).child(
+            "只检查「有没有新版本」，不会自己下载或替换文件。\
+             更新请到发布页取 wslc-panel.exe 或安装包（需要走加速的话就在浏览器里换源）。",
+        ));
+
+    card("更新", body).into_any_element()
 }
 
 /// 主题选择卡（跟随系统 / 深色 / 浅色）。

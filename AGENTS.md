@@ -204,8 +204,17 @@ Invoke-RestMethod -Headers $H -Uri "$api/commits/<sha>/check-runs"
      紧跟一行的 `version` **成对**替换。不放心就用 `gen-lock.yml` 重新生成。
    - `README.md` 里那行启动日志样例（`版本 x.y.z，构建 <短 sha>`）
 3. 推 main → **等 CI 全绿** → 打 `vX.Y.Z` 标签 → 推标签。
-4. `release.yml` 由 `push: tags: ["v*"]` 触发，编译并发布
-   `wslc-panel.exe` + `wslc-panel-vX.Y.Z-windows-x64.zip`。
+4. `release.yml` 由 `push: tags: ["v*"]` 触发，编译并发布三个资产：
+   `wslc-panel.exe`（绿色版）、`wslc-panel-vX.Y.Z-windows-x64.zip`（归档）、
+   `wslc-panel-vX.Y.Z-setup-x64.exe`（Inno Setup 安装包，只在 `v` 标签上编）。
+
+   ⚠️ **`wslc-panel.exe` 这个文件名是契约**：发布页、README、以及更新提示里
+   指向的都是它。改名等于让所有存量用户的"去发布页下载"落空。
+   安装包和 zip 可以改名，它不能。
+
+   **版本号仍然只有那六行要改**（本节第 2 条）—— 安装包版本由
+   `scripts/build-installer.ps1` 从 tag 读，`.iss` 里**不写死**，
+   所以它**不是**第 5 个要手改版本号的文件。
 
 **标签必须落在 main 的祖先链上。** 如果 `git push` 不通、改用 API 建提交，
 本地和远端的 sha 会分叉 —— 那时候 `git tag` 打出来的是**本地**那个提交，
@@ -578,6 +587,57 @@ PATCH /git/refs/heads/X  { sha: <新 commit>, force: true }
 
 ⚠️ **用 API 建的提交和本地提交 sha 不一样**（作者/提交时间不同）——
 对 sha 时认**远端**那个，别拿本地的比。
+
+### 7.7 更新提示：只检查，不下载（本版的产品决定）
+
+「应用设置 → 关于」里那张更新卡**只发一个 GET**：
+`api.github.com/repos/SilkKirk/wslc-panel/releases/latest`。
+查到新版本就提示一句 + 给一个「打开发布页」。
+
+**它不下载、不校验、不替换 exe。** 两个理由：
+
+1. **本机实测吞吐只有 11–15 KB/s**（30 MB 的 exe 要 40 分钟），
+   在应用内做个半吊子下载器只会比"让用户用加速站"更糟；
+2. 用户明确要的就是**提示**（"我自己找加速下载"）。
+
+实现分层（改的时候别搞混）：
+
+| 干什么 | 在哪儿 |
+|---|---|
+| 版本解析 / 比较、GitHub 响应解析 | `wslc-core/src/update.rs`（纯逻辑 + 真 fixture） |
+| 起 `curl.exe` | `wslc-core/src/cmd/update.rs`（**阻塞**，必须走 `background_executor`） |
+| 节流判据 / 提示判据 / 卡片文案 | `wslc-panel-core/src/update.rs`（纯逻辑，`core` job 能测） |
+| 动作与状态迁移 | `crates/wslc-panel/src/app.rs`（`check_update` / `apply_update_check`） |
+
+⚠️ **自动检查失败必须静默**（只写 `warn` 日志，卡片回 `Idle`）——
+这是个本地工具，每天开面板弹一句"检查更新失败"比不检查更糟。
+只有**手动**点「检查更新」时才把错误显示出来。
+
+⚠️ **24 小时节流不是优化，是配额保护**：未认证 GitHub API 是
+**60 次/小时/IP**，而且**304 也算一次**（实测 remaining 52→51）。
+共享出口（公司 NAT / 校园网）很容易被别人用光。
+
+#### 将来真要"自更新"，地基已经测过了（别重新调研）
+
+| 实验 | 结果 |
+|---|---|
+| 覆盖一个**正在运行**的 exe | ❌ 拒绝访问 |
+| **改名**正在运行的 exe（`ping`/`cmd`/`powershell` 三份拷贝都试过） | ✅ 成功 |
+| 改完名后把新文件放到**原路径** | ✅ 成功 |
+| 边跑边删那个已改名的旧文件 | ❌ 拒绝访问；**进程退出后可删** |
+| 改名后 `GetModuleFileName` / `process.execPath` / `MainModule.FileName` | ⚠️ **仍返回改名前的路径** |
+
+最后一条最反直觉，也最容易写错：**替换之后 `current_exe()` 指着一个
+已经不存在的路径**。所以要自更新，必须在**替换之前**把 exe 路径缓存下来
+（启动时取一次），重启时不能用 `current_exe()`。
+
+另外实测**新旧两个版本可以同时运行** —— 所以换完文件重启时要有交接
+（新进程先等旧进程 PID 消失再开始轮询 `wslc`），否则会有一瞬间
+两个面板各自 3 秒轮询，正是 `docs/COMPARISON-references.md` §3 里
+那条 sharing violation 的成因。
+
+完整方案（含三步替换、回滚、失败路径）在
+`docs/PLAN-install-update.md` 的旧版里，当前版只保留了提示那部分。
 
 ---
 

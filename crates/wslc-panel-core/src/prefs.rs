@@ -238,10 +238,36 @@ pub struct Prefs {
     /// 理由写在 [`TerminalStartDir`] 的文档里。
     #[serde(default)]
     pub terminal_dir: TerminalStartDir,
+    /// 启动时自动检查更新（默认开）。
+    ///
+    /// 关掉之后**只有**「关于」页那颗「检查更新」会发请求 —— 有些人就是不想让
+    /// 一个本地工具往外连，这不该由我们替他决定。
+    ///
+    /// ⚠️ 默认值是 `true`：老版本的 `prefs.json` 里没有这个键，
+    /// 升级上来会**开始**每天查一次 GitHub。这是有意的（否则更新提示等于没有），
+    /// 但它确实是一个新出现的外发请求 —— README 里要写清"查什么、多久一次"。
+    #[serde(default = "default_true")]
+    pub auto_check_update: bool,
+    /// 上次检查更新的时间（Unix 秒）。
+    ///
+    /// 只用来做 24 小时节流（见 `crate::update::should_auto_check`）。
+    /// `None` = 从来没查过。
+    #[serde(default)]
+    pub last_update_check: Option<u64>,
+    /// 用户点了「跳过这个版本」之后记住它，不再为它提示。
+    ///
+    /// 存的是**用户当时看到的那串版本号**（`0.10.0`），比较时两种写法都认。
+    /// 换了新版本之后这个值会被覆盖或清空，不需要额外清理。
+    #[serde(default)]
+    pub skipped_version: Option<String>,
 }
 
 fn default_refresh_secs() -> u64 {
     DEFAULT_REFRESH_SECS
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Prefs {
@@ -251,6 +277,9 @@ impl Default for Prefs {
             theme: ThemePref::default(),
             install_dir: None,
             terminal_dir: TerminalStartDir::default(),
+            auto_check_update: true,
+            last_update_check: None,
+            skipped_version: None,
         }
     }
 }
@@ -321,6 +350,61 @@ mod tests {
         assert_eq!(p.install_dir, None);
         // 没有「终端起始目录」= 用默认档位
         assert_eq!(p.terminal_dir, TerminalStartDir::Home);
+    }
+
+    // -- 更新提示 -----------------------------------------------------------
+
+    #[test]
+    fn update_fields_default_to_checks_on() {
+        let p: Prefs = serde_json::from_str("{}").unwrap();
+        // 默认开着：否则"更新提示"这个功能对老用户等于不存在。
+        assert!(p.auto_check_update);
+        assert_eq!(p.last_update_check, None, "没查过");
+        assert_eq!(p.skipped_version, None, "没跳过任何版本");
+        assert!(Prefs::default().auto_check_update);
+    }
+
+    #[test]
+    fn old_prefs_without_update_fields_still_load() {
+        // v0.9.x 写的 prefs.json 里没有这三个键 —— 升级上来不能报错。
+        let p: Prefs = serde_json::from_str(r#"{"refresh_secs":10}"#).unwrap();
+        assert_eq!(p.refresh_secs, 10);
+        assert!(p.auto_check_update);
+        assert_eq!(p.last_update_check, None);
+        assert_eq!(p.skipped_version, None);
+    }
+
+    #[test]
+    fn update_fields_round_trip() {
+        let p = Prefs {
+            auto_check_update: false,
+            last_update_check: Some(1_792_550_104),
+            skipped_version: Some("0.10.0".to_owned()),
+            ..Prefs::default()
+        };
+        let text = serde_json::to_string(&p).unwrap();
+        // 落盘形状锁一下：手工编辑 prefs.json 的人看到的就是这个
+        assert!(text.contains(r#""auto_check_update":false"#), "{text}");
+        assert!(text.contains(r#""skipped_version":"0.10.0""#), "{text}");
+        assert_eq!(serde_json::from_str::<Prefs>(&text).unwrap(), p);
+    }
+
+    #[test]
+    fn normalized_does_not_touch_update_fields() {
+        // 同 normalized_does_not_touch_terminal_dir 的理由：顺手"清理"别的字段
+        // 是最容易埋进去的 bug（改一次刷新间隔就把"跳过这个版本"抹掉，
+        // 用户第二天又会收到同一条提示，而且联想不到是我们干的）。
+        let prefs = Prefs {
+            refresh_secs: 99999,
+            auto_check_update: false,
+            last_update_check: Some(42),
+            skipped_version: Some("0.10.0".to_owned()),
+            ..Prefs::default()
+        }
+        .normalized();
+        assert!(!prefs.auto_check_update);
+        assert_eq!(prefs.last_update_check, Some(42));
+        assert_eq!(prefs.skipped_version.as_deref(), Some("0.10.0"));
     }
 
     #[test]

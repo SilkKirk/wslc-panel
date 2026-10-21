@@ -3818,6 +3818,11 @@ pub struct AppState {
     ///
     /// **不是** `wslc` 的配置 —— 见 `prefs.rs` 的说明。
     pub prefs: crate::prefs::Prefs,
+    /// 「关于」页那张更新卡的状态。
+    ///
+    /// 纯数据（`Phase` 不认识网络也不认识 GPUI）：判据在 `crate::update` 里，
+    /// 起 `curl.exe` 的那一半在 `wslc_core::cmd::update`。
+    pub update: crate::update::Phase,
     /// 系统的**应用主题**是不是深色（None = 没读到，按深色算）。
     ///
     /// 读一次是 7~27 ms（起 `reg.exe`，见 `wslc_core::cmd::win_theme`），
@@ -4034,6 +4039,8 @@ impl AppState {
             settings: None,
             settings_error: None,
             prefs: crate::prefs::Prefs::load(),
+            // 启动 8 秒后才会去查（见 `Shell::start_auto_check`），这里先记空闲。
+            update: crate::update::Phase::Idle,
             // 真正的值由 `main.rs` 在开窗之前填（那里才知道要不要读注册表）
             system_is_dark: None,
             busy: false,
