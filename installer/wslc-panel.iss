@@ -54,8 +54,20 @@ VersionInfoProductName={#AppName}
 VersionInfoDescription=WSL 容器与发行版管理面板
 
 [Languages]
-; ChineseSimplified.isl 是 Inno 官方语言文件（issrc 的 Files/Languages 里有）。
-Name: "zh"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+; ⚠️ 中文语言文件**随仓库带**（`installer\languages\ChineseSimplified.isl`），
+; 不用 `compiler:Languages\...`。
+;
+; 这条是被实测推翻过的：CI runner 上装的是 **Chocolatey 版** Inno
+; （`C:\ProgramData\Chocolatey\bin\ISCC.exe`），那个包**只装编译器**，
+; 没有官方安装包里才有的 `Languages\` 语言文件。于是
+; `compiler:Languages\ChineseSimplified.isl` 会报
+; `Couldn't open include file ... The system cannot find the file specified.`，
+; ISCC 退出码 **2**（v0.10.0 第一次发版就是这么红的）。
+;
+; 改成相对 .iss 的路径 + 把文件提交进仓库，就与 Inno 怎么装的无关了。
+; 文件来自 issrc 的 `Files/Languages/`，内容未改（只把换行统一成 CRLF）。
+Name: "zh"; MessagesFile: "languages\ChineseSimplified.isl"
+; Default.isl 是**编译器内置**的，任何安装形态都有 —— 它仍然可以用 compiler:。
 Name: "en"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]

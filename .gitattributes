@@ -15,3 +15,5 @@
 *.bat text eol=crlf
 # Inno Setup 的脚本：编译器要读的是 Windows 文本文件，别让它吃 LF
 *.iss text eol=crlf
+# Inno Setup 的语言文件（UTF-8 BOM + CRLF，别被规范化成 LF）
+*.isl text eol=crlf

@@ -131,8 +131,16 @@ jobs:
         # `dev-<sha>`，不是数字版本号，Inno 的 AppVersion 要的是数字。
         if: startsWith(env.TAG, 'v')
         shell: pwsh
-        # runner 镜像自带 InnoSetup 6.7.1（实测 2022/2025/2025-vs2026 的 readme），
-        # 所以这里不下载任何东西；脚本里也留了"找不到就给一句能照做的话"的分支。
+        # ⚠️ 这一步**失败不阻断发布**（continue-on-error）。
+        #
+        # 理由：安装包是**锦上添花**，exe 才是主产物。让它硬失败过一次了 ——
+        # v0.10.0 首跑就是因为 `ChineseSimplified.isl` 不在 Chocolatey 版的
+        # Inno 里而报错，结果连 exe 和 zip 都没发出去（后面两步被 skipped）。
+        # 安装包挂了应该退化成"这次只有 exe + zip"，而不是"这次什么都没有"；
+        # Release 那一步会按"存在就带上"自动处理缺失。
+        #
+        # 代价：安装包坏了不会让 release 变红，所以要**看这一步的日志**确认它真的产出了。
+        continue-on-error: true
         run: ./scripts/build-installer.ps1 -Version "$env:TAG" -ExeSource "$env:EXE" -OutputDir dist
 
       - name: 上传 Artifact
