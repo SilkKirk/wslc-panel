@@ -1,0 +1,62 @@
+// `wslc-panel.exe` 的图标 + 版本信息。
+//
+// # 为什么需要这个文件
+//
+// 没有它，exe 就是一个**没有任何资源段**的裸 PE —— Windows 只能给它画
+// 一张白纸图标（实机截图里就是这样：左边参考项目有图标，右边本程序是张纸）。
+// 快捷方式、任务栏、Alt+Tab、「应用和功能」里全都跟着丑。
+//
+// # 图标是画出来的，不是找来的
+//
+// `assets/wslc-panel.ico` 由 `assets/make-icon.py` 用 Pillow 程序化生成
+// （脚本就是图形的源码）。参考项目 wsl-dashboard 的图标是 GPL-3.0-only，
+// 按 `AGENTS.md` §6 一行都不能进本仓库。
+//
+// # 版本信息字段的来源
+//
+// 版本号从 `WSLC_PANEL_VERSION` 环境变量来，由 `build.rs` 注入（它读的是
+// `CARGO_PKG_VERSION`）。**不在这里写死** —— 写死就多出第 7 个要改版本号的地方，
+// 而 `AGENTS.md` §4 把这件事限定在"四个文件、六行"。
+//
+// 数字版本号必须是**四段**（`1.2.3.4`），三段在 VERSIONINFO 里不合法，
+// 所以由 build.rs 补一个 `.0`。
+
+#include <winver.h>
+
+// IDI_APPLICATION(32512) 是个约定俗成的"主图标"ID；资源管理器、快捷方式
+// 和 Inno 的 SetupIconFile 默认都找它。用 1 也能工作，但 32512 更省事
+// （不用在快捷方式里显式写 IconIndex）。
+//
+// ⚠️ 这个路径是**相对 crate 根**（`crates/wslc-panel`），不是相对 .rc 文件。
+// `embed-resource` 调 rc.exe 时的工作目录是 crate 根 —— 第一版写的是
+// `wslc-panel.ico`，CI 直接报 `RC2135 : file not found: wslc-panel.ico`。
+32512 ICON "../../assets/wslc-panel.ico"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    WSLC_PANEL_VERSION_NUMERIC
+ PRODUCTVERSION WSLC_PANEL_VERSION_NUMERIC
+ FILEFLAGSMASK  0x3fL
+ FILEFLAGS      0x0L
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_APP
+ FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        // 0804 = 简体中文，04B0 = Unicode。界面全中文，资源信息跟着走。
+        BLOCK "080404B0"
+        BEGIN
+            VALUE "FileDescription", "WSL 容器与发行版管理面板"
+            VALUE "FileVersion",     WSLC_PANEL_VERSION_STR
+            VALUE "InternalName",    "wslc-panel"
+            VALUE "OriginalFilename","wslc-panel.exe"
+            VALUE "ProductName",     "wslc-panel"
+            VALUE "ProductVersion",  WSLC_PANEL_VERSION_STR
+            VALUE "LegalCopyright",  "Apache-2.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200
+    END
+END
