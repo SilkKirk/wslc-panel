@@ -40,6 +40,10 @@ pub mod model;
 pub mod registry;
 pub mod settings;
 pub mod storage;
+// 更新检查（版本解析/比较 + GitHub release 响应解析）。**不碰网络**；
+// 起 `curl.exe` 的那一半在 `cmd::update`。
+// 刻意不做下载/校验/替换 exe —— 见那个模块顶部的说明。
+pub mod update;
 pub mod wslconfig;
 
 pub use cli::{CancelToken, CommandOutput, StreamHandle, Wsl, Wslc};

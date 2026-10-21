@@ -71,6 +71,11 @@ mod state {
 mod util {
     pub use wslc_panel_core::util::*;
 }
+// 更新提示的状态机与判据（纯逻辑，在 `wslc-panel-core` 里，单测由 CI 的
+// `core` job 跑）。起 `curl.exe` 的那一半在 `wslc_core::cmd::update`。
+mod update {
+    pub use wslc_panel_core::update::*;
+}
 
 // 具名导入（而不是 `as _`）：下面 `impl Write for LogWriter` 直接用这个名字，
 // 顺便让 `file.write_all(...)` 的 trait 方法解析有据可依。

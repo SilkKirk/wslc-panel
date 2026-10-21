@@ -71,6 +71,12 @@ jobs:
           }
           exit 0
 
+      - name: 纯逻辑测试（出包前自己先验一遍）
+        # 现在"main 上 CI 绿了才打标签"是靠人的纪律；发布流程本身不验证。
+        # 和 ci.yml 的 core 任务同一条命令（同样是 `--exclude wslc-panel`：
+        # 不为了几个断言把整棵 GPUI 链接一遍）。
+        run: cargo test --workspace --exclude wslc-panel --locked --profile ci
+
       - name: 编译 release
         env:
           # 注入提交号，让程序自己报出"构建自哪个提交" ——
@@ -120,6 +126,15 @@ jobs:
           Get-ChildItem dist | Select-Object Name, Length
           exit 0
 
+      - name: 编译安装包（Inno Setup）
+        # 只在 vX.Y.Z 标签上编：手动 dispatch 且没填 release_tag 时 `$tag` 是
+        # `dev-<sha>`，不是数字版本号，Inno 的 AppVersion 要的是数字。
+        if: startsWith(env.TAG, 'v')
+        shell: pwsh
+        # runner 镜像自带 InnoSetup 6.7.1（实测 2022/2025/2025-vs2026 的 readme），
+        # 所以这里不下载任何东西；脚本里也留了"找不到就给一句能照做的话"的分支。
+        run: ./scripts/build-installer.ps1 -Version "$env:TAG" -ExeSource "$env:EXE" -OutputDir dist
+
       - name: 上传 Artifact
         # 无条件上传：打标签时它和 Release 并存，
         # 手动触发时它就是唯一的产物出口。
@@ -142,15 +157,22 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $notes = @'
-          Windows x64 **单文件可执行程序**，下载下面的 `wslc-panel.exe` 直接运行即可，无需解压、无需安装。
+          Windows x64。三种取法，按需选一个：
 
-          （`wslc-panel-<tag>-windows-x64.zip` 是同一程序的压缩包，多带了 README 与 docs，按需取用。）
+          | 文件 | 用途 |
+          |---|---|
+          | `wslc-panel-<tag>-setup-x64.exe` | **安装包**（推荐）：per-user 安装，不弹 UAC，带开始菜单快捷方式与卸载项 |
+          | `wslc-panel.exe` | **单文件绿色版**：直接双击运行，无需解压、无需安装 |
+          | `wslc-panel-<tag>-windows-x64.zip` | 同一程序的压缩包，多带了 README 与 docs，归档/离线分发用 |
 
           **前置条件**：Windows 上装有 WSL 3.0 以上版本（提供 `wslc.exe`）。
           若安装在非默认路径，请设置环境变量 `WSLC_PATH` 指向它。
 
           **数据来源**：全部通过 `wslc.exe` 子进程 + `--format json`，
           不依赖 Docker Desktop，也不需要 WebView2。
+
+          > 分享文件请只分享 exe / setup，不要分享整个 `%LOCALAPPDATA%\wslc-panel`
+          > 目录 —— 里面的 `db-credentials.json` 存着数据库账号（明文密码）。
 
           ### 打不开怎么办
 
@@ -165,6 +187,13 @@ jobs:
           '@
           $notes | Out-File -FilePath NOTES.md -Encoding utf8
 
+          # 资产清单：setup 只在打了 v 标签时才编得出来（见上一步的 if），
+          # 所以这里按"存在就带上"来拼，不要在手动 dispatch 的 dev 构建上炸。
+          $assets = @($env:EXE, $env:ZIP)
+          $setup = "dist/wslc-panel-$env:TAG-setup-x64.exe"
+          if (Test-Path $setup) { $assets += $setup }
+          else { Write-Output "没有安装包（tag=$env:TAG 不是 vX.Y.Z？）—— 只发 exe + zip" }
+
           # 幂等：Release 可能已经存在 —— 比如同一个标签重跑工作流，
           # 或者用它给已存在的标签补资产。直接 `gh release create` 会报
           # "a release with the same tag name already exists" 而失败。
@@ -173,13 +202,13 @@ jobs:
 
           if ($exists) {
             Write-Output "Release $env:TAG 已存在 → 覆盖资产并更新说明"
-            gh release upload "$env:TAG" "$env:EXE" "$env:ZIP" --clobber
+            gh release upload "$env:TAG" $assets --clobber
             if ($LASTEXITCODE -ne 0) { throw "上传资产失败" }
             gh release edit "$env:TAG" --title "$env:TAG" --notes-file NOTES.md
           } else {
             Write-Output "创建 Release $env:TAG"
-            # 先传裸 exe（GitHub 会把它作为主要下载项），再传 zip。
-            gh release create "$env:TAG" "$env:EXE" "$env:ZIP" --title "$env:TAG" --notes-file NOTES.md
+            # 先传裸 exe（GitHub 会把它作为主要下载项），再传 zip / setup。
+            gh release create "$env:TAG" $assets --title "$env:TAG" --notes-file NOTES.md
             if ($LASTEXITCODE -ne 0) {
               # ⚠️ 竞态（v0.9.2 实测踩到，跑红过一次）：用 API 建标签时 GitHub
               # **会**同时起一个 `push: tags` 的 run（见 AGENTS §4 的更正），
@@ -189,7 +218,7 @@ jobs:
               # （发布其实是成功的，红叉是假的）。
               # 所以创建失败**不能直接放弃**：退到幂等那条路，把资产覆盖上去。
               Write-Output "创建失败（多半是并行的 push run 已经建好了）→ 退到覆盖资产 + 更新说明"
-              gh release upload "$env:TAG" "$env:EXE" "$env:ZIP" --clobber
+              gh release upload "$env:TAG" $assets --clobber
               if ($LASTEXITCODE -ne 0) { throw "上传资产失败" }
               gh release edit "$env:TAG" --title "$env:TAG" --notes-file NOTES.md
             }

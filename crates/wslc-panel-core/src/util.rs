@@ -16,6 +16,21 @@ pub fn human_secs(secs: u64) -> String {
     }
 }
 
+/// 当前的 Unix 时间（秒）。
+///
+/// 拿不到就返回 0：调用点只有两处（更新检查的节流、卡片上的"上次检查"），
+/// 两处对 0 都安全 —— 节流判据会因此认为"该检查了"（最坏多查一次，
+/// 而 60 次/小时的配额够用）；卡片上写"0 秒前"，属于可接受的退让。
+///
+/// 放在这里而不是各调用点自己写：三个地方各写一遍 `SystemTime::now()` +
+/// `duration_since` + `unwrap_or_default` 只会多出三种细微不同的写法。
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+}
+
 /// 页头那句「最后刷新：N 秒前」。
 ///
 /// 0 / 1 秒都写「刚刚」：自动刷新默认 3 秒，刚刷完就显示「1 秒前」

@@ -34,6 +34,9 @@ pub mod network;
 pub mod picker;
 pub mod registry;
 pub mod system;
+// 更新检查：起一次 `curl.exe` 问 GitHub「最新版是哪个」。
+// 解析在 `crate::update`（纯逻辑）。⚠️ 阻塞，只能在后台执行器上调。
+pub mod update;
 pub mod volume;
 pub mod win_theme;
 
