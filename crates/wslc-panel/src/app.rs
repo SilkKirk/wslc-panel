@@ -757,6 +757,22 @@ pub(crate) struct DbDialog {
     pub(crate) password: Entity<InputState>,
     /// 新建用户 / 授权：授权到哪个库（留空 = 不授权）。
     pub(crate) grant_db: Entity<InputState>,
+    /// 新建用户 / 授权：**同上面那一格的候选下拉框**（库列表里已有的业务库）。
+    ///
+    /// # 为什么是"输入框 + 下拉框"而不是把输入框换成下拉框
+    ///
+    /// 下拉框的候选来自已经读到的库列表（`DbState::grant_database_options`），
+    /// 而那个列表可能**还没读出来**（页面刚打开 / 读失败），也可能**不全**
+    /// （普通账号读不到别人的库）。那样一来"只能选"就等于把授权这件事
+    /// 堵死在一个可能为空的清单上。
+    ///
+    /// 所以两者是**同一格的两个入口**：下拉框选完写进输入框（
+    /// [`Shell::pick_grant_database`]），提交时**只读输入框**
+    /// （`submit_db_dialog` 里那一处 `text(&dialog.grant_db)`）——
+    /// 也就是说输入框是唯一的事实来源，下拉框只是快一点的录入方式。
+    /// 这和「创建容器」里"镜像引用输入框 + 本地镜像下拉框"是同一个形状
+    /// （那个也把下拉框定义成"从本地已有的镜像里挑一个的快捷方式"）。
+    pub(crate) grant_db_select: Entity<SelectState<Vec<DropdownItem>>>,
     /// 授权级别。
     pub(crate) grant: GrantKind,
     /// （仅新建数据库）**同时创建用户** —— v0.8 的主路径：建库的人几乎总是
@@ -3685,6 +3701,11 @@ impl Shell {
         let host = cx.new(|cx| InputState::new(window, cx).placeholder("%（任意主机）"));
         let password = cx.new(|cx| InputState::new(window, cx).placeholder("密码"));
         let grant_db = cx.new(|cx| InputState::new(window, cx).placeholder("留空 = 先不授权"));
+        // 候选下拉框：带搜索（库多的机器上一屏放不下），**空列表**在
+        // `fill_grant_db_select` 里补上 —— 这里先给空 `Vec`。
+        let grant_db_select = cx.new(|cx| {
+            SelectState::new(Vec::<DropdownItem>::new(), None, window, cx).searchable(true)
+        });
         let db_user = cx.new(|cx| InputState::new(window, cx).placeholder("例如 shop_user"));
         let import_path = cx.new(|cx| {
             InputState::new(window, cx).placeholder(r"点右边的「选择文件…」，或直接粘一个路径")
@@ -3714,6 +3735,9 @@ impl Shell {
             DbDialogKind::NewDatabase => &database,
             DbDialogKind::NewUser => &user,
             DbDialogKind::AlterPassword { .. } => &password,
+            // 授权：给**输入框**而不是上面那个下拉框。
+            // 输入框在两种情况下都可用（下拉框的候选可能是空的），而且
+            // 光标落进去就能直接打字；想用列表就点一下上面那格。
             DbDialogKind::Grant { .. } => &grant_db,
             // 导入：最该填的是**文件**（目标库已经由那一行定了）
             DbDialogKind::ImportSql { .. } => &import_path,
@@ -3721,7 +3745,7 @@ impl Shell {
         let handle = first.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
 
-        let input_subs = [&database, &charset, &collation]
+        let mut input_subs: Vec<Subscription> = [&database, &charset, &collation]
             .into_iter()
             .map(|input| {
                 cx.subscribe(input, |_, _, event: &InputEvent, cx| {
@@ -3731,6 +3755,41 @@ impl Shell {
                 })
             })
             .collect();
+        // 从下拉框里选了一个库 → 写进输入框。
+        //
+        // ⚠️ 这个订阅**不是可选的**：不订阅的话"从下拉框里选了一个库"什么都不会发生
+        // （输入框不变，提交时读的还是空 —— 界面上看起来像"选了但没生效"）。
+        // 和「创建容器」里 `image_select` 那条订阅同一个坑：`Subscription` 一 drop
+        // 就退订，所以必须存进 `DbDialog`。
+        //
+        // 用 `subscribe_in` 而不是 `subscribe`：回调里要把值写回 `InputState`，
+        // 而它的 `set_value` 要 `&mut Window`（`AGENTS.md` §7.2）。
+        input_subs.push(cx.subscribe_in(
+            &grant_db_select,
+            window,
+            |shell, _emitter, event: &SelectEvent<Vec<DropdownItem>>, window, cx| {
+                // 和本项目另外四处 `Select` 订阅同一个写法：只有"选了一项"才动作，
+                // 清空（`Confirm(None)`，下拉框开了 `cleanable` 才会有）不改输入框
+                // —— 那会把用户手打的内容一起抹掉，而"清空"在下拉框上的语义本来
+                // 就只是"我不从这儿选了"。
+                if let SelectEvent::Confirm(Some(database)) = event {
+                    shell.pick_grant_database(database.clone(), window, cx);
+                }
+            },
+        ));
+        // 反方向（输入框 → 下拉框）**刻意不做**，理由是一次重入：
+        //
+        // `pick_grant_database` 用 `InputState::set_value` 写值，而它会**同步**
+        // 发 `InputEvent::Change`；如果这里再订阅 `grant_db` 的 Change 去
+        // `grant_db_select.update(…)`，那条回调就在 `SelectState` 自己的
+        // `Confirm` 事件栈里跑 —— 等于在 `select.update(…)` 内部再
+        // `select.update(…)`，GPUI 会直接 panic（"already being updated"）。
+        //
+        // 代价是：用户手改了输入框之后，下拉框的显示会停在最后选中的那个库上。
+        // 这是**能看见的**不一致，所以在界面上用文案把"以哪格为准"说清楚
+        // （`views::grant_db_field` 把输入框标成最终生效的那一格），
+        // 而不是让两格去追一个会崩的双向同步。
+
         self.db_dialog = Some(DbDialog {
             _input_subs: input_subs,
             kind,
@@ -3741,11 +3800,85 @@ impl Shell {
             host,
             password,
             grant_db,
+            grant_db_select,
             grant: GrantKind::All,
             create_user,
             db_user,
             import_path,
         });
+
+        // 候选库（下拉框）要等 `db_dialog` 建好才填得进去。
+        self.fill_grant_db_select(window, cx);
+        cx.notify();
+    }
+
+    /// 把当前读到的**业务库**填进「授权到哪个库」的下拉框。
+    ///
+    /// 候选由 `DbState::grant_database_options()` 给（纯逻辑，带单测：
+    /// 排除系统库 + 按名字排序）。一候选都没有时下拉框就是空的，展开由
+    /// `Select::empty(…)` 说一句"还没读到库列表"（见 `views::grant_db_field`）
+    /// —— 这一格**不会**因此不可用：旁边那个输入框照样能手打。
+    ///
+    /// `set_items` 会把下拉框的选中项清掉，所以填完要把输入框里**已经写着**的
+    /// 那个库重新选上（用户可能是"先手打了库名，再想用下拉框换一个"）。
+    fn fill_grant_db_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dialog) = self.db_dialog.as_ref() else {
+            return;
+        };
+        // 只有这两个动作画那一格（`views::db_dialog_overlay` 里两处
+        // `grant_db_field`）。其余三种动作填了也没人看得见。
+        //
+        // 匹配**引用**（`&dialog.kind`）而不是 `dialog.kind`：`DbDialogKind`
+        // 不是 `Copy`（里面带着 `String`），按值匹配在共享引用后面借用不过。
+        if !matches!(
+            &dialog.kind,
+            DbDialogKind::NewUser | DbDialogKind::Grant { .. }
+        ) {
+            return;
+        }
+        let select = dialog.grant_db_select.clone();
+        let current = dialog.grant_db.read(cx).value().trim().to_owned();
+        let items: Vec<DropdownItem> = self
+            .state
+            .db
+            .as_ref()
+            .map(|db| db.grant_database_options())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|name| DropdownItem::new(name.clone(), name))
+            .collect();
+
+        select.update(cx, |state, cx| {
+            state.set_items(items, window, cx);
+            if !current.is_empty() {
+                state.set_selected_value(&current, window, cx);
+            }
+        });
+    }
+
+    /// 「新建用户 / 授权」弹窗里从下拉框选了一个库：写进输入框。
+    ///
+    /// # 为什么只往这一个方向同步
+    ///
+    /// 输入框是**唯一的事实来源**（`submit_db_dialog` 只读它），所以这里只需
+    /// 把值写进去。反方向（输入框 → 下拉框）**刻意不做**：`set_value` 会
+    /// **同步**发 `InputEvent::Change`，那条回调是在 `SelectState` 自己的
+    /// `Confirm` 事件栈里跑的 —— 再 `select.update(…)` 就是 GPUI 的
+    /// "already being updated" panic。
+    ///
+    /// 代价要认：用户手改输入框之后，下拉框可能还显示着上一次选中的库。
+    /// 所以 `views::grant_db_field` 在输入框下面写着"**以这里为准**"，
+    /// 让"哪一格生效"在界面上是看得出来的，而不是靠用户猜。
+    pub fn pick_grant_database(
+        &mut self,
+        database: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(input) = self.db_dialog.as_ref().map(|d| d.grant_db.clone()) else {
+            return;
+        };
+        input.update(cx, |state, cx| state.set_value(database, window, cx));
         cx.notify();
     }
 
