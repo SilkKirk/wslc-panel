@@ -2690,11 +2690,7 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
                     .child(format!("账号：'{user}'@'{host}'"))
                     .into_any_element(),
             );
-            fields.push(grant_db_field(
-                dialog,
-                "db-dialog-grant-db",
-                "授权到哪个库",
-            ));
+            fields.push(grant_db_field(dialog, "db-dialog-grant-db", "授权到哪个库"));
             fields.push(grant_kind_row(dialog.grant, entity));
         }
         DbDialogKind::ImportSql { database } => {
