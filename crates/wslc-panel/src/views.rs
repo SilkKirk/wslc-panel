@@ -64,7 +64,7 @@ use gpui_kit::component::checkbox::Checkbox;
 // （`ImageForm` 则是「拉取镜像」弹窗的表单）—— 两者的纯数据部分都在
 // `wslc-core` / `wslc-panel-core`，这里只是画出来。
 use crate::app::{
-    CreateDialog, DbDialogKind, DbPageForm, FactsState, ImageForm, InstallForm, Shell,
+    CreateDialog, DbDialog, DbDialogKind, DbPageForm, FactsState, ImageForm, InstallForm, Shell,
     WslConfDialog,
 };
 // 列宽定义与配置项预设值都是纯数据，住在不依赖 GPUI 的 `wslc-panel-core` 里
@@ -2657,12 +2657,10 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
                 cx,
                 true,
             ));
-            fields.push(form_field(
+            fields.push(grant_db_field(
+                dialog,
                 "db-dialog-grant-db",
                 "授权到哪个库（可留空）",
-                &dialog.grant_db,
-                cx,
-                true,
             ));
             fields.push(grant_kind_row(dialog.grant, entity));
         }
@@ -2692,13 +2690,7 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
                     .child(format!("账号：'{user}'@'{host}'"))
                     .into_any_element(),
             );
-            fields.push(form_field(
-                "db-dialog-grant-db",
-                "授权到哪个库",
-                &dialog.grant_db,
-                cx,
-                true,
-            ));
+            fields.push(grant_db_field(dialog, "db-dialog-grant-db", "授权到哪个库"));
             fields.push(grant_kind_row(dialog.grant, entity));
         }
         DbDialogKind::ImportSql { database } => {
@@ -2839,6 +2831,85 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
             ),
     )
     .into_any_element()
+}
+
+/// 「授权到哪个库」那一格：**下拉框（选已有的库）+ 输入框（手打 / 留空）**。
+///
+/// # 为什么两个控件都留着
+///
+/// 下拉框的候选来自已读到的库列表，而那个列表可能**还没读出来**（页面刚进、
+/// 读失败），也可能**不全**（普通账号读不到别人的库 —— `mysql.user` 那条
+/// 已经实测会给 `ERROR 1142`，库列表是同一类权限问题）。只给下拉框就会把
+/// "授权"这件事堵死在一个可能为空的清单上。
+///
+/// 所以：**输入框是唯一的事实来源**，下拉框选完把值写进输入框
+/// （`Shell::pick_grant_database`），提交时只读输入框（`submit_db_dialog`）。
+/// 这个形状和「创建容器」里"镜像引用输入框 + 本地镜像下拉框"完全一致，
+/// 理由也一样（那边把下拉框定义成"从本地已有的镜像里挑一个的快捷方式"）。
+///
+/// ⚠️ 同步只有**单向**（下拉框 → 输入框）：反方向会在 `SelectState` 的
+/// `Confirm` 事件栈里重入 `select.update`，GPUI 会 panic。代价是用户手改输入框
+/// 之后下拉框可能还显示着上一次选中的库，所以在输入框下面写明"以这里为准"。
+///
+/// ⚠️ 订阅（选中 → 写回输入框）在 `Shell::open_db_dialog` 里建，不在这里：
+/// 渲染函数每帧都跑，`subscribe_in` 放这儿就等于每帧叠一个新订阅。
+///
+/// # 为什么下拉框画在输入框**上面**
+///
+/// 用户的心智是"先挑一个常见的，挑不到再手打"；反过来的话，手打完看见下面
+/// 还挂着一个"请选择"的下拉框，会以为那一格没填好。
+fn grant_db_field(dialog: &DbDialog, id: &'static str, label: &'static str) -> AnyElement {
+    v_flex()
+        .w_full()
+        .gap_1()
+        .child(div().text_xs().text_color(theme::text_dim()).child(label))
+        .child(
+            Select::new(&dialog.grant_db_select)
+                // `placeholder` 是"**还没选**"的文案，不是空状态（v0.6.5 踩过：
+                // 空状态写进 placeholder，于是展开明明有候选、触发器却写着
+                // "本地还没有镜像"）。这里说的正是"还没从列表里选"。
+                .placeholder("从已有的库里选一个…（也可以在下面手打）")
+                // 候选菜单**默认和触发器一样宽**（`menu_width` 默认
+                // `Length::Auto`）；这一格在 680px 的卡片里还要和标签对齐，
+                // 不给宽一点就是每个候选都挂省略号。
+                .menu_width(px(420.))
+                .menu_max_h(px(320.))
+                .empty(|_, _| {
+                    div()
+                        .px_3()
+                        .py_2()
+                        .text_sm()
+                        .text_color(theme::text_muted())
+                        .child("还没读到库列表 —— 直接在下面手打库名")
+                })
+                .w_full(),
+        )
+        .child(Input::new(&dialog.grant_db).id(id).w_full())
+        // 这句话是**功能**不是装饰：两格都可能显示得不一样（单向同步的代价），
+        // 不说清楚用户就得猜提交时用的是哪一个。
+        //
+        // ⚠️ 后半句跟着动作走：「新建用户」可以留空（先建账号，以后再授权，
+        // `submit_db_dialog` 那边允许），「授权」**不能**留空（那边会报
+        // "请填要授权给哪个数据库"）。两处都写"留空 = 不授权"就是在
+        // 一个必填的弹窗里说它可以留空 —— 用户会照着做然后吃到一条错误。
+        //
+        // 过 `strip_md` 是守规矩而不是当下需要：`AGENTS.md` §5 那条规矩是
+        // 给"以后加粗的人"的守卫。
+        .child({
+            // 匹配**引用**：`DbDialogKind` 不是 `Copy`（里面带着 `String`），
+            // 按值匹配在共享引用后面借用不过。
+            let suffix = match &dialog.kind {
+                DbDialogKind::Grant { .. } => "必填。",
+                _ => "留空 = 先不授权。",
+            };
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child(crate::util::strip_md(&format!(
+                    "以输入框里的库名为准；下拉框只是帮你填入。{suffix}"
+                )))
+        })
+        .into_any_element()
 }
 
 /// 授权级别那一排按钮（选中态用 `primary` 配色，和别处一致）。

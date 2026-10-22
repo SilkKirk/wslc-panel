@@ -2232,6 +2232,32 @@ impl DbState {
             .iter()
             .filter(|user| !user.is_hidden_by_default())
     }
+
+    /// 「授权到哪个库」那个下拉框里的候选（**业务库，按名字排序**）。
+    ///
+    /// # 为什么排除系统库
+    ///
+    /// 和「数据库」tab 不显示它们同一个理由，但这里更要紧：`GRANT ALL ON mysql.*`
+    /// 差不多等于把一个账号提成 root（`mysql.user` 就在那个库里），而下拉框是
+    /// **选一个就生效**的控件 —— 误选的代价太大。真要授给系统库，旁边那个输入框
+    /// 还能手打（下拉框只是快捷方式，见 `views::grant_db_field`）。
+    ///
+    /// # 为什么排序
+    ///
+    /// 列表来自一条 `ORDER BY SCHEMA_NAME` 的 SQL，本来就是有序的；这里再排一次
+    /// 是为了让"候选顺序"不依赖那条 SQL —— 将来换个查询、或者在别处填
+    /// `databases`，下拉框的顺序都不该跟着变（下拉框的顺序变了，用户凭位置
+    /// 点选就会点错）。
+    pub fn grant_database_options(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .databases
+            .iter()
+            .filter(|entry| !entry.is_system())
+            .map(|entry| entry.name.clone())
+            .collect();
+        names.sort();
+        names
+    }
 }
 
 /// 把用户敲的一行命令变成 `wslc exec` 的 argv。
@@ -6448,6 +6474,38 @@ mod tests {
         let visible: Vec<&DbUser> = state.visible_users().collect();
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].user, "djxm_user");
+    }
+
+    #[test]
+    fn grant_database_options_skip_system_schemas_and_sort() {
+        let mut state = DbState::provisional("mysql", "mysql:8", MysqlFamily::Mysql);
+        // 故意给一个**乱序**的列表：`list_databases_sql` 现在带 `ORDER BY`，
+        // 但下拉框的顺序不该依赖那条 SQL（用户会凭位置点选）。
+        state.databases = ["shop", "mysql", "blog", "information_schema", "app"]
+            .into_iter()
+            .map(|name| DbEntry {
+                name: name.to_owned(),
+                charset: "utf8mb4".to_owned(),
+                collation: "utf8mb4_0900_ai_ci".to_owned(),
+                tables: 0,
+                bytes: 0,
+            })
+            .collect();
+
+        // 系统库不给候选：`GRANT ALL ON mysql.*` 近似提权，而下拉框是
+        // "选一下就生效"的控件 —— 误选的代价太大（要授就给旁边那个输入框手打）。
+        assert_eq!(
+            state.grant_database_options(),
+            vec!["app".to_owned(), "blog".to_owned(), "shop".to_owned()]
+        );
+    }
+
+    #[test]
+    fn grant_database_options_are_empty_before_the_lists_load() {
+        // 还没读到列表（`loaded == false`）时是空候选 —— 界面那边据此画空状态，
+        // 而不是画一个"展开什么都没有"的下拉框。
+        let state = DbState::provisional("mysql", "mysql:8", MysqlFamily::Mysql);
+        assert!(state.grant_database_options().is_empty());
     }
 
     #[test]
