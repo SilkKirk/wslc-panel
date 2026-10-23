@@ -34,6 +34,9 @@ use wslc_core::model::{
     RootCredHint, SqlMode, SystemInfo, VolumeListItem, WslStatus, parse_size,
 };
 use wslc_core::settings::SettingsDoc;
+// SQL 控制台的结构化结果。`SqlResult` 住在 `wslc-core` 的 `model/` 里
+// （纯逻辑、能脱离 Windows 单测），这里只装它。
+use wslc_core::model::sqlresult::SqlResult;
 // 会话存储的位置与占用：基本信息页「存储」那一环要的是它算出来的盘容量
 // （模板里那份 `StorageInfo` 自己带着 `VolumeSpace`）。
 use wslc_core::storage::{StorageInfo, VolumeSpace};
@@ -2084,8 +2087,32 @@ pub struct DbState {
     pub tab: DbTab,
     /// SQL 控制台：上一次执行的语句（回显用）。
     pub last_sql: String,
-    /// SQL 控制台的输出。
-    pub sql_output: Option<String>,
+    /// SQL 控制台的结果：**每条语句一个**（v0.11 起）。
+    ///
+    /// # 为什么是 `Vec` 而不是一个 `Option<String>`
+    ///
+    /// 用户可能一次贴进多条语句（`SELECT ...; UPDATE ...; SELECT ...`）。
+    /// 一次交给 `mysql -e` 的话多个结果集**直接粘连**（实测，见
+    /// `wslc_core::model::sqlstmt` 的模块文档），分不清哪行属于哪条 ——
+    /// 所以现在是**客户端切分 + 逐条执行**（`cmd::mysql::run_statements`），
+    /// 每条产出一个 [`SqlResult`]，界面上按 tab 分开看。
+    pub sql_results: Vec<SqlResult>,
+    /// SQL 控制台的**原始** `--table` 输出（v0.11 之前唯一的形态）。
+    ///
+    /// 留着当"看原始输出"的兜底：排查列宽异常 / 字符集问题时，
+    /// mysql 原样打了什么比任何解析结果都有说服力。
+    pub sql_raw: Option<String>,
+    /// 执行的语句**报错**时的原文（`None` = 没报错）。
+    ///
+    /// 和 `sql_raw` 分开：错误不是"结果"，它的渲染是红字 + 原样保留换行，
+    /// 而结果表格是另一套。
+    pub sql_error: Option<String>,
+    /// 上一次执行一共花了多少毫秒（页脚那行"· 0.08 s"用）。
+    ///
+    /// 含 `wslc exec` 的固定开销（实测每条约 70ms）—— 所以它**不是**服务端
+    /// 的查询耗时，是"用户从点下到看见结果"的时间。页脚里不说"查询耗时"，
+    /// 只说数字加单位，免得被误读。
+    pub sql_elapsed_ms: u64,
     /// SQL 控制台跑过没有（区分"还没跑过"和"跑完了没有输出"）。
     pub sql_ran: bool,
     /// SQL 控制台**针对哪个库**（`None` = 不指定，靠语句自己 `USE`）。
@@ -2252,7 +2279,10 @@ impl DbState {
             loaded: false,
             tab: DbTab::default(),
             last_sql: String::new(),
-            sql_output: None,
+            sql_results: Vec::new(),
+            sql_raw: None,
+            sql_error: None,
+            sql_elapsed_ms: 0,
             sql_ran: false,
             sql_database: None,
             backup: None,

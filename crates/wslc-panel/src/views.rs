@@ -28,6 +28,9 @@ use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 // ⚠️ 它的大小只能用 `Sizable::with_size()` 设，别用 Styled 的 `.size()`
 // —— 见 `views::gauge` 里那段说明。
 use gpui_kit::component::progress::ProgressCircle;
+// SQL 结果表格（v0.11）：`DataTable` 是 gpui-kit 自带的虚拟滚动表格，
+// 支持列宽拖拽 / 排序 / 单元格选择。delegate 在 `crate::sql_table`。
+use gpui_kit::component::table::DataTable;
 // 注意：这里**不导入** `Disableable` —— 全项目不再使用 `.disabled()`：
 // gpui-component 的禁用态文字几乎看不清，改用"守卫 + 文案"表达不可用状态。
 use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
@@ -1704,9 +1707,14 @@ pub fn db_info_overlay(
 ///
 /// 所以入口只有一处：数据库列表那一行的「SQL」按钮（`open_db_console_for`，
 /// 它顺手把这个库的账号写进连接卡）。
+/// SQL 控制台浮层。
+///
+/// `shell` 是给结果表格用的（`TableState` 在 `Shell` 上，`wslc-panel-core`
+/// 装不下 GPUI 实体 —— 见 `Shell::sql_table` 的注释）。
 pub fn db_console_overlay(
     db: &DbState,
     form: &DbPageForm,
+    shell: &Shell,
     entity: &Entity<Shell>,
     cx: &App,
 ) -> AnyElement {
@@ -1753,14 +1761,17 @@ pub fn db_console_overlay(
                     )
                     .child(close),
             )
-            // 控制台本体（输入框 + 输出）—— 输出可能很长，`db_console_card`
-            // 里的输出区自己就是滚动的（`log_text`，带 id）。
+            // 控制台本体（输入框 + 结果表格）。
+            //
+            // ⚠️ 这一层**不能**再是 `overflow_y_scroll` + `max_h`：
+            // `DataTable` 自己管滚动，外面再套一层滚动会让表头跟着滚走，
+            // 而且虚拟滚动算可见行时会拿到错误的高度。高度由
+            // `db_console_card` 内部的 `flex_1` 撑，外层只限最大高度。
             .child(
                 v_flex()
                     .id("db-console-body")
                     .max_h(px(520.))
-                    .overflow_y_scroll()
-                    .child(db_console_card(db, form, entity, cx)),
+                    .child(db_console_card(db, form, shell, entity, cx)),
             ),
     )
     .into_any_element()
@@ -2414,6 +2425,7 @@ fn db_users_card(db: &DbState, shell: &Shell, cx: &App, entity: &Entity<Shell>) 
 fn db_console_card(
     db: &DbState,
     form: &DbPageForm,
+    shell: &Shell,
     entity: &Entity<Shell>,
     cx: &App,
 ) -> AnyElement {
@@ -2464,10 +2476,23 @@ fn db_console_card(
             .into_any_element()
     };
 
-    // 三种状态分开：没跑过 / 跑完了没输出 / 有输出。
-    // （`log_text(None, ..)` 会显示"正在加载…"，那在这儿是错的。）
-    let output: AnyElement = if db.sql_ran || db.sql_output.is_some() {
-        log_text(db.sql_output.as_deref(), "db-sql-output")
+    // 三种状态分开：没跑过 / 报错 / 有结果（v0.11 起结果是表格，不是一段文本）。
+    let output: AnyElement = if let Some(error) = db.sql_error.as_ref() {
+        // 报错：红字 + 原样保留换行（`run_statements` 会说清第几条、
+        // 以及前几条已经生效了）。
+        v_flex()
+            .w_full()
+            .gap_1()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::danger())
+                    .child("执行失败"),
+            )
+            .child(log_text(Some(error), "db-sql-error"))
+            .into_any_element()
+    } else if db.sql_ran {
+        db_sql_results(db, shell, entity, cx)
     } else {
         div()
             .text_sm()
@@ -2543,7 +2568,10 @@ fn db_console_card(
                         .items_center()
                         .child(
                             div().text_xs().text_color(theme::text_muted()).child(
-                                "SHOW / SELECT / DDL 都能跑；输出是 mysql 客户端的表格形态。",
+                                // ⚠️ 这句话必须同时说清两件事，否则用户会困惑：
+                                // 1. 多条语句**是一条条单独跑的**（不是一次交给 mysql）；
+                                // 2. 所以每条有 70ms 起步的开销（实测），语句多会慢。
+                                "SHOW / SELECT / DDL 都能跑；多条语句逐条执行（每条约 70ms 起步）。",
                             ),
                         )
                         .child(run),
@@ -2551,6 +2579,126 @@ fn db_console_card(
         )
         .child(echo)
         .child(output)
+        .into_any_element()
+}
+
+/// SQL 结果区（v0.11）：多语句的 tab + 结果表格 + 页脚。
+///
+/// # 为什么表格要 `flex_1` + 固定高度
+///
+/// `DataTable` 是**虚拟滚动**的：它需要知道"我有多高"才能算出可见行范围。
+/// 放在一个高度不定的容器里，它会算错（表现为滚动条乱跳 / 底部空白）。
+/// 所以这里给结果区一个明确的 `h(px(360.))`。
+///
+/// # 三种形态
+///
+/// 1. **没有任何结果**（全是 DDL）→ 一句话，不画空表格；
+/// 2. **有表格** → `DataTable` + 页脚；
+/// 3. **结果集为空但有列名**（`SELECT ... WHERE 1=0`）→ 也画表格（空的），
+///    因为列名本身是有效信息。
+fn db_sql_results(
+    db: &DbState,
+    shell: &Shell,
+    entity: &Entity<Shell>,
+    _cx: &App,
+) -> AnyElement {
+    let Some(result) = db.sql_results.get(shell.sql_result_tab) else {
+        return div()
+            .text_sm()
+            .text_color(theme::text_dim())
+            .child("执行成功，没有返回行")
+            .into_any_element();
+    };
+
+    // 多语句：结果之间用一排小按钮切换。
+    let tabs = if db.sql_results.len() > 1 {
+        let buttons: Vec<AnyElement> = db
+            .sql_results
+            .iter()
+            .enumerate()
+            .map(|(ix, r)| {
+                let entity = entity.clone();
+                let active = ix == shell.sql_result_tab;
+                let label = crate::sqlview::result_tab_label(ix, r);
+                let mut b = Button::new(SharedString::from(format!("db-sql-tab-{ix}")))
+                    .label(label)
+                    .small();
+                if active {
+                    b = b.primary();
+                }
+                b.on_click(move |_, window, cx| {
+                    entity.update(cx, |shell, cx| {
+                        shell.switch_sql_result_tab(ix, window, cx)
+                    });
+                })
+                .into_any_element()
+            })
+            .collect();
+        h_flex().w_full().gap_1().children(buttons).into_any_element()
+    } else {
+        div().into_any_element()
+    };
+
+    // 表格本体。`shell.sql_table` 为 `None` 说明这个结果没有表格
+    // （DDL / 无输出），画一句话就够。
+    let grid: AnyElement = match shell.sql_table.as_ref() {
+        Some(state) => div()
+            .w_full()
+            // 高度固定，理由见函数文档
+            .h(px(360.))
+            .child(DataTable::new(state))
+            .into_any_element(),
+        None => div()
+            .text_sm()
+            .text_color(theme::text_dim())
+            .child("执行成功，没有返回行")
+            .into_any_element(),
+    };
+
+    // 页脚：行数 / 列数 / 耗时。文案规则在 `sqlview::footer_text`（有单测）。
+    let footer = div()
+        .text_xs()
+        .text_color(theme::text_muted())
+        .child(crate::sqlview::footer_text(result, db.sql_elapsed_ms));
+
+    // 原始输出开关：排查列宽 / 字符集问题时，mysql 原样打了什么最有用。
+    let raw_toggle: AnyElement = match db.sql_raw.as_ref() {
+        Some(raw) if !raw.trim().is_empty() => {
+            let entity = entity.clone();
+            Button::new("db-sql-raw-toggle")
+                .label("看原始输出")
+                .small()
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |shell, cx| shell.toggle_sql_raw(cx));
+                })
+                .into_any_element()
+        }
+        _ => div().into_any_element(),
+    };
+
+    let raw_panel: AnyElement = if shell.sql_raw_open {
+        match db.sql_raw.as_deref() {
+            Some(raw) => log_text(Some(raw), "db-sql-raw"),
+            None => div().into_any_element(),
+        }
+    } else {
+        div().into_any_element()
+    };
+
+    v_flex()
+        .w_full()
+        .gap_2()
+        .child(tabs)
+        .child(grid)
+        .child(
+            h_flex()
+                .w_full()
+                .justify_between()
+                .items_center()
+                .child(footer)
+                .child(raw_toggle),
+        )
+        .child(raw_panel)
         .into_any_element()
 }
 

@@ -36,6 +36,10 @@
 // 上面那个 `#[test]` 宏被遮蔽的坑因此也不会在这里遇到。
 
 mod app;
+// SQL 结果表格：把 `SqlResult` 接上 gpui-kit 的 `DataTable`。
+// 展示规则（列宽 / 单元格分类 / 页脚 / CSV）在 `wslc-panel-core::sqlview`，
+// 那里是纯函数、CI 能测；这个模块只负责把算好的东西画出来。
+mod sql_table;
 mod theme;
 mod views;
 
@@ -67,6 +71,11 @@ mod presets {
 }
 mod state {
     pub use wslc_panel_core::state::*;
+}
+// SQL 结果表格的显示逻辑（列宽 / 单元格分类 / 页脚 / CSV）。
+// 和 `state` 一样只是路径垫片 —— 实现在 `wslc-panel-core`，那里能单测。
+mod sqlview {
+    pub use wslc_panel_core::sqlview::*;
 }
 mod util {
     pub use wslc_panel_core::util::*;

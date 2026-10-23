@@ -990,6 +990,29 @@ pub struct Shell {
     ///
     /// `pub(crate)`：页面在 `views.rs` 里渲染。
     pub(crate) db_form: Option<DbPageForm>,
+    /// SQL 结果表格的 `TableState`（v0.11）。
+    ///
+    /// # 为什么在 `Shell` 而不是 `AppState`
+    ///
+    /// `TableState` 是 GPUI 的实体（`Entity<TableState<D>>`），`wslc-panel-core`
+    /// 不依赖 GPUI，装不下它。这和 `container_search` 的处境一样：
+    /// **界面状态**留在 `Shell`，纯数据（`DbState::sql_results`）在 `AppState`。
+    ///
+    /// # 什么时候重建
+    ///
+    /// 每次跑完 SQL 就**整个换掉**（见 [`Shell::apply_db_console_result`]）：
+    /// 结果集变了，列定义、行、排序全都要重新来。缓存着旧的不如重建 ——
+    /// 重建的代价只是按列名估一次宽度（前 100 行），微不足道。
+    pub(crate) sql_table: Option<
+        Entity<gpui_kit::component::table::TableState<crate::sql_table::SqlResultDelegate>>,
+    >,
+    /// 当前在看的**第几个**结果（多语句时按 tab 分开）。
+    pub(crate) sql_result_tab: usize,
+    /// 「看原始输出」是不是展开着。
+    ///
+    /// 原始输出（`mysql --table` 的 ASCII 表格）不常看 —— 只在排查
+    /// 列宽异常 / 字符集问题时才有用，所以默认收起。
+    pub(crate) sql_raw_open: bool,
     /// 「数据库管理」页的一次性动作弹窗；关闭时为 `None`。
     ///
     /// 和 `create_dialog` 一样懒创建（`InputState::new` 要 `&mut Window`）。
@@ -1169,6 +1192,9 @@ impl Shell {
             status_tick: 0,
             deploy_tick: 0,
             db_form: None,
+            sql_table: None,
+            sql_result_tab: 0,
+            sql_raw_open: false,
             db_dialog: None,
             db_info_open: false,
             db_console_open: false,
@@ -4470,10 +4496,16 @@ impl Shell {
         self.run_db_statement(container, bin, creds, sql, title, to_record, window, cx);
     }
 
-    /// SQL 控制台：执行输入框里那条语句。
+    /// SQL 控制台：执行输入框里那段脚本（**切分后逐条执行**）。
     ///
-    /// 结果**原样**展示（`--table` 形态：stdout 不是 tty 时 mysql 默认是
-    /// batch，不显式要表格的话控制台里会是一堆 tab）。
+    /// # v0.11 起结果不再是"一段文本"
+    ///
+    /// 之前是 `--table` 的 ASCII 表格整段塞进 `log_text` —— 用户看不懂
+    /// （实机反馈原话："现有的这个查询界面和数据展示很难看懂"）。现在：
+    ///
+    /// - 客户端切分（`model::sqlstmt`）→ 逐条执行（`cmd::mysql::run_statements`）；
+    /// - 每条一个 `SqlResult`，界面上画成真正的表格（`views::db_console_card`）；
+    /// - 同时留一份 `--table` 的原文进 `sql_raw`，作"看原始输出"的兜底。
     pub fn run_db_console(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(form) = self.db_form.as_ref() else {
             return;
@@ -4509,7 +4541,9 @@ impl Shell {
             db.busy = true;
             db.clear_error();
             db.last_sql = sql.clone();
-            db.sql_output = None;
+            db.sql_results.clear();
+            db.sql_raw = None;
+            db.sql_error = None;
             db.sql_ran = false;
         }
         cx.notify();
@@ -4524,53 +4558,163 @@ impl Shell {
                 let database = database.clone();
                 cx.background_executor()
                     .spawn(async move {
-                        run_console_sql(&wslc, &target, &bin, &creds, &sql, database.as_deref())
-                            .map_err(|e| e.to_string())
+                        let started = std::time::Instant::now();
+                        // 结构化结果（界面画表格）+ 原始文本（兜底）。
+                        //
+                        // `run_statements` 逐条跑；`run_console_sql` 那一次
+                        // `--table` 只跑**整段**，专门用来留原文 ——
+                        // 多花一次 exec 换"能看到 mysql 原样打了什么"，
+                        // 排障时这点开销值得。
+                        let structured = wslc_core::cmd::mysql::run_statements(
+                            &wslc,
+                            &target,
+                            &bin,
+                            &creds,
+                            &sql,
+                            database.as_deref(),
+                        );
+                        let elapsed = started.elapsed().as_millis() as u64;
+                        let raw = wslc_core::cmd::mysql::run_console_sql(
+                            &wslc,
+                            &target,
+                            &bin,
+                            &creds,
+                            &sql,
+                            database.as_deref(),
+                        )
+                        .ok();
+                        (structured.map_err(|e| e.to_string()), raw, elapsed)
                     })
                     .await
             };
 
-            let _ = this.update_in(cx, |shell, _window, cx| {
-                let mut reload = false;
-                if let Some(db) = shell.state.db.as_mut() {
-                    if db.container != container {
-                        return;
-                    }
-                    db.busy = false;
-                    db.sql_ran = true;
-                    match result {
-                        Ok(output) => {
-                            db.sql_output = Some(output);
-                            db.clear_error();
-                            // 控制台可能刚改了库 / 表 —— 顺手把列表刷新一次。
-                            // 失败时列表不会变，就不白跑一趟了。
-                            reload = true;
-                        }
-                        Err(message) => {
-                            // SQL 报错**不算**页面级错误：它就发生在控制台里，
-                            // 显示在控制台下面比顶到页头更贴合上下文。
-                            //
-                            // ⚠️ 这里必须把原文放进 `sql_output`：只置
-                            // `sql_ran = true` 而让 `sql_output` 是 `None` 的话，
-                            // 渲染那边（`db.sql_ran || db.sql_output.is_some()`）
-                            // 会走到 `log_text(None)` —— 也就是显示
-                            // **"正在加载…"**，而真正的报错被顶到页头去了。
-                            // 实机截图抓到的就是这个（`show database` 拼错那次：
-                            // 控制台底下写着"正在加载…"）。
-                            db.sql_output = Some(message);
-                            // 页面级那条留给"读列表 / 连接"这类失败，
-                            // 清了它免得同一条错误在屏幕上出现两遍。
-                            db.clear_error();
-                        }
-                    }
-                }
-                if reload {
-                    shell.reload_db_lists(cx);
-                }
-                cx.notify();
+            let _ = this.update_in(cx, |shell, window, cx| {
+                shell.apply_db_console_result(container, result, window, cx);
             });
         })
         .detach();
+    }
+
+    /// 把一次 SQL 执行的结果敲进状态。
+    ///
+    /// `result` 是 `(结构化结果, 原始输出, 耗时毫秒)`。拆成独立函数是为了
+    /// 让 `spawn_in` 那个闭包只做"搬运"，判断都集中在有注释的这里。
+    ///
+    /// ⚠️ 要 `&mut Window`：结果集变了就得**重建** `TableState`
+    /// （`TableState::new` 要 window，和 `InputState::new` 同一个道理）。
+    fn apply_db_console_result(
+        &mut self,
+        container: String,
+        result: (
+            std::result::Result<Vec<wslc_core::model::sqlresult::SqlResult>, String>,
+            Option<String>,
+            u64,
+        ),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (structured, raw, elapsed_ms) = result;
+        let mut reload = false;
+        // 重建表格要用的东西先算好（`sql_table` 是 `self` 的字段，
+        // 而 `db` 借的是 `self.state`，两者同时可变借用会撞车）。
+        let mut new_table: Option<wslc_core::model::sqlresult::SqlResult> = None;
+        if let Some(db) = self.state.db.as_mut() {
+            if db.container != container {
+                return;
+            }
+            db.busy = false;
+            db.sql_ran = true;
+            db.sql_elapsed_ms = elapsed_ms;
+            db.sql_raw = raw;
+            match structured {
+                Ok(results) => {
+                    db.sql_results = results;
+                    db.sql_error = None;
+                    db.clear_error();
+                    // 第一个**有表格**的结果作为默认 tab —— 全是 DDL 时停在 0。
+                    let first_grid = db
+                        .sql_results
+                        .iter()
+                        .position(|r| !r.columns.is_empty())
+                        .unwrap_or(0);
+                    new_table = db.sql_results.get(first_grid).cloned();
+                    self.sql_result_tab = first_grid;
+                    // 控制台可能刚改了库 / 表 —— 顺手把列表刷新一次。
+                    // 失败时列表不会变，就不白跑一趟了。
+                    reload = true;
+                }
+                Err(message) => {
+                    // SQL 报错**不算**页面级错误：它就发生在控制台里，
+                    // 显示在控制台下面比顶到页头更贴合上下文。
+                    //
+                    // ⚠️ 必须存进 `sql_error`（而不是像 v0.10 那样塞回输出）：
+                    // 渲染那边靠它区分"红字错误"和"结果表格"。v0.10 曾经只置
+                    // `sql_ran = true` 而让输出是 `None`，界面显示
+                    // **"正在加载…"** 而真正的报错去了页头（实机截图抓到的：
+                    // `show database` 拼错那次）。
+                    db.sql_results.clear();
+                    db.sql_error = Some(message);
+                    // 页面级那条留给"读列表 / 连接"这类失败，
+                    // 清了它免得同一条错误在屏幕上出现两遍。
+                    db.clear_error();
+                }
+            }
+        }
+        // 表格整个换掉。`None`（报错 / 全是 DDL / 没有结果）时也清，
+        // 免得旧结果还留在屏幕上。
+        self.sql_table = new_table.map(|r| {
+            cx.new(|cx| {
+                gpui_kit::component::table::TableState::new(
+                    crate::sql_table::SqlResultDelegate::new(r),
+                    window,
+                    cx,
+                )
+                .cell_selectable(true)
+            })
+        });
+        if reload {
+            self.reload_db_lists(cx);
+        }
+        cx.notify();
+    }
+
+    /// 切换结果 tab（多语句时）。
+    ///
+    /// 换 tab 要重建 `TableState` —— 每个结果的列和行都不一样，没法复用。
+    pub fn switch_sql_result_tab(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(db) = self.state.db.as_ref() else {
+            return;
+        };
+        let Some(result) = db.sql_results.get(index) else {
+            return;
+        };
+        if result.columns.is_empty() {
+            // 没有表格的结果（DDL / 无输出）不建表格 —— 界面画一句说明就够了
+            self.sql_table = None;
+        } else {
+            let result = result.clone();
+            self.sql_table = Some(cx.new(|cx| {
+                gpui_kit::component::table::TableState::new(
+                    crate::sql_table::SqlResultDelegate::new(result),
+                    window,
+                    cx,
+                )
+                .cell_selectable(true)
+            }));
+        }
+        self.sql_result_tab = index;
+        cx.notify();
+    }
+
+    /// 切换「看原始输出」的展开状态。
+    pub fn toggle_sql_raw(&mut self, cx: &mut Context<Self>) {
+        self.sql_raw_open = !self.sql_raw_open;
+        cx.notify();
     }
 
     /// 从数据库管理页回到容器列表。
@@ -9589,7 +9733,7 @@ impl Render for Shell {
         // SQL 控制台浮层（针对某个库）。
         let db_console: AnyElement = match &state.db {
             Some(db) if self.db_console_open => match self.db_form.as_ref() {
-                Some(form) => views::db_console_overlay(db, form, &entity, cx),
+                Some(form) => views::db_console_overlay(db, form, self, &entity, cx),
                 None => div().into_any_element(),
             },
             _ => div().into_any_element(),

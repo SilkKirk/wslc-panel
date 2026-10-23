@@ -36,6 +36,10 @@ pub mod fileio;
 pub mod listview;
 pub mod prefs;
 pub mod presets;
+// SQL 结果表格的**显示逻辑**（列宽估算、单元格分类、页脚文案、CSV 导出）。
+// 纯函数 —— 渲染在 `crates/wslc-panel/src/sql_table.rs`，但"该显示什么"
+// 在这里决定，所以 `core` job 能测到（`AGENTS.md` §8：渲染层没有测试）。
+pub mod sqlview;
 pub mod state;
 // 更新提示的状态机与判据（什么时候查、查到了要不要提示、卡片上写什么）。
 // 只读 JSON、只做判断，不碰网络也不碰 GPUI —— 所以能在这儿单测。
