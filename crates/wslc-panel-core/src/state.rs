@@ -27,6 +27,9 @@ use wslc_core::model::install::{
 // 「在线清单来自哪儿」是**数据**（`wsl -l -o` 还是兜底 JSON），
 // 定义在 `wslc-core` 里；这里转出去，界面按它显示那句说明。
 pub use wslc_core::model::install::OnlineListSource;
+// 多驱动层的连接类型（v0.13）。`DbState::conn` 用它 —— 现在只是容器 + 家族的
+// 镜像，阶段 1 起它会成为"连接"的真正载体（见 `docs/PLAN-multi-db.md`）。
+use wslc_core::db::{DbConn, DbHost, DbKind};
 use wslc_core::model::wslconf;
 use wslc_core::model::{
     AppRuntime, ContainerSummary, DbEntry, DbUser, DeployErrorKind, DeploySignal, Distro,
@@ -2074,6 +2077,25 @@ pub struct DbState {
     pub client: String,
     /// 客户端版本那一行（`mysql  Ver 26.7.0 …`）。
     pub client_version: Option<String>,
+    /// 多驱动层的连接（v0.13）。
+    ///
+    /// # 现在它是什么
+    ///
+    /// 一份**镜像**：由 `container` + `family` 推出来（`host` 就是那个容器、
+    /// `kind` 由家族换算、`addr`/`port` 取引擎默认值）。**还没有代码读它** ——
+    /// 阶段 0 只负责把类型摆到位，做到行为零变化。
+    ///
+    /// # 为什么要有它
+    ///
+    /// 现在"数据库"这个概念在代码里不存在，存在的只有"容器"：`run_sql` 的
+    /// 第一个参数就是容器名。要支持第二个引擎（PostgreSQL，v0.14），
+    /// 就必须有一个"连接"的落点 —— 而这个落点不能是容器，否则永远只能
+    /// "从容器行进入"。方案见 `docs/PLAN-multi-db.md`。
+    ///
+    /// ⚠️ 别急着把 `container` / `family` 删掉：界面上还在显示它们
+    /// （"这是 MySQL 8.0 的容器"这种话对用户是有用的），而且
+    /// `guess_kind` 的反向推理也需要镜像名。
+    pub conn: DbConn,
     /// 连接凭据 —— **上一次连成功的那一份**。
     ///
     /// ⚠️ **它不是执行入口。** 所有动作（备份 / 恢复 / 导入 / SQL / 删库 / 删用户）
@@ -2287,8 +2309,15 @@ impl DbState {
         image: impl Into<String>,
         family: MysqlFamily,
     ) -> Self {
+        // `conn` 要复用容器名，先落成 String（`impl Into<String>` 只能消费一次）。
+        let container: String = container.into();
+        let conn = DbConn::with_defaults(
+            DbKind::from_family(family.label()),
+            DbHost::Container(container.clone()),
+        );
         Self {
-            container: container.into(),
+            conn,
+            container,
             image: image.into(),
             family,
             client: family.fallback_client().to_owned(),
@@ -6617,6 +6646,15 @@ mod tests {
         assert!(!state.loaded);
         // 兜底家族给的客户端名（权威判定由 apply_probe 覆盖）
         assert_eq!(state.client, "mysql");
+        // v0.13：`provisional` 同时把多驱动层的连接摆好（现在只是镜像，
+        // 还没有代码读它 —— 但"家族 → 引擎"的换算必须是对的，
+        // 否则阶段 2 接上 PostgreSQL 时这里会悄悄全变成 MySQL）。
+        assert_eq!(state.conn.kind, wslc_core::db::DbKind::MySql);
+        assert_eq!(
+            state.conn.host,
+            wslc_core::db::DbHost::Container("mysql".into())
+        );
+        assert_eq!(state.conn.port, 3306);
     }
 
     #[test]
