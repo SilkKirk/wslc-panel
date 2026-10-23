@@ -35,3 +35,6 @@ gpui-kit = { workspace = true }
 # —— 这个 crate 里已经没有直接用到它们的地方。
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+# 只为了 SQL 编辑器的自动补全（`CompletionProvider` 的签名里就是
+# `lsp_types::CompletionItem`）。见根 `Cargo.toml` 里的说明。
+lsp-types = { workspace = true }

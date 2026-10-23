@@ -40,6 +40,15 @@ anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# SQL 编辑器的**自动补全**要用到 LSP 的补全数据类型（v0.12.4）。
+#
+# 为什么必须直接依赖：`gpui-kit` 的 `CompletionProvider` trait 签名里就是
+# `lsp_types::CompletionItem` / `CompletionResponse`，而它只 re-export 了
+# `Position`（见 `component::input`），其余类型拿不到。
+#
+# 0.97.0 这个版本是**锁文件里已有的**（`gpui-base` 的传递依赖），
+# 所以加它不会引入任何新 crate。
+lsp-types = "0.97"
 
 # GPUI 本身在 debug 下非常吃 CPU（每帧要跑布局 + 光栅化）。
 # 下面的设置让"自己的代码"保持可调试的优化级别，同时把依赖编译到最高优化，

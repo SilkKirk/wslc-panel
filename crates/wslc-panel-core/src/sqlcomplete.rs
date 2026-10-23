@@ -195,7 +195,8 @@ pub fn complete(tree: &SchemaTree, dialect: Dialect, text: &str, cursor: usize) 
     }
 
     let mut items: Vec<Candidate> = Vec::new();
-    if expects_table(&text[..start]) {
+    let wants_table = expects_table(&text[..start]);
+    if wants_table {
         // `FROM `/`JOIN ` 后面只给表 —— 给关键字纯属干扰。
         for db in &tree.databases {
             for t in &db.tables {
@@ -225,7 +226,8 @@ pub fn complete(tree: &SchemaTree, dialect: Dialect, text: &str, cursor: usize) 
         }
     }
 
-    build(start, items, &lower, dialect, true)
+    // `wants_table` 时**不给关键字** —— 这是上下文补全的关键。
+    build(start, items, &lower, dialect, !wants_table)
 }
 
 /// 按前缀筛一遍、去重、排序、截断。
@@ -259,9 +261,15 @@ fn build(
     let mut seen = std::collections::HashSet::new();
     out.retain(|c| seen.insert(c.label.clone()));
 
-    // 排序：**短的优先**（`name` 比 `name_full` 更可能是想打的），
-    // 等长按字母序 —— 保证每次弹出来的顺序一致，不"跳"。
-    out.sort_by(|a, b| a.label.len().cmp(&b.label.len()).then(a.label.cmp(&b.label)));
+    // ⚠️ **不排序**。
+    //
+    // 一开始我按"短的优先"排过，测试立刻抓到后果：`sys_user` 的列
+    // `id / user_name / nick_name` 被排成 `id / nick_name / user_name`。
+    //
+    // 列的顺序是**表定义里的顺序**（`ORDINAL_POSITION`），用户扫一眼
+    // 就知道"这两列挨着"；按长度重排之后这个信息就没了。
+    // 关键字那边本来就有意排过（`COMMON_WORDS` 按语句骨架、子句、函数），
+    // 对象名那边保持元数据给的顺序 —— 两边都不该在这里再动一次。
     out.truncate(MAX_ITEMS);
 
     Completion {
@@ -628,7 +636,14 @@ mod tests {
         let text = "SELECT * FROM djxm.sys_us";
         let c = complete(&t, Dialect::MySql, text, text.len());
         assert_eq!(at_end(&c, text), "sys_us".len());
-        assert!(labels(&c).contains(&"djxm.sys_user".to_string()));
+        // ⚠️ 这里给的是**裸表名** `sys_user`，不是 `djxm.sys_user` ——
+        // 因为用户已经把 `djxm.` 打出来了（`qualifier_before_dot` 认出来了），
+        // 再补成 `djxm.sys_user` 会变成 `djxm.djxm.sys_user`。
+        assert!(
+            labels(&c).contains(&"sys_user".to_string()),
+            "库限定之后应该补裸表名：{:?}",
+            labels(&c)
+        );
     }
 
     #[test]

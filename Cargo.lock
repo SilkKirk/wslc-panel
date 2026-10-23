@@ -8485,6 +8485,7 @@ version = "0.12.3"
 dependencies = [
  "embed-resource",
  "gpui-kit",
+ "lsp-types",
  "tracing",
  "tracing-subscriber",
  "wslc-core",

@@ -3533,6 +3533,49 @@ impl Shell {
             password,
             sql,
         });
+        // 编辑器刚建好，把自动补全装上（表结构可能还没读到 ——
+        // 那时只有关键字可补，读到之后 `rebuild_schema_tree` 会再装一次）。
+        self.install_sql_completion(cx);
+    }
+
+    /// 给 SQL 编辑器装上 **自动补全**（v0.12.4）。
+    ///
+    /// # 为什么要"装"而不是渲染时读
+    ///
+    /// `EditorState` 的补全提供者是它自己持有的一个 `Rc<dyn CompletionProvider>`
+    /// （见 `gpui-kit` 的 `examples/editor`）。它拿不到 `Shell`，所以必须在
+    /// 每次**元数据变化**之后，把一份新快照塞进去。
+    ///
+    /// # 什么时候调
+    ///
+    /// - 编辑器刚建好（`ensure_db_form`）；
+    /// - 表结构读到 / 重读之后（`rebuild_schema_tree`）——
+    ///   否则补全里永远是"只有关键字"，因为第一次装的时候树是空的。
+    ///
+    /// 成本：把 `SchemaTree` 克隆一份（110 表 + 800 列，几十 KB），
+    /// 只在读表结构/进页面时发生，不在按键路径上。
+    fn install_sql_completion(&mut self, cx: &mut Context<Self>) {
+        let Some(form) = self.db_form.as_ref() else {
+            return;
+        };
+        let editor = form.sql.clone();
+        let Some(db) = self.state.db.as_ref() else {
+            return;
+        };
+        // 方言：MariaDB 有一批 MySQL 没有的关键字（`RETURNING` / `NEXT VALUE FOR`）。
+        // Percona 走 MySQL —— 它是 MySQL 的兼容发行版。
+        let dialect = match db.family {
+            wslc_core::model::MysqlFamily::Mariadb => {
+                wslc_panel_core::sqlcomplete::Dialect::MariaDb
+            }
+            _ => wslc_panel_core::sqlcomplete::Dialect::MySql,
+        };
+        let tree = Arc::new(db.schema_tree.clone());
+        editor.update(cx, |state, _cx| {
+            state.lsp_mut().completion_provider = Some(
+                crate::sql_complete::SqlCompletionProvider::new(tree, dialect),
+            );
+        });
     }
 
     /// 读连接卡上**此刻**的值。
@@ -5061,6 +5104,12 @@ impl Shell {
         state.update(cx, |s, cx| s.set_items(items, cx));
         self.schema_tree_state = Some(state);
         self.schema_tree_built_for = Some(fingerprint);
+
+        // 表结构变了 → 给补全换一份新快照。
+        //
+        // ⚠️ 漏了这一步的表现很具体：补全永远只有关键字、补不出表名和列名 ——
+        // 因为第一次装提供者时树还是空的（`ensure_db_form` 比读表结构早）。
+        self.install_sql_completion(cx);
     }
 
     /// 点树里的一行。
