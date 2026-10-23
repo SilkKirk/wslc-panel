@@ -1,0 +1,33 @@
+[package]
+name = "wslc-db"
+version.workspace = true
+edition = "2024"
+# ⚠️ 不能放进 `wslc-core`：那个 crate 的 MSRV 是 **1.75**（既有承诺），
+# 而 `postgres` 0.19 要求 **1.85**。所以原生驱动单独一个 crate。
+rust-version = "1.85"
+description = "原生（进程内）数据库驱动：同步的 mysql / postgres 客户端"
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# `DbKind` 等类型来自这里（单向依赖：`wslc-core` 不知道本 crate 存在）。
+wslc-core = { workspace = true }
+# 同步驱动 —— 为什么不用 sqlx / tokio-postgres 见 `docs/PLAN-native-db.md` §2：
+# 本项目的铁律是"阻塞调用放 background_executor"，同步驱动天然符合；
+# 异步驱动要桥 tokio runtime，多一层就多一类"卡界面/死锁"的 bug。
+#
+# `mysql` 默认特性是 `minimal + derive + buffer-pool`，这里显式保留
+# `minimal` 并加 `rustls-tls`：
+#   - 远程连 MySQL 8 默认用 `caching_sha2_password`，非 localhost 时
+#     **必须有 TLS 或服务端公钥交换**，所以 TLS 不是可选项；
+#   - 选 rustls 而不是 native-tls，是为了不依赖 OpenSSL（Windows 上
+#     那意味着要随包分发 DLL 或要求系统装 OpenSSL）；
+#   - 再具体一层选 `rustls-tls-ring` 而不是 `rustls-tls`：后者的加密后端是
+#     **aws-lc-rs**，会带进 `aws-lc-sys` + `cmake` + `vcpkg`（要编译 C 代码，
+#     实测锁文件多 4 个包、CI 冷构建明显变慢）。而 `ring` 本来就在依赖树里
+#     （`rustls` 的另一条路径已经在用），换成 ring 后端几乎零增量。
+mysql = { version = "28", default-features = false, features = ["minimal", "rustls-tls-ring"] }
+# `postgres` 是**同步**客户端（`tokio-postgres` 的阻塞包装），默认无 TLS；
+# TLS 需要额外 crate，阶段 A 先只做明文 + 本地/内网，后续再加。
+postgres = "0.19"
