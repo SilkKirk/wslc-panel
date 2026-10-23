@@ -1,0 +1,16 @@
+table_schema,table_name,column_name
+public,dirty,id
+public,dirty,v
+public,nulls,id
+public,nulls,a
+public,nulls,b
+public,one,v
+public,t_user,id
+public,t_user,name
+public,t_user,nick
+public,t_user,active
+public,t_user,tags
+public,t_user,created
+public,v_user,id
+public,v_user,name
+public,zh,v

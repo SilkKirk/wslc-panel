@@ -19,6 +19,12 @@ pub mod deploy;
 // `pub` 是因为面板要直接用它的类型（`MysqlCreds` / `DbEntry` ……）和函数
 // （`mysql_container_kind` 在**渲染期**就要用，见 `views::container_row_actions`）。
 pub mod mysql;
+// PostgreSQL 的拼参数 / CSV 解析 / 语句切分（v0.14）。
+//
+// 这一套**不能复用 MySQL 的**：`psql` 不转义值里的 tab 和换行（所以走 CSV
+// 而不是 TSV）、支持美元引用和嵌套块注释（所以切分规则不同）。
+// 全部规则来自真容器实测，见 `docs/postgres-measured.md`。
+pub mod postgres;
 // SQL 控制台：脚本切分（`split_statements`）与结果解析（`parse_batch_with_header`）。
 //
 // 两个都放 `model/` 而不是 `cmd/`，因为它们是**纯函数** —— 能脱离 Windows

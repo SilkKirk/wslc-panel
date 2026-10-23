@@ -1,0 +1,7 @@
+table_schema,table_name,table_type
+public,dirty,BASE TABLE
+public,nulls,BASE TABLE
+public,one,BASE TABLE
+public,t_user,BASE TABLE
+public,v_user,VIEW
+public,zh,BASE TABLE
