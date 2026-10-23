@@ -1,4 +1,4 @@
-//! 原生（进程内）数据库连接 —— **纯逻辑层**。
+//! 原生（进程内）数据库连接。
 //!
 //! # 这个 crate 负责什么
 //!
@@ -18,7 +18,18 @@
 //! （`AGENTS.md` §7.1）。同步驱动天然符合；异步驱动（`sqlx` /
 //! `tokio-postgres`）要把 tokio runtime 桥到 GPUI 后面，多一层就多一类
 //! "卡界面 / 死锁"的 bug。见 `docs/PLAN-native-db.md` §2。
+//!
+//! # 分层
+//!
+//! ```text
+//! conn.rs     ConnSpec + 连接串拼装（纯函数，有测试）
+//! session.rs  TextTable / DbError / Session trait + 按 kind 打开
+//! pg.rs       PostgreSQL 实现（postgres 0.19）
+//! ```
 
 pub mod conn;
+pub mod pg;
+pub mod session;
 
 pub use conn::ConnSpec;
+pub use session::{open, DbError, DbErrorKind, Session, TextTable};
