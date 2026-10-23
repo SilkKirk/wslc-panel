@@ -1027,12 +1027,27 @@ pub struct Shell {
     /// 原始输出（`mysql --table` 的 ASCII 表格）不常看 —— 只在排查
     /// 列宽异常 / 字符集问题时才有用，所以默认收起。
     pub(crate) sql_raw_open: bool,
-    /// 库 / 表树里**展开着**的库名（v0.11.2）。
+    /// 库 / 表树的**树控件状态**（v0.12.1）。
     ///
-    /// 用 `HashSet` 而不是给 `DbNode` 加一个 `expanded` 字段：树是从
-    /// `wslc-core` 解析出来的**纯数据**，展开状态是界面的事 ——
-    /// 混进去之后每次重新读树都会把展开状态重置掉。
-    pub(crate) schema_expanded: std::collections::HashSet<String>,
+    /// # 为什么换成组件的 `Tree`
+    ///
+    /// v0.12 里这棵树是**自己用 `Button` 一行行画的**，实机一看就丑：
+    /// `Button` 会把文字**居中**、给每一行套一个整行宽度的底色和内边距，
+    /// 于是 110 行看起来像 110 个色块，完全不像树（缩进也读不出来）。
+    ///
+    /// `gpui-kit` 自带 `component::tree::Tree`（虚拟滚动 + 逐级展开 + 选中态 +
+    /// 右键菜单），官方 `examples/editor` 就是用它做文件树的。
+    /// 它自己管展开/折叠和选中，我们只管把 `TreeItem` 喂进去。
+    ///
+    /// ⚠️ `TreeState` 是 GPUI 实体，`wslc-panel-core` 装不下 —— 和
+    /// [`Shell::sql_table`] 同一个理由：纯数据（`DbState::schema_tree`）在
+    /// core，**界面状态**在 `Shell`。
+    pub(crate) schema_tree_state: Option<Entity<gpui_kit::component::tree::TreeState>>,
+    /// 树是**按哪次查询**建出来的（用于判断要不要重建）。
+    ///
+    /// 存 `(搜索关键字, 表总数)`：两者都没变就不重建 —— `TreeState` 重建会
+    /// 丢掉用户已经展开的层级，所以这件事必须**只在真的变了**时做。
+    pub(crate) schema_tree_built_for: Option<(String, usize)>,
     /// 库 / 表树的搜索框（`InputState::new` 要 `&mut Window`，所以懒创建）。
     pub(crate) schema_search: Option<Entity<InputState>>,
     /// 搜索框内容变化的订阅。
@@ -1231,7 +1246,8 @@ impl Shell {
             sql_table: None,
             sql_result_tab: 0,
             sql_raw_open: false,
-            schema_expanded: std::collections::HashSet::new(),
+            schema_tree_state: None,
+            schema_tree_built_for: None,
             schema_search: None,
             schema_search_sub: None,
             db_dialog: None,
@@ -4921,7 +4937,7 @@ impl Shell {
         .detach();
     }
 
-    // -- SQL 控制台的库 / 表树（v0.11.2）--------------------------------------
+    // -- SQL 控制台的库 / 表树（v0.11.2，v0.12.1 换成组件的 `Tree`）-----------
 
     /// 确保搜索框存在（`InputState::new` 要 `&mut Window`，所以懒创建）。
     pub(crate) fn ensure_schema_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -4931,15 +4947,17 @@ impl Shell {
         let input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("过滤库 / 表名")
         });
-        // 订阅：打字时树要跟着过滤。
+        // 订阅：打字时**重建树**（不是"只重绘"）。
         //
-        // 和 `ensure_container_search` 一样用 `cx.subscribe`（不需要 window）——
-        // 我们只是要"通知一下重绘"，不往输入框里写东西。
+        // 过滤不能用"渲染时临时筛"那套了：`TreeState` 的 items 是**喂进去**的，
+        // 组件自己不知道原始数据长什么样。所以关键字一变就得重新灌一份 items。
         //
         // ⚠️ 订阅**必须存进字段**，不能 `let _ = ...` —— drop 即退订，
         // 表现是"打字没反应"，而不会报错（`container_search_sub` 那个坑）。
-        let sub = cx.subscribe(&input, |_shell, _input, event: &InputEvent, cx| {
+        let sub = cx.subscribe(&input, |shell, input, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
+                let query = input.read(cx).value().to_string();
+                shell.rebuild_schema_tree(&query, cx);
                 cx.notify();
             }
         });
@@ -4947,12 +4965,103 @@ impl Shell {
         self.schema_search_sub = Some(sub);
     }
 
-    /// 展开 / 收起树里的一个库。
-    pub fn toggle_schema_db(&mut self, database: String, cx: &mut Context<Self>) {
-        if !self.schema_expanded.remove(&database) {
-            self.schema_expanded.insert(database);
+    /// 按当前数据 + 关键字**重建** `TreeState` 的 items。
+    ///
+    /// # 什么时候会重建
+    ///
+    /// - 读到新的表结构之后；
+    /// - 搜索关键字变了；
+    /// - 第一次进这一页。
+    ///
+    /// # 为什么关键字不变就跳过
+    ///
+    /// `TreeState` 重建会**丢掉用户已经展开的层级**（展开状态住在组件里）。
+    /// 所以只有 `(关键字, 表总数)` 真的变了才重灌 —— 这个指纹在
+    /// [`Shell::schema_tree_built_for`] 里。
+    ///
+    /// # 两种形态
+    ///
+    /// - **没搜索**：库是父节点、表是子节点（默认收起，点库名展开）；
+    /// - **有搜索**：**拍平**成一层「库.表」。理由：树的父节点默认是收起的，
+    ///   搜索时如果还挂着父节点，用户会看到一个收起的库名、得再点一下才见到
+    ///   他刚搜的那张表 —— 那就不叫搜索了。拍平之后命中的表直接在眼前。
+    pub(crate) fn rebuild_schema_tree(&mut self, query: &str, cx: &mut Context<Self>) {
+        use gpui_kit::component::tree::TreeItem;
+
+        let Some(db) = self.state.db.as_ref() else {
+            return;
+        };
+        let total = db.schema_tree.table_count();
+        let fingerprint = (query.trim().to_owned(), total);
+        // 指纹没变就别动 —— 见函数文档（重建会丢展开状态）。
+        if self.schema_tree_built_for.as_ref() == Some(&fingerprint)
+            && self.schema_tree_state.is_some()
+        {
+            return;
         }
-        cx.notify();
+
+        let filtered = db.schema_tree.filter(query);
+        let searching = !query.trim().is_empty();
+        let mut items: Vec<TreeItem> = Vec::new();
+
+        for node in &filtered.databases {
+            if searching {
+                // 拍平：每条都是叶子，id = `t\u{1}库\u{1}表`。
+                for t in &node.tables {
+                    items.push(TreeItem::new(
+                        leaf_id(&node.name, &t.name),
+                        format!("{}.{}", node.name, t.name),
+                    ));
+                }
+            } else {
+                let children: Vec<TreeItem> = node
+                    .tables
+                    .iter()
+                    .map(|t| {
+                        let label = match t.kind.tag() {
+                            "" => t.name.clone(),
+                            tag => format!("{}  {tag}", t.name),
+                        };
+                        TreeItem::new(leaf_id(&node.name, &t.name), label)
+                    })
+                    .collect();
+                let label = if node.is_system() {
+                    format!("{}（系统）", node.name)
+                } else {
+                    node.name.clone()
+                };
+                items.push(TreeItem::new(folder_id(&node.name), label).children(children));
+            }
+        }
+
+        let state = cx.new(|cx| gpui_kit::component::tree::TreeState::new(cx));
+        state.update(cx, |s, cx| s.set_items(items, cx));
+        self.schema_tree_state = Some(state);
+        self.schema_tree_built_for = Some(fingerprint);
+    }
+
+    /// 点树里的一行。
+    ///
+    /// `id` 的格式见 [`leaf_id`] / [`folder_id`]：`t\u{1}库\u{1}表` 是表，
+    /// `d\u{1}库` 是库（点库由组件自己展开/收起，这里什么都不做）。
+    pub fn on_schema_tree_click(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut parts = id.split('\u{1}');
+        let Some(kind) = parts.next() else {
+            return;
+        };
+        if kind != "t" {
+            // 库节点：展开 / 收起由 `Tree` 自己做，不用我们管。
+            return;
+        }
+        let (Some(database), Some(table)) = (parts.next(), parts.next()) else {
+            return;
+        };
+        self.pick_schema_table(database.to_owned(), table.to_owned(), window, cx);
     }
 
     /// 读整棵库 / 表树（进控制台时调一次）。
@@ -4985,20 +5094,15 @@ impl Shell {
                 })
                 .await;
             let _ = this.update(cx, |shell, cx| {
+                let mut ok = false;
                 if let Some(db) = shell.state.db.as_mut() {
                     if db.container != container {
                         return;
                     }
                     match result {
                         Ok(tree) => {
-                            // 第一次读到就把默认库展开 —— 让用户一进来就看到东西，
-                            // 而不是面对一排收起的库名不知道点哪个。
-                            if db.schema_tree.is_empty() && !tree.is_empty() {
-                                if let Some(first) = tree.databases.first() {
-                                    shell.schema_expanded.insert(first.name.clone());
-                                }
-                            }
                             db.schema_tree = tree;
+                            ok = true;
                         }
                         Err(message) => {
                             // 之前读到过就不打扰（见函数文档）
@@ -5009,6 +5113,17 @@ impl Shell {
                             }
                         }
                     }
+                }
+                if ok {
+                    // 换了数据就得重灌 items。指纹先清掉，否则"表总数没变、
+                    // 但表名变了"（改表名场景）会被误判成不变。
+                    shell.schema_tree_built_for = None;
+                    let query = shell
+                        .schema_search
+                        .as_ref()
+                        .map(|i| i.read(cx).value().to_string())
+                        .unwrap_or_default();
+                    shell.rebuild_schema_tree(&query, cx);
                 }
                 cx.notify();
             });
@@ -8305,6 +8420,15 @@ impl Shell {
                     .is_some_and(|db| db.schema_tree.is_empty());
                 if need_tree {
                     self.load_schema_tree(cx);
+                } else {
+                    // 数据已经有了，但树控件的 items 可能还没灌过（第一次进这一页，
+                    // 或者上次是在"有搜索关键字"的状态下离开的）—— 补一次。
+                    let query = self
+                        .schema_search
+                        .as_ref()
+                        .map(|i| i.read(cx).value().to_string())
+                        .unwrap_or_default();
+                    self.rebuild_schema_tree(&query, cx);
                 }
             }
             // 「容器」：搜索框是 `InputState`，只能在进入页面这一刻建。
@@ -10420,6 +10544,34 @@ fn nav_item(page: Page, current: Page, entity: &Entity<Shell>) -> AnyElement {
 /// ⚠️ 这段注释早先写的是"这个 match 只覆盖 `Page::ALL` 里那 8 页"，
 /// 从 `AddInstance` 起就不准了 —— 照着一句过期的注释去判断，会得出
 /// "这些页面在侧边栏里"的错误结论。
+// ---------------------------------------------------------------------------
+// 库 / 表树：节点 id 的编码与解码
+// ---------------------------------------------------------------------------
+
+/// `TreeItem` 的 id 分隔符。
+///
+/// # 为什么不是 `.` 或 `::`
+///
+/// MySQL 的标识符几乎什么字符都能含（反引号里连空格和点都可以），
+/// 所以拿 `.` 拼 `库.表` 再拆开会**拆错**：库名 `a.b` + 表名 `c` 和
+/// 库名 `a` + 表名 `b.c` 拼出来一样。
+///
+/// `U+0001`（Start of Heading）是控制字符，不可能出现在标识符里 ——
+/// 用它当分隔符，拆解就是无歧义的。
+const TREE_ID_SEP: char = '\u{1}';
+
+/// 表节点（叶子）的 id：`t\u{1}库\u{1}表`。
+fn leaf_id(database: &str, table: &str) -> String {
+    format!("t{TREE_ID_SEP}{database}{TREE_ID_SEP}{table}")
+}
+
+/// 库节点（父节点）的 id：`d\u{1}库`。
+///
+/// 只需要唯一 —— 点库节点时组件自己展开/收起，我们不解析它。
+fn folder_id(database: &str) -> String {
+    format!("d{TREE_ID_SEP}{database}")
+}
+
 fn nav_id(page: Page) -> &'static str {
     match page {
         Page::Dashboard => "nav-dashboard",
