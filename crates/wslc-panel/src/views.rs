@@ -9,7 +9,9 @@
 use gpui_kit::component::button::*;
 // `StyledExt` 提供 `font_bold` / `font_semibold` 等字重方法（由宏生成）。
 use gpui_kit::component::collapsible::Collapsible;
-use gpui_kit::component::input::{Input, InputState};
+// `Editor` 是 SQL 控制台那个多行编辑器（v0.12）。它和多行 `Textarea` 的区别：
+// `Editor` 带语法高亮（靠 `tree-sitter-sql` feature）+ 行号 + 缩进线。
+use gpui_kit::component::input::{Editor, Input, InputState};
 // 「微软商店」与「在线发行版」两张清单都是**下拉框**（参考实现也是
 // `CustomComboBox`，不是我们原先那种按钮列表）。
 use gpui_kit::component::select::Select;
@@ -600,6 +602,14 @@ pub fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
         // 「数据库管理」要 `&Shell`（连接卡那三个输入框住在 `Shell` 里）
         // **和** `cx`（渲染时要读输入框的值）—— 和「添加实例」同一类页面。
         Page::Database => database(shell, cx, entity),
+        // 「SQL 控制台」（v0.12）：**整页**工作区（左树 + 右上编辑器 + 右下结果）。
+        // 它要 `&Shell`（编辑器在 `db_form` 里、树的展开状态在 `Shell` 上）
+        // 和 `cx`（读编辑器 / 搜索框的值）。
+        Page::Sql => match shell.db_form.as_ref() {
+            Some(form) => sql_console_page(shell, form, cx, entity),
+            None => empty_state("SQL 编辑器还没建好 —— 请重新从数据库列表进入")
+                .into_any_element(),
+        },
         // 「部署管理」也要 `&Shell` + `cx`：「添加部署」弹窗那五格输入框
         // 住在 `Shell` 里（页面本身没有输入框）。
         Page::Deploy => deploy_page(shell, cx, entity),
@@ -1574,9 +1584,10 @@ pub fn database(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
     };
     // 表单没建好就没法渲染（输入框是懒创建的）。
     //
-    // 这里**不再绑一个 `form`**：连接卡搬进浮层、控制台也搬进浮层之后，
-    // 页面正文一个输入框都不用（`form` 只在 `db_info_overlay` /
-    // `db_console_overlay` 里用），绑了就是一个 unused 警告。
+    // 这里**不再绑一个 `form`**：连接卡搬进浮层之后，这一页正文一个输入框
+    // 都不用（`form` 在 `db_info_overlay` 里用；v0.12 起 SQL 控制台有自己
+    // 的整页 `sql_console_page`，那儿的编辑器是 `EditorState`，也不在这儿读），
+    // 绑了就是一个 unused 警告。
     if shell.db_form.is_none() {
         return empty_state("连接表单还没建好 —— 请重新从容器列表进入这一页").into_any_element();
     }
@@ -1711,878 +1722,192 @@ pub fn db_info_overlay(
 ///
 /// `shell` 是给结果表格用的（`TableState` 在 `Shell` 上，`wslc-panel-core`
 /// 装不下 GPUI 实体 —— 见 `Shell::sql_table` 的注释）。
-pub fn db_console_overlay(
-    db: &DbState,
-    form: &DbPageForm,
+/// 「SQL 控制台」**整页**（v0.12）：左侧库 / 表树 + 右上编辑器 + 右下结果。
+///
+/// # 为什么从浮层改成整页
+///
+/// v0.9.2 起它是浮层（`db_console_overlay`）。实机用下来三个问题：
+///
+/// 1. 浮层盖住页面，**看着像弹窗**，而写 SQL 往往是个持续十分钟的事；
+/// 2. 浮层里塞"树 + 编辑器 + 表格"三块，哪块都不够高（树 `max_h(440)`、
+///    表格 `h(360)`，加起来就顶到 640 的天花板了）；
+/// 3. 关掉就全没了，视觉上像"退出"，而用户只是想换个查询。
+///
+/// 用户的原话："别弹窗出来，直接跳到新页面，左边的列表树左对齐，右上面是
+/// 一个输入的大框，右下显示数据"。所以这一页：
+///
+/// - **独占右侧区域**（不套 `app-body-scroll` 的 `p_5`，见 `app.rs` 里那段
+///   按页分支），树贴着内容区的左边框；
+/// - 编辑器在右上、结果在右下，两块都靠 `flex_1` 吃满剩下的高度。
+///
+/// # 高度是怎么分掉的
+///
+/// ```text
+/// 页头（flex_none，一行）
+/// ──────────────────────────────────────
+/// 树 260px  │  编辑器（flex_none，编辑框固定 170px）
+/// 全高      │  ─────────────────────────────
+///           │  结果（flex_1，表格自己虚拟滚动）
+/// ```
+///
+/// ⚠️ 编辑器给的是**固定** `h(170.)` 而不是 `flex_1`：`Editor::h()` 收的是
+/// `DefiniteLength`（px / relative / auto），没有 flex 语义。而 `DataTable`
+/// 恰恰相反 —— 它是虚拟滚动的，**必须**知道自己多高，所以那一边用
+/// `flex_1 + min_h_0` 让布局算出一个确定值。
+pub fn sql_console_page(
     shell: &Shell,
-    entity: &Entity<Shell>,
+    form: &DbPageForm,
     cx: &App,
+    entity: &Entity<Shell>,
 ) -> AnyElement {
-    let close = {
+    let Some(db) = shell.state.db.as_ref() else {
+        return empty_state("还没有选中容器 —— 请到「容器」页点某一行的「数据库」")
+            .into_any_element();
+    };
+
+    // 页头：返回 + 库名徽标 + 刷新表结构。
+    //
+    // ⚠️ 这里**不重复写**"SQL 控制台"四个字：应用外壳（`app.rs` 的页头）
+    // 已经在标题位置显示 `Page::Sql.label()` 了。同一屏出现两遍同一个标题
+    // 是"同一份信息两个入口"的典型症状（`AGENTS.md` §5），所以这里只留
+    // **这一页特有**的东西：从哪来（返回）、对哪个库、重读表结构。
+    //
+    // 不放「重新读取」（那会重跑整个数据库探测）：这一页要重读的只有表结构，
+    // 给一个精确的按钮，而不是让用户拿一个大而全的刷新去猜它会重做什么。
+    let back = {
         let entity = entity.clone();
-        Button::new("db-console-close")
-            .label("关闭")
+        Button::new("sql-back-to-db")
+            .label("← 返回数据库")
             .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.close_db_console(cx));
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |shell, cx| shell.close_db_console(window, cx));
             })
     };
-
-    // 标题里带上库名：浮层是盖在列表上的，底下那行看不见了 ——
-    // "我现在在对哪个库执行"必须写在脸上（`db_console_card` 里那行
-    // 「当前库」是第二道保险）。
-    let title = match db.sql_database.as_deref() {
-        Some(name) => format!("SQL 控制台 · {name}"),
-        None => "SQL 控制台".to_owned(),
+    let reload_tree = {
+        let entity = entity.clone();
+        Button::new("sql-reload-tree")
+            .label("刷新表结构")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.load_schema_tree(cx));
+            })
     };
-
-    modal_scrim(
-        "db-console",
-        v_flex()
-            // v0.11.2 起左侧多了库 / 表树，所以浮层加宽了 940 → 1120。
-            // 按 1280 宽的窗口算，两边还剩 80px 的遮罩，不算挤。
-            .w(px(1120.))
-            .max_h(px(640.))
-            .gap_4()
-            .p_5()
-            .rounded_lg()
-            .bg(theme::bg_card())
-            .border_1()
-            .border_color(theme::border())
-            .child(
-                h_flex()
-                    .w_full()
-                    .justify_between()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_bold()
-                            .text_color(theme::text())
-                            .child(title),
-                    )
-                    .child(close),
-            )
-            // 控制台本体：**左边库 / 表树 + 右边编辑器与结果**（v0.11.2）。
-            //
-            // ⚠️ 右边那一层**不能**是 `overflow_y_scroll` + `max_h`：
-            // `DataTable` 自己管滚动，外面再套一层会让表头跟着滚走，
-            // 而且虚拟滚动算可见行时会拿到错误的高度。
-            .child(
-                h_flex()
-                    .id("db-console-body")
-                    .w_full()
-                    .max_h(px(520.))
-                    .gap_4()
-                    .items_start()
-                    .child(db_schema_tree(db, shell, entity, cx))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(db_console_card(db, form, shell, entity, cx)),
-                    ),
-            ),
-    )
-    .into_any_element()
-}
-
-/// 左侧的「库 / 表树」（v0.11.2）。
-///
-/// # 布局
-///
-/// 固定 220px 宽 + 自己滚动。结果表格要横向空间（可能几十列），所以树不能
-/// 用 `flex_1` —— 它必须**可预测**地占一小块。
-///
-/// # 为什么自己画而不是用 `Collapsible`
-///
-/// `Collapsible` 是"一组内容一起折叠"，而这里要的是**逐库独立展开**的树
-/// （117 张表里只展开用户关心的那个库）。而且它的展开状态住在组件自己身上，
-/// 而我们的树每次读都可能整个换掉 —— 状态必须留在 `Shell`（`schema_expanded`）。
-fn db_schema_tree(
-    db: &DbState,
-    shell: &Shell,
-    entity: &Entity<Shell>,
-    cx: &App,
-) -> AnyElement {
-    if db.schema_tree.is_empty() {
-        return v_flex()
-            .w(px(220.))
-            .gap_1()
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme::text_dim())
-                    .child("表结构"),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme::text_muted())
-                    .child("读不到表结构（账号可能没有 information_schema 权限）"),
-            )
-            .into_any_element();
+    // 库名徽标：`dbx` 那种工作区都会把"当前连的是哪个库"钉在显眼处。
+    //
+    // 库名是**用户数据**，必须过 `strip_md` —— MySQL 允许库名里带 `**`，
+    // 直接 `.child()` 上去会真的把星号画在屏幕上（`AGENTS.md` 那条规矩）。
+    //
+    // "未指定库"那种情况不加底色：它是个"没什么可显示"的状态，
+    // 给它一块色块反而比一行淡字更抢眼。而 `theme` 里没有 `bg_subtle`
+    // 这类更淡的卡片色，与其为它新造一个色值，不如就别画。
+    let db_badge: AnyElement = match db.sql_database.as_deref() {
+        Some(name) => div()
+            .px_2()
+            .py_0p5()
+            .rounded_md()
+            .bg(theme::primary_soft())
+            .text_xs()
+            .text_color(theme::primary())
+            .child(crate::util::strip_md(name)),
+        None => div()
+            .text_xs()
+            .text_color(theme::text_muted())
+            .child("未指定库"),
     }
-
-    // 搜索框：117 张表必须能过滤，否则铺开没人看得下去。
-    let search = match shell.schema_search.as_ref() {
-        Some(input) => div()
-            .w_full()
-            .child(Input::new(input).id("db-schema-search").w_full())
-            .into_any_element(),
-        None => div().into_any_element(),
-    };
-    let query = shell
-        .schema_search
-        .as_ref()
-        .map(|i| i.read(cx).value().to_string())
-        .unwrap_or_default();
-    let filtered = db.schema_tree.filter(&query);
-
-    // 逐个库画一行「库名 + 表数」，展开时再画它下面的表。
-    let mut rows: Vec<AnyElement> = Vec::new();
-    for db_node in &filtered.databases {
-        let name = db_node.name.clone();
-        // 搜索时**强制展开**：用户搜 `member` 是想直接看到那张表，
-        // 而不是看到一个收起的库名再点一下。
-        let expanded = !query.trim().is_empty() || shell.schema_expanded.contains(&name);
-
-        let arrow = if expanded { "▾" } else { "▸" };
-        let system_tag = if db_node.is_system() { "（系统）" } else { "" };
-        let label = format!(
-            "{arrow} {}{system_tag}  {}",
-            name,
-            db_node.tables.len()
-        );
-        let toggle_entity = entity.clone();
-        let toggle_name = name.clone();
-        rows.push(
-            Button::new(SharedString::from(format!("db-schema-db-{name}")))
-                .label(label)
-                .small()
-                .on_click(move |_, _, cx| {
-                    toggle_entity.update(cx, |shell, cx| {
-                        shell.toggle_schema_db(toggle_name.clone(), cx)
-                    });
-                })
-                .into_any_element(),
-        );
-
-        if expanded {
-            for table in &db_node.tables {
-                let tname = table.name.clone();
-                let tdb = name.clone();
-                let tag = table.kind.tag();
-                let label = if tag.is_empty() {
-                    format!("    {tname}")
-                } else {
-                    format!("    {tname}  {tag}")
-                };
-                let pick_entity = entity.clone();
-                rows.push(
-                    Button::new(SharedString::from(format!(
-                        "db-schema-t-{tdb}-{tname}"
-                    )))
-                    .label(label)
-                    .small()
-                    .on_click(move |_, window, cx| {
-                        pick_entity.update(cx, |shell, cx| {
-                            shell.pick_schema_table(
-                                tdb.clone(),
-                                tname.clone(),
-                                window,
-                                cx,
-                            )
-                        });
-                    })
-                    .into_any_element(),
-                );
-            }
-        }
-    }
+    .into_any_element();
 
     v_flex()
-        .w(px(220.))
-        .flex_shrink_0()
-        .gap_1()
+        .w_full()
+        .h_full()
+        .min_h_0()
         .child(
             h_flex()
                 .w_full()
-                .justify_between()
+                .flex_none()
+                .gap_3()
+                .items_center()
+                .px_4()
+                .py_3()
+                .border_b_1()
+                .border_color(theme::border())
+                .child(back)
+                .child(db_badge)
+                .child(div().flex_1())
+                .child(reload_tree),
+        )
+        .child(
+            h_flex()
+                .w_full()
+                .flex_1()
+                .min_h_0()
+                .items_start()
+                .child(sql_tree_pane(db, shell, entity, cx))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .min_h_0()
+                        .child(sql_editor_pane(db, form, entity, cx))
+                        .child(sql_results_pane(db, shell, entity, cx)),
+                ),
+        )
+        .into_any_element()
+}
+
+/// 编辑器上方那行"这次执行会落在哪个库"。
+///
+/// 从数据库列表行上的「SQL」按钮进来时就是那一行；不指定的话
+/// `SELECT * FROM t` 会报 "No database selected"（实测过），
+/// 所以这件事必须显式画出来，而不是让用户从报错里猜。
+fn sql_target_db(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
+    match db.sql_database.as_deref() {
+        Some(name) => {
+            let clear = {
+                let entity = entity.clone();
+                Button::new("db-sql-clear-db")
+                    .label("改为不指定")
+                    .small()
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |shell, cx| shell.clear_sql_database(cx));
+                    })
+            };
+            h_flex()
+                .gap_2()
                 .items_center()
                 .child(
                     div()
                         .text_xs()
                         .text_color(theme::text_dim())
-                        .child(format!("表结构 · {} 张表", filtered.table_count())),
-                ),
-        )
-        .child(search)
-        .child(
-            v_flex()
-                .id("db-schema-list")
-                .w_full()
-                .max_h(px(440.))
-                .overflow_y_scroll()
-                .gap_0p5()
-                .children(rows),
-        )
-        .into_any_element()
-}
-
-/// 页头：容器 / 镜像 / 家族 / 客户端 + 「← 返回容器」「基础信息」「重新读取」。
-fn db_header(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
-    let back = {
-        let entity = entity.clone();
-        Button::new("db-back")
-            .label("← 返回容器")
-            .small()
-            .on_click(move |_, window, cx| {
-                entity.update(cx, |shell, cx| shell.close_database_page(window, cx));
-            })
-    };
-
-    // 连接卡（用户名 / 密码 + 说明）现在住在这个按钮后面 —— 它以前常驻页面顶部，
-    // 实机反馈"不用进来就在上面占用空间"。按钮文案就叫「基础信息」，
-    // 和浮层标题一致，用户点下去就知道会看到什么。
-    let info = {
-        let entity = entity.clone();
-        Button::new("db-info")
-            .label("基础信息")
-            .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.open_db_info(cx));
-            })
-    };
-
-    // 读取期间把按钮**换掉**（项目里不用 `.disabled()`）：置灰的按钮会让人
-    // 反复去点，而"读取中…"说清了现在在等什么。
-    let reload: AnyElement = if db.busy {
-        div()
-            .text_sm()
-            .text_color(theme::text_muted())
-            .child("读取中…")
-            .into_any_element()
-    } else {
-        let entity = entity.clone();
-        Button::new("db-reload")
-            .label("重新读取")
-            .small()
-            .primary()
-            .on_click(move |_, window, cx| {
-                entity.update(cx, |shell, cx| shell.load_db(window, cx));
-            })
-            .into_any_element()
-    };
-
-    // 「备份中 / 导入中」的**常驻**标记。
-    //
-    // 它和浮层是**两件事**，不是重复：
-    // - 浮层（`db_backup_progress` / `db_import_progress`）带遮罩，会挡住整页；
-    // - 这一行是**不挡任何东西**的状态说明，浮层开着时它在底下（看不见），
-    //   用户点「放到后台」把遮罩收掉之后，它就是唯一的"还在跑"的证据。
-    //
-    // 为什么必须有：不收遮罩的话用户被锁住；收了又没有这一行的话，
-    // 用户会以为已经结束了，接着去点「立即备份」或再导一次。
-    // 这也正是 `AGENTS.md` §7.1 那条"界面必须有变化"的延长线 ——
-    // 收起浮层是用户主动选的，但"还在跑"这个事实不能跟着消失。
-    let running: Option<AnyElement> = if let Some(backup) = db.backup.as_ref() {
-        Some(
-            div()
-                .text_xs()
-                .text_color(theme::primary())
-                .child(format!(
-                    "正在备份 {}…（可以继续用，完成后会提示）",
-                    backup.database
-                ))
-                .into_any_element(),
-        )
-    } else {
-        db.import.as_ref().map(|import| {
-            let target = import
-                .database
-                .as_deref()
-                .map(|d| format!("到 {d}"))
-                .unwrap_or_default();
-            div()
-                .text_xs()
-                .text_color(theme::primary())
-                .child(format!(
-                    "正在导入 {}{target}…（可以继续用，完成后会提示）",
-                    import.file_name
-                ))
-                .into_any_element()
-        })
-    };
-
-    h_flex()
-        .w_full()
-        .justify_between()
-        .items_center()
-        .child(
-            v_flex()
-                .gap_1()
-                .child(
-                    div()
-                        .text_sm()
-                        .font_semibold()
-                        .child(format!("容器 {}", db.container)),
+                        .child("当前库"),
                 )
-                .child(div().text_xs().text_color(theme::text_dim()).child(format!(
-                    "{} · {} · 客户端 {}",
-                    db.family.label(),
-                    db.image,
-                    db.client_version.as_deref().unwrap_or(db.client.as_str()),
-                )))
-                .children(running),
-        )
-        .child(h_flex().gap_2().child(back).child(info).child(reload))
-        .into_any_element()
-}
-
-/// 连接卡：用户名 / 密码 + 一句说明。
-///
-/// ⚠️ 它**现在住在一个浮层里**（`db_info_overlay`，点页头的「基础信息」打开），
-/// 不再常驻页面顶部 —— 实机反馈"不用进来就在上面占用空间"。原先这里的注释
-/// 写的是"挂在**页面**上而不是弹窗里：用户扫一眼就该知道这一页连的是谁"，
-/// 那条取舍被这条反馈推翻了：那一页最有价值的是两张表，而顶部 ~250px 花在
-/// 一份很少改的连接信息上。
-fn db_connection_card(db: &DbState, form: &DbPageForm, cx: &App) -> AnyElement {
-    let mut body = v_flex().w_full().gap_3().child(
-        h_flex()
-            .w_full()
-            .gap_3()
-            .child(form_field("db-user", "用户名", &form.user, cx, false))
-            .child(form_field(
-                "db-password",
-                "密码（只存在内存里）",
-                &form.password,
-                cx,
-                false,
-            )),
-    );
-
-    if let Some(note) = db.cred_note.clone() {
-        body = body.child(
-            div()
-                .text_xs()
-                .text_color(theme::text_dim())
-                .child(crate::util::strip_md(&note)),
-        );
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text())
+                        .child(crate::util::strip_md(name)),
+                )
+                .child(clear)
+                .into_any_element()
+        }
+        None => div()
+            .text_xs()
+            .text_color(theme::text_dim())
+            .child("当前库：不指定（语句里要自己 USE <库>）")
+            .into_any_element(),
     }
-
-    body = body.child(div().text_xs().text_color(theme::text_muted()).child(
-        // Markdown 文案 → 渲染处统一清标记（`util::strip_md`）
-        crate::util::strip_md(
-            "面板靠**容器自带的** mysql / mariadb 客户端执行 SQL —— 所以容器要在运行、\
-                     镜像里得有客户端（不要求把端口发布到主机）。密码走 MYSQL_PWD 环境变量，\
-                     不进命令行；改完点右上角「重新读取」生效。",
-        ),
-    ));
-
-    card("连接", body).into_any_element()
 }
 
-/// 探测就失败时的说明卡（不是 MySQL / 没客户端 / 容器没运行）。
-fn db_blocked_card(failure: &DbFailure) -> AnyElement {
-    v_flex()
-        .w_full()
-        .gap_3()
-        .p_4()
-        .rounded_lg()
-        .bg(theme::danger_soft())
-        .border_1()
-        .border_color(theme::danger_edge())
-        .child(
-            div()
-                .text_sm()
-                .font_semibold()
-                .text_color(theme::danger())
-                .child("这个容器现在管不了数据库"),
-        )
-        .child(
-            div()
-                .text_sm()
-                .text_color(theme::text())
-                .child(crate::util::strip_md(&failure.summary())),
-        )
-        .child(div().text_xs().text_color(theme::text_muted()).child(
-            "面板不自己连 3306，而是驱动容器里的客户端 —— 所以它不依赖端口有没有\
-                     发布出来，但要求那个客户端存在。想自己进去看，用「容器」页那一行\
-                     「更多」菜单里的「终端」。",
-        ))
-        .child(log_text(Some(&failure.detail), "db-blocked-detail"))
-        .into_any_element()
-}
-
-/// 上一次失败：一句"该怎么办" +（可滚动的）原文。
-fn db_error_banner(failure: &DbFailure) -> AnyElement {
-    v_flex()
-        .w_full()
-        .gap_2()
-        .p_3()
-        .rounded_md()
-        .bg(theme::danger_soft())
-        .border_1()
-        .border_color(theme::danger_edge())
-        .child(
-            div()
-                .text_sm()
-                .text_color(theme::danger())
-                .child(crate::util::strip_md(&failure.summary())),
-        )
-        .child(log_text(Some(&failure.detail), "db-error-detail"))
-        .into_any_element()
-}
-
-/// 「账号存档读不出来」这类**纯文字**警告。
-///
-/// 和 [`db_error_banner`] 分开：那个吃 `DbFailure`（会再给一条"该怎么办"的
-/// 提示，是针对 SQL 报错分类的）；存档读坏不是 SQL 失败，没有可分类的东西，
-/// 硬塞成 `DbFailure` 只会让分类器瞎猜一条不相干的建议。
-fn db_store_warning(text: &str) -> AnyElement {
-    div()
-        .w_full()
-        .p_3()
-        .rounded_md()
-        .bg(theme::danger_soft())
-        .border_1()
-        .border_color(theme::danger_edge())
-        .child(
-            div()
-                .text_sm()
-                .text_color(theme::danger())
-                .child(text.to_owned()),
-        )
-        .into_any_element()
-}
-
-/// 还没读到数据时占位。
-fn db_loading(busy: bool) -> AnyElement {
-    let text = if busy {
-        "正在读取…"
-    } else {
-        "还没有读到数据 —— 点右上角「重新读取」"
-    };
-    v_flex()
-        .w_full()
-        .py_8()
-        .items_center()
-        .justify_center()
-        .child(div().text_sm().text_color(theme::text_dim()).child(text))
-        .into_any_element()
-}
-
-/// 三个 tab。
-fn db_tabs(current: DbTab, entity: &Entity<Shell>) -> AnyElement {
-    let buttons: Vec<AnyElement> = DbTab::ALL
-        .iter()
-        .map(|tab| {
-            let tab = *tab;
-            let entity = entity.clone();
-            // id 用 `{:?}`：稳定、且与显示语言无关（和设置页那几个 tab 一致）
-            let mut button = Button::new(SharedString::from(format!("db-tab-{tab:?}")))
-                .label(tab.label())
-                .small()
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |shell, cx| shell.set_db_tab(tab, cx));
-                });
-            if current == tab {
-                button = button.primary();
-            }
-            button.into_any_element()
-        })
-        .collect();
-
-    h_flex()
-        .w_full()
-        .gap_2()
-        .children(buttons)
-        .into_any_element()
-}
-
-/// 库名那一格：名字 + （系统库时）一个「系统」标记。
-///
-/// 系统库现在**不出现在列表里**（[`db_databases_card`] 里过滤掉了），
-/// 所以这个标记实际只在别处（比如将来"显示系统库"的开关）还有用 ——
-/// 留着是因为"这一行是不是系统库"这件事本身仍然要能一眼看出来。
-fn db_name_cell(entry: &wslc_core::model::DbEntry) -> AnyElement {
-    h_flex()
-        .gap_2()
-        .min_w_0()
-        .child(
-            div()
-                .text_sm()
-                .overflow_hidden()
-                .truncate()
-                .child(entry.name.clone()),
-        )
-        .children(
-            entry.is_system().then(|| {
-                badge("系统", theme::text_dim(), theme::neutral_soft()).into_any_element()
-            }),
-        )
-        .into_any_element()
-}
-
-/// 「数据库」tab。
-///
-/// `credentials` 是 `AppState` 上那份**唯一**的账号存档 —— 别从 `DbState`
-/// 里取（那里曾经有一份从没同步过的克隆，见 [`database`] 里的注释）。
-///
-/// `shell` / `cx` 是给「删库」那一行的：它要 `PendingAction::DropDatabase`，
-/// 而动作里的凭据必须和这一行**同一个来源**（`Shell::creds_for_row`，
-/// 面板记的账号优先、没记过才用连接卡）。
-fn db_databases_card(
-    db: &DbState,
-    credentials: &wslc_panel_core::dbcreds::DbCredentialStore,
-    shell: &Shell,
-    cx: &App,
-    entity: &Entity<Shell>,
-) -> AnyElement {
-    let new_database = {
-        let entity = entity.clone();
-        Button::new("db-new-database")
-            .label("新建数据库…")
-            .small()
-            .primary()
-            .on_click(move |_, window, cx| {
-                entity.update(cx, |shell, cx| {
-                    shell.open_db_dialog(DbDialogKind::NewDatabase, window, cx)
-                });
-            })
-    };
-
-    // ⚠️ 页头**没有**「导入 SQL」按钮（v0.9.2 拿掉的）：导入是"往**某个库**灌
-    // 数据"的事，入口在每一行的「导入备份」上。实机反馈：
-    // "数据库列表那里要一个导入备份，点击导入这个库的数据，上面不需要导入 sql"。
-
-    // ⚠️ **系统库不显示**（用户要求）。它们仍然真实存在、也仍然能被 SQL 控制台
-    // 访问 —— 只是不该混在"我的库"里（`sys` / `performance_schema` 还占着
-    // 表数和占用那两列，看着像自己的数据）。数量在下面那行里报出来，
-    // 免得用户以为读漏了。
-    let visible: Vec<&wslc_core::model::DbEntry> =
-        db.databases.iter().filter(|e| !e.is_system()).collect();
-    let hidden_system = db.databases.len() - visible.len();
-
-    let rows: Vec<AnyElement> = visible
-        .iter()
-        // `.copied()` 把 `&&DbEntry` 变回 `&DbEntry`：`iter()` 给的是双重引用，
-        // 而 `db_name_cell(entry)` 要的是 `&DbEntry` —— 函数参数不做自动解引用
-        // （方法调用才会），少这一步就是 E0308。
-        .copied()
-        .map(|entry| {
-            // 账号按**这一行**取（`Shell::creds_for_row`）：面板给 `djxm` 记过
-            // `djxm_user`，那这一行四个按钮全用 `djxm_user` —— 建库时授的是
-            // `GRANT ALL ON djxm.*`，连 `DROP` 都在里面，所以删库它也干得了。
-            // 没记过（比如 `wslc_probe`）才退回连接卡。
-            let row_creds = shell.creds_for_row(&db.container, &entry.name, cx);
-            let action = PendingAction::DropDatabase {
-                container: db.container.clone(),
-                database: entry.name.clone(),
-                client: db.client.clone(),
-                creds: row_creds,
-            };
-            // 「用户名 / 密码」只对**面板建的库**有记录（建库时同时建的用户，
-            // 记在本地存档里）。别处建的库显示 `—` —— 不猜、不编。
-            let credential = credentials.get(&db.container, &entry.name);
-            let backup_button = overlay_button(
-                &format!("db-backup-{}", entry.name),
-                "备份",
-                {
-                    let name = entry.name.clone();
-                    move |shell, window, cx| shell.open_db_backup_dialog(name.clone(), window, cx)
-                },
-                entity,
-            );
-            // 「SQL」：开控制台并**用这一行的库 + 这一行的账号**（面板建的库
-            // 才有账号记录，别的库沿用连接卡上那个）。
-            let sql_button = overlay_button(
-                &format!("db-sql-{}", entry.name),
-                "SQL",
-                {
-                    let name = entry.name.clone();
-                    move |shell, window, cx| shell.open_db_console_for(name.clone(), window, cx)
-                },
-                entity,
-            );
-            // 「导入备份」：把这个库的数据从一个本地 `.sql` 灌进去。
-            // 目标库**就是这一行**（写进 kind 里），弹窗里没有可改的库名。
-            let import_button = overlay_button(
-                &format!("db-import-{}", entry.name),
-                "导入备份",
-                {
-                    let name = entry.name.clone();
-                    move |shell, window, cx| {
-                        shell.open_db_dialog(
-                            DbDialogKind::ImportSql {
-                                database: name.clone(),
-                            },
-                            window,
-                            cx,
-                        )
-                    }
-                },
-                entity,
-            );
-            table_row(
-                DB_COLUMNS,
-                vec![
-                    db_name_cell(entry),
-                    match credential {
-                        Some(cred) => cell_text(cred.user.clone()),
-                        None => cell_muted("—"),
-                    },
-                    match credential {
-                        Some(cred) => cell_text(cred.password.clone()),
-                        None => cell_muted("—"),
-                    },
-                    cell_muted(entry.charset.clone()),
-                    cell_muted(entry.collation.clone()),
-                    cell_muted(entry.tables.to_string()),
-                    cell_muted(format_bytes(entry.bytes)),
-                    h_flex()
-                        .gap_2()
-                        .child(backup_button)
-                        .child(import_button)
-                        .child(sql_button)
-                        .child(
-                            danger_button(
-                                &format!("db-drop-{}", entry.name),
-                                "删除",
-                                action,
-                                entity,
-                            )
-                            .into_any_element(),
-                        )
-                        .into_any_element(),
-                ],
-            )
-            .into_any_element()
-        })
-        .collect();
-
-    let count_text = if hidden_system > 0 {
-        format!(
-            "共 {} 个数据库（另有 {hidden_system} 个系统库未显示）",
-            visible.len()
-        )
-    } else {
-        format!("共 {} 个数据库", visible.len())
-    };
-
-    v_flex()
-        .w_full()
-        .gap_3()
-        .child(
-            h_flex()
-                .w_full()
-                .justify_between()
-                .items_center()
-                // 页头只剩「新建数据库…」：库级动作（导入备份 / SQL / 备份 /
-                // 删除）全在下面每一行上。
-                .child(h_flex().gap_2().child(new_database))
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme::text_muted())
-                        .child(count_text),
-                ),
-        )
-        .child(
-            v_flex()
-                .w_full()
-                .rounded_lg()
-                .bg(theme::bg_card())
-                .border_1()
-                .border_color(theme::border())
-                .overflow_hidden()
-                .child(table_header(DB_COLUMNS))
-                .child(if rows.is_empty() {
-                    empty_state("没有读到任何数据库").into_any_element()
-                } else {
-                    v_flex().w_full().children(rows).into_any_element()
-                }),
-        )
-        .into_any_element()
-}
-
-/// 「用户」tab。
-///
-/// `shell` / `cx` 只给「删除」那一行用：`PendingAction::DropUser` 里的凭据
-/// 必须和「改密码 / 授权」走同一个来源（`Shell::db_creds`，读连接卡）。
-fn db_users_card(db: &DbState, shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
-    let new_user = {
-        let entity = entity.clone();
-        Button::new("db-new-user")
-            .label("新建用户…")
-            .small()
-            .primary()
-            .on_click(move |_, window, cx| {
-                entity.update(cx, |shell, cx| {
-                    shell.open_db_dialog(DbDialogKind::NewUser, window, cx)
-                });
-            })
-    };
-
-    // 只画业务账号：系统账号（`mysql.*` / `mariadb.sys`）和 root 不显示。
-    // 判定在 `DbUser::is_hidden_by_default()`，这里只消费。
-    let visible: Vec<&DbUser> = db.visible_users().collect();
-
-    let rows: Vec<AnyElement> = visible
-        .iter()
-        .map(|user| {
-            let user_name = user.user.clone();
-            let host = user.host.clone();
-
-            let alter = overlay_button(
-                &format!("db-pass-{user_name}-{host}"),
-                "改密码",
-                {
-                    let (user_name, host) = (user_name.clone(), host.clone());
-                    move |shell, window, cx| {
-                        shell.open_db_dialog(
-                            DbDialogKind::AlterPassword {
-                                user: user_name.clone(),
-                                host: host.clone(),
-                            },
-                            window,
-                            cx,
-                        )
-                    }
-                },
-                entity,
-            );
-            let grant = overlay_button(
-                &format!("db-grant-{user_name}-{host}"),
-                "授权",
-                {
-                    let (user_name, host) = (user_name.clone(), host.clone());
-                    move |shell, window, cx| {
-                        shell.open_db_dialog(
-                            DbDialogKind::Grant {
-                                user: user_name.clone(),
-                                host: host.clone(),
-                            },
-                            window,
-                            cx,
-                        )
-                    }
-                },
-                entity,
-            );
-            let drop = danger_button(
-                &format!("db-drop-user-{user_name}-{host}"),
-                "删除",
-                PendingAction::DropUser {
-                    container: db.container.clone(),
-                    user: user_name.clone(),
-                    host: host.clone(),
-                    client: db.client.clone(),
-                    // ⚠️ 这一处**刻意**用连接卡，而不是 `creds_for_row`。
-                    //
-                    // 「用户」tab 每一行的对象是**账号**，不是某个库 —— 没有库名
-                    // 可以拿去找面板记的那份凭据。而更重要的是权限：
-                    // 面板建库时授的是 `GRANT ALL ON <库>.*`，**不含** `CREATE USER`
-                    // / `DROP USER`，所以那个账号删不了人。删账号只能用一个
-                    // 有全局权限的账号（root 或手工授过的人），也就是卡上那个。
-                    creds: shell.db_creds(cx),
-                },
-                entity,
-            )
-            .into_any_element();
-
-            table_row(
-                DB_USER_COLUMNS,
-                vec![
-                    h_flex()
-                        .gap_2()
-                        .min_w_0()
-                        .child(
-                            div()
-                                .text_sm()
-                                .overflow_hidden()
-                                .truncate()
-                                .child(user.user.clone()),
-                        )
-                        .into_any_element(),
-                    cell_muted(user.host.clone()),
-                    cell_muted(user.plugin.clone()),
-                    if user.super_priv {
-                        badge("Y", theme::success(), theme::success_soft()).into_any_element()
-                    } else {
-                        cell_muted("N")
-                    },
-                    h_flex()
-                        .gap_2()
-                        .flex_wrap()
-                        .child(alter)
-                        .child(grant)
-                        .child(drop)
-                        .into_any_element(),
-                ],
-            )
-            .into_any_element()
-        })
-        .collect();
-
-    let count_text = format!(
-        "共 {} 条账号记录（同一个用户名可以有多个主机）",
-        visible.len()
-    );
-
-    v_flex()
-        .w_full()
-        .gap_3()
-        .child(
-            h_flex()
-                .w_full()
-                .justify_between()
-                .items_center()
-                .child(new_user)
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme::text_muted())
-                        .child(count_text),
-                ),
-        )
-        .child(
-            v_flex()
-                .w_full()
-                .rounded_lg()
-                .bg(theme::bg_card())
-                .border_1()
-                .border_color(theme::border())
-                .overflow_hidden()
-                .child(table_header(DB_USER_COLUMNS))
-                .child(if rows.is_empty() {
-                    empty_state(if db.users.is_empty() {
-                        "没有读到任何用户（当前账号可能没有读 mysql.user 的权限）"
-                    } else {
-                        "没有业务账号（系统 / root 账号不显示）"
-                    })
-                    .into_any_element()
-                } else {
-                    v_flex().w_full().children(rows).into_any_element()
-                }),
-        )
-        .into_any_element()
-}
-
-/// 「SQL 控制台」tab。
-///
-/// 它是"上面两张表没做的功能"的**逃生口**：面板不解析、不改写用户写的 SQL，
-/// 原样交给容器里的客户端。⚠️ 输出用 `--table`（stdout 不是 tty 时 mysql
-/// 默认是 batch，不显式要表格的话控制台里会是一堆 tab —— 实测）。
-fn db_console_card(
+/// 右上：SQL 编辑器（多行 + 行号 + 语法高亮）+ 执行按钮。
+fn sql_editor_pane(
     db: &DbState,
     form: &DbPageForm,
-    shell: &Shell,
     entity: &Entity<Shell>,
-    cx: &App,
+    _cx: &App,
 ) -> AnyElement {
     let run: AnyElement = if db.busy {
+        // ⚠️ 点下去必须有变化（`AGENTS.md` §7.1）：从点击到结果出来这段时间
+        // 界面上什么都不动的话，用户会以为按钮坏了然后点第二次。
         div()
             .text_sm()
             .text_color(theme::text_muted())
@@ -2624,124 +1949,190 @@ fn db_console_card(
                     .text_color(theme::text_muted())
                     .overflow_hidden()
                     .truncate()
-                    .child(db.last_sql.clone()),
+                    // 多行语句在这里显示成一行：换行显示不了，
+                    // 换成 `⏎` 让用户知道原语句是分行的。
+                    .child(db.last_sql.replace('\n', " ⏎ ")),
             )
             .into_any_element()
-    };
-
-    // 三种状态分开：没跑过 / 报错 / 有结果（v0.11 起结果是表格，不是一段文本）。
-    let output: AnyElement = if let Some(error) = db.sql_error.as_ref() {
-        // 报错：红字 + 原样保留换行（`run_statements` 会说清第几条、
-        // 以及前几条已经生效了）。
-        v_flex()
-            .w_full()
-            .gap_1()
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme::danger())
-                    .child("执行失败"),
-            )
-            .child(log_text(Some(error), "db-sql-error"))
-            .into_any_element()
-    } else if db.sql_ran {
-        db_sql_results(db, shell, entity, cx)
-    } else {
-        div()
-            .text_sm()
-            .text_color(theme::text_dim())
-            .child("还没有执行任何语句")
-            .into_any_element()
-    };
-
-    // 这一条是**这次执行会落在哪个库**。从数据库列表行上的「SQL」按钮进来时
-    // 就是那一行；不指定的话 `SELECT * FROM t` 会报 "No database selected"
-    // （实测过），所以这件事必须显式画出来，而不是让用户从报错里猜。
-    let target_db: AnyElement = match db.sql_database.as_deref() {
-        Some(name) => {
-            let clear = {
-                let entity = entity.clone();
-                Button::new("db-sql-clear-db")
-                    .label("改为不指定")
-                    .small()
-                    .on_click(move |_, _, cx| {
-                        entity.update(cx, |shell, cx| shell.clear_sql_database(cx));
-                    })
-            };
-            h_flex()
-                .w_full()
-                .gap_2()
-                .items_center()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_dim())
-                        .child("当前库"),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text())
-                        .child(name.to_owned()),
-                )
-                .child(clear)
-                .into_any_element()
-        }
-        None => div()
-            .text_xs()
-            .text_color(theme::text_dim())
-            .child("当前库：不指定（语句里要自己 USE <库>）")
-            .into_any_element(),
     };
 
     v_flex()
         .w_full()
-        .gap_3()
+        .flex_none()
+        .gap_2()
+        .p_4()
+        .border_b_1()
+        .border_color(theme::border())
         .child(
-            v_flex()
+            h_flex()
                 .w_full()
                 .gap_3()
-                .p_4()
-                .rounded_lg()
-                .bg(theme::bg_card())
-                .border_1()
-                .border_color(theme::border())
-                .child(target_db)
-                .child(form_field(
-                    "db-sql",
-                    "语句（原样执行，面板不改写、也不解析）",
-                    &form.sql,
-                    cx,
-                    true,
-                ))
-                .child(
-                    h_flex()
-                        .w_full()
-                        .justify_between()
-                        .items_center()
-                        .child(
-                            div().text_xs().text_color(theme::text_muted()).child(
-                                // ⚠️ 这句话必须同时说清两件事，否则用户会困惑：
-                                // 1. 多条语句**是一条条单独跑的**（不是一次交给 mysql）；
-                                // 2. 所以每条有 70ms 起步的开销（实测），语句多会慢。
-                                "SHOW / SELECT / DDL 都能跑；多条语句逐条执行（每条约 70ms 起步）。",
-                            ),
-                        )
-                        .child(run),
-                ),
+                .items_center()
+                .child(sql_target_db(db, entity))
+                .child(div().flex_1())
+                .child(run),
+        )
+        // SQL 编辑器本体：行号 / 缩进线 / SQL 语法高亮都来自 `Editor`
+        // （`language("sql")` 是在 `ensure_db_form` 里设的）。
+        //
+        // ⚠️ 这里**不用** `form_field`：那个辅助函数是给单行 `InputState` 的
+        // （它读 `.value()`、画 `Input`）。`Editor` 的 API 不一样，
+        // 硬套会编不过 —— 而它也不会因为这个就"看起来像"，是直接报错。
+        .child(div().w_full().child(Editor::new(&form.sql).h(px(170.))))
+        .child(
+            div().text_xs().text_color(theme::text_muted()).child(
+                // ⚠️ 这句话必须同时说清两件事，否则用户会困惑：
+                // 1. 多条语句**是一条条单独跑的**（不是一次交给 mysql）；
+                // 2. 所以每条有 70ms 起步的开销（实测），语句多会慢。
+                "SHOW / SELECT / DDL 都能跑；多条语句逐条执行（每条约 70ms 起步）。",
+            ),
         )
         .child(echo)
-        .child(output)
         .into_any_element()
 }
 
-/// SQL 结果区（v0.11）：多语句的 tab + 结果表格 + 页脚。
+/// 左侧：库 / 表树（贴内容区左边框，全高，自己滚动）。
 ///
-/// # 为什么表格要 `flex_1` + 固定高度
+/// # 布局
 ///
-/// `DataTable` 是**虚拟滚动**的：它需要知道"我有多高"才能算出可见行范围。
-/// 放在一个高度不定的容器里，它会算错（表现为滚动条乱跳 / 底部空白）。
-/// 所以这里给结果区一个明确的 `h(px(360.))`。
+/// 固定 260px 宽 + `h_full`。结果表格要横向空间（可能几十列），
+/// 所以树不能 `flex_1` —— 它必须**可预测**地占一小块。
+///
+/// # 为什么自己画而不是用 `Collapsible`
+///
+/// `Collapsible` 是"一组内容一起折叠"，而这里要的是**逐库独立展开**
+/// （117 张表里只展开用户关心的那个库）。而且它的展开状态住在组件自己身上，
+/// 而我们的树每次重读都可能整个换掉 —— 状态必须留在 `Shell`
+/// （`schema_expanded`）。
+fn sql_tree_pane(
+    db: &DbState,
+    shell: &Shell,
+    entity: &Entity<Shell>,
+    cx: &App,
+) -> AnyElement {
+    let header = h_flex()
+        .w_full()
+        .justify_between()
+        .items_center()
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child(format!("表结构 · {} 张表", db.schema_tree.table_count())),
+        );
+
+    if db.schema_tree.is_empty() {
+        return v_flex()
+            .w(px(260.))
+            .h_full()
+            .flex_none()
+            .gap_2()
+            .p_3()
+            .border_r_1()
+            .border_color(theme::border())
+            .child(header)
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child("读不到表结构（账号可能没有 information_schema 权限）"),
+            )
+            .into_any_element();
+    }
+
+    // 搜索框：117 张表必须能过滤，否则铺开没人看得下去。
+    let search: AnyElement = match shell.schema_search.as_ref() {
+        Some(input) => div()
+            .w_full()
+            .child(Input::new(input).id("db-schema-search").w_full())
+            .into_any_element(),
+        None => div().into_any_element(),
+    };
+    let query = shell
+        .schema_search
+        .as_ref()
+        .map(|i| i.read(cx).value().to_string())
+        .unwrap_or_default();
+    let filtered = db.schema_tree.filter(&query);
+
+    // 逐个库画一行「库名 + 表数」，展开时再画它下面的表。
+    let mut rows: Vec<AnyElement> = Vec::new();
+    for db_node in &filtered.databases {
+        let name = db_node.name.clone();
+        // 搜索时**强制展开**：用户搜 `member` 是想直接看到那张表，
+        // 而不是看到一个收起的库名再点一下。
+        let expanded = !query.trim().is_empty() || shell.schema_expanded.contains(&name);
+
+        let arrow = if expanded { "▾" } else { "▸" };
+        let system_tag = if db_node.is_system() { "（系统）" } else { "" };
+        let label = format!("{arrow} {}{system_tag}  {}", name, db_node.tables.len());
+        let toggle_entity = entity.clone();
+        let toggle_name = name.clone();
+        rows.push(
+            Button::new(SharedString::from(format!("db-schema-db-{name}")))
+                .label(label)
+                .small()
+                .on_click(move |_, _, cx| {
+                    toggle_entity.update(cx, |shell, cx| {
+                        shell.toggle_schema_db(toggle_name.clone(), cx)
+                    });
+                })
+                .into_any_element(),
+        );
+
+        if expanded {
+            for table in &db_node.tables {
+                let tname = table.name.clone();
+                let tdb = name.clone();
+                let tag = table.kind.tag();
+                let label = if tag.is_empty() {
+                    format!("    {tname}")
+                } else {
+                    format!("    {tname}  {tag}")
+                };
+                let pick_entity = entity.clone();
+                rows.push(
+                    Button::new(SharedString::from(format!("db-schema-t-{tdb}-{tname}")))
+                        .label(label)
+                        .small()
+                        .on_click(move |_, window, cx| {
+                            pick_entity.update(cx, |shell, cx| {
+                                shell.pick_schema_table(tdb.clone(), tname.clone(), window, cx)
+                            });
+                        })
+                        .into_any_element(),
+                );
+            }
+        }
+    }
+
+    v_flex()
+        .w(px(260.))
+        .h_full()
+        .flex_none()
+        .min_h_0()
+        .gap_2()
+        .p_3()
+        .border_r_1()
+        .border_color(theme::border())
+        .child(header)
+        .child(search)
+        // `overflow_y_scroll` 来自 `StatefulInteractiveElement`，只对**带 id 的**
+        // 元素可用（这正是它叫 "stateful" 的原因）。漏了 `.id()` 是编译错误。
+        .child(
+            v_flex()
+                .id("db-schema-list")
+                .w_full()
+                .flex_1()
+                .min_h_0()
+                .gap_0p5()
+                .overflow_y_scroll()
+                .children(rows),
+        )
+        .into_any_element()
+}
+
+/// 右下：结果区（多语句 tab + 结果表格 + 页脚 + 导出 / 原始输出）。
 ///
 /// # 三种形态
 ///
@@ -2749,22 +2140,70 @@ fn db_console_card(
 /// 2. **有表格** → `DataTable` + 页脚；
 /// 3. **结果集为空但有列名**（`SELECT ... WHERE 1=0`）→ 也画表格（空的），
 ///    因为列名本身是有效信息。
-fn db_sql_results(
+///
+/// # 为什么表格是 `flex_1`
+///
+/// `DataTable` 是**虚拟滚动**的：它需要知道"我有多高"才能算出可见行范围。
+/// 放在高度不定的容器里会算错（表现为滚动条乱跳 / 底部空白）。
+/// 所以这一层用 `flex_1 + min_h_0`，让布局给出确定高度 ——
+/// 父链上每一层都有确定高度（页面 `h_full` → 右侧列 `h_full` → 这里 `flex_1`）。
+fn sql_results_pane(
     db: &DbState,
     shell: &Shell,
     entity: &Entity<Shell>,
     _cx: &App,
 ) -> AnyElement {
+    // 统一的容器：吃满剩余高度 + 内边距。三种形态共用，免得各写一遍。
+    let shell_area = |inner: AnyElement| -> AnyElement {
+        v_flex()
+            .w_full()
+            .flex_1()
+            .min_h_0()
+            .p_4()
+            .child(inner)
+            .into_any_element()
+    };
+
+    // 报错优先：这时候没有结果表格可看。
+    if let Some(error) = db.sql_error.as_ref() {
+        return shell_area(
+            v_flex()
+                .w_full()
+                .gap_1()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::danger())
+                        .child("执行失败"),
+                )
+                // 原样保留换行：`run_statements` 会说清第几条出错、
+                // 以及前几条已经生效了。
+                .child(log_text(Some(error), "db-sql-error"))
+                .into_any_element(),
+        );
+    }
+    if !db.sql_ran {
+        return shell_area(
+            div()
+                .text_sm()
+                .text_color(theme::text_dim())
+                .child("还没有执行任何语句")
+                .into_any_element(),
+        );
+    }
+
     let Some(result) = db.sql_results.get(shell.sql_result_tab) else {
-        return div()
-            .text_sm()
-            .text_color(theme::text_dim())
-            .child("执行成功，没有返回行")
-            .into_any_element();
+        return shell_area(
+            div()
+                .text_sm()
+                .text_color(theme::text_dim())
+                .child("执行成功，没有返回行")
+                .into_any_element(),
+        );
     };
 
     // 多语句：结果之间用一排小按钮切换。
-    let tabs = if db.sql_results.len() > 1 {
+    let tabs: AnyElement = if db.sql_results.len() > 1 {
         let buttons: Vec<AnyElement> = db
             .sql_results
             .iter()
@@ -2780,9 +2219,7 @@ fn db_sql_results(
                     b = b.primary();
                 }
                 b.on_click(move |_, window, cx| {
-                    entity.update(cx, |shell, cx| {
-                        shell.switch_sql_result_tab(ix, window, cx)
-                    });
+                    entity.update(cx, |shell, cx| shell.switch_sql_result_tab(ix, window, cx));
                 })
                 .into_any_element()
             })
@@ -2797,8 +2234,8 @@ fn db_sql_results(
     let grid: AnyElement = match shell.sql_table.as_ref() {
         Some(state) => div()
             .w_full()
-            // 高度固定，理由见函数文档
-            .h(px(360.))
+            .flex_1()
+            .min_h_0()
             .child(DataTable::new(state))
             .into_any_element(),
         None => div()
@@ -2814,8 +2251,8 @@ fn db_sql_results(
         .text_color(theme::text_muted())
         .child(crate::sqlview::footer_text(result, db.sql_elapsed_ms));
 
-    // 导出 CSV（v0.11.3）：只有真的有表格时才给按钮 —— 空结果导出一个
-    // 只有表头的 CSV 没有意义，只会让用户以为导出坏了。
+    // 导出 CSV：只有真的有表格时才给按钮 —— 空结果导出一个只有表头的 CSV
+    // 没有意义，只会让用户以为导出坏了。
     let export: AnyElement = if result.columns.is_empty() {
         div().into_any_element()
     } else {
@@ -2853,28 +2290,34 @@ fn db_sql_results(
         div().into_any_element()
     };
 
-    v_flex()
-        .w_full()
-        .gap_2()
-        .child(tabs)
-        .child(grid)
-        .child(
-            h_flex()
-                .w_full()
-                .justify_between()
-                .items_center()
-                .child(footer)
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(raw_toggle)
-                        .child(export),
-                ),
-        )
-        .child(raw_panel)
-        .into_any_element()
+    shell_area(
+        v_flex()
+            .w_full()
+            .h_full()
+            .min_h_0()
+            .gap_2()
+            .child(tabs)
+            .child(grid)
+            .child(
+                h_flex()
+                    .w_full()
+                    .flex_none()
+                    .justify_between()
+                    .items_center()
+                    .child(footer)
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(raw_toggle)
+                            .child(export),
+                    ),
+            )
+            .child(raw_panel)
+            .into_any_element(),
+    )
 }
+
 
 /// 「数据库管理」页的动作弹窗（新建库 / 新建用户 / 改密码 / 授权）。
 ///

@@ -93,6 +93,24 @@ pub enum Page {
     /// 进这一页需要 window：「添加部署」弹窗里全是输入框，而
     /// `InputState::new` 要 `&mut Window`（见 [`Page::needs_window_to_enter`]）。
     Deploy,
+    /// **SQL 工作区**（v0.12）：左侧库 / 表树 + 右上编辑器 + 右下结果表格。
+    ///
+    /// # 为什么是独立页面，而不是「数据库管理」页里的一个浮层
+    ///
+    /// v0.11 把它做成了浮层（`views::db_console_overlay`），实机用下来三个问题：
+    ///
+    /// 1. 浮层盖住页面，**看着像弹窗**，而写 SQL 往往是个持续十分钟的事；
+    /// 2. 浮层里塞进"树 + 编辑器 + 表格"三块，哪块都不够高；
+    /// 3. 关掉就全没了，视觉上像"退出"，而用户只是想换个查询。
+    ///
+    /// 用户原话："别弹窗出来，直接跳到新页面，左边的列表树左对齐，右上面是
+    /// 一个输入的大框，右下显示数据"。所以这一页**独占整个右侧区域**，
+    /// 树贴着左边框（没有外层内边距把它推开）。
+    ///
+    /// ⚠️ **不在 [`Page::ALL`] 里** —— 和 `Database` / `Deploy` 同一个取舍：
+    /// 它服务**某一个**容器的某一次会话，只能从数据库列表行上那个「SQL」
+    /// 按钮进来。所以侧边栏没有它，页头有「← 返回」。
+    Sql,
     /// 应用自己的设置（刷新间隔、主题……）。
     ///
     /// 这里存的是**本程序的偏好**（`%LOCALAPPDATA%\wslc-panel\prefs.json`）。
@@ -144,6 +162,7 @@ impl Page {
             Page::Volumes => "卷",
             Page::Database => "数据库管理",
             Page::Deploy => "部署管理",
+            Page::Sql => "SQL 控制台",
             Page::AppSettings => "应用设置",
         }
     }
@@ -153,7 +172,7 @@ impl Page {
         match self {
             Page::Dashboard => "概览",
             Page::Instances | Page::AddInstance => "WSL 实例",
-            Page::Containers | Page::Database | Page::Deploy => "容器",
+            Page::Containers | Page::Database | Page::Deploy | Page::Sql => "容器",
             Page::Images | Page::Networks | Page::Volumes => "资源",
             Page::AppSettings => "设置",
         }
@@ -175,7 +194,8 @@ impl Page {
     /// 的分支，而那正是 v0.4 删掉 `Page::Config` / `Page::WslConfig` 时清掉的
     /// 那种垃圾。同理，「镜像」的拉取表单在弹窗里，也不在这里。
     pub fn needs_window_to_enter(self) -> bool {
-        matches!(self, Page::AddInstance | Page::Database | Page::Containers)
+        // `Page::Sql` 也要：SQL 编辑框 + 树里的过滤框都是 `InputState`。
+        matches!(self, Page::AddInstance | Page::Database | Page::Containers | Page::Sql)
     }
 
     /// 这一页在侧边栏里应该高亮哪一项。
@@ -191,6 +211,8 @@ impl Page {
         match self {
             Page::AddInstance => Some(Page::Instances),
             Page::Database | Page::Deploy => Some(Page::Containers),
+            // SQL 控制台是从「数据库管理」页的列表行进去的，所以高亮那一页。
+            Page::Sql => Some(Page::Database),
             _ => None,
         }
     }

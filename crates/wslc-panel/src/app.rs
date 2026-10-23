@@ -30,7 +30,7 @@ use gpui_kit::component::button::*;
 // 渲染整页的是 `Shell`，输入框改的只是它自己的值 —— 不订阅父级就不会重绘，
 // 过滤结果要等下一次自动刷新（默认 3 秒）才变，打字时像"搜索框坏了"。
 // 这套写法在 v0.6 的 tag 过滤框上验证过（`cx.subscribe` + `matches!(event, InputEvent::Change)`）。
-use gpui_kit::component::input::{InputEvent, InputState};
+use gpui_kit::component::input::{EditorState, InputEvent, InputState, TabSize};
 // 「微软商店」与「在线发行版」两张清单都走组件库的 `Select`（下拉框）——
 // 参考实现也是一个下拉框（`CustomComboBox`），而不是我们原先那种
 // "几十个按钮铺满一屏"的写法。
@@ -620,8 +620,22 @@ pub(crate) struct DbPageForm {
     /// 但这一格是画在屏幕上的 —— 换成掩码要先确认组件库支持
     /// （`AGENTS.md` 说"推测的结论要写明"），所以这一版照实显示。
     pub(crate) password: Entity<InputState>,
-    /// SQL 控制台里那条语句。
-    pub(crate) sql: Entity<InputState>,
+    /// SQL 控制台里那段脚本（v0.12 起是**多行编辑器**）。
+    ///
+    /// # 为什么从 `InputState` 换成 `EditorState`
+    ///
+    /// 之前是单行 `Input` —— 稍微像样的查询都写不下（没有换行、没有缩进），
+    /// 而且关键字和字符串一个颜色，看不出哪里写错。
+    ///
+    /// `EditorState` 带来：多行、行号、缩进参考线、括号自动配对，
+    /// 以及 **SQL 语法高亮**（靠 `gpui-kit` 的 `tree-sitter-sql` feature，
+    /// 见根 `Cargo.toml` 里那段说明）。
+    ///
+    /// ⚠️ 两者 API 很像但不完全一样：
+    /// - 取值：`EditorState::text()`，不是 `InputState::value()`；
+    /// - 赋值：两者都有 `set_value(text, window, cx)`。
+    /// 别猜，看 `gpui-kit` 的 `examples/editor/src/main.rs`，两种用法都在那儿。
+    pub(crate) sql: Entity<EditorState>,
 }
 
 /// 「添加部署 / 重新部署」弹窗里的输入框（v0.9）。
@@ -1036,12 +1050,6 @@ pub struct Shell {
     /// "不用进来就在上面占用空间" —— 现在收进这个浮层，页面顶上是页头 +
     /// 一个「基础信息」按钮。
     pub(crate) db_info_open: bool,
-    /// SQL 控制台浮层开着没有（针对 `DbState.sql_database` 那个库）。
-    ///
-    /// 控制台**不做成 tab**：SQL 是针对某个库的事，入口在数据库列表每行的
-    /// 「SQL」按钮上（实机反馈："上面不需要…sql 控制台，
-    /// 都是在具体数据库 database 操作的"）。
-    pub(crate) db_console_open: bool,
     /// 「部署管理」页的「添加部署 / 重新部署」弹窗；关闭时为 `None`。
     ///
     /// 只有这一个要 window（里面全是输入框）。这一页另外两个浮层
@@ -1228,7 +1236,6 @@ impl Shell {
             schema_search_sub: None,
             db_dialog: None,
             db_info_open: false,
-            db_console_open: false,
             deploy_form: None,
         };
         shell.refresh(cx);
@@ -3452,7 +3459,27 @@ impl Shell {
         }
         let user = cx.new(|cx| InputState::new(window, cx).placeholder("root"));
         let password = cx.new(|cx| InputState::new(window, cx).placeholder("root 的密码"));
-        let sql = cx.new(|cx| InputState::new(window, cx).placeholder("SHOW DATABASES"));
+        // SQL 编辑器（v0.12）：多行 + 行号 + SQL 语法高亮。
+        //
+        // 每一项都是有理由的，不是"顺手都打开"：
+        // - `language("sql")`：靠 `tree-sitter-sql` 认关键字 / 字符串 / 注释，
+        //   这是用户要的那个"像 dbx 一样的编辑器"的核心；
+        // - `line_number(true)`：SQL 报错只说 "line 3"，没有行号就对不上；
+        // - `indent_guides(true)`：多行语句缩进容易乱，参考线能看出层级；
+        // - `soft_wrap(false)`：SQL 按行组织，自动折行会把 `;` 断到看不见的地方；
+        // - `tab_size(2, soft)`：插空格不插制表符 —— 粘进别的工具时对齐不会散。
+        let sql = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .language("sql")
+                .line_number(true)
+                .indent_guides(true)
+                .soft_wrap(false)
+                .tab_size(TabSize {
+                    tab_size: 2,
+                    hard_tabs: false,
+                })
+                .placeholder("SHOW DATABASES;")
+        });
 
         // 用户名预填 root：绝大多数人只填密码那一格。
         user.update(cx, |state, cx| {
@@ -4289,23 +4316,16 @@ impl Shell {
             db.sql_database = Some(database.clone());
             db.clear_error();
         }
-        // 焦点给「语句」那一格：控制台是刚弹出来的浮层，光标不在里面的话
-        // 用户敲下去的字会落在别处（`AGENTS.md` §7.5：输入框的焦点在打开时
-        // 用 `window.focus` 给过去；`ensure_db_form` 当初把焦点给了密码那一格）。
+        // 顺序很重要：**先切页、再给焦点**。
+        //
+        // `set_page(Page::Sql)` 会调 `ensure_db_form` 把编辑器建出来，而它
+        // **首次**创建时会把焦点抢到「密码」那格（见 `ensure_db_form` 末尾）。
+        // 所以焦点必须在这之后给，否则用户一进来敲字会打到密码框里去。
+        self.set_page(Page::Sql, window, cx);
         if let Some(form) = self.db_form.as_ref() {
             let handle = form.sql.read(cx).focus_handle(cx);
             window.focus(&handle, cx);
         }
-        // 控制台是**浮层**（不是 tab）：实机反馈"上面不需要…sql 控制台，
-        // 都是在具体数据库 database 操作的"。
-        self.db_console_open = true;
-        // 左侧的库 / 表树：懒创建搜索框 + 读一次树（v0.11.2）。
-        //
-        // 读树放在**打开浮层时**而不是每次执行 SQL 后：一条 SQL 拿全，
-        // 成本一次 exec（70ms）；而每次执行后重读会白花一次，
-        // 用户大部分时候并不在改结构。
-        self.ensure_schema_search(window, cx);
-        self.load_schema_tree(cx);
         let toast = match credential {
             Some(cred) => Toast::info(format!(
                 "控制台已指向 {database}，账号用 {}（来自面板记的账号）",
@@ -4553,7 +4573,10 @@ impl Shell {
         let Some(form) = self.db_form.as_ref() else {
             return;
         };
-        let sql = form.sql.read(cx).value().trim().to_owned();
+        // ⚠️ `EditorState` 用 `text()`，不是 `InputState::value()`
+        // （`text()` 返回的还不是 `String`，要 `.to_string()` 一次）。
+        let sql = form.sql.read(cx).text().to_string();
+        let sql = sql.trim().to_owned();
         if sql.is_empty() {
             self.state.notify(Toast::error("先写一条 SQL 再执行"));
             cx.notify();
@@ -8265,6 +8288,25 @@ impl Shell {
             if page == Page::Database {
                 self.ensure_db_form(window, cx);
             }
+            // 「SQL 控制台」（v0.12）：整页的工作区。它复用 `DbPageForm`
+            // （编辑器那一格住在里面），外加树自己的搜索框。
+            if page == Page::Sql {
+                self.ensure_db_form(window, cx);
+                self.ensure_schema_search(window, cx);
+                // 树只在**还没读过**时才自动读一次。
+                //
+                // 每次进页面都读一遍会白花一次 `wslc exec`（约 70ms），
+                // 而用户大部分时候只是在几条查询之间来回。要刷新表结构
+                // 就点页面上的「刷新表结构」——那是明确的动作。
+                let need_tree = self
+                    .state
+                    .db
+                    .as_ref()
+                    .is_some_and(|db| db.schema_tree.is_empty());
+                if need_tree {
+                    self.load_schema_tree(cx);
+                }
+            }
             // 「容器」：搜索框是 `InputState`，只能在进入页面这一刻建。
             if page == Page::Containers {
                 self.ensure_container_search(window, cx);
@@ -9730,10 +9772,11 @@ impl Shell {
         cx.notify();
     }
 
-    /// 关掉 SQL 控制台浮层（`sql_database` 留着 —— 下次点同一行的「SQL」
-    /// 还是那个库，省得重选）。
-    pub fn close_db_console(&mut self, cx: &mut Context<Self>) {
-        self.db_console_open = false;
+    /// 从 SQL 控制台回到「数据库管理」页。
+    ///
+    /// `sql_database` 留着 —— 下次点同一行的「SQL」还是那个库，省得重选。
+    pub fn close_db_console(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_page(Page::Database, window, cx);
         cx.notify();
     }
 
@@ -10034,14 +10077,9 @@ impl Render for Shell {
             _ => div().into_any_element(),
         };
 
-        // SQL 控制台浮层（针对某个库）。
-        let db_console: AnyElement = match &state.db {
-            Some(db) if self.db_console_open => match self.db_form.as_ref() {
-                Some(form) => views::db_console_overlay(db, form, self, &entity, cx),
-                None => div().into_any_element(),
-            },
-            _ => div().into_any_element(),
-        };
+        // ⚠️ v0.12 起 SQL 控制台是**整页**（`Page::Sql`），不再是浮层 ——
+        // 所以这里没有它的位置了。浮层那一版（`db_console_overlay`）已删：
+        // 它盖住页面、看着像弹窗，而且塞不下"树 + 编辑器 + 表格"三块。
 
         // 备份进度（跑着才有内容）与备份列表（点「备份」打开）。
         let db_backup_progress: AnyElement = match &state.db {
@@ -10099,19 +10137,42 @@ impl Render for Shell {
         // `Styled`（它是类型擦除后的元素），`.opacity()` 在那儿不存在。
         // 外面那层 `v_flex().w_full()` 负责把"整页宽"传下去 —— 动画包装层
         // 自己不带宽度，而页面内容大量用 `w_full`。
-        let page_body: AnyElement = v_flex()
-            .w_full()
-            .child(
-                div()
-                    .w_full()
-                    .child(views::page(self, cx, &entity))
-                    .with_animation(
-                        state.page.label(),
-                        Animation::new(Duration::from_millis(120)),
-                        |el, delta| el.opacity(delta),
-                    ),
-            )
-            .into_any_element();
+        // ⚠️ 「SQL 控制台」那一页要**撑满高度**（它自己分上下两块、各自滚动），
+        // 其余页面是"内容多高就多高，外层滚动"。所以这两支不能合并：
+        // 给普通页面加 `h_full` 会让短页面被拉满、长页面被压扁。
+        let page_body: AnyElement = if state.page == Page::Sql {
+            v_flex()
+                .w_full()
+                .h_full()
+                .min_h_0()
+                .child(
+                    div()
+                        .w_full()
+                        .h_full()
+                        .min_h_0()
+                        .child(views::page(self, cx, &entity))
+                        .with_animation(
+                            state.page.label(),
+                            Animation::new(Duration::from_millis(120)),
+                            |el, delta| el.opacity(delta),
+                        ),
+                )
+                .into_any_element()
+        } else {
+            v_flex()
+                .w_full()
+                .child(
+                    div()
+                        .w_full()
+                        .child(views::page(self, cx, &entity))
+                        .with_animation(
+                            state.page.label(),
+                            Animation::new(Duration::from_millis(120)),
+                            |el, delta| el.opacity(delta),
+                        ),
+                )
+                .into_any_element()
+        };
 
         div()
             .relative()
@@ -10191,19 +10252,43 @@ impl Render for Shell {
                                     .child(refresh_button),
                             )
                             .child(
+                                // ⚠️ 「SQL 控制台」是**整页工作区**，外层不能给它
+                                // `p_5` 和 `overflow_y_scroll`：
+                                //
+                                // - `p_5` 会把左侧那棵树从内容区左边框推开 20px，
+                                //   而用户明确要"左边的列表树左对齐"；
+                                // - 外层滚动 + 内层滚动（树自己滚、表格自己虚拟滚）
+                                //   会互相打架，而且 `DataTable` 拿不到确定高度时
+                                //   算错可见行范围（表现为滚动条乱跳 / 底部空白）。
+                                //
+                                // 所以这一页自己管布局和滚动，外层只做容器。
+                                //
                                 // `overflow_y_scroll` 来自 `StatefulInteractiveElement`，
                                 // 只对**带 id 的**元素可用（这正是它叫 "stateful" 的原因）。
                                 // 不带 `.id()` 会报 "no method named overflow_y_scroll"。
-                                v_flex()
-                                    .id("app-body-scroll")
-                                    .w_full()
-                                    .flex_1()
-                                    .min_h_0()
-                                    .gap_4()
-                                    .p_5()
-                                    .overflow_y_scroll()
-                                    .child(error_banner)
-                                    .child(page_body),
+                                if state.page == Page::Sql {
+                                    v_flex()
+                                        .id("app-body-sql")
+                                        .w_full()
+                                        .flex_1()
+                                        .min_h_0()
+                                        .overflow_hidden()
+                                        .child(error_banner)
+                                        .child(page_body)
+                                        .into_any_element()
+                                } else {
+                                    v_flex()
+                                        .id("app-body-scroll")
+                                        .w_full()
+                                        .flex_1()
+                                        .min_h_0()
+                                        .gap_4()
+                                        .p_5()
+                                        .overflow_y_scroll()
+                                        .child(error_banner)
+                                        .child(page_body)
+                                        .into_any_element()
+                                },
                             )
                             // 提示条放在主内容列**最后**：它是一条贴底的布局项，
                             // 出现时把上面那个 `flex_1` 的滚动区挤矮一点，
@@ -10240,14 +10325,17 @@ impl Render for Shell {
             // 「基础信息」排在动作弹窗**之后**（同时开着时它在上面 —— 但两者
             // 互斥：动作弹窗要按底下的按钮才会开，而浮层挡着那些按钮）。
             .child(db_info)
-            // ⚠️ SQL 控制台浮层**必须**挂在这儿。v0.9.2 把它从 tab 改成浮层时
-            // 只写了 `let db_console = …` 却没接进这棵树 —— 算出来的
-            // `AnyElement` 当场就被丢掉了，于是点行上的「SQL」只有一条
-            // "控制台已指向 X" 的 toast、**浮层永远不出现**（实机报过来就是这个：
-            // "这个 sql 按钮点击也没弹出控制台输入 sql 的界面来"）。
-            // 它和 `db_info` 走同一条路（都从数据库页的按钮打开，遮罩互斥），
-            // 排在这儿即可。
-            .child(db_console)
+            // ⚠️ v0.12：SQL 控制台从浮层改成了**整页**（`Page::Sql`），
+            // 所以这条链子上没有它的位置了。
+            //
+            // 留一条**踩过的坑**记在这里，因为这个坑很容易再踩：
+            // v0.9.2 把它做成浮层时，只写了 `let db_console = …` 却没把它
+            // `.child(…)` 进这棵树 —— 算出来的 `AnyElement` 当场被丢掉，
+            // 于是点行上的「SQL」只有一条 toast、**界面永远不出现**
+            //（实机原话："这个 sql 按钮点击也没弹出控制台输入 sql 的界面来"）。
+            //
+            // 教训：**这棵树里每算一个 `AnyElement`，都必须确认它真的被挂上去了。**
+            // 漏挂不会编译失败、也不会运行时报错，只是"点了没反应"。
             // 备份进度要盖住它打开时所处的一切；备份列表在进度之后
             //（进度跑完自动关，那时列表还在）。
             .child(db_backup_progress)
@@ -10325,7 +10413,8 @@ fn nav_item(page: Page, current: Page, entity: &Entity<Shell>) -> AnyElement {
 ///
 /// ⚠️ 这个 match 覆盖的是**全部 `Page` 变体**（`Page` 没有 `#[non_exhaustive]`，
 /// 少一支就是编译错误），而侧边栏只画 `Page::ALL` 里那 8 页。
-/// 另外三页 —— `AddInstance` / `Database` / `Deploy`（v0.9）—— **不是导航项**
+/// 另外四页 —— `AddInstance` / `Database` / `Deploy`（v0.9）/ `Sql`（v0.12）
+/// —— **不是导航项**
 /// （只能从别的页面上的按钮进），它们那三支给的是不会被用到的 id。
 ///
 /// ⚠️ 这段注释早先写的是"这个 match 只覆盖 `Page::ALL` 里那 8 页"，
@@ -10347,6 +10436,11 @@ fn nav_id(page: Page) -> &'static str {
         Page::Database => "nav-database",
         // 同上（v0.9 的部署管理页）
         Page::Deploy => "nav-deploy",
+        // 同上（v0.12 的 SQL 控制台整页）。
+        //
+        // 它在侧边栏里**不出现**，但高亮要落在「数据库管理」上 ——
+        // 那不是靠这个 id，而是 `Page::nav_parent()`（见 `highlights_nav`）。
+        Page::Sql => "nav-sql",
         Page::AppSettings => "nav-app-settings",
     }
 }
