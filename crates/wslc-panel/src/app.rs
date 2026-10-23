@@ -10397,7 +10397,19 @@ impl Render for Shell {
                             .min_w_0()
                             .h_full()
                             .overflow_hidden()
-                            .child(
+                            // SQL 页**不画应用级页头**。
+                            //
+                            // 它自带一整条工具栏（返回 / 库名 / 执行 …），再叠一层
+                            // "SQL 控制台 + 最后刷新 + 自动刷新 30 秒 + 刷新按钮"
+                            // 就是纯重复的 chrome —— 实测截图里顶上有四个按钮外加
+                            // 两行标题，专业的 SQL 客户端（dbx / DBeaver）都不是这个样子。
+                            //
+                            // ⚠️ 折叠侧边栏的按钮因此**搬到 SQL 页自己的工具栏**里了：
+                            // 侧边栏一收起那块就不渲染，按钮要是留在这条被隐藏的页头里，
+                            // 就再也点不回来了。
+                            .child(if state.page == Page::Sql {
+                                div().into_any_element()
+                            } else {
                                 h_flex()
                                     .w_full()
                                     .flex_none()
@@ -10431,8 +10443,9 @@ impl Render for Shell {
                                                     ),
                                             ),
                                     )
-                                    .child(refresh_button),
-                            )
+                                    .child(refresh_button)
+                                    .into_any_element()
+                            })
                             .child(
                                 // ⚠️ 「SQL 控制台」是**整页工作区**，外层不能给它
                                 // `p_5` 和 `overflow_y_scroll`：

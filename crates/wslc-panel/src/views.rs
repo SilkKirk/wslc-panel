@@ -17,6 +17,9 @@ use gpui_kit::component::input::{Editor, Input, InputState};
 // 画出来像一排色块（v0.12 实机就是这个效果，用户说"太丑了"）；
 // `ListItem` 是给列表 / 树用的，悬停与选中态由组件自己管。
 use gpui_kit::component::list::ListItem;
+// 折叠应用级侧边栏的按钮。SQL 页不画应用级页头（见 `app.rs`），
+// 所以那个按钮必须由这一页自己提供。
+use gpui_kit::component::sidebar::SidebarToggleButton;
 // 「微软商店」与「在线发行版」两张清单都是**下拉框**（参考实现也是
 // `CustomComboBox`，不是我们原先那种按钮列表）。
 use gpui_kit::component::select::Select;
@@ -1763,22 +1766,32 @@ pub fn sql_console_page(
     //
     // 不放「重新读取」（那会重跑整个数据库探测）：这一页要重读的只有表结构，
     // 给一个精确的按钮，而不是让用户拿一个大而全的刷新去猜它会重做什么。
+    // 折叠侧边栏的按钮。
+    //
+    // ⚠️ 它原来在应用级页头里，而 SQL 页**不画**那一层（见 `app.rs` 的说明），
+    // 所以搬到这里来 —— 侧边栏收起后那块不渲染，按钮必须留在**不会被收起**
+    // 的地方，否则点没了就再也开不回来。
+    let sidebar_toggle = {
+        let entity = entity.clone();
+        let collapsed = shell.sidebar_collapsed;
+        SidebarToggleButton::new()
+            .collapsed(collapsed)
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| {
+                    shell.sidebar_collapsed = !shell.sidebar_collapsed;
+                    cx.notify();
+                });
+            })
+    };
+    // 返回按钮：专业 SQL 客户端是"一个连接下拉框"，我们是"从数据库页进来"，
+    // 所以留一个返回。用 `text` 变体（无底色）—— 顶栏上的按钮越少越好。
     let back = {
         let entity = entity.clone();
         Button::new("sql-back-to-db")
-            .label("← 返回数据库")
+            .label("← 数据库")
             .small()
             .on_click(move |_, window, cx| {
                 entity.update(cx, |shell, cx| shell.close_db_console(window, cx));
-            })
-    };
-    let reload_tree = {
-        let entity = entity.clone();
-        Button::new("sql-reload-tree")
-            .label("刷新表结构")
-            .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.load_schema_tree(cx));
             })
     };
     // 库名徽标：`dbx` 那种工作区都会把"当前连的是哪个库"钉在显眼处。
@@ -1804,32 +1817,31 @@ pub fn sql_console_page(
             .child("未指定库"),
     }
     .into_any_element();
-    // 表结构树的折叠按钮（v0.12.2）。
-    //
-    // 放在页头而不是树里面：树收起之后那一整块不渲染，按钮跟着消失就
-    // 再也点不回来了 —— 和侧边栏折叠按钮同一条理由。
-    let tree_toggle = {
-        let entity = entity.clone();
-        let collapsed = shell.tree_collapsed;
-        let label = if collapsed {
-            "显示表结构"
-        } else {
-            "隐藏表结构"
-        };
-        Button::new("sql-toggle-tree")
-            .label(label)
-            .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| {
-                    shell.tree_collapsed = !shell.tree_collapsed;
-                    cx.notify();
-                });
-            })
-    };
-    // 树那一栏：收起时**完全不渲染**（不是留一条窄边），
-    // 这样编辑器和结果能拿到全部宽度。
+    // 树那一栏：收起时留一条**窄条**（32px）而不是完全消失 ——
+    // 窄条上就是"展开"按钮，否则用户把树收起来之后找不到开回来的入口。
+    // （专业 SQL 客户端也是这个做法：侧栏收起后留一条能点开的边。）
     let tree_column: AnyElement = if shell.tree_collapsed {
-        div().into_any_element()
+        let entity = entity.clone();
+        v_flex()
+            .w(px(32.))
+            .h_full()
+            .flex_none()
+            .items_center()
+            .p_1()
+            .border_r_1()
+            .border_color(theme::border())
+            .child(
+                Button::new("sql-expand-tree")
+                    .label("»")
+                    .small()
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |shell, cx| {
+                            shell.tree_collapsed = false;
+                            cx.notify();
+                        });
+                    }),
+            )
+            .into_any_element()
     } else {
         sql_tree_pane(db, shell, entity, cx)
     };
@@ -1843,15 +1855,16 @@ pub fn sql_console_page(
                 .flex_none()
                 .gap_3()
                 .items_center()
-                .px_4()
-                .py_3()
+                .px_3()
+                .py_2()
                 .border_b_1()
                 .border_color(theme::border())
+                // 工具栏只留三样：侧边栏折叠、返回、当前库。
+                // 「刷新表结构」搬进树头部的 `⟳`，「隐藏表结构」搬进树头部的 `«`。
+                .child(sidebar_toggle)
                 .child(back)
                 .child(db_badge)
-                .child(div().flex_1())
-                .child(tree_toggle)
-                .child(reload_tree),
+                .child(div().flex_1()),
         )
         .child(
             h_flex()
@@ -1998,7 +2011,11 @@ fn sql_editor_pane(
                 // ⚠️ 这句话必须同时说清两件事，否则用户会困惑：
                 // 1. 多条语句**是一条条单独跑的**（不是一次交给 mysql）；
                 // 2. 所以每条有 70ms 起步的开销（实测），语句多会慢。
-                "SHOW / SELECT / DDL 都能跑；多条语句逐条执行（每条约 70ms 起步）。",
+                // 只留"多条语句逐条执行"这一条 —— 那是**用户看不出来**的行为
+                // （会以为是一次性提交），而且解释了为什么语句多会慢。
+                // 原来还有一句"SHOW / SELECT / DDL 都能跑"，那是废话：
+                // 一个 SQL 输入框当然能跑这些，专业客户端也不会写这句。
+                "多条语句逐条执行（每条约 70ms）",
             ),
         )
         .child(echo)
@@ -2049,17 +2066,58 @@ fn sql_tree_pane(
             .into_any_element()
     };
 
+    // 树头一行：左边小字说明，右边两个**图标**按钮。
+    //
+    // 为什么改成图标：原来页头上有「刷新表结构」「隐藏表结构」两个带文字的
+    // 按钮，加上应用级那层标题 / 刷新，一屏顶部有四五个按钮 —— 专业的 SQL
+    // 客户端（dbx / DBeaver）顶栏是很少几个图标的。
+    //
+    // 用「⟳」「«」这两个字符而不是 `IconName`：`IconName` 的变体名得逐个
+    // 确认存在（猜错就是编译错误，而本地编不了），这两个字符是 Unicode 里
+    // 标准存在、任何字体都有的。
+    let tree_header = |label: String| -> AnyElement {
+        let refresh_entity = entity.clone();
+        let collapse_entity = entity.clone();
+        h_flex()
+            .w_full()
+            .items_center()
+            .justify_between()
+            .child(div().text_xs().text_color(theme::text_dim()).child(label))
+            .child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .child(
+                        Button::new("sql-reload-tree")
+                            .label("⟳")
+                            .small()
+                            .on_click(move |_, _, cx| {
+                                refresh_entity
+                                    .update(cx, |shell, cx| shell.load_schema_tree(cx));
+                            }),
+                    )
+                    .child(
+                        Button::new("sql-collapse-tree")
+                            .label("«")
+                            .small()
+                            .on_click(move |_, _, cx| {
+                                collapse_entity.update(cx, |shell, cx| {
+                                    shell.tree_collapsed = true;
+                                    cx.notify();
+                                });
+                            }),
+                    ),
+            )
+            .into_any_element()
+    };
+
     if db.schema_tree.is_empty() {
         return pane(
             v_flex()
                 .w_full()
                 .gap_2()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_dim())
-                        .child("表结构"),
-                )
+                // 读不到的时候**更**需要一个 ⟳ —— 那正是要重试的时候。
+                .child(tree_header("表结构".to_owned()))
                 .child(
                     div()
                         .text_xs()
@@ -2162,12 +2220,7 @@ fn sql_tree_pane(
             .h_full()
             .min_h_0()
             .gap_2()
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme::text_dim())
-                    .child(format!("表结构 · {total} 张表")),
-            )
+            .child(tree_header(format!("表结构 · {total} 张表")))
             .child(search)
             .child(
                 div()
