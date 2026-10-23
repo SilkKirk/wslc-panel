@@ -4830,9 +4830,7 @@ impl Shell {
         // 看的是最后一次使用 —— 一旦在后面再碰 `db`，那段可变借用就会冲突（E0502）。
         //
         // `driver()` 返回 `Arc<dyn SqlDriver>`：要搬进 `background_executor`
-        // 的闭包里，所以必须 `
-'
-static + Send + Sync`。
+        // 的闭包里，所以必须是静态生命周期 + Send + Sync。
         let mut conn = db.conn.clone();
         conn.database = database.clone();
         let driver = db.driver();
