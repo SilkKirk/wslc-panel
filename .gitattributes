@@ -17,6 +17,12 @@
 # 用 `-text` 关掉一切行尾转换，`hash-object` 才会和抓下来时一模一样。
 crates/wslc-core/tests/fixtures/sql_*.tsv -text
 
+# PostgreSQL 的夹具（v0.14，同样从真容器抓的）。
+#
+# 里面同样是**字面 TAB**（字段分隔符）和中文，外加 `(N rows)` 尾行 ——
+# 行尾或 TAB 被改写，那几条解析测试断言的字节就对不上了。
+crates/wslc-core/tests/fixtures/postgres_* -text
+
 # Windows 脚本保持 CRLF
 *.ps1 text eol=crlf
 *.cmd text eol=crlf
