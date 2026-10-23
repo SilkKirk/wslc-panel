@@ -488,6 +488,79 @@ pub fn schema_columns_sql() -> &'static str {
      ORDER BY table_schema, table_name, ordinal_position"
 }
 
+/// 库名列表（每行一个）。
+pub fn parse_databases(table: &CsvTable) -> Vec<String> {
+    table
+        .rows
+        .iter()
+        .filter_map(|r| r.first())
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .collect()
+}
+
+/// 把实测的两条元数据查询拼成对象树。
+///
+/// # 关键决定：schema 当"库"用
+///
+/// PostgreSQL 的实际层级是 **database → schema → table**，比 MySQL 多一层。
+/// 我们的界面只有两层（库 → 表），所以这里把 **schema 映射成 `DbNode`**。
+///
+/// 为什么不映射 database：`information_schema` 是**按库隔离**的 ——
+/// 查它只能看到当前连的那个库里的东西，要拿到所有库就得为每个库各跑一次
+/// `wslc exec`（每次固定开销约 70ms，库多了就是秒级）。而 schema 在同一次
+/// 连接里全都看得到，一次查询就够。
+///
+/// 代价写在明处：树里显示的是 `public` / `myschema` 而不是库名。
+/// 所以界面上要同时显示"当前连的是哪个库"（`DbState::sql_database` 那种）。
+pub fn parse_schema_tree(tables: &CsvTable, columns: &CsvTable) -> SchemaTree {
+    use crate::model::schematree::{DbNode, SchemaTree, TableKind, TableNode};
+    use std::collections::BTreeMap;
+
+    // schema -> 表（BTreeMap 让 schema 和表名都有稳定顺序）
+    let mut map: BTreeMap<String, Vec<TableNode>> = BTreeMap::new();
+    for row in &tables.rows {
+        let (Some(schema), Some(name)) = (row.first(), row.get(1)) else {
+            continue;
+        };
+        if schema.is_empty() || name.is_empty() {
+            continue;
+        }
+        let kind = match row.get(2).map(String::as_str) {
+            // 实测：PostgreSQL 给的是 `BASE TABLE` / `VIEW`（带空格），
+            // 正好和 `TableKind::parse` 认的字面量一致 —— 但这是**测出来的巧合**，
+            // 不是标准保证。所以留一条兜底到 Base。
+            Some(k) => TableKind::parse(k),
+            None => TableKind::Base,
+        };
+        map.entry(schema.clone())
+            .or_default()
+            .push(TableNode::new(name.clone(), kind));
+    }
+
+    // 列按实测的 `ordinal_position` 顺序挂上去（CSV 里已经是那个顺序）
+    for row in &columns.rows {
+        let (Some(schema), Some(table), Some(column)) = (row.first(), row.get(1), row.get(2)) else {
+            continue;
+        };
+        let Some(tables) = map.get_mut(schema) else {
+            continue;
+        };
+        let Some(node) = tables.iter_mut().find(|t| &t.name == table) else {
+            // 列在、表不在：两条查询之间表被删了，或者权限不一致。
+            // 丢掉这一行，而不是凭空造一张表。
+            continue;
+        };
+        node.columns.push(column.clone());
+    }
+
+    SchemaTree {
+        databases: map
+            .into_iter()
+            .map(|(name, tables)| DbNode { name, tables })
+            .collect(),
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -735,5 +808,64 @@ mod tests {
         assert!(schema_columns_sql().contains("ordinal_position"));
         assert!(databases_sql().contains("datallowconn"));
         assert!(databases_sql().contains("NOT datistemplate"));
+    }
+}
+/// 元数据解析的测试（和上面那批分开，因为它要用到 `schematree` 的类型）。
+#[cfg(test)]
+mod meta_tests {
+    use super::*;
+
+    const FIX_TABLES: &str = include_str!("../../tests/fixtures/postgres_schema_tables.csv");
+    const FIX_COLUMNS: &str = include_str!("../../tests/fixtures/postgres_schema_columns.csv");
+    const FIX_DATABASES: &str = include_str!("../../tests/fixtures/postgres_databases.csv");
+
+    #[test]
+    fn parses_database_list() {
+        let dbs = parse_databases(&parse_csv(FIX_DATABASES));
+        assert_eq!(dbs, vec!["postgres"]);
+    }
+
+    #[test]
+    fn parses_tree_with_schema_as_top_level() {
+        let tree = parse_schema_tree(&parse_csv(FIX_TABLES), &parse_csv(FIX_COLUMNS));
+        // 实测这个库里只有一个 schema：public
+        assert_eq!(tree.databases.len(), 1);
+        let public = &tree.databases[0];
+        assert_eq!(public.name, "public");
+
+        // 表都在，视图也在
+        let names: Vec<&str> = public.tables.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"t_user"), "缺 t_user：{names:?}");
+        assert!(names.contains(&"v_user"), "缺 v_user：{names:?}");
+
+        // 视图的类型必须认出来（`VIEW`），否则界面上会被当成表
+        let view = public.tables.iter().find(|t| t.name == "v_user").unwrap();
+        assert_eq!(view.kind, crate::model::schematree::TableKind::View);
+
+        // 列挂上了，而且顺序就是表定义顺序
+        let user = public.tables.iter().find(|t| t.name == "t_user").unwrap();
+        assert_eq!(
+            user.columns,
+            vec!["id", "name", "nick", "active", "tags", "created"]
+        );
+    }
+
+    #[test]
+    fn columns_for_unknown_tables_are_dropped_not_invented() {
+        let tables = parse_csv("table_schema,table_name,table_type\npublic,t,BASE TABLE\n");
+        let columns = parse_csv(
+            "table_schema,table_name,column_name\npublic,t,c1\npublic,ghost,c2\nother,t,c3\n",
+        );
+        let tree = parse_schema_tree(&tables, &columns);
+        assert_eq!(tree.databases.len(), 1, "不该凭空造 schema");
+        assert_eq!(tree.databases[0].tables.len(), 1, "不该凭空造表");
+        assert_eq!(tree.databases[0].tables[0].columns, vec!["c1"]);
+    }
+
+    #[test]
+    fn empty_input_gives_an_empty_tree() {
+        let tree = parse_schema_tree(&CsvTable::default(), &CsvTable::default());
+        assert!(tree.databases.is_empty());
+        assert!(tree.is_empty());
     }
 }

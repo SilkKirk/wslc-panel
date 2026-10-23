@@ -30,9 +30,11 @@ pub mod detect;
 pub mod dialect;
 pub mod driver;
 pub mod mysql_driver;
+pub mod postgres_driver;
 
 pub use conn::{DbConn, DbHost, DbKind};
 pub use detect::{guess_kind, Confidence, ConnHint};
 pub use dialect::{dialect_for, Capabilities, DialectData, LimitSyntax, QuoteStyle};
 pub use driver::{Credentials, ServerInfo, SqlDriver};
 pub use mysql_driver::MySqlDriver;
+pub use postgres_driver::PostgresDriver;

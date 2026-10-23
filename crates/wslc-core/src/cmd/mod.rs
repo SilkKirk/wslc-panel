@@ -31,6 +31,8 @@ pub mod image;
 pub mod install;
 pub mod mysql;
 pub mod network;
+// PostgreSQL 的执行层（v0.14）。形状照 cmd::mysql，但参数和解析不同。
+pub mod postgres;
 pub mod picker;
 pub mod registry;
 pub mod system;
