@@ -19,6 +19,13 @@ pub mod deploy;
 // `pub` 是因为面板要直接用它的类型（`MysqlCreds` / `DbEntry` ……）和函数
 // （`mysql_container_kind` 在**渲染期**就要用，见 `views::container_row_actions`）。
 pub mod mysql;
+// SQL 控制台：脚本切分（`split_statements`）与结果解析（`parse_batch_with_header`）。
+//
+// 两个都放 `model/` 而不是 `cmd/`，因为它们是**纯函数** —— 能脱离 Windows
+// 和容器跑单测（`core` job 十几秒就验完）。它们错了的表现是"界面上一片乱码 /
+// 少了几行"，是最难靠肉眼发现的那类缺陷。
+pub mod sqlresult;
+pub mod sqlstmt;
 // `pub` 是因为表格解析函数 `parse_session_table` 需要被 `cmd::system` 复用。
 pub mod session;
 mod system;

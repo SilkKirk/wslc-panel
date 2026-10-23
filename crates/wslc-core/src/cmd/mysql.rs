@@ -15,6 +15,10 @@ use crate::cli::Wslc;
 use crate::error::{Error, Result};
 use crate::model::mysql as logic;
 use crate::model::mysql::{ClientProbe, DbEntry, DbUser, MysqlCreds, MysqlFamily, RootCredHint, SqlMode};
+// SQL 控制台的结构化结果：`SqlResult` 是它的类型，
+// `sqlresult` / `sqlstmt` 是纯逻辑（住在 `model/` 里，能脱离 Windows 单测）。
+use crate::model::sqlresult::{self, SqlResult};
+use crate::model::sqlstmt;
 
 use super::container;
 
@@ -216,10 +220,74 @@ pub fn list_users(
     Ok(logic::parse_users(&out))
 }
 
-/// 用户敲的一条 SQL（**原样**执行，不加任何包装）。
+/// 用户在 SQL 控制台里敲的一段脚本 —— **切分后逐条执行**，每条一个结果集。
 ///
-/// 用 [`SqlMode::Table`]：stdout 不是 tty 时 mysql 默认是 batch，
-/// 不显式要表格的话控制台里会是一堆 tab。
+/// # 为什么不是"一次执行整段"
+///
+/// 实测：`mysql -B -e "SELECT 1 AS a; SELECT 2 AS b"` 的输出是两个结果集
+/// **直接粘连**（`a` / `1` / `b` / `2`，中间没有任何分隔），分不清哪行属于哪个。
+/// 逐条执行就没有这个问题。切分规则见 [`sqlstmt::split_statements`]。
+///
+/// # 代价
+///
+/// 每条语句一次 `wslc exec`，实测固定开销 **~70ms**。3 条 0.26s ——
+/// 交互式够用，但**一次几十条会明显变慢**（界面上要说明）。
+///
+/// # 遇到第一条报错就停
+///
+/// 和 `mysql` 客户端自己跑脚本的行为一致（不加 `--force` 时它会中止）。
+/// 已经跑完的那些结果**照样返回**，`Err` 里带上"第几条出错"——
+/// 否则用户看到"失败了"却不知道前面几条已经生效了，那是更糟的状态。
+pub fn run_statements(
+    wslc: &Wslc,
+    container_name: &str,
+    client_bin: &str,
+    creds: &MysqlCreds,
+    sql: &str,
+    database: Option<&str>,
+) -> Result<Vec<SqlResult>> {
+    let statements = sqlstmt::split_statements(sql);
+    if statements.is_empty() {
+        return Err(Error::InvalidArgument(
+            "没有可执行的语句（只有空白或注释）".to_owned(),
+        ));
+    }
+
+    let mut results = Vec::with_capacity(statements.len());
+    for (ix, stmt) in statements.iter().enumerate() {
+        match run_sql(
+            wslc,
+            container_name,
+            client_bin,
+            creds,
+            stmt,
+            database,
+            SqlMode::BatchWithHeader,
+        ) {
+            Ok(stdout) => results.push(sqlresult::parse_batch_with_header(&stdout)),
+            Err(e) => {
+                // 报错里说清"第几条"和"前几条已经生效了" —— 后者最要紧：
+                // 用户以为整段失败、其实前面几条已经改了数据。
+                let done = if results.is_empty() {
+                    "还没有语句生效".to_owned()
+                } else {
+                    format!("前 {} 条已经执行成功", results.len())
+                };
+                return Err(Error::Unsupported(format!(
+                    "第 {} 条语句出错（共 {} 条，{done}）：{e}\n\n出错的语句：\n{stmt}",
+                    ix + 1,
+                    statements.len(),
+                )));
+            }
+        }
+    }
+    Ok(results)
+}
+
+/// 执行一条语句并返回**原始**的 `--table` 输出（"看原始输出"的兜底）。
+///
+/// 和 [`run_statements`] 分开：那个要结构化数据，这个要"mysql 原样打了什么"——
+/// 排查列宽异常、字符集问题时，原始输出比任何解析结果都有说服力。
 pub fn run_console_sql(
     wslc: &Wslc,
     container_name: &str,

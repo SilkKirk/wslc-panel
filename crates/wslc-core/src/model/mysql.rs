@@ -360,11 +360,25 @@ pub fn root_credential_from_env(env: &[String]) -> RootCredHint {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SqlMode {
     /// 给**机器解析**用：`-N`（不要表头）+ `-B`（tab 分隔）。
+    ///
+    /// 用于"列名由我们自己知道"的查询（`SHOW DATABASES` 之类）。
     Batch,
+    /// 给**机器解析**用，但**带表头**：只要 `-B`，不要 `-N`。
+    ///
+    /// 实测：`-B` 不带 `-N` 时，输出的**第一行就是列名**。
+    /// SQL 控制台要展示任意查询的结果，列名只有服务端知道 —— 所以用它。
+    /// 解析在 [`super::sqlresult::parse_batch_with_header`]。
+    ///
+    /// ⚠️ **不能加 `-r/--raw`**：那个开关关掉转义，字段里的真 TAB / 真换行
+    /// 会把列和行切错。`-B` 的转义（`\t` / `\n` / `\\`）正是"按行按列切"能成立的
+    /// 前提。
+    BatchWithHeader,
     /// 给**人看**用：`--table`（ASCII 表格）。
     ///
     /// ⚠️ `--table` 必须显式给：stdout 不是 tty 时 `mysql` **默认就是 batch**
     /// （实测：不加参数时输出的是 `a\tb` 而不是带框的表格）。
+    ///
+    /// 现在只留作"看原始输出"的兜底（`DbState.sql_raw`）。
     Table,
 }
 
@@ -373,6 +387,7 @@ impl SqlMode {
     pub fn flags(self) -> &'static [&'static str] {
         match self {
             Self::Batch => &["-N", "-B"],
+            Self::BatchWithHeader => &["-B"],
             Self::Table => &["--table"],
         }
     }

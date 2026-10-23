@@ -9,6 +9,14 @@
 *.ico binary
 *.vhdx binary
 
+# SQL 控制台的**真实抓取夹具**：字节必须原样保留。
+#
+# ⚠️ 这些文件里有用 `-B` 转义出来的**字面** `\t` 和 `\n`（`5C 74` / `5C 6E`），
+# 还有零字节的空结果集 —— 让 `text=auto` 去认行尾，会在某次 checkout 里
+# 把 `\n` 改成 `\r\n`、或者给空文件塞一个换行，那些恰好是解析器要断言的字节。
+# 用 `-text` 关掉一切行尾转换，`hash-object` 才会和抓下来时一模一样。
+crates/wslc-core/tests/fixtures/sql_*.tsv -text
+
 # Windows 脚本保持 CRLF
 *.ps1 text eol=crlf
 *.cmd text eol=crlf
