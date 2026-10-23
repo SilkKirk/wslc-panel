@@ -4796,11 +4796,15 @@ impl Shell {
             None => self.db_creds(cx),
         };
         let wslc = self.state.wslc.clone();
+        // ⚠️ `container` 在后面 `update` 里还要用（判断"是不是还停在同一个容器"），
+        // 而内层的 `async move` 会把它搬走 —— 所以备一份 clone。
+        // 这个坑在 `delete_db_backup_confirmed` 里踩过一次（CI 的 E0382）。
+        let exec_container = container.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    wslc_core::cmd::mysql::list_schema_tree(&wslc, &container, &bin, &creds)
+                    wslc_core::cmd::mysql::list_schema_tree(&wslc, &exec_container, &bin, &creds)
                         .map_err(|e| e.to_string())
                 })
                 .await;
