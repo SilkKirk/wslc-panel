@@ -123,6 +123,142 @@ impl ConnSpec {
     }
 }
 
+/// 解析连接串（`postgres://…` / `postgresql://…` / `mysql://…`）。
+///
+/// # 为什么要这个
+///
+/// 这是"通用工具 + 连远程库"最短的一条路：用户从云厂商控制台复制一条 DSN
+/// 粘进来就能连，不需要先理解我们的表单有几个格子。
+///
+/// # 支持的形状
+///
+/// ```text
+/// postgres://user:pass@host:5432/dbname
+/// postgresql://user@host/dbname          （没有口令、没有端口）
+/// mysql://root:p%40ss@10.0.0.5:3306/shop （口令里的 @ 要编码成 %40）
+/// ```
+///
+/// # 刻意**不**支持的
+///
+/// `?sslmode=require` 这类查询参数：每个引擎的参数名都不一样
+/// （MySQL 是 `ssl-mode`、PostgreSQL 是 `sslmode`、SQL Server 又是另一套），
+/// 猜错比不支持更糟。TLS 由界面上的一个开关键决定（见 [`ConnSpec::tls`]）。
+/// 查询串**存在但不解析**时会报错，而不是静默丢掉 ——
+/// 静默丢掉会让用户以为"我明明写了 require"。
+pub fn parse_dsn(text: &str) -> Result<ConnSpec, DsnError> {
+    let text = text.trim();
+    let (scheme, rest) = text
+        .split_once("://")
+        .ok_or_else(|| DsnError::new("连接串要形如 postgres://user:pass@host:5432/db"))?;
+    let kind = match scheme.to_ascii_lowercase().as_str() {
+        "postgres" | "postgresql" | "pg" => DbKind::Postgres,
+        "mysql" => DbKind::MySql,
+        "mariadb" => DbKind::MariaDb,
+        other => return Err(DsnError::new(format!("不认识的协议：{other}"))),
+    };
+
+    // 查询串先摘掉，有内容就报错（见上面的说明）。
+    let (rest, query) = match rest.split_once('?') {
+        Some((r, q)) => (r, Some(q)),
+        None => (rest, None),
+    };
+    if let Some(q) = query {
+        if !q.trim().is_empty() {
+            return Err(DsnError::new(format!(
+                "连接串里的查询参数暂不支持（?{q}）；TLS 请用界面上的开关"
+            )));
+        }
+    }
+
+    // 最后一段是 `/库名`（库名里可能有 `/`，所以用**第一个** `/` 切）。
+    let (authority, database) = match rest.split_once('/') {
+        Some((a, d)) => (a, Some(percent_decode(d)?)),
+        None => (rest, None),
+    };
+
+    // `userinfo@hostport`：用**最后一个** `@` 切 —— 手写时口令里出现未编码的
+    // `@` 很常见，这样切至少不会把主机名弄错。
+    let (userinfo, hostport) = match authority.rsplit_once('@') {
+        Some((u, h)) => (Some(u), h),
+        None => (None, authority),
+    };
+
+    let (user, password) = match userinfo {
+        Some(info) => match info.split_once(':') {
+            Some((u, p)) => (percent_decode(u)?, percent_decode(p)?),
+            None => (percent_decode(info)?, String::new()),
+        },
+        None => (String::new(), String::new()),
+    };
+
+    // 主机可能是 `host:port`，也可能是 IPv6 的 `[::1]:5432`。
+    let (host, port) = if let Some(inner) = hostport.strip_prefix('[') {
+        let (h, rest) = inner
+            .split_once(']')
+            .ok_or_else(|| DsnError::new("IPv6 地址的方括号没闭合"))?;
+        let port = rest.strip_prefix(':').unwrap_or("");
+        (h.to_owned(), port)
+    } else {
+        match hostport.rsplit_once(':') {
+            Some((h, p)) => (h.to_owned(), p),
+            None => (hostport.to_owned(), ""),
+        }
+    };
+    if host.is_empty() {
+        return Err(DsnError::new("连接串里没有主机名"));
+    }
+    let port = if port.is_empty() {
+        kind.default_port()
+    } else {
+        port.parse::<u16>()
+            .map_err(|_| DsnError::new(format!("端口不是合法数字：{port}")))?
+    };
+
+    let mut spec = ConnSpec::new(kind, host, port, user);
+    spec.password = password;
+    spec.database = database.filter(|d| !d.is_empty());
+    Ok(spec)
+}
+
+/// 连接串解析不出来。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DsnError(pub String);
+
+impl DsnError {
+    fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
+impl std::fmt::Display for DsnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for DsnError {}
+
+/// 百分号解码（`%40` → `@`）。非法转义直接报错，不猜。
+fn percent_decode(value: &str) -> Result<String, DsnError> {
+    let bytes = value.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = value
+                .get(i + 1..i + 3)
+                .ok_or_else(|| DsnError::new("百分号编码不完整"))?;
+            let byte = u8::from_str_radix(hex, 16)
+                .map_err(|_| DsnError::new(format!("百分号编码不合法：%{hex}")))?;
+            out.push(byte);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).map_err(|_| DsnError::new("解码后不是合法的 UTF-8"))
+}
 /// 手写 `Debug`：**只写"有没有口令"，不写内容**。
 ///
 /// 和 `model::mysql::MysqlCreds` / `db::driver::Credentials` 同一个理由 ——
@@ -279,5 +415,94 @@ mod tests {
             assert!(c.postgres_conninfo().contains(&format!("host={host}")));
             assert!(c.mysql_url().contains(host));
         }
+    }
+}
+
+#[cfg(test)]
+mod dsn_tests {
+    use super::*;
+
+    #[test]
+    fn parses_a_full_postgres_dsn() {
+        let c = parse_dsn("postgres://alice:s3cret@db.example.com:6432/shop").unwrap();
+        assert_eq!(c.kind, DbKind::Postgres);
+        assert_eq!(c.host, "db.example.com");
+        assert_eq!(c.port, 6432);
+        assert_eq!(c.user, "alice");
+        assert_eq!(c.password, "s3cret");
+        assert_eq!(c.database.as_deref(), Some("shop"));
+        // 远程地址就是普通字段 —— 这是这一版的全部意义
+        assert!(c.postgres_conninfo().contains("host=db.example.com"));
+    }
+
+    #[test]
+    fn fills_defaults_for_missing_port_and_database() {
+        let c = parse_dsn("postgresql://postgres@127.0.0.1").unwrap();
+        assert_eq!(c.port, 5432, "缺端口时用引擎默认值");
+        assert_eq!(c.database, None);
+        assert_eq!(c.password, "");
+
+        let m = parse_dsn("mysql://root@10.0.0.5").unwrap();
+        assert_eq!(m.kind, DbKind::MySql);
+        assert_eq!(m.port, 3306);
+    }
+
+    #[test]
+    fn decodes_percent_escapes() {
+        let c = parse_dsn("mysql://root:p%40ss%3Aword@h:3306/my%20db").unwrap();
+        assert_eq!(c.password, "p@ss:word");
+        assert_eq!(c.database.as_deref(), Some("my db"));
+    }
+
+    #[test]
+    fn tolerates_an_unencoded_at_in_the_password() {
+        // 手写 DSN 时最常见的错误：口令里有 `@` 却没编码。
+        // 用**最后一个** `@` 切，至少不会把主机名认错。
+        let c = parse_dsn("mysql://root:p@ss@10.0.0.5:3306/shop").unwrap();
+        assert_eq!(c.host, "10.0.0.5");
+        assert_eq!(c.password, "p@ss");
+    }
+
+    #[test]
+    fn parses_ipv6_hosts() {
+        let c = parse_dsn("postgres://u:p@[::1]:5433/db").unwrap();
+        assert_eq!(c.host, "::1");
+        assert_eq!(c.port, 5433);
+    }
+
+    #[test]
+    fn rejects_query_parameters_instead_of_ignoring_them() {
+        // 静默丢掉 `sslmode=require` 会让用户以为"我明明写了"
+        let e = parse_dsn("postgres://u@h:5432/db?sslmode=require").unwrap_err();
+        assert!(e.to_string().contains("查询参数"), "{e}");
+        assert!(e.to_string().contains("sslmode"), "错误里要带上原文：{e}");
+    }
+
+    #[test]
+    fn rejects_unknown_scheme_and_shape() {
+        assert!(parse_dsn("redis://h:6379").unwrap_err().to_string().contains("不认识的协议"));
+        assert!(parse_dsn("db.example.com:5432").unwrap_err().to_string().contains("postgres://"));
+        assert!(parse_dsn("postgres://u@:5432/db").unwrap_err().to_string().contains("主机名"));
+        assert!(parse_dsn("postgres://u@h:notaport/db").unwrap_err().to_string().contains("端口"));
+    }
+
+    #[test]
+    fn round_trips_into_a_usable_conninfo() {
+        // 解析 → 拼连接串：两段都要对，否则"粘进来的 DSN 连不上"
+        let c = parse_dsn("postgres://alice:a%20b@10.0.0.5:5432/shop").unwrap();
+        let s = c.postgres_conninfo();
+        assert!(s.contains("host=10.0.0.5"));
+        assert!(s.contains("port=5432"));
+        assert!(s.contains("user=alice"));
+        // 空格必须被引号包住 —— 否则连接串被截断
+        assert!(s.contains("password='a b'"), "{s}");
+        assert!(s.contains("dbname=shop"));
+    }
+
+    #[test]
+    fn debug_of_a_parsed_dsn_still_hides_the_password() {
+        let c = parse_dsn("postgres://u:hunter2@h:5432/db").unwrap();
+        let text = format!("{c:?}");
+        assert!(!text.contains("hunter2"), "口令漏了：{text}");
     }
 }

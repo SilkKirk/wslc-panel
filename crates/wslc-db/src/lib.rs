@@ -31,5 +31,5 @@ pub mod conn;
 pub mod pg;
 pub mod session;
 
-pub use conn::ConnSpec;
+pub use conn::{parse_dsn, ConnSpec, DsnError};
 pub use session::{open, DbError, DbErrorKind, Session, TextTable};
