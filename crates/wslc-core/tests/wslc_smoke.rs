@@ -248,17 +248,50 @@ fn truncated_and_out_of_order_fields_still_parse() {
 // 2. 真机冒烟测试
 // ---------------------------------------------------------------------------
 
+/// 返回一个**真的能干活**的 `wslc`，否则 `None`（跳过真机测试）。
+///
+/// # ⚠️ 为什么不能只判 `is_available()`
+///
+/// `is_available()` 跑的是 `wslc version` —— 它只证明**可执行文件在**，
+/// 完全不碰容器引擎。而 GitHub 的 `windows-2025` runner 上：
+///
+/// - `wslc.exe` **是存在的**（runner 镜像自带 WSL）→ `is_available()` 返回 true；
+/// - 但容器引擎**起不来**（没有可用的 WSL 发行版 / 虚拟化）→
+///   `container::list_running()` 直接报错。
+///
+/// 于是"探不到就跳过"这个意图落空，`smoke_lists_on_real_machine` 在 CI 上
+/// **必然失败**。实测它已经偶发挂了 3 次（`570695e` 那次侥幸过了，
+/// `4ff861a` / `82c5bcf` 两次都挂），每次都把整轮 CI 弄红，
+/// 而失败信息只有一句 `unwrap_failed` —— 看起来像代码坏了。
+///
+/// 所以这里改成**真的跑一条只碰引擎的只读命令**（`wslc list`）。
+/// 它成功了才说明这台机器能跑真机测试。
 fn wslc_if_available() -> Option<Wslc> {
     let wslc = Wslc::new();
-    if wslc.is_available() {
-        Some(wslc)
-    } else {
+    if !wslc.is_available() {
         eprintln!(
             "跳过真机测试：没有找到可用的 wslc（路径 {:?}）。\
              需要 WSL 3.0 以上版本，或设置环境变量 WSLC_PATH。",
             wslc.program()
         );
-        None
+        return None;
+    }
+    // 光有 exe 不够 —— 引擎要能跑起来（见函数文档）。
+    // 用 `list -a` 而不是 `version`：前者会真的去问容器引擎。
+    match wslc.run_with_timeout(&["list", "-a"], std::time::Duration::from_secs(20)) {
+        Ok(out) if out.success() => Some(wslc),
+        Ok(out) => {
+            eprintln!(
+                "跳过真机测试：`wslc list -a` 退出码非零（容器引擎没起来？）。\
+                 输出：{}",
+                out.combined()
+            );
+            None
+        }
+        Err(e) => {
+            eprintln!("跳过真机测试：`wslc list -a` 跑不起来：{e}");
+            None
+        }
     }
 }
 
