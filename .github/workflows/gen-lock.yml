@@ -35,8 +35,62 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: 生成 Cargo.lock
-        run: cargo generate-lockfile
+      - name: 更新 Cargo.lock（最小更新，保留已有 pin）
+        # ⚠️ **别改回 `cargo generate-lockfile`。**
+        #
+        # 两者都能生成锁文件，但语义完全不同，这里踩过一次（2026-10-23）：
+        #
+        # - `cargo generate-lockfile` 是**全量重解析** —— 它无视现有锁文件，
+        #   按 semver 范围重新挑最新版本。实测为了启用一个 feature 跑它，
+        #   `gpui-kit` 从 0.7.1 被抬到 **0.7.3**、`gpui-pre` 从 0.3.8 到 0.3.9，
+        #   连带 20 多个包变版本、30 多个包消失（0.7.3 的可选依赖集不一样）。
+        #   那等于**顺手升级了整个 UI 框架** —— 而验证它要 15 分钟的 `ui` job，
+        #   更糟的是 API 变了却没人知道（我们读源码核对时按 0.7.1 看的）。
+        #
+        # - `cargo metadata` 走 cargo 的**最小更新**策略：只把"清单要求了、
+        #   但锁文件里还没有"的包补进去，已经锁定的版本一律不动。
+        #   加一个 feature 就只多出那个 feature 需要的几个包 —— 这正是要的。
+        #
+        # 真要整体升级依赖，那是一次独立的、必须配 `ui` 全量验证的改动，
+        # 不该混在"加个 feature"里。
+        shell: pwsh
+        run: |
+          # ⚠️ 这一条是**必须**的，不是保险。
+          #
+          # `tree-sitter-sequel`（SQL 语法）对 `cc` 的要求是 **`~1.2.1`** ——
+          # 波浪号，只认 1.2.x。而项目里 `embed-resource` 早就把 `cc` 锁在
+          # **1.7.0**（它的要求是宽松的 `^1.2`）。
+          #
+          # `cc` 是同一个 major，cargo 只能保留**一个**版本，于是两份要求
+          # 取交集只能是 1.2.x。最小更新策略会把已锁定的 1.7.0 当作
+          # "previously selected"，直接报：
+          #
+          #   error: failed to select a version for `cc`.
+          #   versions that meet the requirements `~1.2.1` are: 1.2.67 … 1.2.1
+          #   all possible versions conflict with previously selected packages
+          #   previously selected package `cc v1.7.0`
+          #
+          # 所以先显式把它降到 1.2.x 的最高版。
+          # 降级是安全的：`embed-resource` 要的是 `^1.2`，1.2.67 满足；
+          # 而"所有依赖 cc 的包都接受 1.2.x"这一点已经被实践证明了 ——
+          # 早先那次 `generate-lockfile` 自己就把 cc 解成了 1.2.67 且成功。
+          cargo update --package cc --precise 1.2.67
+
+          # 输出扔掉：它是给机器读的 JSON，几十兆。
+          cargo metadata --format-version 1 | Out-Null
+
+      - name: 打印关键版本（核对 GPUI 栈有没有被抬版本）
+        shell: pwsh
+        run: |
+          Write-Output "=== GPUI 栈（必须仍是 0.7.1 / 0.3.8）==="
+          Select-String -Path Cargo.lock -Pattern '^name = "gpui' -Context 0,1 |
+            ForEach-Object { "{0} {1}" -f $_.Line.Trim(), $_.Context.PostContext[0].Trim() }
+          Write-Output "=== cc（应为 1.2.x）==="
+          Select-String -Path Cargo.lock -Pattern '^name = "cc"$' -Context 0,1 |
+            ForEach-Object { "{0} {1}" -f $_.Line.Trim(), $_.Context.PostContext[0].Trim() }
+          Write-Output "=== tree-sitter ==="
+          Select-String -Path Cargo.lock -Pattern '^name = "tree-sitter' -Context 0,1 |
+            ForEach-Object { "{0} {1}" -f $_.Line.Trim(), $_.Context.PostContext[0].Trim() }
 
       - name: 提交回去
         shell: pwsh

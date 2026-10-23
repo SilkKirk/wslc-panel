@@ -15,7 +15,25 @@ publish = false
 [workspace.dependencies]
 wslc-core = { path = "crates/wslc-core" }
 wslc-panel-core = { path = "crates/wslc-panel-core" }
-gpui-kit = "0.7.1"
+# `tree-sitter-sql`：SQL 编辑器的**语法高亮**（v0.12）。
+#
+# 为什么值得多这 3 个依赖（`tree-sitter` + `tree-sitter-json` +
+# `tree-sitter-sequel`，其中 `tree-sitter` 要编译 C 代码）：
+#
+# 控制台里那个输入框是用户写 SQL 的地方，之前是**单行** `Input` ——
+# 稍微像样的查询都写不下，也看不出哪里是关键字。用户的原话是
+# "右上面是一个输入的大框……可以参考 dbx"。
+#
+# 备选方案与代价（都实测核对过 gpui-kit v0.7.1 的源码）：
+# - 只用 `Textarea`（多行、纯文本）：零新依赖，但**没有高亮**；
+# - 用 `Editor` 但不开这个 feature：`language("sql")` 会落到纯文本配置，
+#   同样没高亮；
+# - 用 `syntect` backend（`gpui-kit` 的另一个 feature，约 200 种语言、
+#   正则逐行匹配）：不建语法树，但依赖更重（`syntect` + `two-face` +
+#   一整包 sublimelsp 语法），而我们**只需要一种语言**。
+#
+# 所以只挑 SQL 这一种 tree-sitter 语法。
+gpui-kit = { version = "0.7.1", features = ["tree-sitter-sql"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 anyhow = "1"
