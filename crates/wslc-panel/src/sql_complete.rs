@@ -113,4 +113,25 @@ impl CompletionProvider for SqlCompletionProvider {
 
         Task::ready(Ok(CompletionResponse::Array(items)))
     }
+
+    /// 什么情况下**弹出**补全菜单。
+    ///
+    /// `gpui-kit` 的示例实现得很宽松（一律 `true`）。我们收窄一点，
+    /// 只在"正在打一个标识符"时弹：
+    ///
+    /// - 字母 / 数字 / `_` / `$`：正常打字，该补；
+    /// - `.`：刚打完 `别名.`，正是要列列名的时候；
+    /// - `` ` ``：反引号引用标识符，也该接着补；
+    /// - **空字符串**：手动触发（`Ctrl+Space` 之类），一律弹。
+    ///
+    /// 空格、逗号、`)`、`;` 这些**不弹** —— 在那些位置弹一个补全菜单，
+    /// 用户只是刚写完一个表达式，菜单只会挡住他看结果。
+    fn is_completion_trigger(&self, _offset: usize, new_text: &str, _cx: &mut App) -> bool {
+        if new_text.is_empty() {
+            return true;
+        }
+        new_text
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '$' || c == '.' || c == '`')
+    }
 }
