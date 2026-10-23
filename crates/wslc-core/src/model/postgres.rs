@@ -513,7 +513,7 @@ pub fn parse_databases(table: &CsvTable) -> Vec<String> {
 ///
 /// 代价写在明处：树里显示的是 `public` / `myschema` 而不是库名。
 /// 所以界面上要同时显示"当前连的是哪个库"（`DbState::sql_database` 那种）。
-pub fn parse_schema_tree(tables: &CsvTable, columns: &CsvTable) -> SchemaTree {
+pub fn parse_schema_tree(tables: &CsvTable, columns: &CsvTable) -> crate::model::schematree::SchemaTree {
     use crate::model::schematree::{DbNode, SchemaTree, TableKind, TableNode};
     use std::collections::BTreeMap;
 

@@ -111,7 +111,7 @@ impl SqlDriver for MySqlDriver {
         script: &str,
     ) -> Result<Vec<SqlResult>> {
         let container = self.container_name(conn)?;
-        let creds = to_mysql_creds(conn, cred);
+        let creds = to_mysql_creds(cred);
         my::run_statements(
             wslc,
             container,
@@ -124,7 +124,7 @@ impl SqlDriver for MySqlDriver {
 
     fn schema(&self, wslc: &Wslc, conn: &DbConn, cred: &Credentials) -> Result<SchemaTree> {
         let container = self.container_name(conn)?;
-        let creds = to_mysql_creds(conn, cred);
+        let creds = to_mysql_creds(cred);
         my::list_schema_tree(wslc, container, self.bin(), &creds)
     }
 }
@@ -140,7 +140,7 @@ impl SqlDriver for MySqlDriver {
 /// ⚠️ `DbConn::addr` / `port` 目前**不参与**这条路径，它们是为将来的
 /// 进程内直连（`DbHost::Native`，阶段 5）和"跨容器连"准备的。
 /// 这一点写在类型上也写在注释里，免得后来的人以为端口没生效是 bug。
-fn to_mysql_creds(conn: &DbConn, cred: &Credentials) -> MysqlCreds {
+fn to_mysql_creds(cred: &Credentials) -> MysqlCreds {
     MysqlCreds {
         user: cred.user.clone(),
         password: cred.password.clone(),
@@ -189,8 +189,11 @@ mod tests {
     fn mysql_creds_use_unix_socket_not_tcp() {
         // 这条断言是给未来的自己看的：host/port 传 None 是**刻意**的，
         // 不是漏填。改成 Some 会让容器里的连接改走 TCP。
-        let c = conn(DbKind::MySql, DbHost::Container("mysql".into()));
-        let creds = to_mysql_creds(&c, &Credentials::new("root", "pw"));
+        //
+        // 注意签名里**没有** `DbConn`：正因为走 socket，地址和端口在这条
+        // 路径上一个都不需要。将来真要做"exec 进 A 容器连 B 容器的库"，
+        // 那时才该把 `conn` 传进来并填 host/port。
+        let creds = to_mysql_creds(&Credentials::new("root", "pw"));
         assert_eq!(creds.host, None);
         assert_eq!(creds.port, None);
         assert_eq!(creds.user, "root");
