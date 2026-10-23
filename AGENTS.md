@@ -108,10 +108,33 @@ crates/
   release 会用一份**没记录在仓库里**的依赖集出包。
 - `push` **只监听 `main`**；功能分支走 `pull_request`。所以「推分支 + 开 PR」
   不会跑两遍（这是刻意改的，见 `ci.yml` 顶部注释）。
+  ⚠️ **但本仓库现在不开功能分支了**（见下面「工作流」那条）——
+  `ci.yml` 的 `pull_request` 触发留着不影响，只是不再走那条路。
 - 同一个分支连推两次会**取消上一次**（`concurrency`）。
 - 纯文档 PR 会跳过（`paths-ignore: **.md`）。
 - `--profile ci`（见根 `Cargo.toml`）是给**真的会 codegen** 的步骤用的：
   不优化、不带调试信息。**`cargo check` 不要加它** —— 白搭一份冷缓存。
+
+### 工作流：**直接在 `main` 上开发，不开分支、不开 worktree**
+
+2026-10-23 按用户要求清理过一次：本地 10 个功能分支、远端 44 个全删了，
+只留 `main`（清洗前每个分支的 sha 存在
+`.git/branch-archive-20261023.txt`，要找回就 `git branch <name> <sha>`）。
+
+**为什么这么定**：这个仓库的开发者只有一个人，而 CI 的 `push` 只跑 `main` ——
+功能分支要么等 PR（`ui` 那个 job 15 分钟），要么白等一轮。分支反而制造了
+"这个改动在哪个分支上"的额外记忆负担。实测代价是真实的：清理时发现
+10 个本地分支里有 6 个的改动**早就通过 squash merge 进了 main**，
+只是 sha 不同 —— 那种分支留着只会让人怀疑"是不是有东西没合"。
+
+**所以：**
+
+- 直接 `git switch main` + 改 + 推 `main`；
+- **不要 `git worktree add`** —— 这个仓库同时只有一个检出目录
+  （`E:\cnb\wslc-panel`），加 worktree 只会让"哪个目录是当前状态"变得含糊；
+- 要实验性的东西就**先在 main 上做完再推**，或者干脆开个临时分支、当天删掉。
+
+⚠️ **别用 `git add --renormalize`** —— 见 §7.6 那条实测（会把假差异变成真差异）。
 
 > ⚠️ **「CI 绿」这个信号只覆盖：类型检查过 + 纯逻辑测试跑过。仅此而已。**
 > 它**不**包含：格式（`lint` 永远不阻塞，见下）、clippy、MSRV（CI 用浮动
@@ -556,7 +579,7 @@ cx.spawn_in(window, async move |this, cx| {
   镜像预设表在 `model::image_preset`：**认不出来就什么都不做**（不预填、不拦），
   表里只有 mysql / mariadb / postgres / mongo / redis / nginx 这几个。
 
-### 7.6 网络：`github.com` 经常不通 —— 拉取/推送**默认走 API**
+### 7.6 网络：`github.com` 经常不通 —— 先试 HTTP/1.1，再退到 API
 
 - `github.com:443` 时常连不上（`Connection was reset` / 超时 **21 秒**起，
   重试几次就是一分钟）—— `git fetch` / `git push` 基本不可指望；
@@ -564,8 +587,53 @@ cx.spawn_in(window, async move |this, cx| {
 - **`gitee.com` 通**（参考项目就是从那儿 clone 的）；
 - 系统代理（`127.0.0.1:31181`）可能**中途消失**，别写死依赖它。
 
-**别跟 `git` 较劲：用 `scripts/` 下这两个脚本**（它们只走 `api.github.com`，
-token 从 `git credential` 取，脚本里不存任何密钥）：
+#### ⚠️ 先试这条：`-c http.version=HTTP/1.1`
+
+**实测（2026-10-23，v0.10.4 发布后对齐仓库时）：**
+
+| 命令 | 结果 |
+|---|---|
+| `git fetch --tags --prune` | ❌ **427 秒**后 `RPC failed; curl 56 Recv failure: Connection was reset` → `fatal: early EOF` |
+| `git fetch --depth=1 origin main` | ❌ **86 秒**后同样失败 |
+| `git ls-remote origin` | ✅ **1.5 秒**（169 行，main + 全部标签） |
+| `git -c http.version=HTTP/1.1 fetch --no-tags --depth=1 origin main` | ✅ **2.9 秒** |
+| `git -c http.version=HTTP/1.1 fetch --tags --prune --unshallow origin` | ✅ **2.4 秒**（全历史 + 全标签 + 全分支） |
+
+**判据**：`ls-remote` 通而 `fetch` 不通 —— 两者**走的不是同一条数据通道**：
+`ls-remote` 只要 ref 广播（小），`fetch` 要 pack 传输（大）。
+所以这不是"网络不通"，也不是仓库大（本仓库才 8.6 MB / 221 提交），
+`--depth=1` 一样挂。
+
+**根因**：git 默认用 **HTTP/2**，而链路上的中间设备会掐 h2 的数据流 ——
+表现就是"ref 拿到了、对象传一半被重置"。强制 HTTP/1.1 后一律秒级。
+
+**所以对齐仓库的正确顺序是**（别再一上来就跟 API 绕）：
+
+```powershell
+# 1) 先确认是哪种不通
+git ls-remote origin refs/heads/main          # 通 → 是 h2 的问题，走第 2 步
+
+# 2) 用 HTTP/1.1 拉全
+git -c http.version=HTTP/1.1 fetch --tags --prune --unshallow origin
+git reset --hard origin/main
+
+# 3) 只有 HTTP/1.1 也失败时，才退到下面的 API 路径
+```
+
+⚠️ **`git reset --hard` 之前先确认工作区内容已经在远端**（`scripts/gh-api-pull.ps1`
+的 DryRun 或逐文件 `hash-object` 比一遍）。本地 commits 与远端分叉时直接 reset
+会丢提交；而"工作区内容一致、只是本地索引落后"那种情况才是可以安全 reset 的
+（v0.10.4 那次就是这样）。
+
+⚠️ **别用 `git add --renormalize`** 去"修"那些显示为 `M` 的文件。实测踩过：
+本仓库 `.gitattributes` 是 `* text=auto eol=lf` + `*.ps1/*.iss/*.rc/*.isl eol=crlf`，
+仓库里那些 blob **本来就是 CRLF**（属性生效前提交的）。`--renormalize` 会把它们
+归一化成 LF 写进索引 —— **从"假差异"变成真差异**，还得 `reset --hard` 才回得来。
+判"这些 M 是不是假的"用逐字节 + 归一化比对（见本节末尾那个脚本），别看 `git diff`。
+
+#### 退路：`scripts/` 下这两个脚本（只走 `api.github.com`）
+
+**别跟 `git` 较劲时用它们**（token 从 `git credential` 取，脚本里不存任何密钥）：
 
 | 脚本 | 干什么 |
 |---|---|
@@ -573,11 +641,11 @@ token 从 `git credential` 取，脚本里不存任何密钥）：
 | `scripts/gh-api-push.ps1` | 把本地若干文件推成一个提交（`-Branch` 可开新分支，`-DryRun` 可预览） |
 
 - **拉取**：`GET /git/ref/heads/<ref>` → `GET /git/trees/<tree>?recursive=1` 拿每个
-  blob 的 sha；本地用 `git hash-object`（**纯本地操作，不走网络**）算同名文件的 sha，
-  **只下载对不上的那几个**，按字节写回（顺带把 CRLF 的脏工作区纠正成 LF）。
+  blob 的 sha；本地用 `git hash-object --no-filters`（**纯本地操作，不走网络**）算同名
+  文件的 sha，**只下载对不上的那几个**，按字节写回。
   ⚠️ 它只同步**内容**、不动 git 历史：本地 `git log` 仍然落后，`git status` 会显示
-  这些文件"被改过"。哪天网络通了跑一次
-  `git fetch --tags --prune && git reset --hard origin/main` 就彻底对齐。
+  这些文件"被改过"。网络通了按上面那三步
+  （`http.version=HTTP/1.1` + `fetch --unshallow` + `reset --hard`）彻底对齐。
 - **推送**：`POST /git/blobs` → `POST /git/trees`（`base_tree` = 基线分支那棵树，
   只替换指定文件）→ `POST /git/commits`（父提交 = 基线 head）→
   `PATCH|POST /git/refs/heads/<branch>`。两道保险：**拒绝 `.tmp*` 路径**
