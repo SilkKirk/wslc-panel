@@ -47,14 +47,57 @@ const POWERSHELL_LABEL: &str = "powershell.exe";
 /// （`["tar"]`）。返回 `Ok(None)` 表示**用户取消了** —— 那不算错误。
 pub fn pick_file(label: &str, extensions: &[&str]) -> Result<Option<String>> {
     let filter = build_filter(label, extensions);
-    run(&format!("选择{label}"), Some(&filter), false)
+    run(
+        &format!("选择{label}"),
+        Some(&filter),
+        DialogKind::OpenFile,
+    )
+}
+
+/// 弹一个**保存文件**的对话框（v0.11.3，导出 CSV 用）。
+///
+/// `suggested_name` 是预填的文件名（`"djxm-sys_user.csv"`）。
+/// 返回 `Ok(None)` 表示用户取消了。
+///
+/// # 和 [`pick_file`] 的区别（不只是标题）
+///
+/// `SaveFileDialog` 有 `FileName`（预填）和 `OverwritePrompt`（覆盖前确认）；
+/// `OpenFileDialog` 有 `CheckFileExists`。**两者不能混用** —— 用错了的表现是
+/// "导出时对话框是选文件的样子、而且要求文件必须已存在"，那当然选不出来。
+pub fn pick_save_file(
+    title: &str,
+    suggested_name: &str,
+    extensions: &[&str],
+) -> Result<Option<String>> {
+    let filter = build_filter("CSV 文件", extensions);
+    run(
+        title,
+        Some(&filter),
+        DialogKind::SaveFile {
+            suggested_name: suggested_name.to_owned(),
+        },
+    )
 }
 
 /// 弹一个**选目录**的对话框。
 ///
 /// 返回 `Ok(None)` 表示用户取消了。
 pub fn pick_directory(title: &str) -> Result<Option<String>> {
-    run(title, None, true)
+    run(title, None, DialogKind::Folder)
+}
+
+/// 要弹哪种对话框。
+///
+/// # 为什么不用三个 `bool`
+///
+/// 原来是 `folders: bool`（只有"文件"和"目录"两种）。加保存之后如果还是布尔，
+/// 就得变成 `folders: bool, save: bool` —— 而 `(true, true)` 是**无意义的组合**，
+/// 那种状态会成为"将来某次改动把两个参数传反"的土壤。枚举让非法状态写不出来。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DialogKind {
+    OpenFile,
+    Folder,
+    SaveFile { suggested_name: String },
 }
 
 /// 起进程、等结果。
@@ -64,8 +107,8 @@ pub fn pick_directory(title: &str) -> Result<Option<String>> {
 /// 代价是用户不点完，这个后台任务就一直挂着 —— 所以调用方必须保证
 /// **同时只弹一个**（选择器开着的时候按钮不再响应），
 /// 否则任务栏里会堆一排对话框。
-fn run(title: &str, filter: Option<&str>, folders: bool) -> Result<Option<String>> {
-    let script = build_script(title, filter, folders);
+fn run(title: &str, filter: Option<&str>, kind: DialogKind) -> Result<Option<String>> {
+    let script = build_script(title, filter, &kind);
 
     let mut cmd = Command::new(POWERSHELL);
     // `-STA` 是 WinForms 对话框的硬性要求：MTA 线程上 `ShowDialog` 会直接抛。
@@ -124,7 +167,7 @@ fn build_filter(label: &str, extensions: &[&str]) -> String {
 /// 拼出交给 `powershell.exe` 的脚本。
 ///
 /// 拆成纯函数是为了能**脱离 Windows 单测** —— 见模块头的说明。
-fn build_script(title: &str, filter: Option<&str>, folders: bool) -> String {
+fn build_script(title: &str, filter: Option<&str>, kind: &DialogKind) -> String {
     // PowerShell 的单引号字符串里，`''` 表示一个 `'`。
     // 标题和后缀表都是我们自己写的常量，但脚本是**拼**出来的，必须防。
     let quote = |s: &str| s.replace('\'', "''");
@@ -158,24 +201,44 @@ fn build_script(title: &str, filter: Option<&str>, folders: bool) -> String {
     script.push_str("$owner.WindowState = 'Minimized'\n");
     script.push_str("$owner.Show() | Out-Null\n");
 
-    if folders {
-        script.push_str("$d = New-Object System.Windows.Forms.FolderBrowserDialog\n");
-        script.push_str(&format!("$d.Description = '{}'\n", quote(title)));
-        script.push_str("$d.ShowNewFolderButton = $true\n");
-        script
-            .push_str("if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {\n");
-        script.push_str("  [Console]::Out.Write($d.SelectedPath)\n");
-        script.push_str("}\n");
-    } else {
-        script.push_str("$d = New-Object System.Windows.Forms.OpenFileDialog\n");
-        script.push_str(&format!("$d.Title = '{}'\n", quote(title)));
-        script.push_str(&format!("$d.Filter = '{}'\n", quote(filter.unwrap_or(""))));
-        // 手输一个不存在的路径时挡下来，免得后面 wsl 报一句不好懂的错
-        script.push_str("$d.CheckFileExists = $true\n");
-        script
-            .push_str("if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {\n");
-        script.push_str("  [Console]::Out.Write($d.FileName)\n");
-        script.push_str("}\n");
+    match kind {
+        DialogKind::Folder => {
+            script.push_str("$d = New-Object System.Windows.Forms.FolderBrowserDialog\n");
+            script.push_str(&format!("$d.Description = '{}'\n", quote(title)));
+            script.push_str("$d.ShowNewFolderButton = $true\n");
+            script
+                .push_str("if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {\n");
+            script.push_str("  [Console]::Out.Write($d.SelectedPath)\n");
+            script.push_str("}\n");
+        }
+        DialogKind::OpenFile => {
+            script.push_str("$d = New-Object System.Windows.Forms.OpenFileDialog\n");
+            script.push_str(&format!("$d.Title = '{}'\n", quote(title)));
+            script.push_str(&format!("$d.Filter = '{}'\n", quote(filter.unwrap_or(""))));
+            // 手输一个不存在的路径时挡下来，免得后面 wsl 报一句不好懂的错
+            script.push_str("$d.CheckFileExists = $true\n");
+            script
+                .push_str("if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {\n");
+            script.push_str("  [Console]::Out.Write($d.FileName)\n");
+            script.push_str("}\n");
+        }
+        DialogKind::SaveFile { suggested_name } => {
+            script.push_str("$d = New-Object System.Windows.Forms.SaveFileDialog\n");
+            script.push_str(&format!("$d.Title = '{}'\n", quote(title)));
+            script.push_str(&format!("$d.Filter = '{}'\n", quote(filter.unwrap_or(""))));
+            // 预填文件名：没有它用户得从零手打一遍（而名字是我们能算出来的）
+            script.push_str(&format!(
+                "$d.FileName = '{}'\n",
+                quote(suggested_name)
+            ));
+            // 覆盖前确认：导出到已有文件时，WinForms 会弹一次"是否替换"。
+            // **必须开** —— 否则一次误点就把用户的旧文件静默覆盖了。
+            script.push_str("$d.OverwritePrompt = $true\n");
+            script
+                .push_str("if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {\n");
+            script.push_str("  [Console]::Out.Write($d.FileName)\n");
+            script.push_str("}\n");
+        }
     }
 
     script.push_str("$owner.Close()\n");
@@ -222,7 +285,7 @@ mod tests {
 
     #[test]
     fn script_is_sta_and_writes_the_path_to_stdout() {
-        let script = build_script("选择tar 文件", Some("tar 文件 (*.tar)|*.tar"), false);
+        let script = build_script("选择tar 文件", Some("tar 文件 (*.tar)|*.tar"), &DialogKind::OpenFile);
 
         // `-STA` 是 WinForms 的硬性要求，漏了对话框会直接抛
         // （这里只能断言我们**传了**这个参数，见 `run`）。
@@ -245,7 +308,7 @@ mod tests {
 
     #[test]
     fn folder_picker_uses_the_folder_dialog() {
-        let script = build_script("选择安装目录", None, true);
+        let script = build_script("选择安装目录", None, &DialogKind::Folder);
         assert!(script.contains("System.Windows.Forms.FolderBrowserDialog"));
         assert!(script.contains("[Console]::Out.Write($d.SelectedPath)"));
         // 目录对话框没有 Filter，不该出现这一行
@@ -256,7 +319,7 @@ mod tests {
     fn single_quotes_in_text_are_escaped_for_powershell() {
         // PowerShell 单引号串里 `''` 表示一个 `'`。
         // 不转义的话脚本会被**截断**，表现为"对话框根本不出来"。
-        let script = build_script("it's", Some("a'b (*.x)|*.x"), false);
+        let script = build_script("it's", Some("a'b (*.x)|*.x"), &DialogKind::OpenFile);
         assert!(script.contains("$d.Title = 'it''s'"), "{script}");
         assert!(script.contains("$d.Filter = 'a''b (*.x)|*.x'"), "{script}");
     }
@@ -296,5 +359,69 @@ mod tests {
                 "路径被解码弄坏了：{path}"
             );
         }
+    }
+
+    #[test]
+    fn save_dialog_uses_the_save_dialog_with_a_prefilled_name() {
+        let script = build_script(
+            "导出 CSV",
+            Some("CSV 文件 (*.csv)|*.csv"),
+            &DialogKind::SaveFile {
+                suggested_name: "djxm-sys_user.csv".to_owned(),
+            },
+        );
+        // 必须是 SaveFileDialog —— 用 OpenFileDialog 的话它要求文件**已存在**，
+        // 导出时当然选不出来
+        assert!(script.contains("System.Windows.Forms.SaveFileDialog"));
+        assert!(
+            !script.contains("OpenFileDialog"),
+            "保存对话框不能是打开对话框"
+        );
+        // 预填文件名
+        assert!(script.contains("$d.FileName = 'djxm-sys_user.csv'"));
+        // 覆盖前确认必须开：否则一次误点就把旧文件静默覆盖
+        assert!(script.contains("$d.OverwritePrompt = $true"));
+        // 写回的是 FileName（不是 SelectedPath / FileNames）
+        assert!(script.contains("[Console]::Out.Write($d.FileName)"));
+    }
+
+    #[test]
+    fn open_dialog_and_save_dialog_do_not_share_their_checkbox() {
+        // `OpenFileDialog` 有 `CheckFileExists`，`SaveFileDialog` 有
+        // `OverwritePrompt` —— **不能混用**：给保存对话框设
+        // `CheckFileExists = $true` 会让它要求目标文件已存在，那就永远选不出来。
+        let open = build_script("打开", Some("a (*.a)|*.a"), &DialogKind::OpenFile);
+        assert!(open.contains("CheckFileExists"));
+        assert!(!open.contains("OverwritePrompt"));
+
+        let save = build_script(
+            "保存",
+            Some("a (*.a)|*.a"),
+            &DialogKind::SaveFile {
+                suggested_name: "x.a".to_owned(),
+            },
+        );
+        assert!(save.contains("OverwritePrompt"));
+        assert!(
+            !save.contains("CheckFileExists"),
+            "保存对话框不能要求目标文件已存在"
+        );
+    }
+
+    #[test]
+    fn save_dialog_escapes_quotes_in_the_suggested_name() {
+        // 文件名里可能有单引号（`o'brien.csv`）—— 不转义会把脚本截断，
+        // 表现是"对话框根本不出来"
+        let script = build_script(
+            "导出",
+            Some("CSV (*.csv)|*.csv"),
+            &DialogKind::SaveFile {
+                suggested_name: "o'brien.csv".to_owned(),
+            },
+        );
+        assert!(
+            script.contains("$d.FileName = 'o''brien.csv'"),
+            "单引号没被转义：{script}"
+        );
     }
 }

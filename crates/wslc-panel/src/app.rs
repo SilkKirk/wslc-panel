@@ -1074,6 +1074,21 @@ enum AfterPick {
     DeploySource,
 }
 
+/// 保存对话框关掉之后要做什么（CSV 导出用，v0.11.3）。
+///
+/// 单独一个类型而不是 `Option<Result<…>>` 嵌套：那三层
+/// （取消 / 失败 / 拿到路径）在调用处读不出来，而且 `Option<Result<Option<T>>>`
+/// 有四个状态、其中两个无意义。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SaveDecision {
+    /// 拿到路径了，去写文件。
+    Write(std::path::PathBuf),
+    /// 用户点了取消 —— 不算错误，也不用提示。
+    Cancelled,
+    /// 对话框本身打不开（powershell 起不来之类）。
+    Failed(String),
+}
+
 /// 「添加部署」弹窗里需要单独聚焦的输入框。
 ///
 /// 单独一个枚举而不是传字符串：调用点在四处校验失败分支上，
@@ -4743,6 +4758,144 @@ impl Shell {
     pub fn toggle_sql_raw(&mut self, cx: &mut Context<Self>) {
         self.sql_raw_open = !self.sql_raw_open;
         cx.notify();
+    }
+
+    /// 把当前结果导出成 CSV（v0.11.3）。
+    ///
+    /// # 流程
+    ///
+    /// 弹保存对话框 → 用户在后台等 → 写文件（**原子写**，见 `fileio`）。
+    ///
+    /// # 为什么写盘也在后台
+    ///
+    /// 几万行的 CSV 是几 MB，写到机械盘 / 网络盘上要几百毫秒。
+    /// `AGENTS.md` §7.1：界面线程上的任何阻塞都会让窗口"未响应"。
+    /// 这里虽然不是起进程，但 `std::fs::write` 一样会卡。
+    ///
+    /// # 为什么复用 `picking`
+    ///
+    /// 那个布尔的作用是"已经有一个选择框开着"（见 `spawn_picker`）。
+    /// 导出也弹选择框，两边共用同一个守卫才不会一次弹出两个对话框
+    /// —— 任务栏里堆一排对话框是最糟的。
+    pub fn export_sql_result_csv(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.picking {
+            self.state
+                .notify(Toast::info("已经有一个选择框开着了，先处理它"));
+            cx.notify();
+            return;
+        }
+
+        // ⚠️ 这一段**整体**放在一个块里，让 `db`（对 `self.state` 的不可变借用）
+        // 在块结束时立刻归还。外面还要 `self.state.notify(..)`（那要 `&mut`）
+        // 和 `self.picking = true`（要 `&mut self`）—— 借用没结束就写，是 E0502。
+        //
+        // 这个形状在 `open_db_backup_dialog` / `run_db_console` 里都用过：
+        // 先把要用的东西算成 owned 的，出了块再用。
+        let prepared: Option<(String, usize, String)> = {
+            let Some(db) = self.state.db.as_ref() else {
+                return;
+            };
+            let result = db.sql_results.get(self.sql_result_tab);
+            // 没有结果、或者结果没有表格（DDL / 无输出）→ 不给导出。
+            // 一个只有表头的 CSV 没有意义，只会让用户以为导出坏了。
+            match result {
+                Some(r) if !r.columns.is_empty() => {
+                    // 建议文件名：`库-时间戳.csv`。表名我们不知道（结果可能是
+                    // JOIN 出来的），所以用当前库名兜底。
+                    let stamp = wslc_core::model::mysql::now_secs();
+                    let base = db.sql_database.as_deref().unwrap_or("result").to_owned();
+                    // ⚠️ 行数**现在**记下来，不要去数 CSV 字符串里有多少个换行 ——
+                    // 单元格里的换行是被 `"` 包着的（RFC 4180），
+                    // `lines().count()` 会把一个跨两行的单元格数成两行。
+                    Some((
+                        format!("{base}-{stamp}.csv"),
+                        r.row_count(),
+                        crate::sqlview::to_csv(r),
+                    ))
+                }
+                _ => None,
+            }
+        };
+
+        let Some((suggested, row_count, csv)) = prepared else {
+            self.state
+                .notify(Toast::error("这个结果没有表格可以导出"));
+            cx.notify();
+            return;
+        };
+
+        self.picking = true;
+        cx.notify();
+
+        let title = "导出 CSV".to_owned();
+        cx.spawn_in(window, async move |this, cx| {
+            // 第一步：选路径（后台起 powershell 等对话框）。
+            let picked = cx
+                .background_executor()
+                .spawn(async move {
+                    wslc_core::cmd::picker::pick_save_file(&title, &suggested, &["csv"])
+                })
+                .await;
+
+            // ⚠️ `update_in` 的回调是**同步**的，里面不能再 await。
+            // 所以"收下路径 → 交回一个待写的任务"这两步要分开：
+            // 回调只负责把 `picking` 复位、把决定带出来；
+            // 真正的写盘在**外面**（还在这个 async 块里）做。
+            //
+            // 项目里另一个 `background_executor` 也只出现在 `cx.spawn` 的
+            // 顶层（见 `start_toast_reaper`），没有"在 update 回调里 await"的先例。
+            //
+            // 返回值：`Ok(决定)` = 回调跑过了；`Err(_)` = 实体已销毁（窗口关了）。
+            let decision = this.update_in(cx, |shell, _window, _cx| {
+                shell.picking = false;
+                match picked {
+                    Ok(Some(path)) => SaveDecision::Write(std::path::PathBuf::from(path)),
+                    Ok(None) => SaveDecision::Cancelled,
+                    Err(e) => SaveDecision::Failed(e.to_string()),
+                }
+            });
+
+            let target = match decision {
+                // 实体已销毁 / 用户取消 —— 都不用说话
+                Err(_) => return,
+                Ok(SaveDecision::Cancelled) => return,
+                Ok(SaveDecision::Failed(e)) => {
+                    let _ = this.update(cx, |shell, cx| {
+                        shell
+                            .state
+                            .notify(Toast::error(format!("打开保存对话框失败：{e}")));
+                        cx.notify();
+                    });
+                    return;
+                }
+                Ok(SaveDecision::Write(p)) => p,
+            };
+
+            // 第二步：写盘（后台 —— 几 MB 的 CSV 落到机械盘上要几百毫秒）。
+            let body = csv;
+            let write_to = target.clone();
+            let write = cx
+                .background_executor()
+                .spawn(async move {
+                    wslc_panel_core::fileio::write_atomic(&write_to, &body)
+                        .map_err(|e| e.to_string())
+                })
+                .await;
+
+            let _ = this.update(cx, |shell, cx| {
+                match write {
+                    Ok(()) => shell.state.notify(Toast::success(format!(
+                        "已导出 {row_count} 行到 {}",
+                        target.display()
+                    ))),
+                    Err(e) => shell
+                        .state
+                        .notify(Toast::error(format!("写文件失败：{e}"))),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     // -- SQL 控制台的库 / 表树（v0.11.2）--------------------------------------

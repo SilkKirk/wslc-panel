@@ -2814,6 +2814,21 @@ fn db_sql_results(
         .text_color(theme::text_muted())
         .child(crate::sqlview::footer_text(result, db.sql_elapsed_ms));
 
+    // 导出 CSV（v0.11.3）：只有真的有表格时才给按钮 —— 空结果导出一个
+    // 只有表头的 CSV 没有意义，只会让用户以为导出坏了。
+    let export: AnyElement = if result.columns.is_empty() {
+        div().into_any_element()
+    } else {
+        let entity = entity.clone();
+        Button::new("db-sql-export")
+            .label("导出 CSV")
+            .small()
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |shell, cx| shell.export_sql_result_csv(window, cx));
+            })
+            .into_any_element()
+    };
+
     // 原始输出开关：排查列宽 / 字符集问题时，mysql 原样打了什么最有用。
     let raw_toggle: AnyElement = match db.sql_raw.as_ref() {
         Some(raw) if !raw.trim().is_empty() => {
@@ -2849,7 +2864,13 @@ fn db_sql_results(
                 .justify_between()
                 .items_center()
                 .child(footer)
-                .child(raw_toggle),
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(raw_toggle)
+                        .child(export),
+                ),
         )
         .child(raw_panel)
         .into_any_element()
