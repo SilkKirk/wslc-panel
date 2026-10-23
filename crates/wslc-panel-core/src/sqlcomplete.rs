@@ -31,76 +31,15 @@ use wslc_core::model::schematree::{SchemaTree, TableNode};
 
 /// SQL 方言。
 ///
-/// 只区分我们**真的会连**的两种：MySQL 与 MariaDB。别的数据库这个面板
-/// 根本不支持，为它们留变体只会让 match 多几支死代码。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Dialect {
-    MySql,
-    MariaDb,
-}
-
-impl Dialect {
-    /// 从探测到的家族名猜方言。
-    ///
-    /// 认不出就当 MySQL：那是最保守的默认（MariaDB 是它的超集，
-    /// 少数几个 MariaDB 独有关键字补不出来，但不会补出**错**的）。
-    pub fn from_family(family: &str) -> Self {
-        if family.to_ascii_lowercase().contains("maria") {
-            Self::MariaDb
-        } else {
-            Self::MySql
-        }
-    }
-
-    /// 用反引号包一个标识符（内部反引号双写）。
-    ///
-    /// MySQL / MariaDB 都是反引号。`ANSI_QUOTES` 模式下双引号也能用，
-    /// 但那是可配的 `sql_mode`，不能假设 —— 反引号在两种模式下都成立。
-    pub fn quote_ident(self, name: &str) -> String {
-        format!("`{}`", name.replace('`', "``"))
-    }
-
-    /// 这个方言的关键字 / 常用函数（公共部分 + 方言独有）。
-    ///
-    /// 返回 `Vec` 而不是 `&'static [&str]`：两张静态表要在运行时拼起来，
-    /// 而 `const` 里做不了 Vec 拼接。每次补全调一次，几十个元素的分配
-    /// 相对于"弹一个补全菜单"可以忽略。
-    ///
-    /// 顺序就是列表顺序：先语句骨架、再子句、最后函数 —— 不按字母排，
-    /// 用户敲 `SEL` 时 `SELECT` 应该排在 `SHOW` 前面。
-    pub fn keywords(self) -> Vec<&'static str> {
-        let extra: &[&'static str] = match self {
-            Self::MySql => MYSQL_EXTRA,
-            Self::MariaDb => MARIA_EXTRA,
-        };
-        COMMON_WORDS.iter().chain(extra.iter()).copied().collect()
-    }
-}
-
-/// 两种方言共有：语句骨架 + 子句 + 最常用函数。
-const COMMON_WORDS: &[&str] = &[
-    "SELECT", "FROM", "WHERE", "GROUP BY", "HAVING", "ORDER BY", "LIMIT", "OFFSET", "JOIN",
-    "LEFT JOIN", "RIGHT JOIN", "INNER JOIN", "CROSS JOIN", "ON", "USING", "INSERT INTO", "VALUES",
-    "UPDATE", "SET", "DELETE FROM", "REPLACE INTO", "CREATE TABLE", "CREATE DATABASE",
-    "CREATE INDEX", "CREATE VIEW", "ALTER TABLE", "DROP TABLE", "DROP DATABASE", "TRUNCATE TABLE",
-    "DISTINCT", "AS", "AND", "OR", "NOT", "NULL", "IS NULL", "IS NOT NULL", "IN", "BETWEEN",
-    "LIKE", "EXISTS", "UNION", "UNION ALL", "CASE", "WHEN", "THEN", "ELSE", "END", "ASC", "DESC",
-    "COUNT", "SUM", "AVG", "MIN", "MAX", "COALESCE", "IFNULL", "NOW", "DATE_FORMAT",
-];
-
-/// MySQL 独有 / 惯用。
-const MYSQL_EXTRA: &[&str] = &[
-    "SHOW DATABASES", "SHOW TABLES", "SHOW COLUMNS", "SHOW INDEX", "SHOW CREATE TABLE",
-    "SHOW VARIABLES", "SHOW STATUS", "SHOW PROCESSLIST", "DESCRIBE", "EXPLAIN", "USE",
-    "STRAIGHT_JOIN", "SQL_CALC_FOUND_ROWS", "FOUND_ROWS", "GROUP_CONCAT", "ON DUPLICATE KEY UPDATE",
-];
-
-/// MariaDB 独有 / 惯用（它比 MySQL 多的那一批）。
-const MARIA_EXTRA: &[&str] = &[
-    "SHOW DATABASES", "SHOW TABLES", "SHOW COLUMNS", "SHOW INDEX", "SHOW CREATE TABLE",
-    "SHOW VARIABLES", "SHOW STATUS", "SHOW PROCESSLIST", "DESCRIBE", "EXPLAIN", "USE", "RETURNING",
-    "GROUP_CONCAT", "SEQUENCE", "NEXT VALUE FOR",
-];
+/// # v0.13 起这不再是本模块的枚举
+///
+/// 方言数据属于数据层（`wslc_core::db::dialect`）：引号风格、关键字表、
+/// `LIMIT` 语法、能力位都是"这个引擎怎么说话"，补全只是**消费者**之一
+/// （另一个是 `schematree::select_from_table_sql` 拼的那条 SQL）。
+///
+/// 这里保留 `Dialect` 这个名字当别名，是为了不让补全的调用点全都改一遍；
+/// 真正的单一定义在 `DbKind`。
+pub use wslc_core::db::conn::DbKind as Dialect;
 
 /// 候选类别（决定列表右侧那句说明）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -540,7 +479,11 @@ mod tests {
         assert_eq!(Dialect::from_family("MySQL"), Dialect::MySql);
         // 认不出就当 MySQL（保守默认）
         assert_eq!(Dialect::from_family(""), Dialect::MySql);
-        assert_eq!(Dialect::from_family("PostgreSQL"), Dialect::MySql);
+        // ⚠️ v0.13 起 PostgreSQL 是**认识的**引擎了，不再是"认不出"。
+        // 这条断言原来是 `from_family("PostgreSQL") == MySql`，
+        // 加了 Postgres 变体之后必须跟着改 —— 不改的话测试会红，
+        // 而那正是它的价值：它挡住了"新引擎偷偷落进 MySQL 分支"。
+        assert_eq!(Dialect::from_family("PostgreSQL"), Dialect::Postgres);
     }
 
     #[test]
