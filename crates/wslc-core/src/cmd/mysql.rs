@@ -19,6 +19,8 @@ use crate::model::mysql::{ClientProbe, DbEntry, DbUser, MysqlCreds, MysqlFamily,
 // `sqlresult` / `sqlstmt` 是纯逻辑（住在 `model/` 里，能脱离 Windows 单测）。
 use crate::model::sqlresult::{self, SqlResult};
 use crate::model::sqlstmt;
+// 库 / 表树的类型与解析（纯逻辑在 `model/schematree.rs`）。
+use crate::model::schematree::{self, SchemaTree};
 
 use super::container;
 
@@ -218,6 +220,35 @@ pub fn list_users(
         SqlMode::Batch,
     )?;
     Ok(logic::parse_users(&out))
+}
+
+/// 读整棵「库 / 表树」（SQL 控制台左侧那个）。
+///
+/// # 一条 SQL 拿全
+///
+/// 实测这台机器上 `djxm` 库有 117 张表，而 `information_schema.TABLES`
+/// 一条查询就把全部（118 行 TSV，0.08s）返回了。反过来"展开一个库才查一次"
+/// 要多花 N 次 `wslc exec`（每次固定 70ms）。
+///
+/// 用 [`SqlMode::Batch`]（`-N -B`，**不带**表头）：列名是我们自己知道的，
+/// 少打一行少解析一行。
+pub fn list_schema_tree(
+    wslc: &Wslc,
+    container_name: &str,
+    client_bin: &str,
+    creds: &MysqlCreds,
+) -> Result<SchemaTree> {
+    let out = run_sql(
+        wslc,
+        container_name,
+        client_bin,
+        creds,
+        schematree::schema_tree_sql(),
+        // 不指定库：`information_schema` 是全库可见的，指定了反而多一层依赖
+        None,
+        SqlMode::Batch,
+    )?;
+    Ok(schematree::parse_schema_tree(&out))
 }
 
 /// 用户在 SQL 控制台里敲的一段脚本 —— **切分后逐条执行**，每条一个结果集。

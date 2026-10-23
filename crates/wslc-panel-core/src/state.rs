@@ -2121,6 +2121,17 @@ pub struct DbState {
     /// 也可以由控制台里的「不指定」按钮清掉。执行时作为 `mysql -D <库>` 传下去
     /// —— 不指定的话 `SELECT * FROM t` 会报 "No database selected"（实测过）。
     pub sql_database: Option<String>,
+    /// SQL 控制台左侧的「库 / 表树」（v0.11.2）。
+    ///
+    /// # 什么时候读
+    ///
+    /// 打开控制台时读一次（一条 SQL 拿全，实测 118 行 / 0.08s）。
+    /// **不**在每次执行 SQL 后重读 —— 那要多花一次 exec，而用户
+    /// 大部分时候并不在改结构。改了 DDL 之后重开控制台就会刷新。
+    ///
+    /// 读失败（比如账号没权限看 `information_schema`）时是空树，
+    /// 界面上就说一句"读不到表结构"，而不是画一个空白的树。
+    pub schema_tree: wslc_core::model::schematree::SchemaTree,
     // ⚠️ 这里**不该**再挂一份账号存档的克隆。v0.8 挂过（`credentials`），
     // 而它从来没被同步过 —— 构造函数给的是空的，渲染却读它，于是
     // "建库同时建用户"明明成功（SQL 成功、`db-credentials.json` 也写了）、
@@ -2285,6 +2296,7 @@ impl DbState {
             sql_elapsed_ms: 0,
             sql_ran: false,
             sql_database: None,
+            schema_tree: wslc_core::model::schematree::SchemaTree::default(),
             backup: None,
             backups: Vec::new(),
             backup_dialog: None,

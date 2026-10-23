@@ -26,6 +26,9 @@ pub mod mysql;
 // 少了几行"，是最难靠肉眼发现的那类缺陷。
 pub mod sqlresult;
 pub mod sqlstmt;
+// SQL 控制台左侧的「库 / 表树」：一条 SQL 拿全整棵树，客户端建树 + 过滤。
+// 纯逻辑（拼 SQL + 解析 TSV + 拼接选中表名），能脱离容器单测。
+pub mod schematree;
 // `pub` 是因为表格解析函数 `parse_session_table` 需要被 `cmd::system` 复用。
 pub mod session;
 mod system;

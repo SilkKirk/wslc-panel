@@ -1739,7 +1739,9 @@ pub fn db_console_overlay(
     modal_scrim(
         "db-console",
         v_flex()
-            .w(px(940.))
+            // v0.11.2 起左侧多了库 / 表树，所以浮层加宽了 940 → 1120。
+            // 按 1280 宽的窗口算，两边还剩 80px 的遮罩，不算挤。
+            .w(px(1120.))
             .max_h(px(640.))
             .gap_4()
             .p_5()
@@ -1761,20 +1763,171 @@ pub fn db_console_overlay(
                     )
                     .child(close),
             )
-            // 控制台本体（输入框 + 结果表格）。
+            // 控制台本体：**左边库 / 表树 + 右边编辑器与结果**（v0.11.2）。
             //
-            // ⚠️ 这一层**不能**再是 `overflow_y_scroll` + `max_h`：
-            // `DataTable` 自己管滚动，外面再套一层滚动会让表头跟着滚走，
-            // 而且虚拟滚动算可见行时会拿到错误的高度。高度由
-            // `db_console_card` 内部的 `flex_1` 撑，外层只限最大高度。
+            // ⚠️ 右边那一层**不能**是 `overflow_y_scroll` + `max_h`：
+            // `DataTable` 自己管滚动，外面再套一层会让表头跟着滚走，
+            // 而且虚拟滚动算可见行时会拿到错误的高度。
             .child(
-                v_flex()
+                h_flex()
                     .id("db-console-body")
+                    .w_full()
                     .max_h(px(520.))
-                    .child(db_console_card(db, form, shell, entity, cx)),
+                    .gap_4()
+                    .items_start()
+                    .child(db_schema_tree(db, shell, entity, cx))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(db_console_card(db, form, shell, entity, cx)),
+                    ),
             ),
     )
     .into_any_element()
+}
+
+/// 左侧的「库 / 表树」（v0.11.2）。
+///
+/// # 布局
+///
+/// 固定 220px 宽 + 自己滚动。结果表格要横向空间（可能几十列），所以树不能
+/// 用 `flex_1` —— 它必须**可预测**地占一小块。
+///
+/// # 为什么自己画而不是用 `Collapsible`
+///
+/// `Collapsible` 是"一组内容一起折叠"，而这里要的是**逐库独立展开**的树
+/// （117 张表里只展开用户关心的那个库）。而且它的展开状态住在组件自己身上，
+/// 而我们的树每次读都可能整个换掉 —— 状态必须留在 `Shell`（`schema_expanded`）。
+fn db_schema_tree(
+    db: &DbState,
+    shell: &Shell,
+    entity: &Entity<Shell>,
+    cx: &App,
+) -> AnyElement {
+    if db.schema_tree.is_empty() {
+        return v_flex()
+            .w(px(220.))
+            .gap_1()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child("表结构"),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child("读不到表结构（账号可能没有 information_schema 权限）"),
+            )
+            .into_any_element();
+    }
+
+    // 搜索框：117 张表必须能过滤，否则铺开没人看得下去。
+    let search = match shell.schema_search.as_ref() {
+        Some(input) => div()
+            .w_full()
+            .child(Input::new(input).id("db-schema-search").w_full())
+            .into_any_element(),
+        None => div().into_any_element(),
+    };
+    let query = shell
+        .schema_search
+        .as_ref()
+        .map(|i| i.read(cx).value().to_string())
+        .unwrap_or_default();
+    let filtered = db.schema_tree.filter(&query);
+
+    // 逐个库画一行「库名 + 表数」，展开时再画它下面的表。
+    let mut rows: Vec<AnyElement> = Vec::new();
+    for db_node in &filtered.databases {
+        let name = db_node.name.clone();
+        // 搜索时**强制展开**：用户搜 `member` 是想直接看到那张表，
+        // 而不是看到一个收起的库名再点一下。
+        let expanded = !query.trim().is_empty() || shell.schema_expanded.contains(&name);
+
+        let arrow = if expanded { "▾" } else { "▸" };
+        let system_tag = if db_node.is_system() { "（系统）" } else { "" };
+        let label = format!(
+            "{arrow} {}{system_tag}  {}",
+            name,
+            db_node.tables.len()
+        );
+        let toggle_entity = entity.clone();
+        let toggle_name = name.clone();
+        rows.push(
+            Button::new(SharedString::from(format!("db-schema-db-{name}")))
+                .label(label)
+                .small()
+                .on_click(move |_, _, cx| {
+                    toggle_entity.update(cx, |shell, cx| {
+                        shell.toggle_schema_db(toggle_name.clone(), cx)
+                    });
+                })
+                .into_any_element(),
+        );
+
+        if expanded {
+            for table in &db_node.tables {
+                let tname = table.name.clone();
+                let tdb = name.clone();
+                let tag = table.kind.tag();
+                let label = if tag.is_empty() {
+                    format!("    {tname}")
+                } else {
+                    format!("    {tname}  {tag}")
+                };
+                let pick_entity = entity.clone();
+                rows.push(
+                    Button::new(SharedString::from(format!(
+                        "db-schema-t-{tdb}-{tname}"
+                    )))
+                    .label(label)
+                    .small()
+                    .on_click(move |_, window, cx| {
+                        pick_entity.update(cx, |shell, cx| {
+                            shell.pick_schema_table(
+                                tdb.clone(),
+                                tname.clone(),
+                                window,
+                                cx,
+                            )
+                        });
+                    })
+                    .into_any_element(),
+                );
+            }
+        }
+    }
+
+    v_flex()
+        .w(px(220.))
+        .flex_shrink_0()
+        .gap_1()
+        .child(
+            h_flex()
+                .w_full()
+                .justify_between()
+                .items_center()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child(format!("表结构 · {} 张表", filtered.table_count())),
+                ),
+        )
+        .child(search)
+        .child(
+            v_flex()
+                .id("db-schema-list")
+                .w_full()
+                .max_h(px(440.))
+                .overflow_y_scroll()
+                .gap_0p5()
+                .children(rows),
+        )
+        .into_any_element()
 }
 
 /// 页头：容器 / 镜像 / 家族 / 客户端 + 「← 返回容器」「基础信息」「重新读取」。

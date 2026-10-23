@@ -1013,6 +1013,19 @@ pub struct Shell {
     /// 原始输出（`mysql --table` 的 ASCII 表格）不常看 —— 只在排查
     /// 列宽异常 / 字符集问题时才有用，所以默认收起。
     pub(crate) sql_raw_open: bool,
+    /// 库 / 表树里**展开着**的库名（v0.11.2）。
+    ///
+    /// 用 `HashSet` 而不是给 `DbNode` 加一个 `expanded` 字段：树是从
+    /// `wslc-core` 解析出来的**纯数据**，展开状态是界面的事 ——
+    /// 混进去之后每次重新读树都会把展开状态重置掉。
+    pub(crate) schema_expanded: std::collections::HashSet<String>,
+    /// 库 / 表树的搜索框（`InputState::new` 要 `&mut Window`，所以懒创建）。
+    pub(crate) schema_search: Option<Entity<InputState>>,
+    /// 搜索框内容变化的订阅。
+    ///
+    /// ⚠️ **必须存着**：`Subscription` 一 drop 就退订，表现是"打字时树不跟着过滤"，
+    /// 不会报错 —— 这是本仓库踩过的坑（见 `container_search_sub`）。
+    pub(crate) schema_search_sub: Option<Subscription>,
     /// 「数据库管理」页的一次性动作弹窗；关闭时为 `None`。
     ///
     /// 和 `create_dialog` 一样懒创建（`InputState::new` 要 `&mut Window`）。
@@ -1195,6 +1208,9 @@ impl Shell {
             sql_table: None,
             sql_result_tab: 0,
             sql_raw_open: false,
+            schema_expanded: std::collections::HashSet::new(),
+            schema_search: None,
+            schema_search_sub: None,
             db_dialog: None,
             db_info_open: false,
             db_console_open: false,
@@ -4268,6 +4284,13 @@ impl Shell {
         // 控制台是**浮层**（不是 tab）：实机反馈"上面不需要…sql 控制台，
         // 都是在具体数据库 database 操作的"。
         self.db_console_open = true;
+        // 左侧的库 / 表树：懒创建搜索框 + 读一次树（v0.11.2）。
+        //
+        // 读树放在**打开浮层时**而不是每次执行 SQL 后：一条 SQL 拿全，
+        // 成本一次 exec（70ms）；而每次执行后重读会白花一次，
+        // 用户大部分时候并不在改结构。
+        self.ensure_schema_search(window, cx);
+        self.load_schema_tree(cx);
         let toast = match credential {
             Some(cred) => Toast::info(format!(
                 "控制台已指向 {database}，账号用 {}（来自面板记的账号）",
@@ -4719,6 +4742,125 @@ impl Shell {
     /// 切换「看原始输出」的展开状态。
     pub fn toggle_sql_raw(&mut self, cx: &mut Context<Self>) {
         self.sql_raw_open = !self.sql_raw_open;
+        cx.notify();
+    }
+
+    // -- SQL 控制台的库 / 表树（v0.11.2）--------------------------------------
+
+    /// 确保搜索框存在（`InputState::new` 要 `&mut Window`，所以懒创建）。
+    pub(crate) fn ensure_schema_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.schema_search.is_some() {
+            return;
+        }
+        let input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("过滤库 / 表名")
+        });
+        // 订阅：打字时树要跟着过滤。
+        //
+        // 和 `ensure_container_search` 一样用 `cx.subscribe`（不需要 window）——
+        // 我们只是要"通知一下重绘"，不往输入框里写东西。
+        //
+        // ⚠️ 订阅**必须存进字段**，不能 `let _ = ...` —— drop 即退订，
+        // 表现是"打字没反应"，而不会报错（`container_search_sub` 那个坑）。
+        let sub = cx.subscribe(&input, |_shell, _input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        });
+        self.schema_search = Some(input);
+        self.schema_search_sub = Some(sub);
+    }
+
+    /// 展开 / 收起树里的一个库。
+    pub fn toggle_schema_db(&mut self, database: String, cx: &mut Context<Self>) {
+        if !self.schema_expanded.remove(&database) {
+            self.schema_expanded.insert(database);
+        }
+        cx.notify();
+    }
+
+    /// 读整棵库 / 表树（进控制台时调一次）。
+    ///
+    /// 失败时**不清空**已有的树：用户可能已经有树了，一次读失败不该让它消失
+    /// （比如网络抖了一下）。只在**从未读到过**时才发提示。
+    pub fn load_schema_tree(&mut self, cx: &mut Context<Self>) {
+        let Some(db) = self.state.db.as_ref() else {
+            return;
+        };
+        let container = db.container.clone();
+        let bin = db.client.clone();
+        // 树是全库可见的（`information_schema`），但账号得有权限 ——
+        // 按行的兜底规则取（有具体库时用那个库的账号，否则用连接卡）。
+        let creds = match db.sql_database.as_deref() {
+            Some(name) => self.creds_for_row(&container, name, cx),
+            None => self.db_creds(cx),
+        };
+        let wslc = self.state.wslc.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    wslc_core::cmd::mysql::list_schema_tree(&wslc, &container, &bin, &creds)
+                        .map_err(|e| e.to_string())
+                })
+                .await;
+            let _ = this.update(cx, |shell, cx| {
+                if let Some(db) = shell.state.db.as_mut() {
+                    if db.container != container {
+                        return;
+                    }
+                    match result {
+                        Ok(tree) => {
+                            // 第一次读到就把默认库展开 —— 让用户一进来就看到东西，
+                            // 而不是面对一排收起的库名不知道点哪个。
+                            if db.schema_tree.is_empty() && !tree.is_empty() {
+                                if let Some(first) = tree.databases.first() {
+                                    shell.schema_expanded.insert(first.name.clone());
+                                }
+                            }
+                            db.schema_tree = tree;
+                        }
+                        Err(message) => {
+                            // 之前读到过就不打扰（见函数文档）
+                            if db.schema_tree.is_empty() {
+                                shell
+                                    .state
+                                    .notify(Toast::info(format!("读不到表结构：{message}")));
+                            }
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 点树里的表名 → 把 `SELECT * FROM \`库\`.\`表\` LIMIT 200` 填进编辑区。
+    ///
+    /// # 为什么是"填进去"而不是"直接执行"
+    ///
+    /// 用户点表是想看数据，但**先看一眼 SQL** 是更安全的默认：他可能想加
+    /// `WHERE`，也可能只是点错了表。填进去之后按一下「执行」就行，
+    /// 而"点了就立刻跑一个全表扫描"是不可撤销的（尤其是生产库）。
+    pub fn pick_schema_table(
+        &mut self,
+        database: String,
+        table: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let sql = wslc_core::model::schematree::select_from_table_sql(&database, &table);
+        // 顺便把「当前库」设成这个表所在的库 —— 否则 `SELECT * FROM \`库\`.\`表\``
+        // 虽然能跑，但下面再手写 `SELECT * FROM 别的表` 时会报
+        // "No database selected"（实测过）。
+        if let Some(db) = self.state.db.as_mut() {
+            db.sql_database = Some(database);
+        }
+        if let Some(form) = self.db_form.as_ref() {
+            form.sql
+                .update(cx, |state, cx| state.set_value(sql, window, cx));
+        }
         cx.notify();
     }
 
