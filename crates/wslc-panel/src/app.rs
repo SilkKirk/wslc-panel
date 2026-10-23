@@ -36,6 +36,12 @@ use gpui_kit::component::input::{EditorState, InputEvent, InputState, TabSize};
 // "几十个按钮铺满一屏"的写法。
 use gpui_kit::component::searchable_list::SearchableListItem;
 use gpui_kit::component::select::{SelectEvent, SelectState};
+// 左侧导航栏用组件库的 `Sidebar`（v0.12.2）：分组标题 / 悬停 / 选中 / 折叠
+// 都由它负责。之前是自己画的 `div` 行，连 hover 都要手写
+// （见 `AGENTS.md` §7.5 那条"自己画的可点元素必须手写 hover"）。
+use gpui_kit::component::sidebar::{
+    Sidebar, SidebarCollapsible, SidebarGroup, SidebarHeader, SidebarMenuItem, SidebarToggleButton,
+};
 // 同 views.rs：不导入 `Disableable`，全项目不再用 `.disabled()`。
 use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
@@ -1027,6 +1033,21 @@ pub struct Shell {
     /// 原始输出（`mysql --table` 的 ASCII 表格）不常看 —— 只在排查
     /// 列宽异常 / 字符集问题时才有用，所以默认收起。
     pub(crate) sql_raw_open: bool,
+    /// 左侧**应用导航栏**收起来了没有（v0.12.2）。
+    ///
+    /// 用的是组件库的 `Sidebar` + `SidebarCollapsible::Offcanvas`：
+    /// 收起时它**完全退出布局**（不只是变窄），主区域能拿到全部宽度。
+    ///
+    /// 为什么不用 `Icon` 模式（收成一条图标轨）：那个模式要求每个菜单项
+    /// 都有图标才看得懂，而我们这 7 项一直是纯文字。给它们硬配图标
+    /// （`IconName::Server` / `Network` …）得先确认每个名字在 Lucide 里
+    /// 都存在 —— 猜错了是编译错误，而我们本地编不了。所以先做"整体收起"。
+    pub(crate) sidebar_collapsed: bool,
+    /// SQL 页左侧**表名树**收起来了没有（v0.12.2）。
+    ///
+    /// 和上面分开记：一个是应用级导航，一个是这一页的工作区侧栏，
+    /// 两者该各自开关（看代码时不想看到导航栏，不代表也不想看表结构）。
+    pub(crate) tree_collapsed: bool,
     /// 库 / 表树的**树控件状态**（v0.12.1）。
     ///
     /// # 为什么换成组件的 `Tree`
@@ -1246,6 +1267,8 @@ impl Shell {
             sql_table: None,
             sql_result_tab: 0,
             sql_raw_open: false,
+            sidebar_collapsed: false,
+            tree_collapsed: false,
             schema_tree_state: None,
             schema_tree_built_for: None,
             schema_search: None,
@@ -9920,29 +9943,36 @@ impl Render for Shell {
         let entity = cx.entity();
         let state = &self.state;
 
-        // 导航按 `Page::group()` 分组，组名变化时插一条小标题。
-        let mut nav: Vec<AnyElement> = Vec::new();
+        // 导航按 `Page::group()` 分组 —— 每组合成一个 `SidebarGroup`。
+        //
+        // v0.12.2 起用组件库的 `Sidebar`（见下方渲染处），所以这里是
+        // `SidebarGroup` / `SidebarMenuItem` 而不是自己画的 `div`：
+        // 分组标题、缩进、悬停态、选中态都由组件负责，`nav_item` 那个
+        // 手写 hover/active 的版本已经不需要了。
+        // ⚠️ 类型必须写全 `SidebarGroup<SidebarMenuItem>`：`SidebarGroup` 是
+        // 泛型（`E: SidebarItem`），只写 `SidebarGroup` 会报 "missing generics"。
+        let mut groups: Vec<SidebarGroup<SidebarMenuItem>> = Vec::new();
         let mut last_group = "";
         for page in Page::ALL {
-            let group = page.group();
-            if group != last_group {
-                if !last_group.is_empty() {
-                    nav.push(div().h(px(6.)).into_any_element());
-                }
-                nav.push(
-                    div()
-                        .px_3()
-                        .pt_2()
-                        .pb_1()
-                        .text_xs()
-                        .font_semibold()
-                        .text_color(theme::text_dim())
-                        .child(group)
-                        .into_any_element(),
-                );
-                last_group = group;
+            if page.group() != last_group {
+                groups.push(SidebarGroup::new(page.group()));
+                last_group = page.group();
             }
-            nav.push(nav_item(page, state.page, &entity));
+            let item_entity = entity.clone();
+            let item = SidebarMenuItem::new(page.label()).active(state.page.highlights_nav(page)).on_click(
+                move |_, window, cx| {
+                    // `on_click` 给的是 `&mut App`（不是 `Context<Self>`），
+                    // 所以走 `entity.update` 拿 `Context`。
+                    //
+                    // ⚠️ `window` 是必需的：「添加实例」页要现场创建输入框，
+                    // 而 `InputState::new` 需要 `&mut Window`。
+                    item_entity.update(cx, |shell, cx| shell.set_page(page, window, cx));
+                },
+            );
+            // 填进**最后一组**（`SidebarGroup` 不实现 Clone，所以取出来再放回）。
+            if let Some(g) = groups.pop() {
+                groups.push(g.child(item));
+            }
         }
 
         // 副标题回答「数据有多新」，不再放会话 / 构建号 —— 那两样是低频
@@ -9960,6 +9990,23 @@ impl Render for Shell {
         // 3 秒一次的自动刷新是后台行为：它照样跑，但按钮一直是「刷新」，
         // 用户随时可以点它手动刷新（见 `refresh_quiet` / `refresh_inner`）。
         let user_refreshing = state.busy && self.refresh_visible;
+
+        // 侧边栏折叠按钮（v0.12.2）。
+        //
+        // ⚠️ 它必须放在**主区域**里，不能放进侧边栏自己：侧边栏收起之后
+        // 那一块完全不渲染（`Offcanvas`），按钮跟着消失就再也点不回来了。
+        let sidebar_toggle = {
+            let entity = entity.clone();
+            let collapsed = self.sidebar_collapsed;
+            SidebarToggleButton::new()
+                .collapsed(collapsed)
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |shell, cx| {
+                        shell.sidebar_collapsed = !shell.sidebar_collapsed;
+                        cx.notify();
+                    });
+                })
+        };
 
         let refresh_button = {
             let entity = entity.clone();
@@ -10309,22 +10356,24 @@ impl Render for Shell {
                     .flex_row()
                     .size_full()
                     // 侧边栏
+                    // 侧边栏（v0.12.2 换成组件库的 `Sidebar`）。
+                    //
+                    // `SidebarCollapsible::Offcanvas`：收起时它**完全退出布局**，
+                    // 主区域拿到全部宽度 —— 这就是用户要的"左边菜单能折叠"。
+                    //
+                    // 没用 `Icon` 模式（收成一条图标轨）：那个模式要靠图标才看得懂，
+                    // 而我们这 7 项一直是纯文字；硬配图标得先确认每个 `IconName`
+                    // 变体都存在，猜错就是编译错误（本地编不了，只能等 CI）。
                     .child(
-                        v_flex()
+                        Sidebar::new("app-sidebar")
+                            .collapsible(SidebarCollapsible::Offcanvas)
+                            .collapsed(self.sidebar_collapsed)
                             .w(px(216.))
-                            .h_full()
-                            .flex_none()
-                            .gap_1()
-                            .p_3()
-                            .bg(theme::bg_sidebar())
-                            .border_r_1()
-                            .border_color(theme::border())
-                            .child(
+                            .header(SidebarHeader::new().child(
                                 h_flex()
                                     .w_full()
                                     .gap_2()
-                                    .px_3()
-                                    .py_3()
+                                    .items_center()
                                     .child(
                                         div()
                                             .text_lg()
@@ -10338,8 +10387,8 @@ impl Render for Shell {
                                             .text_color(theme::text_dim())
                                             .child("panel"),
                                     ),
-                            )
-                            .children(nav),
+                            ))
+                            .children(groups),
                     )
                     // 主区域
                     .child(
@@ -10358,19 +10407,28 @@ impl Render for Shell {
                                     .border_b_1()
                                     .border_color(theme::border())
                                     .child(
-                                        v_flex()
-                                            .gap_1()
+                                        // 折叠按钮 + 标题绑在一起，否则
+                                        // `justify_between` 会把标题推到中间
+                                        // （三个孩子时它是"两边对齐 + 中间均分"）。
+                                        h_flex()
+                                            .gap_3()
+                                            .items_center()
+                                            .child(sidebar_toggle)
                                             .child(
-                                                div()
-                                                    .text_lg()
-                                                    .font_bold()
-                                                    .child(state.page.label()),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(theme::text_dim())
-                                                    .child(subtitle),
+                                                v_flex()
+                                                    .gap_1()
+                                                    .child(
+                                                        div()
+                                                            .text_lg()
+                                                            .font_bold()
+                                                            .child(state.page.label()),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .text_color(theme::text_dim())
+                                                            .child(subtitle),
+                                                    ),
                                             ),
                                     )
                                     .child(refresh_button),
@@ -10489,61 +10547,6 @@ impl Render for Shell {
             .child(confirm)
     }
 }
-
-/// 左侧导航项。
-fn nav_item(page: Page, current: Page, entity: &Entity<Shell>) -> AnyElement {
-    let entity = entity.clone();
-    // 子页面（添加实例 / 数据库 / 部署）也高亮它所属的父项 ——
-    // 否则进这三页时侧边栏一个都不选中，用户会失去"我在哪"。
-    let active = current.highlights_nav(page);
-
-    let mut item = h_flex()
-        .w_full()
-        .id(nav_id(page))
-        .gap_2()
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .cursor_pointer()
-        .child(div().text_sm().child(page.label()))
-        .on_click(move |_, window, cx| {
-            // `window` 在这里是必需的：「添加实例」页要现场创建输入框，
-            // 而 `InputState::new` 需要 `&mut Window`。
-            entity.update(cx, |shell, cx| shell.set_page(page, window, cx));
-        });
-
-    // ⚠️ 悬停/按下**必须**自己写：这是我们自己画的 `div`（要"选中态 + 分组标题"，
-    // 用不了组件库的 `Button`），而 `Button` 自带的那套它一点都没有 ——
-    // v0.6.5 之前鼠标移上去毫无反应，实机反馈"没有点击的感觉"。
-    //
-    // 未选中的项：悬停给一层浅底 + 文字提亮（`nav_hover` 是侧边栏底色与
-    // "已选中"之间的那一档）；按下再深一点。已选中的项不再叠悬停 ——
-    // 它已经在最亮的那一档了，再变只会让人以为选中态丢了。
-    item = if active {
-        item.bg(theme::bg_selected()).text_color(theme::primary())
-    } else {
-        item.text_color(theme::text_muted())
-            .hover(|this| this.bg(theme::nav_hover()).text_color(theme::text()))
-            .active(|this| this.bg(theme::nav_hover()))
-    };
-
-    item.into_any_element()
-}
-
-/// 导航项的稳定 ID。
-///
-/// 用 `&'static str` 而不是格式化出来的 `String`：
-/// GPUI 的交互元素要求 ID 稳定，静态字符串最不容易出错。
-///
-/// ⚠️ 这个 match 覆盖的是**全部 `Page` 变体**（`Page` 没有 `#[non_exhaustive]`，
-/// 少一支就是编译错误），而侧边栏只画 `Page::ALL` 里那 8 页。
-/// 另外四页 —— `AddInstance` / `Database` / `Deploy`（v0.9）/ `Sql`（v0.12）
-/// —— **不是导航项**
-/// （只能从别的页面上的按钮进），它们那三支给的是不会被用到的 id。
-///
-/// ⚠️ 这段注释早先写的是"这个 match 只覆盖 `Page::ALL` 里那 8 页"，
-/// 从 `AddInstance` 起就不准了 —— 照着一句过期的注释去判断，会得出
-/// "这些页面在侧边栏里"的错误结论。
 // ---------------------------------------------------------------------------
 // 库 / 表树：节点 id 的编码与解码
 // ---------------------------------------------------------------------------
@@ -10572,30 +10575,6 @@ fn folder_id(database: &str) -> String {
     format!("d{TREE_ID_SEP}{database}")
 }
 
-fn nav_id(page: Page) -> &'static str {
-    match page {
-        Page::Dashboard => "nav-dashboard",
-        Page::Instances => "nav-instances",
-        // 侧边栏不列它，但 `Page` 是穷尽的，这一支必须有；
-        // 真走到这儿也只是给一个不会被用到的 id。
-        Page::AddInstance => "nav-add-instance",
-        Page::Containers => "nav-containers",
-        Page::Images => "nav-images",
-        Page::Networks => "nav-networks",
-        Page::Volumes => "nav-volumes",
-        // 同 `AddInstance`：侧边栏不列它（只能从容器行上的按钮进），
-        // 但 `Page` 是穷尽的，这一支必须有。
-        Page::Database => "nav-database",
-        // 同上（v0.9 的部署管理页）
-        Page::Deploy => "nav-deploy",
-        // 同上（v0.12 的 SQL 控制台整页）。
-        //
-        // 它在侧边栏里**不出现**，但高亮要落在「数据库管理」上 ——
-        // 那不是靠这个 id，而是 `Page::nav_parent()`（见 `highlights_nav`）。
-        Page::Sql => "nav-sql",
-        Page::AppSettings => "nav-app-settings",
-    }
-}
 
 /// 危险操作的确认浮层。
 ///

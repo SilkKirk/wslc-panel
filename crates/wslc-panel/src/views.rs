@@ -1804,6 +1804,35 @@ pub fn sql_console_page(
             .child("未指定库"),
     }
     .into_any_element();
+    // 表结构树的折叠按钮（v0.12.2）。
+    //
+    // 放在页头而不是树里面：树收起之后那一整块不渲染，按钮跟着消失就
+    // 再也点不回来了 —— 和侧边栏折叠按钮同一条理由。
+    let tree_toggle = {
+        let entity = entity.clone();
+        let collapsed = shell.tree_collapsed;
+        let label = if collapsed {
+            "显示表结构"
+        } else {
+            "隐藏表结构"
+        };
+        Button::new("sql-toggle-tree")
+            .label(label)
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| {
+                    shell.tree_collapsed = !shell.tree_collapsed;
+                    cx.notify();
+                });
+            })
+    };
+    // 树那一栏：收起时**完全不渲染**（不是留一条窄边），
+    // 这样编辑器和结果能拿到全部宽度。
+    let tree_column: AnyElement = if shell.tree_collapsed {
+        div().into_any_element()
+    } else {
+        sql_tree_pane(db, shell, entity, cx)
+    };
     v_flex()
         .w_full()
         .h_full()
@@ -1821,6 +1850,7 @@ pub fn sql_console_page(
                 .child(back)
                 .child(db_badge)
                 .child(div().flex_1())
+                .child(tree_toggle)
                 .child(reload_tree),
         )
         .child(
@@ -1829,7 +1859,7 @@ pub fn sql_console_page(
                 .flex_1()
                 .min_h_0()
                 .items_start()
-                .child(sql_tree_pane(db, shell, entity, cx))
+                .child(tree_column)
                 .child(
                     v_flex()
                         .flex_1()
