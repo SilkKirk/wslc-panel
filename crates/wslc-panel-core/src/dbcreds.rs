@@ -171,6 +171,30 @@ mod tests {
         assert_eq!(key(" mysql ", " shop "), "mysql/shop");
     }
 
+    /// 同一容器里的**两个库**各用各的账号 —— 这是「列表行上的按钮按行走」
+    /// （`Shell::creds_for_row`）能成立的前提。
+    ///
+    /// 实机的那一页长这样：`djxm`（面板建的，有 `djxm_user`）和
+    /// `wslc_probe`（不是面板建的，没记录）。如果按键取错了，点 `djxm` 那行的
+    /// 「备份」会拿 `wslc_probe` 的账号（或者干脆拿 root）去 dump，报一句
+    /// `Access denied`，而界面上没有任何东西能解释为什么。
+    #[test]
+    fn keys_are_also_scoped_by_database_within_one_container() {
+        let mut store = DbCredentialStore::default();
+        store.put("mysql", "djxm", cred("djxm_user", "pjx"));
+        // `wslc_probe` 故意不记 —— 它是用户在容器里自己建的库，面板没有账号。
+        assert_eq!(store.get("mysql", "djxm").unwrap().user, "djxm_user");
+        assert_eq!(
+            store.get("mysql", "wslc_probe"),
+            None,
+            "没记过的库必须查不到 —— 调用方据此退回连接卡，而不是错用别人的账号"
+        );
+        // 反过来也不能串：按 `djxm` 的键查不到 `djxm_user2` 这种前缀混淆
+        store.put("mysql", "djxm2", cred("djxm2_user", "x"));
+        assert_eq!(store.get("mysql", "djxm").unwrap().user, "djxm_user");
+        assert_eq!(store.get("mysql", "djxm2").unwrap().user, "djxm2_user");
+    }
+
     #[test]
     fn round_trips_through_disk() {
         let dir = std::env::temp_dir().join(format!("wslc-dbcreds-{}", std::process::id()));

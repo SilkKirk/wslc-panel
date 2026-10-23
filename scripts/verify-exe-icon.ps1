@@ -32,6 +32,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $RT_GROUP_ICON = 14
+$RT_ICON = 3
 
 if (-not (Test-Path -LiteralPath $Path)) {
     Write-Error "没有这个文件：$Path"
@@ -114,7 +115,9 @@ function RvaToOffset([uint32]$rva) {
 
 $resOff = RvaToOffset $resRva
 if ($resOff -lt 0 -or $resOff + 16 -gt $bytes.Length) {
-    Fail "资源段的 RVA 映射不到文件偏移（rva=0x{0:X}）" -f $resRva
+    # ⚠️ 括号不能省：`Fail "…{0:X}" -f $x` 会把 `-f` 和 `$x` 当成**位置参数**
+    # 塞进 `$args`，格式串原样输出（实测：屏幕上真的印着 `rva=0x{0:X}`）。
+    Fail ("资源段的 RVA 映射不到文件偏移（rva=0x{0:X}）" -f $resRva)
 }
 
 # --- 枚举资源类型 -----------------------------------------------------------
@@ -124,23 +127,112 @@ if ($resOff -lt 0 -or $resOff + 16 -gt $bytes.Length) {
 $typeCount = [BitConverter]::ToUInt16($bytes, $resOff + 12) +
              [BitConverter]::ToUInt16($bytes, $resOff + 14)
 $found = @()
+# 类型 → 该类型的二级目录偏移（相对资源段起点）。拿它才能往下取 RT_ICON 数据。
+$typeDir = @{}
 for ($i = 0; $i -lt $typeCount; $i++) {
     $entry = $resOff + 16 + $i * 8
     if ($entry + 8 -gt $bytes.Length) { break }
     $nameField = [BitConverter]::ToUInt32($bytes, $entry)
+    $offsetField = [BitConverter]::ToUInt32($bytes, $entry + 4)
     if (($nameField -band 0x80000000) -ne 0) {
         $found += "字符串类型"
-    } else {
-        $found += ([int]($nameField -band 0xFFFF))
+        continue
     }
+    $typeId = [int]($nameField -band 0xFFFF)
+    $found += $typeId
+    $typeDir[$typeId] = [int]($offsetField -band 0x7FFFFFFF)
 }
 
 $types = ($found | ForEach-Object { "$_" }) -join ', '
-if ($found -contains $RT_GROUP_ICON) {
-    $iconCount = 0
-    if ($found -contains 3) { $iconCount = $found.Count }  # RT_ICON=3
-    Write-Output "OK  $Path 有图标资源（RT_GROUP_ICON=14；资源类型：$types）"
-    exit 0
+if (-not ($found -contains $RT_GROUP_ICON)) {
+    Fail "$Path 的资源段里没有 RT_GROUP_ICON(14)。现有类型：$types —— 图标没嵌进去"
 }
 
-Fail "$Path 的资源段里没有 RT_GROUP_ICON(14)。现有类型：$types —— 图标没嵌进去"
+# --- 图标**内容**校验：真的嵌了我们那一份吗 ----------------------------------
+#
+# ⚠️ 只查 "有 RT_GROUP_ICON" 是不够的 —— 这个判据**过得了 Inno 的默认图标**
+# （它自己也是一个 group icon）。v0.10.1~v0.10.3 就是这样过了关：
+# 发布出去的 `wslc-panel-0.10.x-setup-x64.exe` 里，13 张 RT_ICON 逐张 sha256
+# 与 `assets/wslc-panel.ico` 的 7 张**没有一个重合**，而安装包照样"有图标"、
+# 校验照样绿。所以这里再比一次**内容**。
+#
+# 取证方式：真正的 exe 里 rc.exe 会把 ico 的每一张图原样写进 RT_ICON
+# （BMP/PNG 载荷逐字节一致），所以按 sha256 比对是可靠的。
+function Get-IconPayloads([byte[]]$file, [int]$resourceOffset, $typeDirs) {
+    # 资源树是**三层**：类型 → 名字/ID → 语言。第三层 entry 的 Offset
+    # **不是**目录偏移，而是 IMAGE_RESOURCE_DATA_ENTRY 的偏移（相对资源段起点）。
+    # 少走这一步就会把 entry 的 Name（语言 ID，比如 1033 = 0x409）当成数据 RVA ——
+    # 解析出来是"RVA 1033"，落在第一个节之前，映射必定失败。
+    $out = @()
+    if (-not $typeDirs.ContainsKey($RT_ICON)) { return $out }
+    $dir2 = $resourceOffset + $typeDirs[$RT_ICON]
+    if ($dir2 + 16 -gt $file.Length) { return $out }
+    $named2 = [BitConverter]::ToUInt16($file, $dir2 + 12)
+    $id2 = [BitConverter]::ToUInt16($file, $dir2 + 14)
+    for ($j = 0; $j -lt ($named2 + $id2); $j++) {
+        $e2 = $dir2 + 16 + $j * 8
+        if ($e2 + 8 -gt $file.Length) { break }
+        $offsetField2 = [BitConverter]::ToUInt32($file, $e2 + 4)
+        if (($offsetField2 -band 0x80000000) -eq 0) { continue }
+        $dir3 = $resourceOffset + [int]($offsetField2 -band 0x7FFFFFFF)
+        if ($dir3 + 16 -gt $file.Length) { continue }
+        $named3 = [BitConverter]::ToUInt16($file, $dir3 + 12)
+        $id3 = [BitConverter]::ToUInt16($file, $dir3 + 14)
+        # 语言层取第一项即可（rc.exe 只写一个）
+        if (($named3 + $id3) -lt 1) { continue }
+        $e3 = $dir3 + 16
+        if ($e3 + 8 -gt $file.Length) { continue }
+        # 第三层 entry 的**后 4 字节**才是数据项偏移（前 4 字节是语言 ID）
+        $dataEntryRel = [BitConverter]::ToUInt32($file, $e3 + 4)
+        $dataEntry = $resourceOffset + [int]($dataEntryRel -band 0x7FFFFFFF)
+        if ($dataEntry + 8 -gt $file.Length) { continue }
+        $dataRva = [BitConverter]::ToUInt32($file, $dataEntry)
+        $dataSize = [BitConverter]::ToUInt32($file, $dataEntry + 4)
+        if ($dataSize -le 0) { continue }
+        $dataOff = RvaToOffset $dataRva
+        if ($dataOff -lt 0 -or $dataOff + $dataSize -gt $file.Length) { continue }
+        $payload = New-Object byte[] $dataSize
+        [Array]::Copy($file, $dataOff, $payload, 0, $dataSize)
+        $out += [pscustomobject]@{
+            Size = [int]$dataSize
+            Hash = (Get-FileHash -InputStream ([System.IO.MemoryStream]::new($payload)) -Algorithm SHA256).Hash
+        }
+    }
+    return $out
+}
+
+function Get-IcoPayloadHashes([string]$icoPath) {
+    $ico = [System.IO.File]::ReadAllBytes($icoPath)
+    $count = [BitConverter]::ToUInt16($ico, 4)
+    $out = @()
+    for ($i = 0; $i -lt $count; $i++) {
+        $p = 6 + $i * 16
+        if ($p + 16 -gt $ico.Length) { break }
+        $size = [int][BitConverter]::ToUInt32($ico, $p + 8)
+        $offset = [int][BitConverter]::ToUInt32($ico, $p + 12)
+        if ($size -le 0 -or $offset + $size -gt $ico.Length) { continue }
+        $payload = New-Object byte[] $size
+        [Array]::Copy($ico, $offset, $payload, 0, $size)
+        $out += [pscustomobject]@{
+            Size = $size
+            Hash = (Get-FileHash -InputStream ([System.IO.MemoryStream]::new($payload)) -Algorithm SHA256).Hash
+        }
+    }
+    return $out
+}
+
+$icoPath = Join-Path $PSScriptRoot "../assets/wslc-panel.ico"
+if (Test-Path -LiteralPath $icoPath) {
+    $exeIcons = Get-IconPayloads $bytes $resOff $typeDir
+    $icoIcons = Get-IcoPayloadHashes (Resolve-Path -LiteralPath $icoPath).Path
+    $matched = @($icoIcons | Where-Object { $h = $_.Hash; $exeIcons | Where-Object { $_.Hash -eq $h } }).Count
+    Write-Output "图标载荷比对：exe 里 $($exeIcons.Count) 张 / .ico 里 $($icoIcons.Count) 张，命中 $matched 张"
+    if ($matched -eq 0) {
+        Fail "$Path 里有 RT_GROUP_ICON，但**没有一张图**来自 assets/wslc-panel.ico —— 这是别处（多半是编译器/工具默认）的图标，不是我们的。exe=$($exeIcons.Count) ico=$($icoIcons.Count)"
+    }
+} else {
+    Write-Warning "找不到 $icoPath，跳过图标内容比对（只验证了有 RT_GROUP_ICON）"
+}
+
+Write-Output "OK  $Path 有图标资源且内容与 assets/wslc-panel.ico 一致（资源类型：$types）"
+exit 0

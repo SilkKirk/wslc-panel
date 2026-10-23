@@ -51,8 +51,16 @@ fn main() {
     ];
 
     embed_resource::compile("app.rc", macros)
-        // 图标是可选的装饰：编不进去也不该让整个构建失败
-        // （`manifest_optional` 就是这个语义）。
+        // ⚠️ `manifest_optional()` 只管**清单（manifest）那块**：找不到清单文件
+        // 就跳过，不报错。它**不**让"资源编译失败"变成静默降级 —— 那是我原先
+        // 在这条注释里写错的（`embed-resource` 的文档语义是 manifest 可选，
+        // 不是整个 .rc 可选；这一条是读 API 推出来的，没有源码可查，因为本机
+        // 没有 cargo registry 缓存）。
+        //
+        // 所以下面的 `panic!` 是**真的会 panic**，而这是刻意的：
+        // 资源编不出来时宁可让构建红，也不要出一个"没有图标但 CI 全绿"的 exe
+        // （v0.10.0 就是这么发出去的）。release.yml 里那一步
+        // `verify-exe-icon.ps1` 再兜一层 —— 它现在会真的比图标**内容**。
         .manifest_optional()
         .unwrap_or_else(|e| panic!("嵌入资源失败：{e}（rc.exe 找不到？本机没有 Windows SDK 是正常的，CI 有）"));
 }

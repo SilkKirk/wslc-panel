@@ -908,6 +908,28 @@ pub enum PendingAction {
         /// 连接凭据。
         creds: MysqlCreds,
     },
+    /// **删除**一份备份文件（v0.10.4 补的二次确认）。
+    ///
+    /// # 为什么它必须有确认，而「恢复」本来就有
+    ///
+    /// 原先正好反着：**恢复**（覆盖数据、但旧库还能再备份一份）有确认，
+    /// **删除**（Windows 侧文件 + 容器内 `rm -f`，一起没，没有任何地方能找回来）
+    /// 反而直接执行。用户在备份浮层里连着点两下就够了 —— 那份备份不可再生。
+    ///
+    /// 它不能像别的动作那样塞进 `PendingAction::execute`：删一份备份要做
+    /// "删本地文件 + 进容器 rm + 重扫目录"三件事，而 `execute` 的形状是
+    /// "跑一条 `wslc` 命令 → 返回字符串"。所以这里只带**够定位那一条**的字段，
+    /// 真正的执行仍在 `Shell::delete_db_backup_confirmed` 里。
+    DeleteDatabaseBackup {
+        /// 目标容器（容器内那份也要删）。
+        container: String,
+        /// 这份备份属于哪个库（只用于文案）。
+        database: String,
+        /// **Windows 侧**那份文件的路径（主要产物，删不掉要报错）。
+        windows_path: std::path::PathBuf,
+        /// **容器内**那份的路径（尽力删，删不掉不影响结果）。
+        container_path: String,
+    },
 }
 
 impl PendingAction {
@@ -926,6 +948,7 @@ impl PendingAction {
             PendingAction::DropDatabase { .. } => "删除数据库",
             PendingAction::DropUser { .. } => "删除 MySQL 用户",
             PendingAction::RestoreDatabase { .. } => "恢复备份",
+            PendingAction::DeleteDatabaseBackup { .. } => "删除备份文件",
         }
     }
 
@@ -982,6 +1005,19 @@ impl PendingAction {
                  恢复只能回原库）。此操作不可撤销。",
                 windows_path.display()
             ),
+            PendingAction::DeleteDatabaseBackup {
+                container,
+                database,
+                windows_path,
+                container_path,
+            } => format!(
+                "将**永久删除**这份备份：\n\
+                 {}\n\
+                 （容器 {container} 里的 `{container_path}` 也一起删。）\n\n\
+                 数据库 {database} 本身不受影响，但这份存档再也没有第二份 —— \
+                 面板里没有回收站，删了就得重新备份。",
+                windows_path.display()
+            ),
         }
     }
 
@@ -999,6 +1035,7 @@ impl PendingAction {
             PendingAction::DropDatabase { .. } => "删除数据库",
             PendingAction::DropUser { .. } => "删除用户",
             PendingAction::RestoreDatabase { .. } => "恢复",
+            PendingAction::DeleteDatabaseBackup { .. } => "永久删除",
         }
     }
 
@@ -1125,6 +1162,19 @@ impl PendingAction {
                 cmd::mysql::load_sql_file(wslc, container, client, creds, &container_path, None)?;
                 Ok(format!("已恢复数据库：{database}（现有数据已被备份覆盖）"))
             }
+            // 删除备份**不在这里执行**。
+            //
+            // 理由：它要做三件事（删本地文件 → 进容器 `rm -f` → 重扫目录
+            // 并写回 `AppState`），而 `execute` 的形状是"跑一条 `wslc` 命令 →
+            // 返回字符串"——最后一件事它表达不了（`&self`，拿不到 `AppState`）。
+            // 这个分支只是为了 match 完备：`views::confirm_overlay` 会把这一类
+            // 分流给 `Shell::delete_db_backup_confirmed`，走不到这里。
+            //
+            // 不用 `unreachable!()`：真要漏进来，宁可给一句能读的错误，
+            // 也不要在用户的机器上 panic（和 `submit_prompt` 那几个分支同理）。
+            PendingAction::DeleteDatabaseBackup { .. } => Err(wslc_core::Error::InvalidArgument(
+                "删除备份不走这条同步路径（见 Shell::delete_db_backup_confirmed）".to_owned(),
+            )),
         }
     }
 }
@@ -1196,8 +1246,10 @@ fn db_credentials_at_startup() -> (crate::dbcreds::DbCredentialStore, Option<Str
 /// ⚠️ 和那个不同的是两点：
 ///
 /// 1. **这个的第二项必须真的显示到界面上**（`AppState::deploy_store_error`
-///    → 部署页的提示条）。`db_credentials_error` 算出来了却全仓库没人读，
-///    是个洞；不能因为"照抄那边的形状"再挖一个。
+///    → 部署页的提示条）。`db_credentials_error` **曾经**算出来了却没人读，
+///    是个洞 —— 后来补上了（数据库页的 `creds_warning` 那一条，见
+///    `views::database`）。写这里是为了记住那类错误的形状：
+///    算出来 → 塞进 `AppState` → **忘了画**，是最容易静默失效的一种。
 /// 2. **`LOCALAPPDATA` 没设置时不去猜路径**。`db_credentials_at_startup` 用的是
 ///    `app_dir().unwrap_or_default()`，那会得到**相对当前工作目录**的
 ///    `deployments.json` —— 读的时候降级到 CWD、写的时候（`save_deploy_store`）
@@ -1997,7 +2049,19 @@ pub struct DbState {
     pub client: String,
     /// 客户端版本那一行（`mysql  Ver 26.7.0 …`）。
     pub client_version: Option<String>,
-    /// 连接凭据。
+    /// 连接凭据 —— **上一次连成功的那一份**。
+    ///
+    /// ⚠️ **它不是执行入口。** 所有动作（备份 / 恢复 / 导入 / SQL / 删库 / 删用户）
+    /// 都必须用连接卡上**此刻**的值，唯一入口是 `Shell::db_creds(cx)`。
+    ///
+    /// 为什么：这个字段只在 `load_db` 里赋值一次，而「从列表行进备份浮层 /
+    /// SQL 控制台」会把行上的账号写进连接卡 —— 于是同一页会出现两套账号。
+    /// v0.10.3 之前的实现一半用这个字段、一半用连接卡，结果是"点某行的备份
+    /// （卡换成 shop_user）再在同一个浮层点恢复"会用 **root** 去恢复，
+    /// 报 Access denied 而浮层上明明写着 shop_user。
+    ///
+    /// 现在它的用途只剩"诊断 / 显示"（和卡上的值对照），写它的地方是
+    /// `load_db` 与 `open_db_backup_dialog`（后者跟着卡一起更新）。
     pub creds: MysqlCreds,
     /// 这份凭据是怎么来的（"已从容器环境变量读出 root 密码"这类说明）。
     pub cred_note: Option<String>,
@@ -2043,7 +2107,9 @@ pub struct DbState {
     /// 备份列表（**Windows 侧**目录里扫出来的）。
     ///
     /// 进页面 / 备份完成 / 删除后重扫。**纯本地目录扫描** —— 不碰容器、不起进程，
-    /// 所以可以在任何时机做（包括"恢复前顺手看一眼"）。
+    /// 但会 `read_dir` + 每条一次 `metadata()`，所以扫描本身要在**后台执行器**上
+    /// 做，再由 [`AppState::apply_backups`] 填进来；只有点击路径
+    /// （`open_db_backup_dialog`）才可以同步调 [`AppState::rescan_backups`]。
     pub backups: Vec<BackupEntry>,
     /// 备份列表浮层开没开（开的对象是哪个库；`None` = 关着）。
     pub backup_dialog: Option<String>,
@@ -2051,6 +2117,11 @@ pub struct DbState {
     ///
     /// 和备份一样是长任务（大 dump 要几分钟），所以状态放这里、界面把它显示成
     /// 一个进度浮层 —— "点下去到有结果之间界面上必须有变化"（`AGENTS.md` §7.1）。
+    ///
+    /// ⚠️ 这个浮层**必须有关闭途径**（见 `views::db_import_progress`）：
+    /// 导入跑在后台，关掉浮层不影响它继续跑；而没有关闭按钮的话，
+    /// 一旦 `container cp` 卡住（容器停了 / 大文件），遮罩会挡住整页，
+    /// 用户连"去检查容器"都做不了。
     pub import: Option<ImportState>,
 }
 
@@ -2066,6 +2137,19 @@ pub struct ImportState {
     pub file_name: String,
     /// 往哪个库导（`None` = 由文件里的语句决定）。
     pub database: Option<String>,
+    /// 用户点过「知道了」把浮层收起来了。
+    ///
+    /// ⚠️ **收起来不等于取消**：导入还在后台跑（`container cp` + `mysql <`），
+    /// 完成后照样发提示、照样重读列表。这个字段只决定**画不画那个遮罩**。
+    ///
+    /// 为什么必须有它：浮层带 `.occlude()`，没有关闭途径时一旦卡住
+    /// （容器停了 / 几百 MB 的 dump），整页点不动，用户连"去容器页看看"
+    /// 都做不了 —— 那是比"看不到进度"更糟的状态。
+    ///
+    /// 它放在 `ImportState` 里（而不是 `Option` 置 `None`）：`Option` 同时是
+    /// **互斥锁**（`start_db_import` 第一句就查它），置 `None` 会放开"再来一份
+    /// 导入"的口子。
+    pub dismissed: bool,
 }
 
 /// 一次备份的状态（跑着的那一个）。
@@ -2085,6 +2169,11 @@ pub struct BackupState {
     /// 这一版是 `None`：输出直接落在容器内（见 `cmd::mysql` 的模块注释），
     /// 字段留着是给"边 dump 边传"那条路用的。
     pub last_message: Option<String>,
+    /// 用户点过「放到后台」把浮层收起来了。
+    ///
+    /// 和 [`ImportState::dismissed`] 同一个理由：浮层带遮罩，而备份是分钟级的；
+    /// 收起来不等于取消（备份没有取消能力，见 `Shell::cancel_db_backup`）。
+    pub dismissed: bool,
 }
 
 /// 一条备份记录（**Windows 侧**目录里扫出来的文件）。
@@ -3955,8 +4044,10 @@ pub struct AppState {
     pub deploy_store: crate::deploys::DeployStore,
     /// 部署存档**读不出来**的原因（`None` = 一切正常）。
     ///
-    /// ⚠️ 这个会被部署页当成提示条显示出来。别让它变成第二个
-    /// `db_credentials_error`（那个至今没人读）。
+    /// ⚠️ 这个会被部署页当成提示条显示出来
+    /// （`views::deploy_page` 里那条 `deploy_store_error`）。改字段名 / 挪位置
+    /// 时记得同步那一处 —— 这类"算出来但没画"的错误不会有编译错误，
+    /// 只会静默消失（`db_credentials_error` 就曾经空了整整一个版本）。
     pub deploy_store_error: Option<String>,
 }
 
@@ -4031,10 +4122,17 @@ impl AppState {
         })
     }
 
-    /// 重扫一个容器的备份目录（备份完成 / 删除后调）。
+    /// 重扫一个容器的备份目录（**同步**碰文件系统）。
     ///
-    /// ⚠️ 碰文件系统 —— 只在**点击后**和**长任务完成回调**里调，
-    /// 绝不在渲染路径上（`AGENTS.md` §7.1）。
+    /// ⚠️ `read_dir` + 每条一次 `metadata()`，目录在机械盘 / 网络盘上、
+    /// 或者攒了几百份备份时会明显卡一下。所以：
+    ///
+    /// - **点击路径**（`open_db_backup_dialog`）可以直接调 —— 用户点一下、
+    ///   等几十毫秒，可以接受；
+    /// - **异步回调里**（`load_db` / 备份完成 / 删除完成的 `update_in`）
+    ///   必须先在 `background_executor` 上算出 `Vec<BackupEntry>`，再用
+    ///   [`AppState::apply_backups`] 塞回来 —— 那些回调跑在**界面线程**上，
+    ///   "反正是后台任务的回调"这个理由是错的（v0.10.3 审查时抓到）。
     pub fn rescan_backups(&mut self, container: &str) {
         // ⚠️ 先把**目录**算出来、再借 `self.db`：`db.backups = …` 赋值时
         // `db`（对 `self.db` 的可变借用）还活着，那时再去调 `self.…`
@@ -4047,6 +4145,17 @@ impl AppState {
         };
         db.backups = scan_backup_dir(&dir).unwrap_or_default();
     }
+
+    /// 把（在后台线程上算好的）备份列表塞进状态。
+    ///
+    /// 和 [`AppState::rescan_backups`] 配成一对：那个负责**算**，这个负责**填**。
+    /// 分成两个是因为 `scan_backup_dir` 碰文件系统，不能出现在界面线程上。
+    pub fn apply_backups(&mut self, container: &str, entries: Vec<BackupEntry>) {
+        if let Some(db) = self.db.as_mut().filter(|db| db.container == container) {
+            db.backups = entries;
+        }
+    }
+
     /// 新建初始状态。
     pub fn new(wslc: Wslc, wsl: Wsl) -> Self {
         // 只读一次盘，然后把两半分别放进结构体 —— 对比上面 `db_credentials`
@@ -6630,6 +6739,72 @@ mod tests {
         assert!(state.error.as_ref().unwrap().hint().is_some());
         state.clear_error();
         assert!(state.error.is_none());
+    }
+
+    #[test]
+    fn import_and_backup_progress_can_be_put_in_the_background() {
+        // ⚠️ 「放到后台」只收遮罩，**不取消**任务：
+        //
+        // - `dismissed = true` 时渲染那边什么都不画（`db_import_progress` /
+        //   `db_backup_progress` 的第一句）；
+        // - 但 `import` / `backup` 仍然是 `Some` —— 这两个 `Option` 同时是
+        //   **互斥锁**（`start_db_import` / `start_db_backup` 的第一句就查它们）。
+        //   置 `None` 会放开"再来一份"的口子：两份 `container cp` 抢同一个
+        //   目录，或者两份 mysqldump 撞同一个备份文件名。
+        let mut db = DbState::from_probe(&probe_with(RootCredHint::Unknown), "mysql:8");
+        db.import = Some(ImportState {
+            file_name: "shop.sql".to_owned(),
+            database: Some("shop".to_owned()),
+            dismissed: false,
+        });
+        db.backup = Some(BackupState {
+            database: "shop".to_owned(),
+            container_path: "/tmp/wslc-backups/x.sql".to_owned(),
+            windows_path: std::path::PathBuf::from(r"C:\x\shop-1.sql"),
+            last_message: None,
+            dismissed: false,
+        });
+
+        // 刚起来时浮层是可见的
+        assert!(!db.import.as_ref().unwrap().dismissed);
+        assert!(!db.backup.as_ref().unwrap().dismissed);
+
+        // 收起来之后：两个任务**都还在**（互斥锁没被放开）
+        db.import.as_mut().unwrap().dismissed = true;
+        db.backup.as_mut().unwrap().dismissed = true;
+        assert!(db.import.is_some(), "收起浮层不能把互斥锁放掉");
+        assert!(db.backup.is_some(), "收起浮层不能把互斥锁放掉");
+        assert!(db.import.as_ref().unwrap().dismissed);
+        assert!(db.backup.as_ref().unwrap().dismissed);
+    }
+
+    #[test]
+    fn deleting_a_backup_file_asks_for_confirmation_and_names_both_copies() {
+        // ⚠️ 这个动作原先**没有**二次确认，而「恢复」（可恢复的那个）有 ——
+        // 两个配置反着。凭据是：删除是不可撤销的（Windows 侧文件 + 容器内
+        // `rm -f`，面板里没有回收站），而恢复至少还能再备份回来。
+        let action = PendingAction::DeleteDatabaseBackup {
+            container: "mysql".to_owned(),
+            database: "djxm".to_owned(),
+            windows_path: std::path::PathBuf::from(r"C:\Users\x\backups\mysql\djxm-20261015-035901.sql"),
+            container_path: "/tmp/wslc-backups/djxm-20261015-035901.sql".to_owned(),
+        };
+
+        assert_eq!(action.title(), "删除备份文件");
+        assert_eq!(action.confirm_label(), "永久删除");
+
+        let body = action.body();
+        // 用户必须看见**两份**都会没：Windows 侧那份是主体，容器内那份也会删
+        assert!(body.contains(r"C:\Users\x\backups\mysql\djxm-20261015-035901.sql"), "{body}");
+        assert!(body.contains("/tmp/wslc-backups/djxm-20261015-035901.sql"), "{body}");
+        // 说清"数据库本身不受影响" —— 否则用户会以为连库一起删了
+        assert!(body.contains("数据库 djxm 本身不受影响"), "{body}");
+        assert!(body.contains("不可撤销") || body.contains("没有回收站"), "{body}");
+
+        // 它**不**走 `PendingAction::execute`（那个形状表达不了"删完再重扫目录"），
+        // 所以执行入口必须给一句人话，而不是 panic。
+        // `execute` 要 `&Wslc`；这里只验证这个变体不会走到"跑一条命令"那条路。
+        // （真实分流在 `Shell::confirm_pending` 里，见那边的注释。）
     }
 
     #[test]

@@ -44,6 +44,11 @@ OutputBaseFilename=wslc-panel-{#AppVersion}-setup-x64
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+; 安装包自己也要有图标 —— 否则下载页上一堆安装器里它同样是一张白纸。
+; 同一个 .ico 也给 exe 嵌了（crates/wslc-panel/build.rs），两处共用一个文件，
+; 不会出现"安装包图标和程序图标不一样"。
+SetupIconFile=..\assets\wslc-panel.ico
+; 卸载列表里显示程序图标（不是卸载器图标），和「应用和功能」里的观感一致。
 UninstallDisplayIcon={app}\wslc-panel.exe
 DirExistsWarning=no
 CloseApplications=no
@@ -79,8 +84,11 @@ Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
+; 快捷方式本身会继承 exe 里的图标（IDI_APPLICATION），所以这里**不写 IconFilename**
+; —— 写反而容易和 exe 里的那一份不同步。
 Name: "{group}\{#AppName}"; Filename: "{app}\wslc-panel.exe"
-Name: "{group}\卸载 {#AppName}"; Filename: "{uninstallexe}"
+; 卸载项用系统"添加/删除"那个图标（shell32 第 31 号），一眼能看出它是卸载器。
+Name: "{group}\卸载 {#AppName}"; Filename: "{uninstallexe}"; IconFilename: "{sys}\shell32.dll"; IconIndex: 31
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\wslc-panel.exe"; Tasks: desktopicon
 
 [Run]

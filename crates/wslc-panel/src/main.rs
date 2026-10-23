@@ -115,9 +115,15 @@ fn build_sha() -> &'static str {
 }
 
 /// 提交号前 7 位（短号）。
+///
+/// ⚠️ `get(..7)` 而不是 `&sha[..7]`：`sha` 来自 `WSLC_PANEL_BUILD_SHA`
+/// 环境变量（CI 注入），`len()` 是**字节**数 —— 第 7 个字节落在多字节字符
+/// 中间就是一次 panic，而且发生在**启动路径**上。正常情况它一定是 40 位十六
+/// 进制，但"正常情况"不是这层的设计前提（`model/container.rs` 的 `short_id`
+/// 为同一个理由也是这么写的）。
 fn short_build_sha() -> &'static str {
     let sha = build_sha();
-    if sha.len() >= 7 { &sha[..7] } else { sha }
+    sha.get(..7).unwrap_or(sha)
 }
 
 fn main() {

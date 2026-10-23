@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/wslc-core", "crates/wslc-panel", "crates/wslc-panel-core"]
 
 [workspace.package]
-version = "0.10.3"
+version = "0.10.4"
 license = "Apache-2.0"
 # 原先这里是空串。`publish = false` 所以不影响发布，但它是"关于"页与各种
 # 工具读元数据的地方 —— 空着只会让人以为这个仓库没有来源。

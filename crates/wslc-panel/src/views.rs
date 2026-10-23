@@ -1555,11 +1555,13 @@ pub fn containers(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> impl IntoE
 /// 而它只存在内存里：不写进 `prefs.json`、不进日志（`MysqlCreds` 的 `Debug`
 /// 是手写脱敏的）、也不进错误消息（出口是 `cmd::mysql::sanitize`）。
 pub fn database(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
-    // 分发（`page()`）为了统一签名给每个页面都传 `cx`（那边有注释说明为什么）。
-    // v0.9.2 起这一页的输入框**全在浮层里**（连接卡 → 「基础信息」、
-    // 控制台 → 每行的「SQL」），正文一个都不用 —— 所以这里显式绑一下消警告，
-    // 而不是把参数删掉：删了就得为这一页破例改分发，下一个人还得再改回来。
-    let _ = cx;
+    // 这一页正文一个输入框都没有（连接卡 → 「基础信息」浮层、控制台 → 每行的
+    // 「SQL」），但 `cx` **真的要用**：列表行上的「删库」要把**执行时**的账号
+    // 装进 `PendingAction`，而那份账号是按行取的（`Shell::creds_for_row`，
+    // 它读的是账号存档 + 连接卡的 `InputState`）。
+    //
+    // ⚠️ 别改成 `db.creds`：它只在 `load_db` 里赋值一次，于是同一次会话里
+    // 「备份用 djxm_user、删除用 root」—— 这条不一致是实机可复现的。
 
     let Some(db) = shell.state.db.as_ref() else {
         // 理论上来不到（只可能从容器行上的按钮进，那里已经建好状态了），
@@ -1597,8 +1599,10 @@ pub fn database(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
             // `DbState` 上再挂一份克隆 —— v0.8 就是这么错的：`DbState.credentials`
             // 从没被同步过（构造函数里给的是空的），于是"建库同时建用户"
             // 明明成功、列表里那两列却永远是 `—`（实机截图抓到的）。
-            DbTab::Databases => db_databases_card(db, &shell.state.db_credentials, entity),
-            DbTab::Users => db_users_card(db, entity),
+            DbTab::Databases => {
+                db_databases_card(db, &shell.state.db_credentials, shell, cx, entity)
+            }
+            DbTab::Users => db_users_card(db, shell, cx, entity),
         }
     } else {
         db_loading(db.busy)
@@ -1807,6 +1811,46 @@ fn db_header(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
             .into_any_element()
     };
 
+    // 「备份中 / 导入中」的**常驻**标记。
+    //
+    // 它和浮层是**两件事**，不是重复：
+    // - 浮层（`db_backup_progress` / `db_import_progress`）带遮罩，会挡住整页；
+    // - 这一行是**不挡任何东西**的状态说明，浮层开着时它在底下（看不见），
+    //   用户点「放到后台」把遮罩收掉之后，它就是唯一的"还在跑"的证据。
+    //
+    // 为什么必须有：不收遮罩的话用户被锁住；收了又没有这一行的话，
+    // 用户会以为已经结束了，接着去点「立即备份」或再导一次。
+    // 这也正是 `AGENTS.md` §7.1 那条"界面必须有变化"的延长线 ——
+    // 收起浮层是用户主动选的，但"还在跑"这个事实不能跟着消失。
+    let running: Option<AnyElement> = if let Some(backup) = db.backup.as_ref() {
+        Some(
+            div()
+                .text_xs()
+                .text_color(theme::primary())
+                .child(format!(
+                    "正在备份 {}…（可以继续用，完成后会提示）",
+                    backup.database
+                ))
+                .into_any_element(),
+        )
+    } else {
+        db.import.as_ref().map(|import| {
+            let target = import
+                .database
+                .as_deref()
+                .map(|d| format!("到 {d}"))
+                .unwrap_or_default();
+            div()
+                .text_xs()
+                .text_color(theme::primary())
+                .child(format!(
+                    "正在导入 {}{target}…（可以继续用，完成后会提示）",
+                    import.file_name
+                ))
+                .into_any_element()
+        })
+    };
+
     h_flex()
         .w_full()
         .justify_between()
@@ -1825,7 +1869,8 @@ fn db_header(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
                     db.family.label(),
                     db.image,
                     db.client_version.as_deref().unwrap_or(db.client.as_str()),
-                ))),
+                )))
+                .children(running),
         )
         .child(h_flex().gap_2().child(back).child(info).child(reload))
         .into_any_element()
@@ -2020,9 +2065,15 @@ fn db_name_cell(entry: &wslc_core::model::DbEntry) -> AnyElement {
 ///
 /// `credentials` 是 `AppState` 上那份**唯一**的账号存档 —— 别从 `DbState`
 /// 里取（那里曾经有一份从没同步过的克隆，见 [`database`] 里的注释）。
+///
+/// `shell` / `cx` 是给「删库」那一行的：它要 `PendingAction::DropDatabase`，
+/// 而动作里的凭据必须和这一行**同一个来源**（`Shell::creds_for_row`，
+/// 面板记的账号优先、没记过才用连接卡）。
 fn db_databases_card(
     db: &DbState,
     credentials: &wslc_panel_core::dbcreds::DbCredentialStore,
+    shell: &Shell,
+    cx: &App,
     entity: &Entity<Shell>,
 ) -> AnyElement {
     let new_database = {
@@ -2057,11 +2108,16 @@ fn db_databases_card(
         // （方法调用才会），少这一步就是 E0308。
         .copied()
         .map(|entry| {
+            // 账号按**这一行**取（`Shell::creds_for_row`）：面板给 `djxm` 记过
+            // `djxm_user`，那这一行四个按钮全用 `djxm_user` —— 建库时授的是
+            // `GRANT ALL ON djxm.*`，连 `DROP` 都在里面，所以删库它也干得了。
+            // 没记过（比如 `wslc_probe`）才退回连接卡。
+            let row_creds = shell.creds_for_row(&db.container, &entry.name, cx);
             let action = PendingAction::DropDatabase {
                 container: db.container.clone(),
                 database: entry.name.clone(),
                 client: db.client.clone(),
-                creds: db.creds.clone(),
+                creds: row_creds,
             };
             // 「用户名 / 密码」只对**面板建的库**有记录（建库时同时建的用户，
             // 记在本地存档里）。别处建的库显示 `—` —— 不猜、不编。
@@ -2188,7 +2244,10 @@ fn db_databases_card(
 }
 
 /// 「用户」tab。
-fn db_users_card(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
+///
+/// `shell` / `cx` 只给「删除」那一行用：`PendingAction::DropUser` 里的凭据
+/// 必须和「改密码 / 授权」走同一个来源（`Shell::db_creds`，读连接卡）。
+fn db_users_card(db: &DbState, shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
     let new_user = {
         let entity = entity.clone();
         Button::new("db-new-user")
@@ -2256,7 +2315,14 @@ fn db_users_card(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
                     user: user_name.clone(),
                     host: host.clone(),
                     client: db.client.clone(),
-                    creds: db.creds.clone(),
+                    // ⚠️ 这一处**刻意**用连接卡，而不是 `creds_for_row`。
+                    //
+                    // 「用户」tab 每一行的对象是**账号**，不是某个库 —— 没有库名
+                    // 可以拿去找面板记的那份凭据。而更重要的是权限：
+                    // 面板建库时授的是 `GRANT ALL ON <库>.*`，**不含** `CREATE USER`
+                    // / `DROP USER`，所以那个账号删不了人。删账号只能用一个
+                    // 有全局权限的账号（root 或手工授过的人），也就是卡上那个。
+                    creds: shell.db_creds(cx),
                 },
                 entity,
             )
@@ -2946,15 +3012,22 @@ fn grant_kind_row(current: GrantKind, entity: &Entity<Shell>) -> AnyElement {
 /// 没在备份时返回空 —— 进度不是常驻的（跑完就关）。
 /// ⚠️ 这一版**没有实时进度**（dump 输出直接落在容器里，见 `cmd::mysql`
 /// 的模块注释），所以只有一句"备份中…"和目标文件路径。
+///
+/// 「放到后台」= 只收遮罩，**不**打断备份（这一版本来也打断不了，
+/// 见 `Shell::cancel_db_backup`）。按钮不叫「知道了」：那个名字会让人以为
+/// 它取消的是备份。
 pub fn db_backup_progress(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
     let Some(state) = db.backup.as_ref() else {
         return div().into_any_element();
     };
+    if state.dismissed {
+        return div().into_any_element();
+    }
 
-    let cancel = {
+    let dismiss = {
         let entity = entity.clone();
-        Button::new("db-backup-cancel")
-            .label("知道了")
+        Button::new("db-backup-dismiss")
+            .label("放到后台")
             .small()
             .on_click(move |_, _, cx| {
                 entity.update(cx, |shell, cx| shell.cancel_db_backup(cx));
@@ -3003,34 +3076,51 @@ pub fn db_backup_progress(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
                             .text_color(theme::text_muted())
                             .child("备份中…"),
                     )
-                    .child(cancel),
+                    .child(dismiss),
             ),
     )
     .into_any_element()
 }
 
-/// 某个库的**备份列表**浮层（v0.8）。
-///
-/// 列表是 **Windows 侧**目录扫出来的（`AppState::rescan_backups`）——
-/// 这也正是**恢复的输入**：点「恢复」时会把这份文件 cp 进容器再重定向进
-/// `mysql`（v0.8.2 起不再依赖容器内 `/tmp` 里那份旧的，所以容器重建过、
-/// `/tmp` 被清过都照样能恢复）。因此这里不需要（也无法）预先画
-/// "容器里那份还在不在"—— 只认列表里这个文件在不在。
 /// 导入进度浮层（导入跑着的时候盖在页面上）。
 ///
 /// 没在导入时返回空。和备份那个一样：**没有实时百分比**（`container cp` 和
 /// `mysql` 都不吐进度），但"点下去之后界面上有变化"这条必须有
 /// （`AGENTS.md` §7.1）—— 所以起码要显示"在导哪个文件、进哪个库"。
-pub fn db_import_progress(db: &DbState, _entity: &Entity<Shell>) -> AnyElement {
+///
+/// # 为什么必须有「放到后台」
+///
+/// 见函数体里那段注释：遮罩挡住整页 + 导入是分钟级的，没有关闭途径时用户
+/// 会被锁在屏幕前。收起来不等于取消。
+pub fn db_import_progress(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
     let Some(state) = db.import.as_ref() else {
         return div().into_any_element();
     };
+    // 用户点过「放到后台」—— 浮层收起来，但导入照跑（见 `ImportState::dismissed`）。
+    if state.dismissed {
+        return div().into_any_element();
+    }
 
     let target = state
         .database
         .as_deref()
         .map(|d| format!("导入到 {d}"))
         .unwrap_or_else(|| "导入到文件里指定的库".to_owned());
+
+    // ⚠️ 这个按钮是**必需的**：浮层带 `.occlude()`，遮罩挡住整页，而导入是
+    // 分钟级的（几百 MB 的 dump / 容器刚停时 `container cp` 会卡住）。
+    // 没有关闭途径时，那段时间用户既看不到进度、又点不到任何按钮 ——
+    // 连"去容器页看看它是不是挂了"都做不到。
+    // 收起来**不等于取消**：导入继续跑，完成后照样发提示、照样重读列表。
+    let dismiss = {
+        let entity = entity.clone();
+        Button::new("db-import-dismiss")
+            .label("放到后台")
+            .small()
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.dismiss_db_import(cx));
+            })
+    };
 
     modal_scrim(
         "db-import-progress",
@@ -3059,20 +3149,36 @@ pub fn db_import_progress(db: &DbState, _entity: &Entity<Shell>) -> AnyElement {
                      大文件会慢一些 —— 完成后这里会自动关掉，列表也会重读一次。",
             ))
             .child(
-                h_flex().w_full().justify_end().child(
-                    div()
-                        .text_sm()
-                        .text_color(theme::text_muted())
-                        .child("导入中…"),
-                ),
+                h_flex()
+                    .w_full()
+                    .justify_end()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(theme::text_muted())
+                            .child("导入中…"),
+                    )
+                    .child(dismiss),
             ),
     )
     .into_any_element()
 }
 
+/// 某个库的**备份列表**浮层（v0.8）——也是这个库「备份 / 恢复」的唯一入口。
+///
+/// `credentials` 是 `AppState` 上那份账号存档：这个浮层要在顶部写清
+/// **这一行的备份 / 恢复会用哪个账号**（面板记的那份，还是连接卡上那份），
+/// 而那句话只有查了存档才说得准。
+///
+/// 收 `shell` 而不收 `DbPageForm`：这个浮层里的每个按钮都**按行走**
+/// （`Shell::creds_for_row`），一个输入框都不读 —— 收个 `&DbPageForm`
+/// 只会让人以为它和连接卡有关。
 pub fn db_backup_dialog_overlay(
     db: &DbState,
-    form: &DbPageForm,
+    credentials: &wslc_panel_core::dbcreds::DbCredentialStore,
+    shell: &Shell,
     entity: &Entity<Shell>,
     cx: &App,
 ) -> AnyElement {
@@ -3108,30 +3214,40 @@ pub fn db_backup_dialog_overlay(
         )
     };
 
-    // 备份用的是**连接卡**上的账号（`start_db_backup` → `read_db_form`），
-    // 而这张卡藏在页头的「基础信息」后面 —— 不写出来，用户拿到
-    // "备份失败：Access denied for user 'root'@'localhost'" 时无从下手
-    //（面板建的库有独立账号，root 往往不是它）。所以这里把**当前会用的账号**
-    // 显示出来：和 `open_db_console_for` 一样，卡上是什么就说什么。
+    // 这个浮层里的**每个**动作都钉在这个库上：备份、恢复，以及上面那个
+    // 「立即备份」。账号用的就是这一行的（`Shell::creds_for_row`）——
+    // 面板记过就用记的那份，没记过才退回连接卡。
+    //
+    // 为什么必须写出来：`Access denied for user 'root'@'localhost'` 是这里
+    // 最常见的一条报错，而用户看不到我们到底用了谁。卡藏在页头的
+    // 「基础信息」后面，写一句就等于把"该去改哪儿"指出来。
     let account: AnyElement = {
-        let user = form.user.read(cx).value().trim().to_owned();
-        let user = if user.is_empty() {
-            "root".to_owned()
-        } else {
-            user
-        };
-        let text = if form.password.read(cx).value().trim().is_empty() {
+        let row = shell.creds_for_row(&db.container, &database, cx);
+        let recorded = credentials.get(&db.container, &database);
+        let text = if let Some(cred) = recorded {
             format!(
-                "备份用账号 {user}（密码那一格现在是空的 —— 先去页头「基础信息」\
-                 补上，否则 mysqldump 会报 Access denied）。"
+                "备份 / 恢复都用面板记的账号 {}（这个库自己的账号，建库时授的是 \
+                 `GRANT ALL ON {database}.*`）。要换就改「基础信息」里那张卡 —— \
+                 但那样只影响**没记账号**的库。",
+                cred.user
+            )
+        } else if row.password.trim().is_empty() {
+            format!(
+                "这个库不是面板建的（没有记账号），会退回用「基础信息」卡上的 {}，\
+                 而那张卡的密码现在是空的 —— 先去补上，否则 mysqldump 会报 Access denied。",
+                row.user
             )
         } else {
-            format!("备份用账号 {user}（要换账号去页头「基础信息」）。")
+            format!(
+                "这个库不是面板建的（没有记账号），会退回用「基础信息」卡上的 {}；\
+                 要换账号就去那里改。",
+                row.user
+            )
         };
         div()
             .text_xs()
             .text_color(theme::text_dim())
-            .child(text)
+            .child(crate::util::strip_md(&text))
             .into_any_element()
     };
 
@@ -3316,8 +3432,9 @@ pub fn deploy_page(shell: &Shell, _cx: &App, entity: &Entity<Shell>) -> AnyEleme
         .gap_3()
         .child(header)
         // 存档读坏了要说出来 —— 不然用户会以为"我部署过的东西全没了"。
-        // ⚠️ `AppState::deploy_store_error` 存在的唯一目的就是这一行；
-        // 对比 `db_credentials_error`：那个算出来了却全仓库没人读。
+        // `AppState::deploy_store_error` 存在的唯一目的就是这一行。
+        // 另一半在 `views::database` 的 `creds_warning`（账号存档读坏了）——
+        // 两个存档各有一条，别只补一边。
         .children(
             shell
                 .state
@@ -4441,11 +4558,22 @@ pub fn deploy_remove_confirm_overlay(
 /// 见 [`pull_dialog_overlay`] —— 它和这里**是同一个入口**：点这个按钮才会
 /// 建表单、才可能拉取（`AGENTS.md` §5「同一个动作只给一个入口」）。
 ///
-/// # 行内为什么只留「更多」（v0.9.22）
+/// # 行内为什么**直接**摆两个按钮（v0.9.24 改回来）
 ///
-/// 删除是低频危险动作；「用这个镜像创建容器」是"从这一行顺手做"的第二入口。
-/// 两个都进菜单，操作列在窄窗下才放得下 —— 也顺手把整页的红色按钮
-/// 收干净了（原先每一行一个红色「删除」）。
+/// v0.9.22 曾把「创建容器 / 删除」一起收进「更多」菜单，理由是"操作列在窄窗下
+/// 放得下"。实机看下来那个理由不成立，而且代价明显：
+///
+/// - 镜像行只有**两个**动作，套一层菜单等于让每个动作多点一次；
+/// - 「创建容器」是镜像页最常用的一件事（拉完镜像的下一步就是它），
+///   藏进菜单后用户会以为没有这个功能。
+///
+/// 所以 v0.9.24 改回**直接摆**。和容器页的区别在于动作**数量**：
+/// 容器行最多 4 个动作（还含危险操作），镜像行 2 个。`AGENTS.md` §5 那条
+/// 「超过 4 个就收进更多」针对的是前者 —— 别把这条规则套到只有两个按钮的行上。
+///
+/// ⚠️ 这一段原先写的是"行内只留「更多」，两个都进菜单"，而实现一直是两个
+/// 直接按钮 —— 注释和实现相反，正是 `AGENTS.md` §5 警告过的那种"后来的人
+/// 会照着注释继续加重复"的源头。
 pub fn images(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     let rows: Vec<AnyElement> = state
         .snapshot
@@ -5726,7 +5854,11 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
                         div()
                             .text_xs()
                             .text_color(theme::text_dim())
-                            .child(note.clone())
+                            // ⚠️ notes 全是 Markdown 写的（`**不做**首次启动初始化`
+                            // / `--import`），而 `div` 画的是纯文本 —— 不过
+                            // `strip_md` 屏幕上就是字面星号和反引号。
+                            // 这一处是 v0.9.13 那轮补 15 处时**唯一漏下的**。
+                            .child(crate::util::strip_md(note))
                     }));
                 // 提醒不是错误、也不挡提交；只在参数已经能跑时附在步骤下面，
                 // 避免和"点开始安装才校验"的红框混在一起。
@@ -6879,7 +7011,12 @@ pub fn wsl_config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                         div()
                             .text_xs()
                             .text_color(theme::text_muted())
-                            .child(format!("应该放到 {} —— {}", m.belongs_to, m.why)),
+                            // `m.why` 来自 `wslc_core::wslconfig::check`，带 `**…**`
+                            // （见那里 `KNOWN_MISPLACED` 的注释）。`m.text` 是原文不动。
+                            .child(crate::util::strip_md(&format!(
+                                "应该放到 {} —— {}",
+                                m.belongs_to, m.why
+                            ))),
                     )
                     .into_any_element()
             })
@@ -7219,8 +7356,12 @@ fn terminal_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         .child(kv("新终端的起始目录", current.describe()))
         .child(h_flex().w_full().gap_2().flex_wrap().children(buttons))
         .child(div().text_xs().text_color(theme::text_dim()).child(
-            "「打开终端」（实例列表）用 `wsl --cd` 指定起点；不给就是继承面板自己的工作目录，\
-             也就是从哪个文件夹启动的面板，终端就从哪儿开始。",
+            // 这一句里有 `wsl --cd` 的反引号 —— 同一张卡下面两段都过了
+            // `strip_md`，只有这一段漏了（注释和实现不一致时后来人会照错的那份走）。
+            crate::util::strip_md(
+                "「打开终端」（实例列表）用 `wsl --cd` 指定起点；不给就是继承面板自己的工作目录，\
+                 也就是从哪个文件夹启动的面板，终端就从哪儿开始。",
+            ),
         ));
 
     // 输入框只在点过「自定义路径…」之后存在。它一直留着（不随页面离开销毁），
@@ -7510,7 +7651,9 @@ fn image_env_hint(dialog: &CreateDialog, cx: &App) -> AnyElement {
     div()
         .text_xs()
         .text_color(theme::text_dim())
-        .child(text)
+        // 第二支文案里有 `{prefill}=你的值` 的反引号 —— 第一支没有，所以
+        // 别只在其中一支加。统一在出口过一遍（`AGENTS.md` §5）。
+        .child(crate::util::strip_md(&text))
         .into_any_element()
 }
 
@@ -8751,12 +8894,14 @@ pub fn logs_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                 .w_full()
                 .text_sm()
                 .text_color(theme::text_dim())
-                .child(
+                .child(crate::util::strip_md(
+                    // 文案里带 `` `tail -f /dev/null` `` —— 不过 `strip_md` 就
+                    // 把反引号一起画出来（这条是守卫，不是当下需要）。
                     "容器主进程没有往 stdout / stderr 写东西时就是这个样子 —— 比如面板为了\
                  「吊住」容器而起的 `tail -f /dev/null`，它本身不打印任何东西。\
                  部署的应用日志不在这一份里：那是应用自己的输出，在「部署管理」\
                  那一行的「日志」里看。",
-                )
+                ))
                 .into_any_element()
         } else {
             div().into_any_element()

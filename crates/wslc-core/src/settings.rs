@@ -287,53 +287,58 @@ impl SettingsDoc {
 
         match value {
             Some(v) => {
-                let new_line = match self.find_key_line(section, key) {
-                    Some(idx) => {
-                        let old = self.line(idx).to_owned();
-                        let indent = leading_whitespace(&old);
-                        // 只有原本就是"生效行"（`key: 值 # 说明`）时才保留行尾注释。
-                        //
-                        // 如果原行是被注释掉的（`# key: default`），
-                        // `inline_comment` 会把那个 `#` 误认成行尾注释，
-                        // 结果生成 `key: 4 # key: default` —— CI 抓到的就是这个。
-                        let suffix = if old.trim_start().starts_with('#') {
-                            ""
-                        } else {
-                            inline_comment(&old)
-                        };
-                        format!("{indent}{key}: {v}{suffix}")
+                // ⚠️ 这里**只查一次** `find_key_line`，把 idx 直接拿在手上。
+                //
+                // 原先写的是 `match self.find_key_line(...) { Some(idx) => …,
+                // None => { …插入…; return } }` 然后再 `find_key_line(..).unwrap()`
+                // —— 那个 `unwrap` 靠"上面 None 那条已经 return 了"才安全，
+                // 而这段代码中间改过 `self.raw`（插入路径），两次查找之间
+                // 的输入并不相同。虽然当前两条路互斥、跑不到，但"安全靠上一段
+                // 的记忆"正是这个仓库最不想留下的那类结构（`jsonl` / `decode`
+                // 那一层的原则是"任何输入都不 panic"）。
+                let Some(idx) = self.find_key_line(section, key) else {
+                    // 键不存在时插入：先找小节块尾，再找顶层文件尾。
+                    //
+                    // ⚠️ **节本身不存在时必须连节头一起补**。
+                    //
+                    // 只往文件尾插一行带缩进的 `  cpuCount: 4`，得到的是
+                    // 一个没有父节点的缩进键 —— YAML 解析直接报错，
+                    // `wslc` 从此读不了 settings.yaml，而用户只是改了一个
+                    // 配置项。触发条件是"用户手工删掉了 `session:` 段"
+                    // （或文件被别的工具裁剪过）之后再从面板改任何
+                    // session 键。现有测试原先正好把这个错误行为固化住了
+                    // （只断言 `contains("foo: bar")`）。
+                    let indent = self.child_indent(section);
+                    let missing_section = match section {
+                        Some(name) if self.section_range(Some(name)).is_none() => Some(name),
+                        _ => None,
+                    };
+                    let line = format!("{indent}{key}: {v}");
+                    let at = self.insert_position(section);
+                    let mut new_raw = self.raw.clone();
+                    insert_line(&mut new_raw, at, &line);
+                    if let Some(name) = missing_section {
+                        // 节头要落在缩进键**之前**：两次都用同一个下标，
+                        // 后插进去的那行会把先插的那行往后推。
+                        insert_line(&mut new_raw, at, &format!("{name}:"));
                     }
-                    None => {
-                        // 键不存在时插入：先找小节块尾，再找顶层文件尾。
-                        //
-                        // ⚠️ **节本身不存在时必须连节头一起补**。
-                        //
-                        // 只往文件尾插一行带缩进的 `  cpuCount: 4`，得到的是
-                        // 一个没有父节点的缩进键 —— YAML 解析直接报错，
-                        // `wslc` 从此读不了 settings.yaml，而用户只是改了一个
-                        // 配置项。触发条件是"用户手工删掉了 `session:` 段"
-                        // （或文件被别的工具裁剪过）之后再从面板改任何
-                        // session 键。现有测试原先正好把这个错误行为固化住了
-                        // （只断言 `contains("foo: bar")`）。
-                        let indent = self.child_indent(section);
-                        let missing_section = match section {
-                            Some(name) if self.section_range(Some(name)).is_none() => Some(name),
-                            _ => None,
-                        };
-                        let line = format!("{indent}{key}: {v}");
-                        let at = self.insert_position(section);
-                        let mut new_raw = self.raw.clone();
-                        insert_line(&mut new_raw, at, &line);
-                        if let Some(name) = missing_section {
-                            // 节头要落在缩进键**之前**：两次都用同一个下标，
-                            // 后插进去的那行会把先插的那行往后推。
-                            insert_line(&mut new_raw, at, &format!("{name}:"));
-                        }
-                        self.raw = new_raw;
-                        return self.raw != before;
-                    }
+                    self.raw = new_raw;
+                    return self.raw != before;
                 };
-                let idx = self.find_key_line(section, key).unwrap();
+
+                let old = self.line(idx).to_owned();
+                let indent = leading_whitespace(&old);
+                // 只有原本就是"生效行"（`key: 值 # 说明`）时才保留行尾注释。
+                //
+                // 如果原行是被注释掉的（`# key: default`），
+                // `inline_comment` 会把那个 `#` 误认成行尾注释，
+                // 结果生成 `key: 4 # key: default` —— CI 抓到的就是这个。
+                let suffix = if old.trim_start().starts_with('#') {
+                    ""
+                } else {
+                    inline_comment(&old)
+                };
+                let new_line = format!("{indent}{key}: {v}{suffix}");
                 let mut lines: Vec<String> = self.raw.lines().map(str::to_owned).collect();
                 lines[idx] = new_line;
                 self.raw = join_lines(&lines, &self.raw);

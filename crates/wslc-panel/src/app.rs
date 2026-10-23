@@ -2496,6 +2496,14 @@ impl Shell {
     pub fn check_update(&mut self, manual: bool, cx: &mut Context<Self>) {
         // 正在查就不要再发一条（用户可能连点）。
         if matches!(self.state.update, crate::update::Phase::Checking) {
+            // ⚠️ 别静默返回：`AGENTS.md` §7.1 那条"点了没反应会被当成按钮坏了"
+            // 对这里同样成立。界面上那颗按钮虽然已经换成「正在检查…」、点不到，
+            // 但自动检查（启动 8 秒后）和手动点用的是同一条路，将来多一个入口
+            // 就会踩到这条 —— 给一句话的成本是零。
+            if manual {
+                self.state.notify(Toast::info("正在检查更新，等它结束"));
+                cx.notify();
+            }
             return;
         }
 
@@ -2530,18 +2538,26 @@ impl Shell {
     ) {
         let current = current_version();
 
+        // ⚠️ **这一条必须在 `match` 外面**：不管成功、失败，这一次都算"查过了"。
+        //
+        // 原先它写在 `Ok(release)` 分支里，而 `Err` 分支一个字段都没动 ——
+        // 于是 `should_auto_check` 下一次仍然看到"没查过 / 太久没查"，**每次启动
+        // 都再发一次** `curl`（最长 25 秒）。而注释和 README 承诺的恰恰相反：
+        // 「查失败不会让下一次启动又立刻再查一次」「24 小时最多一次」。
+        //
+        // 触发条件不是边角情况：这台机器上 `api.github.com` 时好时坏，
+        // 共享出口（公司 NAT / 校园网）还会把 60 次/小时用光 —— 那正是最容易
+        // 一直失败、也最容易被这条 bug 反复烧配额的机器。
+        self.state.prefs.last_update_check = Some(now);
+        if let Err(e) = self.state.prefs.save() {
+            tracing::warn!("记录更新检查时间失败：{e}");
+        }
+
         match outcome {
             Ok(release) => {
                 let newer = wslc_core::update::is_newer(&release.version, &current);
                 let skipped =
                     crate::update::is_skipped(&release, self.state.prefs.skipped_version.as_deref());
-
-                // 不管结果如何，这一次都算"查过了" —— 否则查失败会让下一次
-                // 启动又立刻再查一次（配额就是这么被烧掉的）。
-                self.state.prefs.last_update_check = Some(now);
-                if let Err(e) = self.state.prefs.save() {
-                    tracing::warn!("记录更新检查时间失败：{e}");
-                }
 
                 tracing::info!(
                     "检查更新：当前 {}，远端 {}（{}），{}",
@@ -3092,7 +3108,13 @@ impl Shell {
                 match result {
                     Ok(id) => {
                         let id = id.trim().to_owned();
-                        let short = if id.len() > 12 { &id[..12] } else { &id };
+                        // ⚠️ `get(..12)` 而不是 `&id[..12]`：`len()` 是**字节**数，
+                        // 而 `id` 是子进程的原始输出（被包装脚本改成中文、或混进
+                        // 一行畸形文本都会踩到），第 12 个字节落在多字节字符中间
+                        // 就是一次 panic —— 而且发生在 `update_in` 的回调里，
+                        // 直接把界面拖掉。`model/container.rs` 的 `short_id`
+                        // 为同一个理由就是这么写的，那边有一整段说明。
+                        let short = id.get(..12).unwrap_or(&id);
                         shell
                             .state
                             .notify(Toast::success(format!("容器已创建：{short}")));
@@ -3409,6 +3431,91 @@ impl Shell {
         (user, form.password.read(cx).value().trim().to_owned())
     }
 
+    /// 这一次动作要用的账号 —— **唯一入口**。
+    ///
+    /// # 为什么不能从 `DbState::creds` 取
+    ///
+    /// `DbState::creds` 全仓库只在 [`Shell::load_db`] 里赋值，而数据库页的
+    /// 入口里有一半会**先把行上的账号写进连接卡**
+    /// （[`Shell::open_db_backup_dialog`] / [`Shell::open_db_console_for`]）。
+    /// 于是同一页上会出现两套账号，而且**看不出来**：
+    ///
+    /// | 动作 | 原来取的 |
+    /// |---|---|
+    /// | 备份 / 导入 / SQL 控制台 / 建库建用户 | 连接卡（用户看到的那个） |
+    /// | 恢复备份 / 删库 / 删用户 | `DbState::creds`（进页面那一刻那个） |
+    ///
+    /// 复现路径是日常操作：进数据库页（`creds` = root）→ 点某一行的「备份」
+    /// （连接卡被换成该库的 `shop_user`）→ 在浮层里点「恢复」→ 恢复用的是
+    /// **root**，MySQL 回一句 `Access denied`，而浮层上明明写着
+    /// 「备份用账号 shop_user」。
+    ///
+    /// 所以执行路径只认连接卡；`DbState::creds` 退回成"上一次连成功的那份"
+    /// （只在诊断 / 显示里用）。
+    ///
+    /// `pub(crate)`：`views.rs` 渲染时构造 `PendingAction`（删库 / 删用户）
+    /// 也要用它 —— 那两个按钮的账号必须和别处是同一个来源。
+    pub(crate) fn db_creds(&self, cx: &App) -> MysqlCreds {
+        let (user, password) = self.read_db_form(cx);
+        MysqlCreds {
+            user,
+            password,
+            host: None,
+            port: None,
+        }
+    }
+
+    /// 把「面板记的账号」写进连接卡之后，同步镜像一份到 `DbState::creds`。
+    ///
+    /// 那个字段已经不是执行入口（见 [`Shell::db_creds`]），但它仍然被文档
+    /// 描述成"上一次连成功的那份" —— 从列表行进来时卡被换掉了，镜像不跟上
+    /// 就会留下一个**永远比卡旧**的值。两份不一致最容易在下一个人
+    /// "顺手从 `db.creds` 取一下"的时候咬人。
+    fn mirror_card_into_db_creds(&mut self, cred: &wslc_panel_core::dbcreds::DbCredential) {
+        if let Some(db) = self.state.db.as_mut() {
+            db.creds = MysqlCreds {
+                user: cred.user.clone(),
+                password: cred.password.clone(),
+                host: None,
+                port: None,
+            };
+        }
+    }
+
+    /// **数据库列表那一行**该用哪个账号 —— 行内四个按钮 + 恢复共用这一个。
+    ///
+    /// # 规则（只有一条，按顺序取第一个有的）
+    ///
+    /// 1. 面板给 `(容器, 库)` 记过账号（`db-credentials.json`，建库时同时建的
+    ///    那个用户）→ 用它。那是这个库**自己的**账号，备份 / 导入 / 恢复 / SQL
+    ///    本来就该以它的身份做 —— 实测 `GRANT ALL ON <库>.*` 连 `DROP` 都给了，
+    ///    所以连「删除这个库」它也干得了；
+    /// 2. 没记过（不是面板建的库，或者存档被清过）→ 退回连接卡上那个
+    ///    （用户看得见、能改的那份）。
+    ///
+    /// # 为什么不能用连接卡"看情况"
+    ///
+    /// 连接卡是**一个**值，而列表里有**多行**。用户在 `djxm` 那行点过「备份」
+    /// 之后卡被换成 `djxm_user`，此时再去点 `wslc_probe` 那行的「删除」——
+    /// 用卡就会拿 `djxm_user` 去删 `wslc_probe`，报一句别人看不懂的
+    /// Access denied。所以**行内动作一律按行走**，卡只在"行上没有记录"时兜底。
+    ///
+    /// ⚠️ 唯一的例外是「用户」tab 的「删除」：删一个**账号**需要
+    /// `DROP USER` 权限，而面板给某个库记的那个账号只有那个库的权限
+    /// （`GRANT ALL ON <库>.*` 不含 `DROP USER`），所以那里仍然用连接卡上
+    /// 的账号 —— 那一行的"对象"是账号本身，不是某个库。
+    pub(crate) fn creds_for_row(&self, container: &str, database: &str, cx: &App) -> MysqlCreds {
+        if let Some(cred) = self.state.db_credentials.get(container, database) {
+            return MysqlCreds {
+                user: cred.user.clone(),
+                password: cred.password.clone(),
+                host: None,
+                port: None,
+            };
+        }
+        self.db_creds(cx)
+    }
+
     /// 打开某个容器的数据库管理页（从容器列表行的「数据库」按钮进）。
     ///
     /// `image` 只用于显示和"用镜像名兜底判家族"；**权威判定**在
@@ -3475,6 +3582,10 @@ impl Shell {
         // 用户此刻填在连接卡上的值。密码为空 = "还没填" → 用探测到的那个
         // （容器环境变量里的 `MYSQL_ROOT_PASSWORD` 就是给这种时候用的）。
         let (typed_user, typed_password) = self.read_db_form(cx);
+        // 备份目录**先算出来**（纯字符串拼接），扫描本身放到后台执行器上 ——
+        // `read_dir` + 每条一次 `metadata()`，在机械盘 / 网络盘上会明显卡一下，
+        // 而下面那个 `update_in` 回调跑在**界面线程**上。
+        let backup_dir = self.state.container_backup_dir(&container);
 
         if let Some(db) = self.state.db.as_mut() {
             db.busy = true;
@@ -3532,6 +3643,7 @@ impl Shell {
                 let target = container.clone();
                 let bin = bin.clone();
                 let creds = creds.clone();
+                let backup_dir = backup_dir.clone();
                 cx.background_executor()
                     .spawn(async move {
                         let databases =
@@ -3539,7 +3651,14 @@ impl Shell {
                         // 用户列表**单独**取：普通账号读不到 `mysql.user`
                         // （ERROR 1142），那不该把数据库列表一起判成失败。
                         let users = wslc_core::cmd::mysql::list_users(&wslc, &target, &bin, &creds);
-                        (databases, users)
+                        // 顺手重扫备份目录（进页面时目录可能被手动动过）。
+                        // 放在这个块里是**故意的**：扫描碰文件系统，而
+                        // `update_in` 的回调在界面线程上 —— 见
+                        // `AppState::rescan_backups` 的文档。
+                        let backups = backup_dir
+                            .as_deref()
+                            .and_then(|dir| state::scan_backup_dir(dir).ok());
+                        (databases, users, backups)
                     })
                     .await
             };
@@ -3593,10 +3712,11 @@ impl Shell {
                     }
                     db.error.as_ref().map(DbFailure::summary)
                 };
-                // 备份列表顺手重扫一次（进页面时目录可能被手动动过）；
-                // ⚠️ 碰文件系统 —— 这里在**后台任务的回调**里，不在渲染路径上
+                // 备份列表：把后台算好的那份填进去（**不**在这里扫盘）。
                 if rescan {
-                    shell.state.rescan_backups(&container);
+                    if let Some(entries) = lists.2 {
+                        shell.state.apply_backups(&container, entries);
+                    }
                 }
                 if let Some(summary) = failure_summary {
                     shell
@@ -3622,7 +3742,10 @@ impl Shell {
         };
         let container = db.container.clone();
         let bin = db.client.clone();
-        let creds = db.creds.clone();
+        // 也走连接卡：用户可能刚在「基础信息」里改过密码再建库，这时
+        // 重读列表必须用**新**的那份 —— 用 `db.creds`（上一次 load_db 的）
+        // 会让"建库成功、列表却报 Access denied"。
+        let creds = self.db_creds(cx);
         if let Some(db) = self.state.db.as_mut() {
             db.busy = true;
         }
@@ -3948,7 +4071,6 @@ impl Shell {
             cx.notify();
             return;
         }
-        let database = Some(database);
 
         let Some(db) = self.state.db.as_ref() else {
             return;
@@ -3959,13 +4081,15 @@ impl Shell {
         }
         let container = db.container.clone();
         let bin = db.client.clone();
-        let (user, password) = self.read_db_form(cx);
-        let creds = MysqlCreds {
-            user,
-            password,
-            host: None,
-            port: None,
-        };
+        // 按**行**取账号：这一行的库是 `database`，导入就该用它的账号
+        //（见 [`Shell::creds_for_row`]）。「导入备份」是在同一个库上灌数据，
+        // 和「备份」必须是同一个身份 —— 否则"备份能成、导入 Access denied"
+        // 会变成一个只看浮层文案解释不了的现象。
+        //
+        // ⚠️ 必须在 `database` 被包成 `Option` **之前**取：下面那一步是为了
+        // `ImportState` 的字段类型，而这里要的是裸库名。
+        let creds = self.creds_for_row(&container, &database, cx);
+        let database = Some(database);
 
         let file_name = path
             .file_name()
@@ -3976,6 +4100,7 @@ impl Shell {
             db.import = Some(ImportState {
                 file_name: file_name.clone(),
                 database: database.clone(),
+                dismissed: false,
             });
         }
         self.db_dialog = None;
@@ -4078,13 +4203,25 @@ impl Shell {
             .get(&container, &database)
             .cloned();
 
-        if let (Some(cred), Some(form)) = (credential.as_ref(), self.db_form.as_ref()) {
-            form.user.update(cx, |state, cx| {
+        // ⚠️ 先把两个输入框的句柄 clone 出来，再写值 —— `self.db_form.as_ref()`
+        // 那一借必须在这里结束：下面 `mirror_card_into_db_creds` 要 `&mut self`
+        // （E0502）。句柄本身是 `Entity`，clone 很便宜。
+        let form_inputs = self
+            .db_form
+            .as_ref()
+            .map(|form| (form.user.clone(), form.password.clone()));
+        if let (Some(cred), Some((user_input, password_input))) =
+            (credential.as_ref(), form_inputs)
+        {
+            user_input.update(cx, |state, cx| {
                 state.set_value(cred.user.clone(), window, cx)
             });
-            form.password.update(cx, |state, cx| {
+            password_input.update(cx, |state, cx| {
                 state.set_value(cred.password.clone(), window, cx)
             });
+            // 卡上变了，`db.creds` 这份对照也跟上（它不是执行入口，
+            // 见 [`Shell::db_creds`]——不同步只会让那份对照失真）。
+            self.mirror_card_into_db_creds(cred);
         }
         if let Some(db) = self.state.db.as_mut() {
             db.sql_database = Some(database.clone());
@@ -4158,6 +4295,26 @@ impl Shell {
     /// 关掉动作弹窗（不提交）。
     pub fn close_db_dialog(&mut self, cx: &mut Context<Self>) {
         self.db_dialog = None;
+        cx.notify();
+    }
+
+    /// 把「导入中」浮层收起来（**不**取消导入）。
+    ///
+    /// 导入是分钟级的，而那个浮层带遮罩 —— 没有这个出口时用户会被锁在
+    /// 屏幕前。收起来之后导入照跑，完成回调里照样发提示、照样重读列表。
+    ///
+    /// 为什么用 `dismissed` 而不是把 `db.import` 置 `None`：那个 `Option`
+    /// 同时是**互斥锁**（`start_db_import` 第一句就查它）。置 `None` 会放开
+    /// "再来一份导入"的口子，两份 `container cp` 抢同一个目录。
+    pub fn dismiss_db_import(&mut self, cx: &mut Context<Self>) {
+        if let Some(db) = self.state.db.as_mut() {
+            if let Some(import) = db.import.as_mut() {
+                import.dismissed = true;
+            }
+        }
+        self.state.notify(Toast::info(
+            "导入还在后台跑 —— 完成后会提示你，列表也会自动重读",
+        ));
         cx.notify();
     }
 
@@ -4305,14 +4462,9 @@ impl Shell {
         }
         let container = db.container.clone();
         let bin = db.client.clone();
-        // 执行用的是**连接卡**上的账号（弹窗里的 user/host 是"被操作的对象"）
-        let (user, password) = self.read_db_form(cx);
-        let creds = MysqlCreds {
-            user,
-            password,
-            host: None,
-            port: None,
-        };
+        // 执行用的是**连接卡**上的账号（弹窗里的 user/host 是"被操作的对象"）。
+        // 走 [`Shell::db_creds`] 而不是自己拼：那是全页唯一的取账号入口。
+        let creds = self.db_creds(cx);
 
         self.db_dialog = None;
         self.run_db_statement(container, bin, creds, sql, title, to_record, window, cx);
@@ -4344,12 +4496,13 @@ impl Shell {
         // 否则是 `None`（由语句自己 `USE`）。不指定时 `SELECT * FROM t`
         // 会报 "No database selected"（实测过）。
         let database = db.sql_database.clone();
-        let (user, password) = self.read_db_form(cx);
-        let creds = MysqlCreds {
-            user,
-            password,
-            host: None,
-            port: None,
+        // 账号也要跟着**那个库**走：从 `djxm` 行的「SQL」进来就该用 `djxm_user`，
+        // 而不是"连接卡上碰巧是谁"（见 [`Shell::creds_for_row`]）。
+        // `sql_database` 为 `None`（手动清掉了当前库）时按行的兜底规则取——
+        // 那时用连接卡，因为没有一个具体的库可以查存档。
+        let creds = match database.as_deref() {
+            Some(name) => self.creds_for_row(&container, name, cx),
+            None => self.db_creds(cx),
         };
 
         if let Some(db) = self.state.db.as_mut() {
@@ -6681,13 +6834,10 @@ impl Shell {
         };
         let container = db.container.clone();
         let bin = db.client.clone();
-        let (user, password) = self.read_db_form(cx);
-        let creds = MysqlCreds {
-            user,
-            password,
-            host: None,
-            port: None,
-        };
+        // 按**行**取账号：面板给这个库记过就用它自己的账号，没记过才用连接卡
+        //（见 [`Shell::creds_for_row`]）。这一行是 `djxm`，备份就必须是
+        // `djxm_user` 在 dump `djxm` —— 而不是"连接卡上碰巧是什么"。
+        let creds = self.creds_for_row(&container, &database, cx);
         let paths = match wslc_core::cmd::mysql::backup_paths(
             &backup_dir,
             &container,
@@ -6708,12 +6858,15 @@ impl Shell {
                 container_path: paths.container_path.clone(),
                 windows_path: paths.windows_path.clone(),
                 last_message: None,
+                dismissed: false,
             });
         }
         self.state
             .notify(Toast::info(format!("正在备份数据库 {database}…")));
         cx.notify();
 
+        // 备份目录先算出来：下面完成回调里要在**后台**重扫它。
+        let backup_scan_dir = self.state.container_backup_dir(&container);
         let wslc = self.state.wslc.clone();
         cx.spawn_in(window, async move |this, cx| {
             let result = {
@@ -6736,6 +6889,16 @@ impl Shell {
                     .await
             };
 
+            // 重扫备份目录也要在**后台**做（`read_dir` + 每条 metadata）：
+            // 下面那个 `update_in` 跑在界面线程上。失败不致命 —— 列表保持原样。
+            let rescanned = match backup_scan_dir {
+                Some(dir) => cx
+                    .background_executor()
+                    .spawn(async move { state::scan_backup_dir(&dir).ok() })
+                    .await,
+                None => None,
+            };
+
             let _ = this.update_in(cx, |shell, _window, cx| {
                 let finished = shell
                     .state
@@ -6745,7 +6908,9 @@ impl Shell {
                     .map(|db| db.backup.take());
                 match (&result, finished.flatten()) {
                     (Ok(()), Some(state)) => {
-                        shell.state.rescan_backups(&container);
+                        if let Some(entries) = rescanned {
+                            shell.state.apply_backups(&container, entries);
+                        }
                         shell.state.notify(Toast::success(format!(
                             "备份完成：{}（容器内留了一份用于恢复）",
                             state.windows_path.display()
@@ -6785,12 +6950,17 @@ impl Shell {
 
     /// 打开某个库的备份列表（列表是 Windows 侧目录扫出来的）。
     ///
-    /// 顺手把面板记的账号**写进连接卡**：备份用的是连接卡上的账号
-    ///（`start_db_backup` → `read_db_form`），而从列表行进来的用户根本没见过
-    /// 那张卡（它藏在页头的「基础信息」后面）。不写的话，**面板建的库**（有自己
-    /// 的账号，root 往往不对）会拿 root 去 dump，报一句 Access denied，而用户
-    /// 没地方知道该填谁 —— 浮层里那行"备份用账号 X"也因此显示了正确的值。
+    /// 顺手把面板记的账号**写进连接卡**：这一页所有动作都按行取账号
+    ///（`Shell::creds_for_row`），而卡是没记账号时的兜底。从列表行进来的用户
+    /// 根本没见过那张卡（它藏在页头的「基础信息」后面）。不写的话，
+    /// **面板建的库**（有自己的账号，root 往往不对）会拿 root 去 dump，
+    /// 报一句 Access denied，而用户没地方知道该填谁 —— 浮层里那行
+    /// "备份用账号 X" 也因此显示了正确的值。
     /// 理由和 `open_db_console_for` 完全一样：卡上显示什么，执行就用什么。
+    ///
+    /// ⚠️ 写完卡还要顺手写 `db.creds`：那个字段不再是执行入口（见
+    /// [`Shell::db_creds`]），但它仍然是"上一次连成功的那份"，留着是为了
+    /// 将来做诊断时能和卡上的值对照 —— 不同步会让那份对照失真。
     pub fn open_db_backup_dialog(
         &mut self,
         database: String,
@@ -6807,13 +6977,23 @@ impl Shell {
             .get(&container, &database)
             .cloned();
 
-        if let (Some(cred), Some(form)) = (credential.as_ref(), self.db_form.as_ref()) {
-            form.user.update(cx, |state, cx| {
+        // 同 `open_db_console_for`：句柄先 clone，别让 `db_form` 的借
+        // 跨到 `mirror_card_into_db_creds` 的 `&mut self` 上去（E0502）。
+        let form_inputs = self
+            .db_form
+            .as_ref()
+            .map(|form| (form.user.clone(), form.password.clone()));
+        if let (Some(cred), Some((user_input, password_input))) =
+            (credential.as_ref(), form_inputs)
+        {
+            user_input.update(cx, |state, cx| {
                 state.set_value(cred.user.clone(), window, cx)
             });
-            form.password.update(cx, |state, cx| {
+            password_input.update(cx, |state, cx| {
                 state.set_value(cred.password.clone(), window, cx)
             });
+            // 卡上变了，`db.creds` 这份对照也跟上（见 [`Shell::db_creds`]）。
+            self.mirror_card_into_db_creds(cred);
         }
         if let Some(db) = self.state.db.as_mut() {
             db.backup_dialog = Some(database);
@@ -6834,6 +7014,16 @@ impl Shell {
         let Some(entry) = db.backups.get(index) else {
             return;
         };
+        // 账号按**这条备份所属的库**取（`Shell::creds_for_row`）：
+        // 备份浮层点开时已经把自己钉在某个库上（`backup_dialog`），
+        // 「恢复」就是"把这条备份灌回它的原库"，所以身份必须和「备份」
+        // 完全一致 —— 备份用 `djxm_user`、恢复也必须用它。
+        //
+        // 这一行原先取的是 `db.creds`（只在 `load_db` 里赋一次值），
+        // 于是"点某一行的「备份」把卡换成 shop_user，再在同一个浮层里点
+        // 「恢复」"会用 **root** 去恢复，报 Access denied 而浮层上明明写着
+        // 「备份用账号 shop_user」。现在两条路径都按行走，不再看卡。
+        let creds = self.creds_for_row(&db.container, &entry.database, cx);
         let action = PendingAction::RestoreDatabase {
             container: db.container.clone(),
             database: entry.database.clone(),
@@ -6841,27 +7031,49 @@ impl Shell {
             // 恢复的输入是 **Windows 侧那份**：执行时会把它 cp 进容器
             //（所以容器重建过也照样能恢复，见 `PendingAction::RestoreDatabase`）
             windows_path: entry.path.clone(),
-            creds: db.creds.clone(),
+            creds,
         };
         self.request(action, cx);
     }
 
-    /// 删除一份备份文件（Windows 侧的；容器内那份同名的一起删）。
+    /// 请求删除一份备份文件（**先弹二次确认**）。
     ///
-    /// 不需要 `&mut Window`：删除不需要往输入框里写东西，所以走 `cx.spawn`
-    ///（不带 `_in`）就够了 —— 这也让它能在任何回调里调。
+    /// 删除是不可撤销的：Windows 侧那份文件删了就是删了，容器内那份也一起
+    /// `rm -f`，面板里没有回收站。它的兄弟动作「恢复」一直有确认（覆盖数据
+    /// 至少还能再备份回来），而删除原先**没有** —— 这一条是补那个反着的配置。
+    ///
+    /// 真正的执行在 [`Shell::delete_db_backup_confirmed`]：那个函数只拿
+    /// `PendingAction::DeleteDatabaseBackup` 里那几个字段，不再自己查索引
+    /// （确认框开着的期间列表可能已经变了，按索引取会删错一条）。
     pub fn delete_db_backup(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(db) = self.state.db.as_ref() else {
             return;
         };
-        let container = db.container.clone();
         let Some(entry) = db.backups.get(index) else {
             return;
         };
-        let windows_path = entry.path.clone();
-        let container_path = entry.container_path.clone();
-        let database = entry.database.clone();
+        let action = PendingAction::DeleteDatabaseBackup {
+            container: db.container.clone(),
+            database: entry.database.clone(),
+            windows_path: entry.path.clone(),
+            container_path: entry.container_path.clone(),
+        };
+        self.request(action, cx);
+    }
 
+    /// 执行一份备份的删除（已经从二次确认里点过「永久删除」）。
+    ///
+    /// 参数是**确认时定下来的**路径，不再按索引回查：确认框开着的几秒里
+    /// 用户可能在文件管理器里删过、或者又备份了一份（列表重排），
+    /// 按索引取会删掉另一条。
+    pub fn delete_db_backup_confirmed(
+        &mut self,
+        container: String,
+        database: String,
+        windows_path: std::path::PathBuf,
+        container_path: String,
+        cx: &mut Context<Self>,
+    ) {
         let wslc = self.state.wslc.clone();
         // ⚠️ 这两件事都是**阻塞**的（删 Windows 侧文件 + 进容器 `rm -f`），
         // 所以整段丢进后台执行器。`cx.spawn(…)` 的 future 是在**界面线程**上被
@@ -6869,10 +7081,17 @@ impl Shell {
         //（点一下窗口变灰，直到子进程结束）。仓库里其余后台任务都是这个写法：
         // `cx.background_executor().spawn(async move { … }).await`。
         //
-        // ⚠️ `container` 后面还要用（刷列表），所以进后台块的是它的一份 clone。
+        // 重扫备份目录也放在同一个后台块里：`read_dir` + 每条 metadata 会卡
+        // 一下，而这个块下面的 `update` 回调在界面线程上。
+        //
+        // ⚠️ `container` / `database` 后面在 `update` 里还要用（刷列表、拼提示），
+        // 而内层那两个 `async move` 会把它们搬走 —— 所以这里备好两份 clone。
         let exec_container = container.clone();
+        let target_container = container.clone();
+        let target_database = database.clone();
+        let scan_dir = self.state.container_backup_dir(&container);
         cx.spawn(async move |this, cx| {
-            let (file_result, container_result) = cx
+            let (file_result, container_result, rescanned) = cx
                 .background_executor()
                 .spawn(async move {
                     // Windows 侧那份是**主体**，删不掉要报错；容器内那份尽力删
@@ -6883,7 +7102,10 @@ impl Shell {
                         .run(&["exec", &exec_container, "rm", "-f", &container_path])
                         .map(|_| ())
                         .map_err(|e| e.to_string());
-                    (file_result, container_result)
+                    let rescanned = scan_dir
+                        .as_deref()
+                        .and_then(|dir| state::scan_backup_dir(dir).ok());
+                    (file_result, container_result, rescanned)
                 })
                 .await;
 
@@ -6891,9 +7113,11 @@ impl Shell {
                 match &file_result {
                     Ok(()) => {
                         let _ = container_result;
-                        shell.state.rescan_backups(&container);
+                        if let Some(entries) = rescanned {
+                            shell.state.apply_backups(&target_container, entries);
+                        }
                         shell.state.notify(Toast::success(format!(
-                            "已删除 {database} 的备份（容器内那份尽力清理）"
+                            "已删除 {target_database} 的备份（容器内那份尽力清理）"
                         )));
                     }
                     Err(e) => shell
@@ -6906,15 +7130,24 @@ impl Shell {
         .detach();
     }
 
-    /// 取消正在跑的备份。
+    /// 把「备份中」浮层收起来（**不**取消备份）。
     ///
     /// 这一版**没有**接取消令牌：`backup_database` 里是两条**顺序**的短命令
     /// （dump 一般几十秒内自己结束），接令牌要把它改成 `spawn_to_file` +
-    /// 轮询那条路 —— 等"边 dump 边传"一起做。所以现在取消 = 说明情况，
-    /// **不**假装能打断。
+    /// 轮询那条路 —— 等"边 dump 边传"一起做。所以这里**不**假装能打断，
+    /// 只把遮罩收掉（它挡住整页）。
+    ///
+    /// 和[`Shell::dismiss_db_import`] 同一个理由；区别是这个浮层底下没有
+    /// 互斥锁要维护（`db.backup` 照样是 `Some`，所以「立即备份」仍然是
+    /// "备份中…"、不会重复起一份）。
     pub fn cancel_db_backup(&mut self, cx: &mut Context<Self>) {
+        if let Some(db) = self.state.db.as_mut() {
+            if let Some(backup) = db.backup.as_mut() {
+                backup.dismissed = true;
+            }
+        }
         self.state.notify(Toast::info(
-            "这一版还不能中途打断备份 —— mysqldump 一般几十秒内会自己结束，等它跑完即可",
+            "备份还在跑（这一版不能中途打断）—— 完成后会提示你，列表也会自动重读",
         ));
         cx.notify();
     }
@@ -7443,6 +7676,33 @@ impl Shell {
             }
             _ => false,
         };
+
+        // 「删除备份」**分流**到它自己的执行函数。
+        //
+        // 它要做三件事（删本地文件 → 进容器 rm → 重扫目录写回 `AppState`），
+        // 而 `PendingAction::execute` 的形状是"跑一条 `wslc` 命令 → 返回字符串"
+        // —— 最后那件它表达不了（`&self`）。所以在这里把字段拆出来、交给
+        // `delete_db_backup_confirmed`，别让它掉进下面那个通用分支。
+        //
+        // 确认框已经 `take()` 走了（上面），所以这里 return 不会留下残影。
+        if let ConfirmAction::Container(PendingAction::DeleteDatabaseBackup {
+            container,
+            database,
+            windows_path,
+            container_path,
+        }) = &action
+        {
+            let (container, database) = (container.clone(), database.clone());
+            let (windows_path, container_path) = (windows_path.clone(), container_path.clone());
+            self.delete_db_backup_confirmed(
+                container,
+                database,
+                windows_path,
+                container_path,
+                cx,
+            );
+            return;
+        }
 
         // 删库 / 删用户之后要重读数据库页那两张表 —— 容器的列表刷新管不到它们。
         // 这里先算好（`action` 马上要移进异步块）。
@@ -9342,7 +9602,10 @@ impl Render for Shell {
         };
         let db_backup_dialog: AnyElement = match &state.db {
             Some(db) => match self.db_form.as_ref() {
-                Some(form) => views::db_backup_dialog_overlay(db, form, &entity, cx),
+                // `db_form` 只用来判断"页面进得来没有"（浮层自己一个输入框都不读）。
+                Some(_) => {
+                    views::db_backup_dialog_overlay(db, &state.db_credentials, self, &entity, cx)
+                }
                 None => div().into_any_element(),
             },
             None => div().into_any_element(),

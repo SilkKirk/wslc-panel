@@ -492,8 +492,9 @@ mod tests {
 
         let (store, error) = DeployStore::load(&path);
         assert!(store.is_empty());
-        // ⚠️ 这个 `Some` **必须**被界面显示出来（`AppState::deploy_store_error`）——
-        // 对比 `db_credentials_error`：那个算出来了却没人读，是个洞
+        // ⚠️ 这个 `Some` **必须**被界面显示出来（`AppState::deploy_store_error`
+        // → `views::deploy_page` 的提示条）。这条断言只保证"错误算出来了"，
+        // 保证不了"画出来了" —— 后者在 CI 里没有信号（`wslc-panel` 不在测试目标里）。
         assert!(error.is_some(), "损坏要能被说出来");
 
         std::fs::remove_file(&path).ok();

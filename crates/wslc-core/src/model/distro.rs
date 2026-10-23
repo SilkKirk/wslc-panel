@@ -255,15 +255,23 @@ fn parse_distro_row(line: &str) -> std::result::Result<Distro, String> {
     // 3) 在**中间**找状态：最左一段是名字的一部分，最右一段是版本，
     //    所以状态只可能在 `[1, len-1)` 这个区间里。
     //    用 `rposition` 从右往左找 —— 名字里含 "Running" 这类词时也不会误判。
-    let state_index = tokens[1..tokens.len() - 1]
+    //
+    // ⚠️ 这里**直接拿到解析结果**，不是"先拿到下标、再 parse 一次"。
+    // 原先是 `.rposition(..).map(|o| o + 1)` 之后再
+    // `DistroState::parse(tokens[i]).expect("上一步刚判定过")` —— 那句
+    // `expect` 靠"上一次调用返回过 Some"才安全，而这个文件所属的那一层
+    // 明确要求**任何输入都不 panic**（见 `jsonl` / `decode` 的模块注释）。
+    // `DistroState::parse` 是纯函数，两次调用结果必然一致，但这个写法把
+    // "必然"从编译器管不到的地方挪到了类型里。
+    let (state_index, state) = tokens[1..tokens.len() - 1]
         .iter()
-        .rposition(|token| DistroState::parse(token).is_some())
-        .map(|offset| offset + 1)
+        .enumerate()
+        .rev()
+        .find_map(|(offset, token)| DistroState::parse(token).map(|state| (offset + 1, state)))
         .ok_or_else(|| format!("状态列不在已知集合里（只认 {}）", DistroState::TOKENS))?;
 
     // 4) 左边是名字（可能含空格，所以 join 回去），右边是版本
     let name = tokens[..state_index].join(" ");
-    let state = DistroState::parse(tokens[state_index]).expect("上一步刚判定过，必然成立");
     let version = tokens[tokens.len() - 1].parse::<u8>().ok();
 
     Ok(Distro::new(name, state, version, is_default))

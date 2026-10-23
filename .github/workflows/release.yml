@@ -155,6 +155,37 @@ jobs:
         continue-on-error: true
         run: ./scripts/build-installer.ps1 -Version "$env:TAG" -ExeSource "$env:EXE" -OutputDir dist
 
+      - name: 确认安装包里嵌的是**我们的**图标
+        # ⚠️ 这一步是补漏，不是锦上添花。
+        #
+        # 之前只校验主 exe（上一步 `verify-exe-icon.ps1`），而那个判据是
+        # "有没有 RT_GROUP_ICON" —— **Inno 自己那个默认图标也是 14 号资源**，
+        # 所以安装包哪怕完全没吃 `SetupIconFile`，校验照样绿。
+        #
+        # 实测代价（v0.10.1 ~ v0.10.3）：`installer/wslc-panel.iss` 里的
+        # `SetupIconFile` 那几行**从没进过 main**，于是三个版本的安装包用的都是
+        # Inno 默认图标；而 v0.10.1 的发布说明写着"安装包也有图标了"。
+        # 下载 v0.10.3 的 setup 逐张哈希核对：13 张 RT_ICON，与
+        # `assets/wslc-panel.ico` 的 7 张**零重合**。
+        #
+        # 现在 `verify-exe-icon.ps1` 会真的比内容，所以这一步能拦住。
+        # 同样 `continue-on-error`：安装包坏了应该退化成"只有 exe + zip"，
+        # 而不是让整轮 release 变红（理由同上一步）。
+        if: startsWith(env.TAG, 'v')
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $setups = @(Get-ChildItem -Path dist -Filter '*-setup-*.exe' -File -ErrorAction SilentlyContinue)
+          if ($setups.Count -eq 0) {
+            Write-Output "没有安装包产物，跳过（上一步应该是失败的）"
+            exit 0
+          }
+          foreach ($s in $setups) {
+            Write-Output "检查 $($s.Name)"
+            ./scripts/verify-exe-icon.ps1 -Path $s.FullName
+          }
+          exit 0
+
       - name: 上传 Artifact
         # 无条件上传：打标签时它和 Release 并存，
         # 手动触发时它就是唯一的产物出口。
