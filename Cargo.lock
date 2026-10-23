@@ -8469,7 +8469,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "wslc-core"
-version = "0.12.3"
+version = "0.12.4"
 dependencies = [
  "chrono",
  "serde",
@@ -8481,7 +8481,7 @@ dependencies = [
 
 [[package]]
 name = "wslc-panel"
-version = "0.12.3"
+version = "0.12.4"
 dependencies = [
  "embed-resource",
  "gpui-kit",
@@ -8494,7 +8494,7 @@ dependencies = [
 
 [[package]]
 name = "wslc-panel-core"
-version = "0.12.3"
+version = "0.12.4"
 dependencies = [
  "serde",
  "serde_json",
