@@ -210,6 +210,76 @@ fn csv_field(s: &str) -> String {
     }
 }
 
+/// 排序方向（和 gpui-kit 的 `ColumnSort` 一一对应，但不能直接用它 ——
+/// 那个类型在 `gpui-kit` 里，而 `wslc-panel-core` 不依赖 GPUI）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortDir {
+    Ascending,
+    Descending,
+}
+
+/// 算出"按第 `col` 列排序时，行的显示顺序"。
+///
+/// 返回的是**原始行的下标序列**，而不是排好的数据 —— 这样原数据永远保持
+/// 服务端给的顺序（导出 CSV 时能拿到原文），而显示顺序单独维护。
+///
+/// # 比较规则（每条都有代价）
+///
+/// 1. **数字列按下数值比**，其余按字符串比。否则 `10` 会排在 `9` 前面 ——
+///    这是数据库客户端最容易被投诉的一类细节。
+/// 2. **空值（NULL / 空串）永远排最后**，不管升序降序。数据库客户端的惯例；
+///    而且它让"有值的行"聚在一起，比混在中间好读。
+/// 3. **相等时按下标定序**。`sort_by` 不保证稳定（虽然现在实现是稳定的），
+///    依赖它会让"每次点列头顺序都可能变"，很难查。
+pub fn sort_order(rows: &[Vec<String>], col: usize, dir: SortDir) -> Vec<usize> {
+    let mut idx: Vec<usize> = (0..rows.len()).collect();
+
+    // 这一列算不算"数字列"：看**第一个非空值**。只看一个是为了快 ——
+    // 实际结果集的列类型是统一的（MySQL 不会一列里混着数字和文字）。
+    let numeric = rows
+        .iter()
+        .filter_map(|r| r.get(col))
+        .find(|v| !v.is_empty())
+        .map(|v| looks_numeric(v))
+        .unwrap_or(false);
+
+    idx.sort_by(|&a, &b| {
+        let va = rows[a].get(col).map(String::as_str).unwrap_or("");
+        let vb = rows[b].get(col).map(String::as_str).unwrap_or("");
+
+        let empty_a = va.is_empty();
+        let empty_b = vb.is_empty();
+        if empty_a || empty_b {
+            return match (empty_a, empty_b) {
+                (true, true) => a.cmp(&b),
+                (true, false) => std::cmp::Ordering::Greater,
+                (false, true) => std::cmp::Ordering::Less,
+                // 上面已经排除了，走不到
+                _ => std::cmp::Ordering::Equal,
+            };
+        }
+
+        let ord = if numeric {
+            // 用 `f64` 比 —— 排序只需要相对大小，精度够；展示仍然用原文。
+            let fa: f64 = va.parse().unwrap_or(0.0);
+            let fb: f64 = vb.parse().unwrap_or(0.0);
+            fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
+        } else {
+            va.cmp(vb)
+        };
+        let ord = match dir {
+            SortDir::Descending => ord.reverse(),
+            SortDir::Ascending => ord,
+        };
+        if ord == std::cmp::Ordering::Equal {
+            a.cmp(&b)
+        } else {
+            ord
+        }
+    });
+    idx
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,5 +415,87 @@ mod tests {
         assert_eq!(to_csv(&SqlResult::default()), "\r\n");
         let r = res(&["a", "b"], vec![]);
         assert_eq!(to_csv(&r), "a,b\r\n");
+    }
+
+    // ---- 排序（v0.11.1 从 `sql_table.rs` 搬来这里，为了能被 CI 测到）----
+
+    fn rows(data: &[&[&str]]) -> Vec<Vec<String>> {
+        data.iter()
+            .map(|r| r.iter().map(|s| (*s).to_owned()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn numeric_column_sorts_by_value_not_lexicographically() {
+        // 字典序会把 "10" 排在 "9" 前面 —— 这是最容易被投诉的一类细节
+        let r = rows(&[&["10"], &["9"], &["100"]]);
+        let got: Vec<&str> = sort_order(&r, 0, SortDir::Ascending)
+            .into_iter()
+            .map(|i| r[i][0].as_str())
+            .collect();
+        assert_eq!(got, ["9", "10", "100"]);
+    }
+
+    #[test]
+    fn text_column_sorts_lexicographically() {
+        let r = rows(&[&["b"], &["a"], &["c"]]);
+        let got: Vec<&str> = sort_order(&r, 0, SortDir::Ascending)
+            .into_iter()
+            .map(|i| r[i][0].as_str())
+            .collect();
+        assert_eq!(got, ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn descending_is_the_exact_reverse() {
+        let r = rows(&[&["a"], &["c"], &["b"]]);
+        let got: Vec<&str> = sort_order(&r, 0, SortDir::Descending)
+            .into_iter()
+            .map(|i| r[i][0].as_str())
+            .collect();
+        assert_eq!(got, ["c", "b", "a"]);
+    }
+
+    #[test]
+    fn empty_values_go_last_in_both_directions() {
+        let r = rows(&[&["b"], &[""], &["a"]]);
+        for dir in [SortDir::Ascending, SortDir::Descending] {
+            let order = sort_order(&r, 0, dir);
+            assert_eq!(
+                r[*order.last().unwrap()][0],
+                "",
+                "空值在 {dir:?} 下都应该排最后"
+            );
+        }
+    }
+
+    #[test]
+    fn equal_values_keep_a_deterministic_order() {
+        // 三个相等的值：显示顺序必须等于原始下标顺序，否则每次点列头都会跳
+        let r = rows(&[&["x", "1"], &["x", "2"], &["x", "3"]]);
+        let order = sort_order(&r, 0, SortDir::Ascending);
+        assert_eq!(order, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn sorting_returns_indices_so_the_original_rows_stay_untouched() {
+        let r = rows(&[&["2"], &["1"]]);
+        let order = sort_order(&r, 0, SortDir::Ascending);
+        assert_eq!(order, vec![1, 0]);
+        // 原数据顺序不变
+        assert_eq!(r[0][0], "2");
+        assert_eq!(r[1][0], "1");
+    }
+
+    #[test]
+    fn sorting_short_rows_and_empty_input_do_not_panic() {
+        // 某些行缺这一列（不该发生，但解析器允许补齐失败）
+        let r = rows(&[&["b"], &[]]);
+        let _ = sort_order(&r, 0, SortDir::Ascending);
+        // 空输入
+        assert!(sort_order(&[], 0, SortDir::Ascending).is_empty());
+        // 列下标越界
+        let r = rows(&[&["a"]]);
+        assert_eq!(sort_order(&r, 99, SortDir::Ascending), vec![0]);
     }
 }

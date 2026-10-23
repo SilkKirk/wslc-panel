@@ -51,7 +51,7 @@ use wslc_core::model::deploy as deploy_model;
 use wslc_core::model::{AppRuntime, DeployKind, DeploySignal, DeploySite};
 // 数据库管理页（v0.7.0）：真正的活都在 `cmd::mysql` 里（起进程 + 脱敏），
 // 识别 / 拼参数 / SQL 生成是 `model::mysql` 的纯逻辑。
-use wslc_core::cmd::mysql::{MysqlProbe, run_console_sql, run_sql};
+use wslc_core::cmd::mysql::{MysqlProbe, run_sql};
 use wslc_core::model::{
     GrantKind, MysqlCreds, MysqlFamily, RootCredHint, SqlMode, mysql as mysql_model,
 };
@@ -3705,8 +3705,11 @@ impl Shell {
                 // `&mut shell.state` —— 借用没结束就调 `notify` 是编译错误，
                 // 所以先把要说的那句话算成 owned 的，出了块再发。
                 // 备份列表的重扫同理：等 `db` 借用结束、出了块再做。
-                let mut rescan = false;
-                let failure_summary: Option<String> = {
+                //
+                // ⚠️ 不要写成 `let mut rescan = false;` 然后在块里置 true ——
+                // 那个初值永远不会被读到（块里必定先赋值），编译器会报
+                // `unused_assignments`。下面直接让块**返回**它。
+                let (failure_summary, rescan): (Option<String>, bool) = {
                     let Some(db) = shell.state.db.as_mut() else {
                         cx.notify();
                         return;
@@ -3719,7 +3722,6 @@ impl Shell {
                     db.creds = creds.clone();
                     db.busy = false;
                     db.loaded = true;
-                    rescan = true;
                     match lists.0 {
                         Ok(databases) => db.databases = databases,
                         Err(message) => db.fail(message),
@@ -3736,7 +3738,10 @@ impl Shell {
                             }
                         }
                     }
-                    db.error.as_ref().map(DbFailure::summary)
+                    // 块返回 `(提示条文案, 要不要重扫备份列表)` ——
+                    // `rescan` 恒为 true（走到这里说明 probe 成功、列表已读），
+                    // 但保持返回它的形状，将来若某个分支不该重扫就改一处。
+                    (db.error.as_ref().map(DbFailure::summary), true)
                 };
                 // 备份列表：把后台算好的那份填进去（**不**在这里扫盘）。
                 if rescan {
