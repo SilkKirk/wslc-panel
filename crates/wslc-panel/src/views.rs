@@ -1139,7 +1139,19 @@ fn container_row_actions(item: &ContainerListItem, entity: &Entity<Shell>) -> An
         // 同样的理由省略了「停止的容器」那一支：页面里每一格都要
         // `wslc exec`，容器没跑就只有 `WSLC_E_CONTAINER_NOT_RUNNING`。
         // 先在上面那行点「启动」，按钮自然会出来。
-        if let Some(_candidate) = mysql_model::mysql_container_kind(item) {
+        // v0.14：除了 MySQL 家族，**PostgreSQL** 容器也给这个按钮。
+        //
+        // 判定仍然是**纯字符串**（镜像名 / 命令）—— 渲染每帧都跑，
+        // 绝不能在这里起进程。认不出来就什么都不画（和 `image_preset`
+        // 同一条原则：宁可少一个按钮，也不要给一个点进去全是报错的按钮）。
+        let has_db_page = mysql_model::mysql_container_kind(item).is_some()
+            || wslc_core::db::guess_kind(&wslc_core::db::ConnHint {
+                image: item.image.as_str(),
+                command: item.command.as_str(),
+                container_ports: &[],
+            })
+            .is_some();
+        if has_db_page {
             let target = name.to_owned();
             let image = item.image.clone();
             actions.push(overlay_button(
@@ -1616,15 +1628,23 @@ pub fn database(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
     }
 
     let body: AnyElement = if db.loaded {
-        match db.tab {
-            // ⚠️ 凭据取**单一数据源**（`AppState.db_credentials`），不要从
-            // `DbState` 上再挂一份克隆 —— v0.8 就是这么错的：`DbState.credentials`
-            // 从没被同步过（构造函数里给的是空的），于是"建库同时建用户"
-            // 明明成功、列表里那两列却永远是 `—`（实机截图抓到的）。
-            DbTab::Databases => {
-                db_databases_card(db, &shell.state.db_credentials, shell, cx, entity)
+        if !db.is_mysql_family() {
+            // v0.14：PostgreSQL 目前只接了「SQL 控制台 + 表结构 + 补全」。
+            // 数据库 / 用户 / 备份恢复依赖 `SHOW DATABASES`、`mysql.user`、
+            // `mysqldump`，对 PostgreSQL 全都不成立 —— 与其把那些按钮画出来
+            // 让用户点进去看报错，不如明说这一页支持到哪儿。
+            db_postgres_card(db, entity)
+        } else {
+            match db.tab {
+                // ⚠️ 凭据取**单一数据源**（`AppState.db_credentials`），不要从
+                // `DbState` 上再挂一份克隆 —— v0.8 就是这么错的：`DbState.credentials`
+                // 从没被同步过（构造函数里给的是空的），于是"建库同时建用户"
+                // 明明成功、列表里那两列却永远是 `—`（实机截图抓到的）。
+                DbTab::Databases => {
+                    db_databases_card(db, &shell.state.db_credentials, shell, cx, entity)
+                }
+                DbTab::Users => db_users_card(db, shell, cx, entity),
             }
-            DbTab::Users => db_users_card(db, shell, cx, entity),
         }
     } else {
         db_loading(db.busy)
@@ -1644,7 +1664,7 @@ pub fn database(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
         .child(header)
         .children(db.error.as_ref().map(db_error_banner))
         .children(creds_warning)
-        .child(db_tabs(db.tab, entity))
+        .child(db_tabs(db.tab, entity, db.is_mysql_family()))
         .child(body)
         .into_any_element()
 }
@@ -1703,7 +1723,7 @@ pub fn db_info_overlay(
                     .child(div().text_xs().text_color(theme::text_dim()).child(format!(
                         "容器 {} · {} · {} · 客户端 {}",
                         db.container,
-                        db.family.label(),
+                        db.engine_label(),
                         db.image,
                         db.client_version.as_deref().unwrap_or(db.client.as_str()),
                     ))),
@@ -2711,7 +2731,7 @@ fn db_header(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
                 )
                 .child(div().text_xs().text_color(theme::text_dim()).child(format!(
                     "{} · {} · 客户端 {}",
-                    db.family.label(),
+                    db.engine_label(),
                     db.image,
                     db.client_version.as_deref().unwrap_or(db.client.as_str()),
                 )))
@@ -2855,7 +2875,13 @@ fn db_loading(busy: bool) -> AnyElement {
 }
 
 /// 三个 tab。
-fn db_tabs(current: DbTab, entity: &Entity<Shell>) -> AnyElement {
+///
+/// `mysql_family` 为假时**一个 tab 都不画**：那两个 tab 里全是 MySQL 专有的
+/// 动作（建库 / 建用户 / 授权），对 PostgreSQL 点了只会报错。
+fn db_tabs(current: DbTab, entity: &Entity<Shell>, mysql_family: bool) -> AnyElement {
+    if !mysql_family {
+        return div().into_any_element();
+    }
     let buttons: Vec<AnyElement> = DbTab::ALL
         .iter()
         .map(|tab| {
@@ -2879,6 +2905,90 @@ fn db_tabs(current: DbTab, entity: &Entity<Shell>) -> AnyElement {
         .w_full()
         .gap_2()
         .children(buttons)
+        .into_any_element()
+}
+
+/// PostgreSQL 连接在数据库页上的说明卡（v0.14）。
+///
+/// # 为什么不是把那两张 MySQL 表"适配"成 PostgreSQL
+///
+/// 那两页的每一格都建在 MySQL 专有的东西上：`SHOW DATABASES` 的字符集 /
+/// 排序规则、`mysql.user` 的 `Host` 列、`mysqldump` 的备份文件。
+/// PostgreSQL 里这些概念要么不存在、要么叫别的名字（`pg_roles` /
+/// `pg_dump`），"差不多的填一填"只会得到一张**看起来能用、实际全不对**的表。
+///
+/// 所以这一页明说支持到哪儿，并给一个真的能用的入口（SQL 控制台）。
+/// 用户要的是"能跑 SQL、能看到表结构"，这两样已经通了。
+fn db_postgres_card(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
+    // 打开控制台时连哪个库：优先"当前库"，否则第一个库。
+    //
+    // 为什么必须给一个具体的库：PostgreSQL 的元数据和 SQL 都**按库隔离**
+    // （不指定库时 `psql` 连的是 `postgres` 这个维护库，用户会以为
+    // "我建的表怎么不见了"）。
+    let target_db = db
+        .sql_database
+        .clone()
+        .or_else(|| db.databases.first().map(|d| d.name.clone()))
+        .unwrap_or_default();
+
+    let open = {
+        let entity = entity.clone();
+        let target_db = target_db.clone();
+        Button::new("db-pg-console")
+            .label("打开 SQL 控制台")
+            .small()
+            .primary()
+            .on_click(move |_, window, cx| {
+                let db_name = target_db.clone();
+                entity.update(cx, |shell, cx| {
+                    shell.open_db_console_for(db_name, window, cx)
+                });
+            })
+    };
+
+    let names: Vec<AnyElement> = db
+        .databases
+        .iter()
+        .map(|d| {
+            // 库名是**用户数据**，必须过 `strip_md`（`AGENTS.md` §5）。
+            div()
+                .text_sm()
+                .text_color(theme::text())
+                .child(crate::util::strip_md(&d.name))
+                .into_any_element()
+        })
+        .collect();
+
+    v_flex()
+        .w_full()
+        .gap_2()
+        .child(
+            div()
+                .text_sm()
+                .font_semibold()
+                .text_color(theme::text())
+                .child(format!(
+                    "{} · 共 {} 个库",
+                    db.engine_label(),
+                    db.databases.len()
+                )),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child("这一页已支持：SQL 控制台、表结构树、方言感知补全。"),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child("数据库 / 用户 / 备份恢复 是 MySQL 专有功能，暂未适配 PostgreSQL。"),
+        )
+        .child(div().h(px(4.)))
+        .children(names)
+        .child(div().h(px(4.)))
+        .child(open)
         .into_any_element()
 }
 

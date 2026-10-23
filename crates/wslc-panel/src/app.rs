@@ -58,6 +58,8 @@ use wslc_core::model::{AppRuntime, DeployKind, DeploySignal, DeploySite};
 // 数据库管理页（v0.7.0）：真正的活都在 `cmd::mysql` 里（起进程 + 脱敏），
 // 识别 / 拼参数 / SQL 生成是 `model::mysql` 的纯逻辑。
 use wslc_core::cmd::mysql::{MysqlProbe, run_sql};
+// 多驱动层（v0.14）：判断"这是哪个引擎"和按引擎取驱动。
+use wslc_core::db::DbKind;
 use wslc_core::model::{
     GrantKind, MysqlCreds, MysqlFamily, RootCredHint, SqlMode, mysql as mysql_model,
 };
@@ -3704,14 +3706,28 @@ impl Shell {
 
         if !same_container {
             let family = mysql_model::family_from_image(&image).unwrap_or(MysqlFamily::Mysql);
-            self.state.db = Some(DbState::provisional(name, image, family));
+            // v0.14：先按镜像名猜**引擎**。猜出 PostgreSQL 就走多驱动那条路，
+            // 猜不出或猜成 MySQL 家族时**仍用原来的 `provisional`** ——
+            // 它会保住 Percona 这类细分家族，而 `provisional_kind` 只知道
+            // "MySql / MariaDb / Postgres" 三档，会把 Percona 显示成 MySQL。
+            let kind = wslc_core::db::guess_kind(&wslc_core::db::ConnHint::new(&image))
+                .map(|(k, _)| k)
+                .unwrap_or_else(|| DbKind::from_family(family.label()));
+            self.state.db = Some(if matches!(kind, DbKind::Postgres) {
+                DbState::provisional_kind(name, image, kind)
+            } else {
+                DbState::provisional(name, image, family)
+            });
             // 换了容器就要清密码：上一个容器的密码留在这儿会**连错库**
             // （两个容器恰好都有个 root 账号时，这个错误会非常难发现）。
+            // 用户名也要跟着换成该引擎的默认值：PostgreSQL 没有 root 账号，
+            // 留着 `root` 会让第一次连接直接报 role "root" does not exist。
             if let Some(form) = self.db_form.as_ref() {
                 form.password
                     .update(cx, |state, cx| state.set_value(String::new(), window, cx));
+                let default_user = kind.default_user().to_owned();
                 form.user.update(cx, |state, cx| {
-                    state.set_value("root".to_owned(), window, cx)
+                    state.set_value(default_user, window, cx)
                 });
             }
             self.goto_page(Page::Database, cx);
@@ -3742,6 +3758,15 @@ impl Shell {
         };
         // 正在跑就不叠第二次（按钮那边也已经换成「读取中…」）。
         if db.busy {
+            return;
+        }
+        // v0.14：PostgreSQL 走**独立**路径。
+        //
+        // 注：`kind` 是 `Copy`，取出来之后对 `self.state.db` 的借用就结束了，
+        // 下面才能调 `&mut self` 的方法。
+        let kind = db.conn.kind;
+        if matches!(kind, DbKind::Postgres) {
+            self.load_db_postgres(window, cx);
             return;
         }
         let container = db.container.clone();
@@ -3900,6 +3925,121 @@ impl Shell {
         .detach();
     }
 
+    /// PostgreSQL 的「读页面」路径（v0.14）。
+    ///
+    /// # 为什么是独立函数而不是 `load_db` 里的分支
+    ///
+    /// `load_db` 那条路有三件 MySQL 专有的事：`inspect` 探测（拿镜像 / 环境变量）、
+    /// 从环境变量猜 root 口令（`effective_db_creds`）、客户端二进制探测。
+    /// PostgreSQL 一件都不需要（官方镜像只有 `psql`，口令靠用户填）。
+    ///
+    /// 硬塞进同一段代码会把两边都搅浑，而且出问题时**分不清是谁的锅**。
+    /// 分开写还有个好处：这条路一行都不碰 MySQL 的代码，随时能单独回退。
+    ///
+    /// # 少了什么（和 MySQL 那条路比）
+    ///
+    /// - 不读用户列表（PostgreSQL 的用户在 `pg_roles`，界面上还没做）
+    /// - 不重扫备份目录（`mysqldump` 的备份对 PostgreSQL 不适用）
+    ///
+    /// 界面上那两块会按 [`DbState::is_mysql_family`] 隐藏。
+    fn load_db_postgres(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(db) = self.state.db.as_ref() else {
+            return;
+        };
+        let container = db.container.clone();
+        let mut conn = db.conn.clone();
+        // 当前库：PostgreSQL 的元数据是**按库隔离**的，必须带库名去查
+        // （不指定时 `information_schema` 只返回连接默认库的内容）。
+        conn.database = db.sql_database.clone();
+        let driver = db.driver();
+        let cred = state::to_credentials(&self.db_creds(cx));
+
+        if let Some(db) = self.state.db.as_mut() {
+            db.busy = true;
+            db.blocked = None;
+            db.clear_error();
+        }
+        cx.notify();
+
+        let wslc = self.state.wslc.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            // 探测 + 列库，两件事一起在后台做完（各一次 `wslc exec`）。
+            let probed = {
+                let wslc = wslc.clone();
+                let conn = conn.clone();
+                let cred = cred.clone();
+                let driver = driver.clone();
+                let container = container.clone();
+                cx.background_executor()
+                    .spawn(async move {
+                        let info = driver
+                            .probe(&wslc, &conn, &cred)
+                            .map_err(|e| e.to_string())?;
+                        let names = wslc_core::cmd::postgres::list_databases(
+                            &wslc,
+                            &container,
+                            &cred.user,
+                            &cred.password,
+                        )
+                        .map_err(|e| e.to_string())?;
+                        Ok::<_, String>((info, names))
+                    })
+                    .await
+            };
+
+            let _ = this.update_in(cx, |shell, _window, cx| {
+                let (failure, databases) = match probed {
+                    Ok((info, names)) => {
+                        let entries: Vec<wslc_core::model::DbEntry> = names
+                            .into_iter()
+                            .map(|name| wslc_core::model::DbEntry {
+                                name,
+                                // PostgreSQL 没有 MySQL 那种"库默认字符集 / 排序规则"，
+                                // 也没有现成的"表数量 / 占用"聚合 —— 全留空。
+                                // ⚠️ 不是忘了填：界面上这几列对 PostgreSQL 要隐藏
+                                // （按 `is_mysql_family` 判断），留空是诚实。
+                                charset: String::new(),
+                                collation: String::new(),
+                                tables: 0,
+                                bytes: 0,
+                            })
+                            .collect();
+                        (None, Some((info, entries)))
+                    }
+                    Err(message) => (Some(DbFailure::from_text(message)), None),
+                };
+                // 提示条文案先算成 owned：下面 `db` 借用期间没法调 `notify`。
+                let failure_summary = failure.as_ref().map(|f| f.summary());
+
+                if let Some(db) = shell.state.db.as_mut() {
+                    if db.container != container {
+                        return;
+                    }
+                    db.busy = false;
+                    match databases {
+                        Some((info, entries)) => {
+                            db.client_version = info.version;
+                            db.loaded = true;
+                            db.databases = entries;
+                            // 用户列表：PostgreSQL 这条路径不读（见函数文档）。
+                            db.users = Vec::new();
+                        }
+                        None => {
+                            db.loaded = false;
+                            db.blocked = failure;
+                        }
+                    }
+                }
+                if let Some(summary) = failure_summary {
+                    shell
+                        .state
+                        .notify(Toast::error(format!("读取失败：{summary}")));
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
     /// 只重读两张表（表结构变更之后调）。
     ///
     /// 和 [`Shell::load_db`] 分开：那个要重新跑 `inspect` + 客户端探测（两个进程），
@@ -4684,6 +4824,19 @@ impl Shell {
             Some(name) => self.creds_for_row(&container, name, cx),
             None => self.db_creds(cx),
         };
+        // v0.14：在 `db` 还是**不可变**借用的时候就取好驱动和连接。
+        //
+        // ⚠️ 必须放在下面那个 `self.state.db.as_mut()` **之前**：借用检查器
+        // 看的是最后一次使用 —— 一旦在后面再碰 `db`，那段可变借用就会冲突（E0502）。
+        //
+        // `driver()` 返回 `Arc<dyn SqlDriver>`：要搬进 `background_executor`
+        // 的闭包里，所以必须 `
+'
+static + Send + Sync`。
+        let mut conn = db.conn.clone();
+        conn.database = database.clone();
+        let driver = db.driver();
+        let cred = state::to_credentials(&creds);
 
         if let Some(db) = self.state.db.as_mut() {
             db.busy = true;
@@ -4704,15 +4857,25 @@ impl Shell {
                 let creds = creds.clone();
                 let sql = sql.clone();
                 let database = database.clone();
+                let driver = driver.clone();
+                let conn = conn.clone();
+                let cred = cred.clone();
                 cx.background_executor()
                     .spawn(async move {
                         let started = std::time::Instant::now();
-                        // 结构化结果（界面画表格）+ 原始文本（兜底）。
+                        // 两条引擎路径的差别只在这里：
                         //
-                        // `run_statements` 逐条跑；`run_console_sql` 那一次
-                        // `--table` 只跑**整段**，专门用来留原文 ——
-                        // 多花一次 exec 换"能看到 mysql 原样打了什么"，
-                        // 排障时这点开销值得。
+                        // - MySQL：`run_statements` 逐条跑（结构化），
+                        //   `run_console_sql` 再跑**整段** `--table` 留原文 ——
+                        //   多花一次 exec 换"能看到 mysql 原样打了什么"。
+                        // - PostgreSQL：`psql` 没有 `--table` 那种人读格式，
+                        //   原文那一档**直接不给**（`raw = None`，界面上的
+                        //   「看原始输出」按钮本来就会按 `sql_raw.is_some()` 隐藏）。
+                        if matches!(conn.kind, DbKind::Postgres) {
+                            let structured = driver.run_script(&wslc, &conn, &cred, &sql);
+                            let elapsed = started.elapsed().as_millis() as u64;
+                            return (structured.map_err(|e| e.to_string()), None, elapsed);
+                        }
                         let structured = wslc_core::cmd::mysql::run_statements(
                             &wslc,
                             &target,
@@ -5157,12 +5320,22 @@ impl Shell {
         // 而内层的 `async move` 会把它搬走 —— 所以备一份 clone。
         // 这个坑在 `delete_db_backup_confirmed` 里踩过一次（CI 的 E0382）。
         let exec_container = container.clone();
+        // v0.14：PostgreSQL 走驱动。它的元数据查询**按库隔离**，所以要带上
+        // 当前选中的库；MySQL 那条 `information_schema` 是全库可见的。
+        let mut conn = db.conn.clone();
+        conn.database = db.sql_database.clone();
+        let driver = db.driver();
+        let cred = state::to_credentials(&creds);
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    wslc_core::cmd::mysql::list_schema_tree(&wslc, &exec_container, &bin, &creds)
-                        .map_err(|e| e.to_string())
+                    if matches!(conn.kind, DbKind::Postgres) {
+                        driver.schema(&wslc, &conn, &cred)
+                    } else {
+                        wslc_core::cmd::mysql::list_schema_tree(&wslc, &exec_container, &bin, &creds)
+                    }
+                    .map_err(|e| e.to_string())
                 })
                 .await;
             let _ = this.update(cx, |shell, cx| {

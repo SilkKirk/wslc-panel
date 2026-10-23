@@ -29,7 +29,7 @@ use wslc_core::model::install::{
 pub use wslc_core::model::install::OnlineListSource;
 // 多驱动层的连接类型（v0.13）。`DbState::conn` 用它 —— 现在只是容器 + 家族的
 // 镜像，阶段 1 起它会成为"连接"的真正载体（见 `docs/PLAN-multi-db.md`）。
-use wslc_core::db::{DbConn, DbHost, DbKind};
+use wslc_core::db::{Credentials, DbConn, DbHost, DbKind, MySqlDriver, PostgresDriver, SqlDriver};
 use wslc_core::model::wslconf;
 use wslc_core::model::{
     AppRuntime, ContainerSummary, DbEntry, DbUser, DeployErrorKind, DeploySignal, Distro,
@@ -2282,6 +2282,14 @@ pub struct BackupEntry {
 /// 从备份文件名解出 `(库名, 时间戳)`；不像的文件名返回 `None`（跳过）。
 ///
 /// 目录里可能躺着用户手动拷进来的东西 —— 不认识的**跳过**而不是报错。
+/// 把界面上的凭据（`MysqlCreds`）转成驱动认的形状（v0.14）。
+///
+/// 多驱动层只认"用户名 + 口令"两样（见 `db::driver::Credentials`），
+/// 而连接卡上那份 `MysqlCreds` 还带着 `host`/`port`（走 socket 时都是 `None`）。
+/// 转换点集中在这一个函数，将来连接卡换成通用形状时只改这里。
+pub fn to_credentials(creds: &MysqlCreds) -> Credentials {
+    Credentials::new(creds.user.clone(), creds.password.clone())
+}
 pub fn parse_backup_file_name(file_name: &str) -> Option<(String, String)> {
     let raw = file_name.strip_suffix(".sql")?;
     // 形如 `djxm-20261015-035901`：库自身也可能带 `-`，所以从**右边**找两段
@@ -2299,6 +2307,46 @@ pub fn parse_backup_file_name(file_name: &str) -> Option<(String, String)> {
 }
 
 impl DbState {
+    /// 这个数据库该用哪个驱动（v0.14）。
+    ///
+    /// 返回 `Arc<dyn SqlDriver>` 而不是 `&dyn`：UI 那边要把它**搬进**
+    /// `background_executor` 的闭包里（起进程必须离开界面线程，
+    /// 见 `AGENTS.md` §7.1），所以需要 `'static + Send + Sync`。
+    ///
+    /// 每次调用新建一个（都是无状态的单元结构体，代价可以忽略）。
+    /// MySQL 家族的驱动要带上**探测到的**客户端名 —— 镜像里可能叫
+    /// `mariadb` 或 `mysql`，用错名字就是"命令不存在"。
+    pub fn driver(&self) -> std::sync::Arc<dyn SqlDriver> {
+        match self.conn.kind {
+            DbKind::MySql | DbKind::MariaDb => std::sync::Arc::new(
+                MySqlDriver::with_client(self.conn.kind, self.client.clone()),
+            ),
+            DbKind::Postgres => std::sync::Arc::new(PostgresDriver::new()),
+        }
+    }
+
+    /// 是不是 MySQL 家族。
+    ///
+    /// 「数据库 / 用户 / 备份恢复」那几块**只有 MySQL 家族支持**（它们依赖
+    /// `SHOW DATABASES`、`mysql.user`、`mysqldump`）。界面用这个判断
+    /// 该不该画那些入口 —— 而不是画出来再让用户点进去看报错。
+    pub fn is_mysql_family(&self) -> bool {
+        !matches!(self.conn.kind, DbKind::Postgres)
+    }
+
+    /// 界面上"这是哪种库"的那句话。
+    ///
+    /// MySQL 家族走 `family.label()`（能显示 Percona 这种细分），
+    /// PostgreSQL 走 `DbKind::label()`。
+    ///
+    /// ⚠️ **不要**直接用 `family.label()`：`kind == Postgres` 时那个字段
+    /// 是占位值，会显示成 "MySQL"。
+    pub fn engine_label(&self) -> &'static str {
+        match self.conn.kind {
+            DbKind::MySql | DbKind::MariaDb => self.family.label(),
+            DbKind::Postgres => DbKind::Postgres.label(),
+        }
+    }
     /// 页面刚打开、还没探测完时的状态。
     ///
     /// `family` 来自**列表那条启发式**（镜像名 / 命令 / 3306 端口），
@@ -2309,18 +2357,47 @@ impl DbState {
         image: impl Into<String>,
         family: MysqlFamily,
     ) -> Self {
+        let kind = DbKind::from_family(family.label());
+        let mut state = Self::provisional_kind(container, image, kind);
+        // ⚠️ `from_family` 把 Percona 归到 `MySql`（协议相同），但界面上要显示
+        // "Percona" 这个细分 —— 所以家族信息在这里补回去，别让抽象把显示变糙。
+        state.family = family;
+        state.client = family.fallback_client().to_owned();
+        state
+    }
+
+    /// 按**引擎**建初始状态（v0.14，多驱动）。
+    ///
+    /// 和 [`Self::provisional`] 的区别：这个直接吃 `DbKind`，所以能表达
+    /// PostgreSQL —— 而 `MysqlFamily` 表达不了。`provisional` 保留原签名
+    /// 是为了不动现有调用点，它转调这个函数。
+    ///
+    /// ⚠️ `family` 字段在 `kind == Postgres` 时是**占位值**，没有意义。
+    /// 要显示"这是哪种库"请用 [`Self::engine_label`]，它会按 kind 分流。
+    pub fn provisional_kind(
+        container: impl Into<String>,
+        image: impl Into<String>,
+        kind: DbKind,
+    ) -> Self {
         // `conn` 要复用容器名，先落成 String（`impl Into<String>` 只能消费一次）。
         let container: String = container.into();
-        let conn = DbConn::with_defaults(
-            DbKind::from_family(family.label()),
-            DbHost::Container(container.clone()),
-        );
+        let conn = DbConn::with_defaults(kind, DbHost::Container(container.clone()));
+        let family = match kind {
+            DbKind::MySql => MysqlFamily::Mysql,
+            DbKind::MariaDb => MysqlFamily::Mariadb,
+            // 占位：见上面那段注释。
+            DbKind::Postgres => MysqlFamily::Mysql,
+        };
+        let client = match kind {
+            DbKind::Postgres => kind.client_bin().to_owned(),
+            _ => family.fallback_client().to_owned(),
+        };
         Self {
             conn,
             container,
             image: image.into(),
             family,
-            client: family.fallback_client().to_owned(),
+            client,
             client_version: None,
             creds: MysqlCreds::root(""),
             cred_note: None,
