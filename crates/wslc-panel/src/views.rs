@@ -1995,9 +1995,15 @@ fn sql_editor_pane(
                 .w_full()
                 .gap_3()
                 .items_center()
-                .child(sql_target_db(db, entity))
+                // ⚠️ 顺序：**执行在左、当前库在右**（v0.12.4 按用户要求换过）。
+                //
+                // 原来的顺序是"当前库 …… 执行"，那个布局把最常用的动作
+                // 推到了最右边。专业客户端（dbx / DBeaver）都是把"跑"
+                // 放在编辑区左手边、紧挨着代码，连接/库的切换放在右边 ——
+                // 眼睛从代码往下扫的第一站应该就是执行。
+                .child(run)
                 .child(div().flex_1())
-                .child(run),
+                .child(sql_target_db(db, entity)),
         )
         // SQL 编辑器本体：行号 / 缩进线 / SQL 语法高亮都来自 `Editor`
         // （`language("sql")` 是在 `ensure_db_form` 里设的）。

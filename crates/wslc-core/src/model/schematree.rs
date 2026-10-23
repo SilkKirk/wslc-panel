@@ -60,6 +60,25 @@ impl TableKind {
 pub struct TableNode {
     pub name: String,
     pub kind: TableKind,
+    /// 列名（按 `ORDINAL_POSITION` 排）。
+    ///
+    /// v0.12.4 加：自动补全要能补出 `别名.列名`，光有表名不够。
+    ///
+    /// ⚠️ 它来自**第二条查询**（`information_schema.COLUMNS`），不是
+    /// `TABLES` 那条 —— 所以它可能是空的（还没读 / 读失败 / 真的没列）。
+    /// 填它的是 [`merge_columns`]。
+    pub columns: Vec<String>,
+}
+
+impl TableNode {
+    /// 只有名字和类型，列待 [`merge_columns`] 填。
+    pub fn new(name: impl Into<String>, kind: TableKind) -> Self {
+        Self {
+            name: name.into(),
+            kind,
+            columns: Vec::new(),
+        }
+    }
 }
 
 /// 树里的一个库。
@@ -174,16 +193,65 @@ pub fn parse_schema_tree(tsv: &str) -> SchemaTree {
             continue;
         }
         let kind = cells.get(2).map(|k| TableKind::parse(k)).unwrap_or(TableKind::Base);
-        map.entry(db.clone()).or_default().push(TableNode {
-            name: table.clone(),
-            kind,
-        });
+        map.entry(db.clone())
+            .or_default()
+            .push(TableNode::new(table.clone(), kind));
     }
     SchemaTree {
         databases: map
             .into_iter()
             .map(|(name, tables)| DbNode { name, tables })
             .collect(),
+    }
+}
+
+/// 拿**列信息**的那条 SQL（v0.12.4，自动补全用）。
+///
+/// # 为什么要单独一条查询
+///
+/// `information_schema.TABLES` 里没有列。补全 `u.na|` 这种要给出
+/// `name / nickname`，就必须读 `COLUMNS`。
+///
+/// # 为什么不分表查
+///
+/// 和树那条同一个理由：一次拿全（实测这台机器上 `djxm` 110 张表的列
+/// 一共 800 多行，一条查询 0.15s），而不是"展开一张表查一次"。
+///
+/// 排除系统库的条件必须和 [`schema_tree_sql`] **保持一致**，
+/// 否则会读到一堆树里根本没有的表的列（白占内存还污染补全）。
+pub fn schema_columns_sql() -> &'static str {
+    "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME \
+     FROM information_schema.COLUMNS \
+     WHERE TABLE_SCHEMA NOT IN \
+       ('mysql','information_schema','performance_schema','sys') \
+     ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
+}
+
+/// 把 [`schema_columns_sql`] 的输出填进树里。
+///
+/// 每行三列：库名、表名、列名。**找不到对应表的行直接丢掉** ——
+/// 两条查询之间表被删了、或者用户没权限看 `TABLES` 却看得到 `COLUMNS`，
+/// 都会出现这种"列在、表不在"的情况；凭空造一个表节点反而更糟。
+pub fn merge_columns(tree: &mut SchemaTree, tsv: &str) {
+    for line in tsv.split('\n') {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if line.trim().is_empty() {
+            continue;
+        }
+        let cells = crate::model::mysql::split_tsv_line(line);
+        let (Some(db), Some(table), Some(column)) = (cells.first(), cells.get(1), cells.get(2)) else {
+            continue;
+        };
+        if db.is_empty() || table.is_empty() || column.is_empty() {
+            continue;
+        }
+        let Some(node) = tree.databases.iter_mut().find(|d| &d.name == db) else {
+            continue;
+        };
+        let Some(t) = node.tables.iter_mut().find(|t| &t.name == table) else {
+            continue;
+        };
+        t.columns.push(column.clone());
     }
 }
 
@@ -375,5 +443,74 @@ mod tests {
         }
         // 必须有 ORDER BY，否则每次查询顺序可能变
         assert!(sql.contains("ORDER BY"));
+    }
+
+    // ---- 列信息（v0.12.4，自动补全用）----
+
+    const COLUMNS: &str = "djxm\tsys_user\tid\n\
+                           djxm\tsys_user\tuser_name\n\
+                           djxm\tsys_user\tnick_name\n\
+                           djxm\tsys_job\tjob_id\n\
+                           shop\torders\torder_id\n";
+
+    #[test]
+    fn columns_are_attached_to_the_right_tables_in_order() {
+        let mut tree = parse_schema_tree(
+            "djxm\tsys_user\tBASE TABLE\n\
+             djxm\tsys_job\tBASE TABLE\n\
+             shop\torders\tBASE TABLE\n",
+        );
+        merge_columns(&mut tree, COLUMNS);
+        let user = tree.databases[0]
+            .tables
+            .iter()
+            .find(|t| t.name == "sys_user")
+            .unwrap();
+        assert_eq!(user.columns, vec!["id", "user_name", "nick_name"]);
+        let orders = tree.databases[1]
+            .tables
+            .iter()
+            .find(|t| t.name == "orders")
+            .unwrap();
+        assert_eq!(orders.columns, vec!["order_id"]);
+    }
+
+    #[test]
+    fn columns_for_unknown_tables_are_dropped_not_invented() {
+        let mut tree = parse_schema_tree("djxm\tsys_user\tBASE TABLE\n");
+        // `djxm.ghost` 在树里不存在（两条查询之间被删了，或权限不一致）
+        merge_columns(&mut tree, "djxm\tsys_user\tid\ndjxm\tghost\tx\nnodb\tt\tc\n");
+        assert_eq!(tree.databases.len(), 1, "不该凭空造库");
+        assert_eq!(tree.databases[0].tables.len(), 1, "不该凭空造表");
+        assert_eq!(tree.databases[0].tables[0].columns, vec!["id"]);
+    }
+
+    #[test]
+    fn merge_columns_tolerates_junk() {
+        let mut tree = parse_schema_tree("djxm\tt\tBASE TABLE\n");
+        for junk in [
+            "",
+            "\n\n",
+            "only_one_cell\n",
+            "djxm\tt\n",
+            "djxm\tt\t\n",
+            "\t\t\t\n",
+        ] {
+            merge_columns(&mut tree, junk);
+        }
+        assert!(tree.databases[0].tables[0].columns.is_empty());
+    }
+
+    #[test]
+    fn columns_sql_matches_the_tree_sql_exclusions() {
+        // 两条查询的排除条件必须一致，否则会读到树里没有的表的列。
+        assert_eq!(
+            schema_columns_sql()
+                .matches("'mysql','information_schema','performance_schema','sys'")
+                .count(),
+            1
+        );
+        assert!(schema_columns_sql().contains("ORDER BY"));
+        assert!(schema_columns_sql().contains("ORDINAL_POSITION"));
     }
 }

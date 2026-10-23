@@ -40,6 +40,13 @@ pub mod presets;
 // 纯函数 —— 渲染在 `crates/wslc-panel/src/sql_table.rs`，但"该显示什么"
 // 在这里决定，所以 `core` job 能测到（`AGENTS.md` §8：渲染层没有测试）。
 pub mod sqlview;
+// SQL 编辑器的**方言感知 + 自动补全**（v0.12.4）。
+//
+// 判断逻辑（该给哪些候选、替换哪一段、有没有认出别名）全在这里；
+// 渲染层 `crates/wslc-panel/src/sql_complete.rs` 只负责把结果包成
+// `lsp_types::CompletionItem`。这么分是因为"补全给错了"在界面上
+// 根本看不出来 —— 必须能在 `core` job 里断言。
+pub mod sqlcomplete;
 pub mod state;
 // 更新提示的状态机与判据（什么时候查、查到了要不要提示、卡片上写什么）。
 // 只读 JSON、只做判断，不碰网络也不碰 GPUI —— 所以能在这儿单测。

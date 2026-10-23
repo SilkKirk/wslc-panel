@@ -248,7 +248,29 @@ pub fn list_schema_tree(
         None,
         SqlMode::Batch,
     )?;
-    Ok(schematree::parse_schema_tree(&out))
+    let mut tree = schematree::parse_schema_tree(&out);
+
+    // 第二条查询：列名（v0.12.4，自动补全要能补出 `别名.列名`）。
+    //
+    // 代价是**多一次 `wslc exec`**（固定开销约 70ms，这条本身 0.15s 量级）。
+    // 为什么不合成一条 JOIN：`TABLES` 和 `COLUMNS` 是不同粒度，JOIN 出来
+    // 会重复表信息、解析更绕；两条各自列序清晰。
+    //
+    // ⚠️ 列读失败**不算整体失败**：树本身有用（能点表名生成 SELECT），
+    // 补全只是锦上添花 —— 所以这里吞掉错误，只是补全少一档候选。
+    if let Ok(columns) = run_sql(
+        wslc,
+        container_name,
+        client_bin,
+        creds,
+        schematree::schema_columns_sql(),
+        None,
+        SqlMode::Batch,
+    ) {
+        schematree::merge_columns(&mut tree, &columns);
+    }
+
+    Ok(tree)
 }
 
 /// 用户在 SQL 控制台里敲的一段脚本 —— **切分后逐条执行**，每条一个结果集。
