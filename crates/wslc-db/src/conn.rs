@@ -12,7 +12,9 @@ use wslc_core::db::DbKind;
 /// v0.15 之前"连接"等于"某个容器"，所以代码里到处都是 `container_name`。
 /// 这里 `host` 就是个普通字符串：`127.0.0.1`（容器映射到宿主的端口）、
 /// 内网 IP、云数据库域名 —— **同一个类型全覆盖**。这就是"能连远程库"。
-#[derive(Debug, Clone, PartialEq, Eq)]
+// ⚠️ **不要**在 derive 里加 `Debug`：下面有手写的实现（只为把口令写成 `***`）。
+// 两处都有就是 E0119（conflicting implementations）。
+#[derive(Clone, PartialEq, Eq)]
 pub struct ConnSpec {
     pub kind: DbKind,
     pub host: String,
