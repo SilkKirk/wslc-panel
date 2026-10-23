@@ -146,6 +146,15 @@ fn strip_cr(line: &str) -> &str {
 ///
 /// 后者是为了"不丢数据"：如果服务端真给了比表头多的一列（理论上不该有，
 /// 但遇到 `-B` 的转义边界时可能），把多余的拼回去至少还能看见原文。
+///
+/// ⚠️ **`want == 1` 是个真实的坑**（CI 抓到的，`index out of bounds: len is 1
+/// but the index is 1`）。原来的写法是
+/// `let tail = row.split_off(want - 1); row[want - 1] = tail.join("\t");` ——
+/// 在 `want == 1` 时 `split_off(0)` 会把**整行**搬进 `tail`，`row` 变空，
+/// 紧接着的 `row[0] = …` 就 panic。触发条件是"单列结果集 + 某行里有多余的 TAB"。
+///
+/// 改成 `split_off(want)`（从 `want` 开始切，**不**包含最后一列），
+/// 再把尾段**追加**到最后一格：`want == 1` 和 `want >= 2` 走同一条路，没有特例。
 fn fix_row_width(row: &mut Vec<String>, want: usize) {
     if want == 0 {
         row.clear();
@@ -155,8 +164,14 @@ fn fix_row_width(row: &mut Vec<String>, want: usize) {
         row.push(String::new());
     }
     if row.len() > want {
-        let tail = row.split_off(want - 1);
-        row[want - 1] = tail.join("\t");
+        // `split_off(want)` 保证 `row` 里还剩 `want` 个元素 —— 所以
+        // `row[want - 1]` 一定合法（`want >= 1`）。
+        let tail = row.split_off(want);
+        let joined = tail.join("\t");
+        if !joined.is_empty() {
+            row[want - 1].push('\t');
+            row[want - 1].push_str(&joined);
+        }
     }
 }
 
@@ -305,6 +320,38 @@ mod tests {
         let r = parse_batch_with_header("a\tb\n1\t2\t3\n");
         assert_eq!(r.rows[0].len(), 2, "不能比表头多出列");
         assert_eq!(r.rows[0][1], "2\t3", "多出来的部分要保住，不能丢");
+    }
+
+    /// 回归：`want == 1` 时 `split_off(want - 1)` 会把整行搬空，再索引就 panic。
+    ///
+    /// CI 抓到的原文：`index out of bounds: the len is 1 but the index is 1`。
+    /// 触发条件：**单列**结果集 + 某行里有多余的 TAB（`-B` 的转义边界上可能出现）。
+    #[test]
+    fn single_column_row_with_extra_tabs_does_not_panic() {
+        // 单列，但数据行有两个 TAB（3 段）
+        let r = parse_batch_with_header("only\nx\ty\tz\n");
+        assert_eq!(r.columns, vec!["only"]);
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].len(), 1, "单列结果集不能变成多列");
+        assert_eq!(r.rows[0][0], "x\ty\tz", "多出来的部分并回唯一那一列");
+
+        // 单列 + 数据行恰好两段
+        let r = parse_batch_with_header("only\nx\ty\n");
+        assert_eq!(r.rows, vec![vec!["x\ty"]]);
+
+        // 单列 + 正常一行（不该被改动）
+        let r = parse_batch_with_header("only\nx\n");
+        assert_eq!(r.rows, vec![vec!["x"]]);
+    }
+
+    /// 回归：`want == 1` 时**短行也不能出事**。
+    #[test]
+    fn single_column_short_row_is_padded() {
+        // 表头 1 列、数据行 0 段（空行）—— 补成 1 个空串
+        let r = parse_batch_with_header("only\n\n");
+        // 末尾的空行会被当成"没有数据"剥掉，所以这里是 0 行 —— 两种都算对，
+        // 关键是**不能 panic**。
+        assert!(r.rows.len() <= 1, "{:?}", r.rows);
     }
 
     #[test]
