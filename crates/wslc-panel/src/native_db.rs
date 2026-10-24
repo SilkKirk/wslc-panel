@@ -123,6 +123,65 @@ pub fn schema(spec: &ConnSpec) -> Result<SchemaTree, String> {
     }
 }
 
+/// MySQL 的读页面（原生连接）：探测结果 + 库列表 + 用户列表。
+///
+/// # 为什么要造一个 `MysqlProbe`
+///
+/// 数据库页的「库」「用户」两个 tab、以及连接卡上的"用的是哪个客户端"
+/// 都吃 `MysqlProbe`。原生连接没有"容器里的客户端"这回事，所以这里造一个
+/// 等价的：`family` 从 `DbKind` 推、`client.bin` 记为 `native`、
+/// `root_hint` 留 `Unknown`（连接串里已经带了账号，不需要从环境变量猜）。
+///
+/// 这样 `load_db` 的后半段（`apply_probe` + 填库/用户 + 备份扫描）**一行都不用改**。
+pub fn mysql_probe(text: &str, container: &str) -> anyhow::Result<wslc_core::cmd::mysql::MysqlProbe> {
+    use wslc_core::cmd::mysql::MysqlProbe;
+    use wslc_core::model::mysql::{ClientProbe, MysqlFamily, RootCredHint};
+
+    let spec = parse(text).map_err(|e| anyhow::anyhow!(e))?;
+    let version = server_version(&spec).map_err(|e| anyhow::anyhow!(e))?;
+    let family = match spec.kind {
+        DbKind::MariaDb => MysqlFamily::Mariadb,
+        _ => MysqlFamily::Mysql,
+    };
+    Ok(MysqlProbe {
+        family,
+        client: ClientProbe {
+            // `native` 不是真的二进制名，但它会显示在连接卡上 ——
+            // 让人一眼看出"这次没用容器里的 mysql 客户端"。
+            bin: "native".to_owned(),
+            path: "（面板内建连接）".to_owned(),
+            version: Some(version),
+        },
+        root_hint: RootCredHint::Unknown,
+        container: container.to_owned(),
+    })
+}
+
+/// MySQL 的库列表（原生连接）。复用 `-B -N` 的解析（见 `to_batch_tsv`）。
+pub fn mysql_databases(text: &str) -> anyhow::Result<Vec<wslc_core::model::mysql::DbEntry>> {
+    let spec = parse(text).map_err(|e| anyhow::anyhow!(e))?;
+    let mut session = wslc_db::open(&spec).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let tables = session
+        .query(wslc_core::model::mysql::list_databases_sql())
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let tsv = tables.first().map(to_tsv).unwrap_or_default();
+    Ok(wslc_core::model::mysql::parse_databases(&tsv))
+}
+
+/// MySQL 的用户列表（原生连接）。
+///
+/// ⚠️ 普通账号读不到 `mysql.user`（`ERROR 1142`）—— 调用方必须把它的失败
+/// **单独**处理，不能连带把库列表一起判成失败（`load_db` 里就是这么做的）。
+pub fn mysql_users(text: &str) -> anyhow::Result<Vec<wslc_core::model::mysql::DbUser>> {
+    let spec = parse(text).map_err(|e| anyhow::anyhow!(e))?;
+    let mut session = wslc_db::open(&spec).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let tables = session
+        .query(wslc_core::model::mysql::list_users_sql())
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let tsv = tables.first().map(to_tsv).unwrap_or_default();
+    Ok(wslc_core::model::mysql::parse_users(&tsv))
+}
+
 /// `TextTable` → `-B -N` 那种 TSV 文本（复用 MySQL 侧的解析）。
 fn to_tsv(table: &TextTable) -> String {
     wslc_core::model::mysql::to_batch_tsv(&table.rows)

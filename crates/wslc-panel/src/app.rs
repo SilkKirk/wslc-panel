@@ -3557,10 +3557,11 @@ impl Shell {
     /// 填了 → 这一页之后的操作走**原生连接**（`wslc-db`），能连远程库；
     /// 留空 → 回到"在容器里 exec 客户端"那条路。
     ///
-    /// # 为什么只接受 PostgreSQL
+    /// # 引擎必须和这一页对得上
     ///
-    /// `wslc-db` 现在只有 PG 的实现（MySQL 在阶段 B）。给一句明确的话，
-    /// 而不是"存下来了但不生效" —— 后者会让用户以为连接串写错了。
+    /// 把一个 PostgreSQL 连接串填进 MySQL 页，结果是"查询走 PG、库列表和
+    /// 表结构却按 MySQL 的元数据去查" —— 那种半对半错的状态比直接拒绝难查得多。
+    /// 所以引擎不匹配就明确报错，让用户去对应的页面。
     pub(crate) fn apply_db_dsn(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(form) = self.db_form.as_ref() else {
             return;
@@ -3569,14 +3570,28 @@ impl Shell {
 
         // 先算出结果，再动状态：这样 `db` 的可变借用不会跨越 `notify`
         // （借用没结束就调 `&mut self.state` 的方法是编译错误）。
+
+        // 这一页的引擎（用来拦"把 PG 连接串填进 MySQL 页"这种事）。
+        let page_kind = self.state.db.as_ref().map(|d| d.conn.kind);
         let outcome: std::result::Result<Option<String>, String> = if text.is_empty() {
             Ok(None)
         } else {
             match crate::native_db::parse(&text) {
-                Ok(spec) if matches!(spec.kind, DbKind::Postgres) => Ok(Some(text)),
-                Ok(_) => Err(
-                    "MySQL 的原生连接还没做（阶段 B）；现在只有 PostgreSQL 支持连接串".to_owned(),
-                ),
+                Ok(spec) => match page_kind {
+                    // MySQL 与 MariaDB 协议兼容，算同一族。
+                    Some(kind)
+                        if !(kind == spec.kind
+                            || (matches!(kind, DbKind::MySql | DbKind::MariaDb)
+                                && matches!(spec.kind, DbKind::MySql | DbKind::MariaDb))) =>
+                    {
+                        Err(format!(
+                            "这条连接串是 {}，但这一页是 {} —— 请到对应的数据库页里用",
+                            spec.kind.label(),
+                            kind.label(),
+                        ))
+                    }
+                    _ => Ok(Some(text)),
+                },
                 Err(message) => Err(message),
             }
         };
@@ -3834,6 +3849,8 @@ impl Shell {
             return;
         }
         let container = db.container.clone();
+        // v0.16：填了连接串就走原生连接（能连远程库）。
+        let dsn = db.dsn.clone();
         // 用户此刻填在连接卡上的值。密码为空 = "还没填" → 用探测到的那个
         // （容器环境变量里的 `MYSQL_ROOT_PASSWORD` 就是给这种时候用的）。
         let (typed_user, typed_password) = self.read_db_form(cx);
@@ -3853,10 +3870,18 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             let target = container.clone();
             let wslc_probe = wslc.clone();
+            let probe_dsn = dsn.clone();
             let probe = cx
                 .background_executor()
                 .spawn(async move {
-                    wslc_core::cmd::mysql::detect(&wslc_probe, &target).map_err(|e| e.to_string())
+                    match probe_dsn.as_deref() {
+                        // 有连接串 → 原生探测（不需要容器里的 mysql 客户端）。
+                        Some(text) => crate::native_db::mysql_probe(text, &target)
+                            .map_err(|e| e.to_string()),
+                        // 没有 → 原来的 exec 那条路。
+                        None => wslc_core::cmd::mysql::detect(&wslc_probe, &target)
+                            .map_err(|e| e.to_string()),
+                    }
                 })
                 .await;
 
@@ -3899,13 +3924,21 @@ impl Shell {
                 let bin = bin.clone();
                 let creds = creds.clone();
                 let backup_dir = backup_dir.clone();
+                let lists_dsn = dsn.clone();
                 cx.background_executor()
                     .spawn(async move {
-                        let databases =
-                            wslc_core::cmd::mysql::list_databases(&wslc, &target, &bin, &creds);
-                        // 用户列表**单独**取：普通账号读不到 `mysql.user`
-                        // （ERROR 1142），那不该把数据库列表一起判成失败。
-                        let users = wslc_core::cmd::mysql::list_users(&wslc, &target, &bin, &creds);
+                        let (databases, users) = match lists_dsn.as_deref() {
+                            // 原生：两条独立查询（用户列表读不到 `mysql.user`
+                            // 是常态 —— 那时库列表不能跟着一起失败）。
+                            Some(text) => (
+                                crate::native_db::mysql_databases(text),
+                                crate::native_db::mysql_users(text),
+                            ),
+                            None => (
+                                wslc_core::cmd::mysql::list_databases(&wslc, &target, &bin, &creds),
+                                wslc_core::cmd::mysql::list_users(&wslc, &target, &bin, &creds),
+                            ),
+                        };
                         // 顺手重扫备份目录（进页面时目录可能被手动动过）。
                         // 放在这个块里是**故意的**：扫描碰文件系统，而
                         // `update_in` 的回调在界面线程上 —— 见
@@ -3913,6 +3946,7 @@ impl Shell {
                         let backups = backup_dir
                             .as_deref()
                             .and_then(|dir| state::scan_backup_dir(dir).ok());
+                        (databases, users, backups)
                         (databases, users, backups)
                     })
                     .await
@@ -4967,6 +5001,17 @@ impl Shell {
                             let elapsed = started.elapsed().as_millis() as u64;
                             return (structured, None, elapsed);
                         }
+                        // MySQL / MariaDB 有连接串也走原生（同一个门面）。
+                        // 原生这条路没有 `--table` 那种人读原文，所以 `raw = None`
+                        // —— 和 PostgreSQL 同一个取舍。
+                        if matches!(conn.kind, DbKind::MySql | DbKind::MariaDb) {
+                            if let Some(text) = dsn.as_deref() {
+                                let structured = crate::native_db::parse(text)
+                                    .and_then(|spec| crate::native_db::run_sql(&spec, &sql));
+                                let elapsed = started.elapsed().as_millis() as u64;
+                                return (structured, None, elapsed);
+                            }
+                        }
                         let structured = wslc_core::cmd::mysql::run_statements(
                             &wslc,
                             &target,
@@ -5433,6 +5478,9 @@ impl Shell {
                                 .schema(&wslc, &conn, &cred)
                                 .map_err(|e| e.to_string()),
                         }
+                    } else if let Some(text) = dsn.as_deref() {
+                        // 有连接串 → 原生（能读远程库的对象树）。
+                        crate::native_db::parse(text).and_then(|spec| crate::native_db::schema(&spec))
                     } else {
                         wslc_core::cmd::mysql::list_schema_tree(&wslc, &exec_container, &bin, &creds)
                             .map_err(|e| e.to_string())

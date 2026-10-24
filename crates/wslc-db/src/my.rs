@@ -22,6 +22,26 @@ use mysql::prelude::Queryable;
 use crate::conn::ConnSpec;
 use crate::session::{DbError, DbErrorKind, Session, TextTable};
 
+/// MySQL 的 `binary` 字符集 id。
+///
+/// 列的 `character_set()` 等于它，说明这列**不是文本**（`BLOB` / `VARBINARY` /
+/// `GEOMETRY` …）。判据取自 dbx（`is_mysql_binary_charset`），它的理由是"只有
+/// 二进制列才会带 63"，比按 `ColumnType` 枚举去穷举稳。
+const BINARY_CHARSET_ID: u16 = 63;
+
+/// 二进制值怎么显示：`0x` + 大写十六进制。
+///
+/// 不这么做的后果是 `String::from_utf8_lossy` 把它们变成一串 `U+FFFD`（问号），
+/// 看起来像"数据坏了" —— 其实只是我们拿二进制当文本读了。
+fn hex_bytes(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(2 + bytes.len() * 2);
+    out.push_str("0x");
+    for b in bytes {
+        out.push_str(&format!("{b:02X}"));
+    }
+    out
+}
+
 pub struct MySqlSession {
     conn: mysql::Conn,
 }
@@ -65,11 +85,21 @@ impl Session for MySqlSession {
         for stmt in statements {
             let mut result = self.conn.query_iter(&stmt).map_err(classify)?;
 
-            // 列名要在迭代**之前**取（迭代会消费掉 `result`）。
-            let columns: Vec<String> = {
+            // 列名 + "这列是不是二进制" 都要在迭代**之前**取（迭代会消费掉 `result`）。
+            //
+            // 二进制判据跟 dbx 一样：`character_set() == 63`（binary 字符集）。
+            // 有了它，BLOB 列可以显示成十六进制而不是一堆问号 —— 后者看起来像
+            // "数据坏了"，其实只是我们拿二进制当文本读了。
+            let (columns, binary): (Vec<String>, Vec<bool>) = {
                 let cols = result.columns();
                 let slice: &[mysql::Column] = cols.as_ref();
-                slice.iter().map(|c| c.name_str().into_owned()).collect()
+                (
+                    slice.iter().map(|c| c.name_str().into_owned()).collect(),
+                    slice
+                        .iter()
+                        .map(|c| c.character_set() == BINARY_CHARSET_ID)
+                        .collect(),
+                )
             };
 
             let mut rows: Vec<Vec<Option<String>>> = Vec::new();
@@ -77,16 +107,20 @@ impl Session for MySqlSession {
                 let row = row.map_err(classify)?;
                 let mut cells = Vec::with_capacity(row.len());
                 for i in 0..row.len() {
-                    // 取原始字节再自己转文本：
+                    // 取原始字节再自己决定怎么显示：
                     // - 外层 `Option` 是"这一列存在吗"（索引越界时为 `None`）；
                     // - 内层 `Option` 是 NULL。
                     // 用 `Option<Vec<u8>>` 而不是 `Option<String>`：后者遇到
                     // 非 UTF-8 的 BLOB 会**直接报错**，而我们只想尽量显示。
                     let raw: Option<Option<Vec<u8>>> = row.get(i);
-                    cells.push(
-                        raw.flatten()
-                            .map(|b| String::from_utf8_lossy(&b).into_owned()),
-                    );
+                    let is_binary = binary.get(i).copied().unwrap_or(false);
+                    cells.push(raw.flatten().map(|b| {
+                        if is_binary {
+                            hex_bytes(&b)
+                        } else {
+                            String::from_utf8_lossy(&b).into_owned()
+                        }
+                    }));
                 }
                 rows.push(cells);
             }
@@ -165,6 +199,16 @@ mod tests {
         let url = spec.mysql_url();
         assert!(mysql::Opts::from_url(&url).is_ok(), "URL 解析不了：{url}");
     }
+
+    #[test]
+    fn binary_values_render_as_hex_not_mojibake() {
+        // dbx 的做法：字符集 id == 63 的列按十六进制显示。
+        // 不这么做，`[0xFF, 0xFE]` 会变成两个 U+FFFD —— 看起来像数据损坏。
+        assert_eq!(hex_bytes(&[0x00, 0x1F, 0xFF]), "0x001FFF");
+        assert_eq!(hex_bytes(&[]), "0x");
+        assert_eq!(hex_bytes("hi".as_bytes()), "0x6869");
+    }
+
 
     #[test]
     fn tls_is_refused_rather_than_silently_downgraded() {
