@@ -164,7 +164,7 @@ pub fn mysql_probe(text: &str, container: &str) -> Result<wslc_core::cmd::mysql:
 /// MySQL 的库列表（原生连接）。复用 `-B -N` 的解析（见 `to_batch_tsv`）。
 pub fn mysql_databases(text: &str) -> Result<Vec<wslc_core::model::mysql::DbEntry>, String> {
     let spec = parse(text)?;
-    let mut session = wslc_db::open(&spec)?;
+    let mut session = wslc_db::open(&spec).map_err(|e| e.to_string())?;
     let tables = session
         .query(wslc_core::model::mysql::list_databases_sql())
         .map_err(|e| e.to_string())?;
@@ -178,7 +178,7 @@ pub fn mysql_databases(text: &str) -> Result<Vec<wslc_core::model::mysql::DbEntr
 /// **单独**处理，不能连带把库列表一起判成失败（`load_db` 里就是这么做的）。
 pub fn mysql_users(text: &str) -> Result<Vec<wslc_core::model::mysql::DbUser>, String> {
     let spec = parse(text)?;
-    let mut session = wslc_db::open(&spec)?;
+    let mut session = wslc_db::open(&spec).map_err(|e| e.to_string())?;
     let tables = session
         .query(wslc_core::model::mysql::list_users_sql())
         .map_err(|e| e.to_string())?;
