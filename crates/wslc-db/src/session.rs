@@ -141,10 +141,7 @@ pub trait Session {
 pub fn open(spec: &ConnSpec) -> Result<Box<dyn Session>, DbError> {
     match spec.kind {
         DbKind::Postgres => Ok(Box::new(crate::pg::PgSession::open(spec)?)),
-        DbKind::MySql | DbKind::MariaDb => Err(DbError::new(
-            DbErrorKind::Other,
-            "MySQL 的原生连接还没接（阶段 B）",
-        )),
+        DbKind::MySql | DbKind::MariaDb => Ok(Box::new(crate::my::MySqlSession::open(spec)?)),
     }
 }
 

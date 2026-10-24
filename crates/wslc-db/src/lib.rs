@@ -28,6 +28,7 @@
 //! ```
 
 pub mod conn;
+pub mod my;
 pub mod pg;
 pub mod session;
 
