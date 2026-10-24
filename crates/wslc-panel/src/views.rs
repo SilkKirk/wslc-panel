@@ -1729,7 +1729,7 @@ pub fn db_info_overlay(
                     ))),
             )
             // 连接卡本体照旧用它自己那份渲染（表单 + 说明都在里面）
-            .child(db_connection_card(db, form, cx))
+            .child(db_connection_card(db, form, entity, cx))
             .child(h_flex().w_full().justify_end().child(close)),
     )
     .into_any_element()
@@ -2748,7 +2748,12 @@ fn db_header(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
 /// 写的是"挂在**页面**上而不是弹窗里：用户扫一眼就该知道这一页连的是谁"，
 /// 那条取舍被这条反馈推翻了：那一页最有价值的是两张表，而顶部 ~250px 花在
 /// 一份很少改的连接信息上。
-fn db_connection_card(db: &DbState, form: &DbPageForm, cx: &App) -> AnyElement {
+fn db_connection_card(
+    db: &DbState,
+    form: &DbPageForm,
+    entity: &Entity<Shell>,
+    cx: &App,
+) -> AnyElement {
     let mut body = v_flex().w_full().gap_3().child(
         h_flex()
             .w_full()
@@ -2763,6 +2768,43 @@ fn db_connection_card(db: &DbState, form: &DbPageForm, cx: &App) -> AnyElement {
             )),
     );
 
+    // 连接串（v0.16）：填了就走**原生连接**，能连远程库；留空回到"容器里执行"。
+    //
+    // 放在用户名/密码下面单独一行，是因为它和那两格**互斥**：
+    // 填了它，用户名密码就由连接串里的人带了（那两格不再参与）。
+    let apply_dsn = {
+        let entity = entity.clone();
+        Button::new("db-dsn-apply")
+            .label("应用连接串")
+            .small()
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |shell, cx| shell.apply_db_dsn(window, cx));
+            })
+    };
+    body = body.child(form_field(
+        "db-dsn",
+        "连接串（可选，填了就走原生连接）",
+        &form.dsn,
+        cx,
+        true,
+    ));
+    body = body.child(
+        h_flex()
+            .w_full()
+            .gap_2()
+            .items_center()
+            .child(apply_dsn)
+            // 当前生效的是哪条路要说出来 —— 否则用户不知道"到底按哪份配置在跑"。
+            .child(div().text_xs().text_color(theme::text_dim()).child(match db.dsn.as_deref() {
+                Some(dsn) => crate::util::strip_md(&format!(
+                    "当前：**原生连接** {}",
+                    // 连接串里有口令，界面上只显示协议+主机+库，不显示口令段
+                    crate::native_db::redact_dsn(dsn)
+                )),
+                None => crate::util::strip_md("当前：在容器里执行（未使用连接串）"),
+            })),
+    );
+
     if let Some(note) = db.cred_note.clone() {
         body = body.child(
             div()
@@ -2775,9 +2817,10 @@ fn db_connection_card(db: &DbState, form: &DbPageForm, cx: &App) -> AnyElement {
     body = body.child(div().text_xs().text_color(theme::text_muted()).child(
         // Markdown 文案 → 渲染处统一清标记（`util::strip_md`）
         crate::util::strip_md(
-            "面板靠**容器自带的** mysql / mariadb 客户端执行 SQL —— 所以容器要在运行、\
+            "不填连接串时：面板靠**容器自带的** mysql / mariadb 客户端执行 SQL —— 所以容器要在运行、\
                      镜像里得有客户端（不要求把端口发布到主机）。密码走 MYSQL_PWD 环境变量，\
-                     不进命令行；改完点右上角「重新读取」生效。",
+                     不进命令行。填了连接串则改为**由面板自己连**（TCP），可以不经过容器、\
+                     也能连远程库。改完点右上角「重新读取」生效。"
         ),
     ));
 

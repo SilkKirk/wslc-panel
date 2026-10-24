@@ -628,6 +628,13 @@ pub(crate) struct DbPageForm {
     /// 但这一格是画在屏幕上的 —— 换成掩码要先确认组件库支持
     /// （`AGENTS.md` 说"推测的结论要写明"），所以这一版照实显示。
     pub(crate) password: Entity<InputState>,
+    /// 连接串（v0.16，可选）。
+    ///
+    /// 填了就走**原生连接**（`wslc-db`），能连远程库；留空则回到原来的
+    /// "在容器里 exec 客户端"那条路。
+    ///
+    /// ⚠️ 里面的口令**不落盘**：这个输入框只在内存里，`DbState.dsn` 也是。
+    pub(crate) dsn: Entity<InputState>,
     /// SQL 控制台里那段脚本（v0.12 起是**多行编辑器**）。
     ///
     /// # 为什么从 `InputState` 换成 `EditorState`
@@ -3500,6 +3507,10 @@ impl Shell {
         }
         let user = cx.new(|cx| InputState::new(window, cx).placeholder("root"));
         let password = cx.new(|cx| InputState::new(window, cx).placeholder("root 的密码"));
+        // 连接串（可选）：粘一条 `postgres://…` 就走原生连接。
+        let dsn = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("postgres://user:pass@host:5432/db（留空＝在容器里执行）")
+        });
         // SQL 编辑器（v0.12）：多行 + 行号 + SQL 语法高亮。
         //
         // 每一项都是有理由的，不是"顺手都打开"：
@@ -3533,12 +3544,65 @@ impl Shell {
         self.db_form = Some(DbPageForm {
             user,
             password,
+            dsn,
             sql,
         });
         // 编辑器刚建好，把自动补全装上（表结构可能还没读到 ——
         // 那时只有关键字可补，读到之后 `rebuild_schema_tree` 会再装一次）。
         self.install_sql_completion(cx);
     }
+
+    /// 应用连接卡里的「连接串」（v0.16）。
+    ///
+    /// 填了 → 这一页之后的操作走**原生连接**（`wslc-db`），能连远程库；
+    /// 留空 → 回到"在容器里 exec 客户端"那条路。
+    ///
+    /// # 为什么只接受 PostgreSQL
+    ///
+    /// `wslc-db` 现在只有 PG 的实现（MySQL 在阶段 B）。给一句明确的话，
+    /// 而不是"存下来了但不生效" —— 后者会让用户以为连接串写错了。
+    pub(crate) fn apply_db_dsn(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = self.db_form.as_ref() else {
+            return;
+        };
+        let text = form.dsn.read(cx).value().to_string().trim().to_owned();
+
+        // 先算出结果，再动状态：这样 `db` 的可变借用不会跨越 `notify`
+        // （借用没结束就调 `&mut self.state` 的方法是编译错误）。
+        let outcome: std::result::Result<Option<String>, String> = if text.is_empty() {
+            Ok(None)
+        } else {
+            match crate::native_db::parse(&text) {
+                Ok(spec) if matches!(spec.kind, DbKind::Postgres) => Ok(Some(text)),
+                Ok(_) => Err(
+                    "MySQL 的原生连接还没做（阶段 B）；现在只有 PostgreSQL 支持连接串".to_owned(),
+                ),
+                Err(message) => Err(message),
+            }
+        };
+
+        match outcome {
+            Ok(dsn) => {
+                let switched = dsn.is_some();
+                if let Some(db) = self.state.db.as_mut() {
+                    db.dsn = dsn;
+                    // 树是从**上一个**连接读的，换了连接就必须重读。
+                    db.schema_tree.databases.clear();
+                }
+                self.state.notify(Toast::info(if switched {
+                    "已切到原生连接，正在重读…".to_owned()
+                } else {
+                    "已改回「在容器里执行」".to_owned()
+                }));
+                self.load_db(window, cx);
+            }
+            Err(message) => {
+                self.state
+                    .notify(Toast::error(format!("连接串用不了：{message}")));
+            }
+        }
+    }
+
 
     /// 给 SQL 编辑器装上 **自动补全**（v0.12.4）。
     ///
