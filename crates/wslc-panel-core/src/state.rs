@@ -2121,6 +2121,18 @@ pub struct DbState {
     /// 现在它的用途只剩"诊断 / 显示"（和卡上的值对照），写它的地方是
     /// `load_db` 与 `open_db_backup_dialog`（后者跟着卡一起更新）。
     pub creds: MysqlCreds,
+    /// 进「行内功能」（SQL 控制台 / 备份浮层）**之前**连接卡上的账号 —— 也就是"管理账号"。
+    ///
+    /// # 为什么需要它
+    ///
+    /// 点列表某一行的「SQL」/「备份」时，`open_db_console_for` / `open_db_backup_dialog` 会把那一行的账号
+    /// （`<库名>_user`）写进连接卡 —— 查**那个库**本来就该用它。但连接卡是
+    /// **整页共享**的：离开控制台时必须还原，否则「数据库管理」页也会拿
+    /// 业务账号去读用户列表 / 建库，于是拿到 `ERROR 1142`。
+    ///
+    /// 实机反馈（v0.16.0）："在这个列表页面一直都是 root 啊，进 sql 界面才是
+    /// 对应的数据库和 djxm 角色，然后退出来这个列表界面变成了 djxm 了"。
+    pub management_creds: Option<MysqlCreds>,
     /// 这份凭据是怎么来的（"已从容器环境变量读出 root 密码"这类说明）。
     pub cred_note: Option<String>,
     /// 正在后台跑（探测 / 读列表 / 执行 SQL）。
@@ -2422,6 +2434,7 @@ impl DbState {
             client,
             client_version: None,
             creds: MysqlCreds::root(""),
+            management_creds: None,
             cred_note: None,
             // ⚠️ **必须 false**。这里一开始写的是 `true`（想着"马上就要去探测，
             // 先算忙"），结果 `Shell::load_db` 的第一句就是"正在跑就不叠第二次"

@@ -4196,8 +4196,10 @@ pub fn db_backup_dialog_overlay(
         Button::new("db-backup-close")
             .label("关闭")
             .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.close_db_backup_dialog(cx));
+            // `update` 的回调里没有 window，所以从外层闭包捕获进去
+            // （`close_db_backup_dialog` 要它来还原连接卡上的账号）。
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |shell, cx| shell.close_db_backup_dialog(window, cx));
             })
     };
 
