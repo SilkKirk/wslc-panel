@@ -1843,6 +1843,21 @@ pub fn sql_console_page(
             .child("未指定库"),
     }
     .into_any_element();
+    // 这一页实际用哪个账号。
+    //
+    // ⚠️ 它**不等于**连接卡上那个：卡是"管理账号"（用户填的，通常 root），
+    // 而从某个库的行进来时，执行用的是**那个库自己的**账号
+    // （`Shell::creds_for_row`）。所以必须写出来 —— 否则用户以为自己是 root 在查，
+    // 实际是业务账号，遇上报错会对不上（实机反馈过）。
+    let account = match db.sql_database.as_deref() {
+        Some(name) if shell.state.db_credentials.get(&db.container, name).is_some() => {
+            format!(
+                "账号 {}（这个库的）",
+                shell.creds_for_row(&db.container, name, cx).user
+            )
+        }
+        _ => format!("账号 {}（连接卡）", shell.db_creds(cx).user),
+    };
     // 树那一栏：收起时留一条**窄条**（32px）而不是完全消失 ——
     // 窄条上就是"展开"按钮，否则用户把树收起来之后找不到开回来的入口。
     // （专业 SQL 客户端也是这个做法：侧栏收起后留一条能点开的边。）
@@ -1905,7 +1920,7 @@ pub fn sql_console_page(
                         .min_w_0()
                         .h_full()
                         .min_h_0()
-                        .child(sql_editor_pane(db, form, entity, cx))
+                        .child(sql_editor_pane(db, form, entity, &account, cx))
                         .child(sql_results_pane(db, shell, entity, cx)),
                 ),
         )
@@ -1916,7 +1931,7 @@ pub fn sql_console_page(
 /// 从数据库列表行上的「SQL」按钮进来时就是那一行；不指定的话
 /// `SELECT * FROM t` 会报 "No database selected"（实测过），
 /// 所以这件事必须显式画出来，而不是让用户从报错里猜。
-fn sql_target_db(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
+fn sql_target_db(db: &DbState, entity: &Entity<Shell>, account: &str) -> AnyElement {
     match db.sql_database.as_deref() {
         Some(name) => {
             let clear = {
@@ -1944,12 +1959,21 @@ fn sql_target_db(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
                         .child(crate::util::strip_md(name)),
                 )
                 .child(clear)
+                // 账号和库同样是"这次执行落在哪儿"的一部分 —— 而且它**不等于**
+                // 连接卡上那个（卡是管理账号，这里可能是这个库自己的账号）。
+                .child(div().text_xs().text_color(theme::text_dim()).child("·"))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child(crate::util::strip_md(account)),
+                )
                 .into_any_element()
         }
         None => div()
             .text_xs()
             .text_color(theme::text_dim())
-            .child("当前库：不指定（语句里要自己 USE <库>）")
+.child(format!("当前库：不指定（语句里要自己 USE <库>）· {account}"))
             .into_any_element(),
     }
 }
@@ -1958,6 +1982,7 @@ fn sql_editor_pane(
     db: &DbState,
     form: &DbPageForm,
     entity: &Entity<Shell>,
+    account: &str,
     _cx: &App,
 ) -> AnyElement {
     let run: AnyElement = if db.busy {
@@ -2029,7 +2054,7 @@ fn sql_editor_pane(
                 // 眼睛从代码往下扫的第一站应该就是执行。
                 .child(run)
                 .child(div().flex_1())
-                .child(sql_target_db(db, entity)),
+                .child(sql_target_db(db, entity, &account)),
         )
         // SQL 编辑器本体：行号 / 缩进线 / SQL 语法高亮都来自 `Editor`
         // （`language("sql")` 是在 `ensure_db_form` 里设的）。
@@ -4196,10 +4221,8 @@ pub fn db_backup_dialog_overlay(
         Button::new("db-backup-close")
             .label("关闭")
             .small()
-            // `update` 的回调里没有 window，所以从外层闭包捕获进去
-            // （`close_db_backup_dialog` 要它来还原连接卡上的账号）。
-            .on_click(move |_, window, cx| {
-                entity.update(cx, |shell, cx| shell.close_db_backup_dialog(window, cx));
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.close_db_backup_dialog(cx));
             })
     };
 

@@ -3712,22 +3712,6 @@ impl Shell {
         }
     }
 
-    /// 把「面板记的账号」写进连接卡之后，同步镜像一份到 `DbState::creds`。
-    ///
-    /// 那个字段已经不是执行入口（见 [`Shell::db_creds`]），但它仍然被文档
-    /// 描述成"上一次连成功的那份" —— 从列表行进来时卡被换掉了，镜像不跟上
-    /// 就会留下一个**永远比卡旧**的值。两份不一致最容易在下一个人
-    /// "顺手从 `db.creds` 取一下"的时候咬人。
-    fn mirror_card_into_db_creds(&mut self, cred: &wslc_panel_core::dbcreds::DbCredential) {
-        if let Some(db) = self.state.db.as_mut() {
-            db.creds = MysqlCreds {
-                user: cred.user.clone(),
-                password: cred.password.clone(),
-                host: None,
-                port: None,
-            };
-        }
-    }
 
     /// **数据库列表那一行**该用哪个账号 —— 行内四个按钮 + 恢复共用这一个。
     ///
@@ -4630,10 +4614,15 @@ impl Shell {
 
     /// 从数据库列表某一行开 SQL 控制台：**用这个库 + 这一行的账号**。
     ///
-    /// 做法是把那一行的用户名 / 密码**写进连接卡**（而不是藏一份"控制台专用
-    /// 凭据"）—— 连接卡本来就是"这次连数据库用哪个账号"的唯一入口，
-    /// 写进去用户能看见自己在用谁、也能随时改。库名则记在 `sql_database` 上，
-    /// 执行时作为 `mysql -D <库>` 传下去。
+    /// 库名记在 `sql_database` 上（执行时作为 `mysql -D <库>` 传下去），
+    /// 账号交给 `Shell::creds_for_row` 按行取 —— 它优先用面板给这个库记的账号，
+    /// 没有才退回连接卡。
+    ///
+    /// ⚠️ **不要**把那一行的账号写进连接卡。卡是整页共享的「管理账号」
+    /// （用户填的，通常 root）；写进去之后一退出控制台，「数据库管理」页的
+    /// 读用户列表 / 新建库 / 备份就全都改用业务账号，报 `ERROR 1142`。
+    /// 实机踩过两次：第一次只补了"退出时还原"，本质仍在借用同一张卡。
+    /// 现在用户看到的是：卡上永远是 root，SQL 页头上写着"账号 X（这个库的）"。
     ///
     /// 那一行没有账号记录（不是面板建的库）时**只设库名**，账号保持用户当前
     /// 填的那个 —— 不猜、不编（凭据只对面板建的库有）。
@@ -4653,36 +4642,16 @@ impl Shell {
             .get(&container, &database)
             .cloned();
 
-        // ⚠️ 先把两个输入框的句柄 clone 出来，再写值 —— `self.db_form.as_ref()`
-        // 那一借必须在这里结束：下面 `mirror_card_into_db_creds` 要 `&mut self`
-        // （E0502）。句柄本身是 `Entity`，clone 很便宜。
-        let form_inputs = self
-            .db_form
-            .as_ref()
-            .map(|form| (form.user.clone(), form.password.clone()));
-        // 先把"管理账号"存一份 —— 下面要把卡换成这个库自己的账号，
-        // 离开控制台时得原样还回去（见 `restore_page_creds`）。
-        // 没记过账号的库不改卡，也就不需要还原。
-        if credential.is_some() {
-            let management = self.db_creds(cx);
-            if let Some(db) = self.state.db.as_mut() {
-                db.management_creds = Some(management);
-            }
-        }
-
-        if let (Some(cred), Some((user_input, password_input))) =
-            (credential.as_ref(), form_inputs)
-        {
-            user_input.update(cx, |state, cx| {
-                state.set_value(cred.user.clone(), window, cx)
-            });
-            password_input.update(cx, |state, cx| {
-                state.set_value(cred.password.clone(), window, cx)
-            });
-            // 卡上变了，`db.creds` 这份对照也跟上（它不是执行入口，
-            // 见 [`Shell::db_creds`]——不同步只会让那份对照失真）。
-            self.mirror_card_into_db_creds(cred);
-        }
+        // 🔴 **不要改连接卡。**
+        //
+        // 卡是整页共享的「管理账号」——它该一直是用户填的那个（通常是 root）。
+        // 点某个库的「SQL」只是"用**这个库的**账号去看这个库"，那件事由
+        // `db.sql_database` + `Shell::creds_for_row` 表达（执行时按行取账号），
+        // 不需要也不应该把卡改掉。
+        //
+        // 实机踩过两次：早先这里会把那一行的账号写进卡，于是退出控制台之后
+        // 「数据库管理」页（读用户列表 / 新建库 / 备份）全部改用业务账号在跑，
+        // 报 `ERROR 1142`；第一版补丁只是"退出时还原"，本质仍在借用同一张卡。
         if let Some(db) = self.state.db.as_mut() {
             db.sql_database = Some(database.clone());
             db.clear_error();
@@ -4699,11 +4668,11 @@ impl Shell {
         }
         let toast = match credential {
             Some(cred) => Toast::info(format!(
-                "控制台已指向 {database}，账号用 {}（来自面板记的账号）",
+                "控制台已指向 {database}，用这个库自己的账号 {}（连接卡还是你的管理账号）",
                 cred.user
             )),
             None => Toast::info(format!(
-                "控制台已指向 {database}（这个库不是面板建的，账号仍用连接卡上那个）"
+                "控制台已指向 {database}（这个库不是面板建的，账号沿用连接卡上那个）"
             )),
         };
         self.state.notify(toast);
@@ -7954,9 +7923,7 @@ impl Shell {
     }
 
     /// 关掉备份列表浮层。
-    pub fn close_db_backup_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // 关浮层前把连接卡还原成管理账号（见 `restore_page_creds`）。
-        self.restore_page_creds(window, cx);
+    pub fn close_db_backup_dialog(&mut self, cx: &mut Context<Self>) {
         if let Some(db) = self.state.db.as_mut() {
             db.backup_dialog = None;
         }
@@ -7979,46 +7946,17 @@ impl Shell {
     pub fn open_db_backup_dialog(
         &mut self,
         database: String,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(db) = self.state.db.as_ref() else {
             return;
         };
         let container = db.container.clone();
-        let credential = self
-            .state
-            .db_credentials
-            .get(&container, &database)
-            .cloned();
 
-        // 同 `open_db_console_for`：句柄先 clone，别让 `db_form` 的借
-        // 跨到 `mirror_card_into_db_creds` 的 `&mut self` 上去（E0502）。
-        let form_inputs = self
-            .db_form
-            .as_ref()
-            .map(|form| (form.user.clone(), form.password.clone()));
-        // 同 `open_db_console_for`：先把管理账号存一份，关浮层时还原
-        // （否则「数据库管理」页会一直用这个库的业务账号）。
-        if credential.is_some() {
-            let management = self.db_creds(cx);
-            if let Some(db) = self.state.db.as_mut() {
-                db.management_creds = Some(management);
-            }
-        }
-
-        if let (Some(cred), Some((user_input, password_input))) =
-            (credential.as_ref(), form_inputs)
-        {
-            user_input.update(cx, |state, cx| {
-                state.set_value(cred.user.clone(), window, cx)
-            });
-            password_input.update(cx, |state, cx| {
-                state.set_value(cred.password.clone(), window, cx)
-            });
-            // 卡上变了，`db.creds` 这份对照也跟上（见 [`Shell::db_creds`]）。
-            self.mirror_card_into_db_creds(cred);
-        }
+        // 同 `open_db_console_for`：**不改连接卡**。备份/导入/恢复用的是
+        // `Shell::creds_for_row`（按这个库取账号），浮层里也会写明"备份用账号 X"。
+        // 卡留给「管理账号」——它该一直是用户填的那个。
         if let Some(db) = self.state.db.as_mut() {
             db.backup_dialog = Some(database);
         }
@@ -8813,14 +8751,6 @@ impl Shell {
     /// v0.9.22 起「容器」页也需要 window：列表上方的搜索框是 `InputState`，
     /// 只能在进入页面时建一次（见 [`Shell::ensure_container_search`]）。
     pub fn set_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
-        // 离开 SQL 控制台就把连接卡还原成管理账号。
-        //
-        // 放在这里而不是只放 `close_db_console` 里：用户完全可能直接点侧边栏
-        // 的「容器」跳走（那条路不经过 close_db_console）。
-        // `management_creds` 是 `take()` 掉的，所以两条路重复调用无害。
-        if self.state.page == Page::Sql && page != Page::Sql {
-            self.restore_page_creds(window, cx);
-        }
         if page.needs_window_to_enter() {
             // 「添加实例」那一套：表单 + 两份清单的预取。
             //
@@ -10342,51 +10272,10 @@ impl Shell {
         cx.notify();
     }
 
-    /// 把连接卡还原成**进控制台之前**那个账号（管理账号）。
-    ///
-    /// # 为什么必须有这一步
-    ///
-    /// 连接卡是**整页共享**的：点列表某一行的「SQL」会把那一行的账号写进去
-    /// （查那个库就该用它），但退出之后如果不还原，「数据库管理」页就会拿
-    /// 业务账号去读用户列表 / 建库 —— 实机反馈正是这个：
-    /// "列表页面一直都是 root 啊，进 sql 界面才是对应的数据库和 djxm 角色，
-    /// 然后退出来这个列表界面变成了 djxm 了"。
-    ///
-    /// 没存过（这次不是从列表行进来的）就什么都不做。
-    fn restore_page_creds(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(saved) = self
-            .state
-            .db
-            .as_mut()
-            .and_then(|db| db.management_creds.take())
-        else {
-            return;
-        };
-        // 句柄先 clone 出来：下面还要 `&mut self` 同步镜像（E0502）。
-        let Some((user_input, password_input)) = self
-            .db_form
-            .as_ref()
-            .map(|form| (form.user.clone(), form.password.clone()))
-        else {
-            return;
-        };
-        user_input.update(cx, |state, cx| {
-            state.set_value(saved.user.clone(), window, cx)
-        });
-        password_input.update(cx, |state, cx| {
-            state.set_value(saved.password.clone(), window, cx)
-        });
-        if let Some(db) = self.state.db.as_mut() {
-            db.creds = saved;
-        }
-    }
-
     /// 从 SQL 控制台回到「数据库管理」页。
     ///
     /// `sql_database` 留着 —— 下次点同一行的「SQL」还是那个库，省得重选。
     pub fn close_db_console(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // 先还原账号，再切页（切页里不会再读凭据，顺序只是让意图清楚）。
-        self.restore_page_creds(window, cx);
         self.set_page(Page::Database, window, cx);
         cx.notify();
     }
