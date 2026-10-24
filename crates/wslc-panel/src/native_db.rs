@@ -34,28 +34,12 @@ pub fn run_sql(spec: &ConnSpec, script: &str) -> Result<Vec<SqlResult>, String> 
     Ok(tables.iter().map(to_sql_result).collect())
 }
 
-/// 把连接串里的**口令段**打掉，用于界面显示。
+/// 界面上显示连接串时打掉口令段 —— 实现在 `wslc-db`。
 ///
-/// 连接串里有明文口令，而这一行是画在屏幕上的（还会被截图发到 issue 里）。
-/// 只打口令、保留协议/用户/主机/库 —— 用户要能确认"连的是哪台"。
-///
-/// 认不出形状就原样返回（宁可显示不完全，也不要显示错）。
-pub fn redact_dsn(dsn: &str) -> String {
-    let Some(start) = dsn.find("://") else {
-        return dsn.to_owned();
-    };
-    let after = start + 3;
-    // 用**最后一个** `@`：和 `parse_dsn` 的切法保持一致
-    let Some(at_rel) = dsn[after..].rfind('@') else {
-        return dsn.to_owned();
-    };
-    let at = after + at_rel;
-    let Some(colon_rel) = dsn[after..at].find(':') else {
-        return dsn.to_owned();
-    };
-    let colon = after + colon_rel;
-    format!("{}***{}", &dsn[..colon + 1], &dsn[at..])
-}
+/// ⚠️ **不要**把实现搬回这个文件：`wslc-panel` 不在任何测试目标里
+/// （`AGENTS.md` §2），写在这里的 `#[test]` 只编译不执行。
+/// `wslc-db` 的测试是真跑的（`core` job）。
+pub use wslc_db::redact_dsn;
 /// 列出所有库（原生连接）。
 ///
 /// 复用 `wslc_core::model::postgres::databases_sql` —— 那是 v0.15 对着真容器
@@ -155,22 +139,7 @@ mod tests {
         assert_eq!(spec.database.as_deref(), Some("shop"));
     }
 
-        #[test]
-    fn redact_dsn_hides_the_password_but_keeps_the_rest() {
-        assert_eq!(
-            redact_dsn("postgres://alice:s3cret@db.example.com:5432/shop"),
-            "postgres://alice:***@db.example.com:5432/shop"
-        );
-        // 没有口令段 → 原样（别把 `@` 后面的东西吃掉）
-        assert_eq!(
-            redact_dsn("postgres://alice@h:5432/db"),
-            "postgres://alice@h:5432/db"
-        );
-        // 认不出形状 → 原样返回，不猜
-        assert_eq!(redact_dsn("host=127.0.0.1"), "host=127.0.0.1");
-    }
-
-#[test]
+    #[test]
     fn null_becomes_empty_string_at_the_boundary() {
         // 这是刻意的取舍：界面不区分 NULL 与空串（项目既有决定），
         // 但 `wslc-db` 内部仍然保留 Option —— 翻译只发生在这一层。

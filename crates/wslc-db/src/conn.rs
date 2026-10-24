@@ -220,6 +220,28 @@ pub fn parse_dsn(text: &str) -> Result<ConnSpec, DsnError> {
     Ok(spec)
 }
 
+/// 把连接串里的**口令段**打掉，用于界面显示。
+///
+/// 连接串里有明文口令，而界面上的那一行会被截图发到 issue 里。
+/// 只打口令、保留协议/用户/主机/库 —— 用户要能确认"连的是哪台"。
+///
+/// 认不出形状就**原样返回**（宁可显示不完全，也不要显示错）。
+pub fn redact_dsn(dsn: &str) -> String {
+    let Some(start) = dsn.find("://") else {
+        return dsn.to_owned();
+    };
+    let after = start + 3;
+    // 用**最后一个** `@`：和 `parse_dsn` 的切法保持一致（口令里可能有未编码的 @）
+    let Some(at_rel) = dsn[after..].rfind('@') else {
+        return dsn.to_owned();
+    };
+    let at = after + at_rel;
+    let Some(colon_rel) = dsn[after..at].find(':') else {
+        return dsn.to_owned();
+    };
+    let colon = after + colon_rel;
+    format!("{}***{}", &dsn[..colon + 1], &dsn[at..])
+}
 /// 连接串解析不出来。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DsnError(pub String);
@@ -499,7 +521,24 @@ mod dsn_tests {
         assert!(s.contains("dbname=shop"));
     }
 
-    #[test]
+        #[test]
+    fn redact_dsn_hides_the_password_but_keeps_the_rest() {
+        assert_eq!(
+            redact_dsn("postgres://alice:s3cret@db.example.com:5432/shop"),
+            "postgres://alice:***@db.example.com:5432/shop"
+        );
+        // 没有口令段 → 原样（别把 `@` 后面的东西吃掉）
+        assert_eq!(redact_dsn("postgres://alice@h:5432/db"), "postgres://alice@h:5432/db");
+        // 认不出形状 → 原样返回，不猜
+        assert_eq!(redact_dsn("host=127.0.0.1"), "host=127.0.0.1");
+        // 未编码的 `@` 也要打掉口令段（取最后一个 @）
+        assert_eq!(
+            redact_dsn("mysql://root:p@ss@10.0.0.5:3306/db"),
+            "mysql://root:***@10.0.0.5:3306/db"
+        );
+    }
+
+#[test]
     fn debug_of_a_parsed_dsn_still_hides_the_password() {
         let c = parse_dsn("postgres://u:hunter2@h:5432/db").unwrap();
         let text = format!("{c:?}");
