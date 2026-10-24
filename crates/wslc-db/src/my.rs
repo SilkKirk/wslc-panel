@@ -28,7 +28,7 @@ pub struct MySqlSession {
 
 impl MySqlSession {
     pub fn open(spec: &ConnSpec) -> Result<Self, DbError> {
-// ⚠️ 要求 TLS 时**明确报错**，不能静默用明文连上去。
+        // ⚠️ 要求 TLS 时**明确报错**，不能静默用明文连上去。
         //
         // 静默降级是安全问题：用户以为"要加密"，结果口令和查询内容在网线上裸奔，
         // 而界面上一切正常。宁可连不上，也不能这样"成功"。
@@ -166,17 +166,21 @@ mod tests {
         assert!(mysql::Opts::from_url(&url).is_ok(), "URL 解析不了：{url}");
     }
 
-        #[test]
+    #[test]
     fn tls_is_refused_rather_than_silently_downgraded() {
         let mut spec = ConnSpec::new(wslc_core::db::DbKind::MySql, "10.0.0.5", 3306, "u");
         spec.tls = true;
-        let err = MySqlSession::open(&spec).unwrap_err();
+        // 不用 `unwrap_err()`：它要求 `Ok` 那边（`MySqlSession`）实现 `Debug`，
+        // 而持有连接的会话类型不该为了一个测试去 derive 它。
+        let Err(err) = MySqlSession::open(&spec) else {
+            panic!("要求 TLS 时必须失败，不能静默用明文连上去");
+        };
         assert_eq!(err.kind, DbErrorKind::Tls);
         // 要说清"没接"，而不是让用户去猜口令 —— 这条错误是**给用户看的**
         assert!(err.message.contains("TLS"), "{}", err.message);
     }
 
-#[test]
+    #[test]
     fn error_kinds_have_labels() {
         for kind in [DbErrorKind::Connect, DbErrorKind::Auth, DbErrorKind::Query] {
             assert!(!kind.label().is_empty());
