@@ -3935,8 +3935,10 @@ impl Shell {
                                 crate::native_db::mysql_users(text),
                             ),
                             None => (
-                                wslc_core::cmd::mysql::list_databases(&wslc, &target, &bin, &creds),
-                                wslc_core::cmd::mysql::list_users(&wslc, &target, &bin, &creds),
+                                wslc_core::cmd::mysql::list_databases(&wslc, &target, &bin, &creds)
+                                    .map_err(|e| e.to_string()),
+                                wslc_core::cmd::mysql::list_users(&wslc, &target, &bin, &creds)
+                                    .map_err(|e| e.to_string()),
                             ),
                         };
                         // 顺手重扫备份目录（进页面时目录可能被手动动过）。
@@ -3946,7 +3948,6 @@ impl Shell {
                         let backups = backup_dir
                             .as_deref()
                             .and_then(|dir| state::scan_backup_dir(dir).ok());
-                        (databases, users, backups)
                         (databases, users, backups)
                     })
                     .await
@@ -4169,6 +4170,8 @@ impl Shell {
         };
         let container = db.container.clone();
         let bin = db.client.clone();
+        // v0.16：填了连接串就走原生连接。
+        let dsn = db.dsn.clone();
         // 也走连接卡：用户可能刚在「基础信息」里改过密码再建库，这时
         // 重读列表必须用**新**的那份 —— 用 `db.creds`（上一次 load_db 的）
         // 会让"建库成功、列表却报 Access denied"。
@@ -4184,12 +4187,23 @@ impl Shell {
                 let target = container.clone();
                 let bin = bin.clone();
                 let creds = creds.clone();
+                let lists_dsn = dsn.clone();
                 cx.background_executor()
                     .spawn(async move {
-                        let databases =
-                            wslc_core::cmd::mysql::list_databases(&wslc, &target, &bin, &creds);
-                        let users = wslc_core::cmd::mysql::list_users(&wslc, &target, &bin, &creds);
-                        (databases, users)
+                        match lists_dsn.as_deref() {
+                            // 有连接串 → 原生（否则"建完库刷新"会去读容器，
+                            // 和页面正在显示的远程库对不上）。
+                            Some(text) => (
+                                crate::native_db::mysql_databases(text),
+                                crate::native_db::mysql_users(text),
+                            ),
+                            None => (
+                                wslc_core::cmd::mysql::list_databases(&wslc, &target, &bin, &creds)
+                                    .map_err(|e| e.to_string()),
+                                wslc_core::cmd::mysql::list_users(&wslc, &target, &bin, &creds)
+                                    .map_err(|e| e.to_string()),
+                            ),
+                        }
                     })
                     .await
             };

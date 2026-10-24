@@ -133,12 +133,16 @@ pub fn schema(spec: &ConnSpec) -> Result<SchemaTree, String> {
 /// `root_hint` 留 `Unknown`（连接串里已经带了账号，不需要从环境变量猜）。
 ///
 /// 这样 `load_db` 的后半段（`apply_probe` + 填库/用户 + 备份扫描）**一行都不用改**。
-pub fn mysql_probe(text: &str, container: &str) -> anyhow::Result<wslc_core::cmd::mysql::MysqlProbe> {
+///
+/// ⚠️ 错误类型用 `String` 而不是 `anyhow::Error`：`wslc-panel` **没有** anyhow 依赖
+/// （它只在 `wslc-core` / `wslc-panel-core` 里）。加一个依赖要走 `gen-lock`，
+/// 而这里唯一需要的就是"一句能显示给用户的话"。
+pub fn mysql_probe(text: &str, container: &str) -> Result<wslc_core::cmd::mysql::MysqlProbe, String> {
     use wslc_core::cmd::mysql::MysqlProbe;
     use wslc_core::model::mysql::{ClientProbe, MysqlFamily, RootCredHint};
 
-    let spec = parse(text).map_err(|e| anyhow::anyhow!(e))?;
-    let version = server_version(&spec).map_err(|e| anyhow::anyhow!(e))?;
+    let spec = parse(text)?;
+    let version = server_version(&spec)?;
     let family = match spec.kind {
         DbKind::MariaDb => MysqlFamily::Mariadb,
         _ => MysqlFamily::Mysql,
@@ -158,12 +162,12 @@ pub fn mysql_probe(text: &str, container: &str) -> anyhow::Result<wslc_core::cmd
 }
 
 /// MySQL 的库列表（原生连接）。复用 `-B -N` 的解析（见 `to_batch_tsv`）。
-pub fn mysql_databases(text: &str) -> anyhow::Result<Vec<wslc_core::model::mysql::DbEntry>> {
-    let spec = parse(text).map_err(|e| anyhow::anyhow!(e))?;
-    let mut session = wslc_db::open(&spec).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+pub fn mysql_databases(text: &str) -> Result<Vec<wslc_core::model::mysql::DbEntry>, String> {
+    let spec = parse(text)?;
+    let mut session = wslc_db::open(&spec)?;
     let tables = session
         .query(wslc_core::model::mysql::list_databases_sql())
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        .map_err(|e| e.to_string())?;
     let tsv = tables.first().map(to_tsv).unwrap_or_default();
     Ok(wslc_core::model::mysql::parse_databases(&tsv))
 }
@@ -172,12 +176,12 @@ pub fn mysql_databases(text: &str) -> anyhow::Result<Vec<wslc_core::model::mysql
 ///
 /// ⚠️ 普通账号读不到 `mysql.user`（`ERROR 1142`）—— 调用方必须把它的失败
 /// **单独**处理，不能连带把库列表一起判成失败（`load_db` 里就是这么做的）。
-pub fn mysql_users(text: &str) -> anyhow::Result<Vec<wslc_core::model::mysql::DbUser>> {
-    let spec = parse(text).map_err(|e| anyhow::anyhow!(e))?;
-    let mut session = wslc_db::open(&spec).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+pub fn mysql_users(text: &str) -> Result<Vec<wslc_core::model::mysql::DbUser>, String> {
+    let spec = parse(text)?;
+    let mut session = wslc_db::open(&spec)?;
     let tables = session
         .query(wslc_core::model::mysql::list_users_sql())
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        .map_err(|e| e.to_string())?;
     let tsv = tables.first().map(to_tsv).unwrap_or_default();
     Ok(wslc_core::model::mysql::parse_users(&tsv))
 }
