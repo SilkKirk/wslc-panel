@@ -1664,7 +1664,13 @@ pub fn database(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
         .child(header)
         .children(db.error.as_ref().map(db_error_banner))
         .children(creds_warning)
-        .child(db_tabs(db.tab, entity, db.is_mysql_family()))
+        .child(db_tabs(
+            db.tab,
+            entity,
+            db.is_mysql_family(),
+            // 用户列表读失败时给 tab 打个标记（横幅只画在那个 tab 里）
+            db.users_error.is_some(),
+        ))
         .child(body)
         .into_any_element()
 }
@@ -2921,7 +2927,12 @@ fn db_loading(busy: bool) -> AnyElement {
 ///
 /// `mysql_family` 为假时**一个 tab 都不画**：那两个 tab 里全是 MySQL 专有的
 /// 动作（建库 / 建用户 / 授权），对 PostgreSQL 点了只会报错。
-fn db_tabs(current: DbTab, entity: &Entity<Shell>, mysql_family: bool) -> AnyElement {
+fn db_tabs(
+    current: DbTab,
+    entity: &Entity<Shell>,
+    mysql_family: bool,
+    users_failed: bool,
+) -> AnyElement {
     if !mysql_family {
         return div().into_any_element();
     }
@@ -2932,7 +2943,13 @@ fn db_tabs(current: DbTab, entity: &Entity<Shell>, mysql_family: bool) -> AnyEle
             let entity = entity.clone();
             // id 用 `{:?}`：稳定、且与显示语言无关（和设置页那几个 tab 一致）
             let mut button = Button::new(SharedString::from(format!("db-tab-{tab:?}")))
-                .label(tab.label())
+                // 用户列表读失败时打个标记：否则用户不知道点进来会看到什么
+                // （整页横幅已经不占地方了，见 `db_users_card`）。
+                .label(if users_failed && tab == DbTab::Users {
+                    "用户（读取失败）"
+                } else {
+                    tab.label()
+                })
                 .small()
                 .on_click(move |_, _, cx| {
                     entity.update(cx, |shell, cx| shell.set_db_tab(tab, cx));
@@ -3246,6 +3263,25 @@ fn db_databases_card(
 /// `shell` / `cx` 只给「删除」那一行用：`PendingAction::DropUser` 里的凭据
 /// 必须和「改密码 / 授权」走同一个来源（`Shell::db_creds`，读连接卡）。
 fn db_users_card(db: &DbState, shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
+    // 用户列表**自己**读失败（多半是权限：普通账号读不到 `mysql.user`，`ERROR 1142`）:
+    // 只在这个 tab 里画。整页红色横幅会让人以为整个页面坏了，
+    // 而「数据库」tab 明明好好地列着表（v0.16.0 实机反馈）。
+    if let Some(failure) = db.users_error.as_ref() {
+        return v_flex()
+            .w_full()
+            .gap_3()
+            .child(db_error_banner(failure))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child(crate::util::strip_md(
+                        "想管用户的话：去「基础信息」换成高权限账号（比如 root），再点「重新读取」。数据库列表不受影响。",
+                    )),
+            )
+            .into_any_element();
+    }
+
     let new_user = {
         let entity = entity.clone();
         Button::new("db-new-user")

@@ -2134,6 +2134,16 @@ pub struct DbState {
     pub databases: Vec<DbEntry>,
     /// MySQL 用户列表。
     pub users: Vec<DbUser>,
+    /// 用户列表**自己**的失败（多半是权限：`ERROR 1142` 读不到 `mysql.user`）。
+    ///
+    /// # 为什么不复用 `error`
+    ///
+    /// 实机反馈（v0.16.0）：用普通账号进数据库页时，「用户」这一条查询被拒，
+    /// 结果整页顶上挂着一条红色横幅 —— 而「数据库」tab 完全正常、表都列出来了。
+    /// 那种画法会让人以为**整个页面坏了**，于是不敢用（明明能用）。
+    ///
+    /// 所以用户列表的失败只画在用户 tab 里：那是它自己的事。
+    pub users_error: Option<DbFailure>,
     /// 成功读过一次没有？
     ///
     /// 用来区分「还没读」和「读到了，确实是空的」—— 两者在界面上是两句话。
@@ -2427,6 +2437,7 @@ impl DbState {
             error: None,
             databases: Vec::new(),
             users: Vec::new(),
+            users_error: None,
             loaded: false,
             tab: DbTab::default(),
             last_sql: String::new(),
@@ -2481,9 +2492,22 @@ impl DbState {
         self.error = Some(DbFailure::from_text(error.to_string()));
     }
 
+    /// 记一条**用户列表自己**的失败（≠ 整页失败）。
+    ///
+    /// 加这个方法而不是让调用方直接赋值，是为了把"它绝不污染整页 `error`"
+    /// 这条不变式写在一个**能跑测试**的地方 —— `wslc-panel` 不在任何测试目标里，
+    /// 写在那边的断言永远不会执行（`AGENTS.md` §2）。
+    ///
+    /// 背景：v0.16.0 实机里，普通账号读 `mysql.user` 被拒（`ERROR 1142`），
+    /// 结果整页顶上挂着红横幅，而「数据库」tab 明明好好地列着表。
+    pub fn fail_users(&mut self, error: impl std::fmt::Display) {
+        self.users_error = Some(DbFailure::from_text(error.to_string()));
+    }
+
     /// 清掉上一次的错误（每次动作开始前调）。
     pub fn clear_error(&mut self) {
         self.error = None;
+        self.users_error = None;
     }
 
     /// 页面能不能真的干活：探测通过、而且没有根本性问题。
@@ -4595,6 +4619,33 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_users_query_failure_never_becomes_a_page_level_error() {
+        // 实机场景（v0.16.0）：普通账号读 mysql.user 被拒（ERROR 1142），
+        // 而「数据库」tab 完全正常。如果这条失败进了 `error`，整页顶上会挂
+        // 一条红色横幅 —— 用户会以为整个页面坏了，于是不敢用（明明能用）。
+        let mut db = DbState::provisional_kind(
+            "mysql",
+            "docker.1panel.live/library/mysql:latest",
+            wslc_core::db::DbKind::MySql,
+        );
+        db.fail_users("ERROR 1142 (42000): SELECT command denied for table user");
+
+        // 用户那边记下了
+        assert!(db.users_error.is_some());
+        // 但整页的错误必须仍然是空的
+        assert!(
+            db.error.is_none(),
+            "用户列表失败污染了整页 error —— 会把「数据库」tab 也糊住"
+        );
+        // "这次读取是成功的"这个判断也不能被它推翻（页面据此决定画不画表）
+        assert!(db.usable());
+
+        // 换成有权限的账号重读：清掉之后界面上的"读取失败"标记也该消失
+        db.clear_error();
+        assert!(db.users_error.is_none());
+    }
 
     #[test]
     fn every_wslconf_field_has_its_own_id() {

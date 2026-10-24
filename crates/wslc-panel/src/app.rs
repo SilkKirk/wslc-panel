@@ -3991,14 +3991,18 @@ impl Shell {
                         Err(message) => db.fail(message),
                     }
                     match lists.1 {
-                        Ok(users) => db.users = users,
-                        // 数据库列出来了、用户列表没列出来（多半是权限）：
-                        // 照样把它说出来，但别覆盖掉数据库那边的成功。
-                        // ⚠️ 这里拿到的是 `wslc_core::Error`，`fail()` 收
-                        // `impl Display`，会自己把它变成字符串并分类。
+                        Ok(users) => {
+                            db.users = users;
+                            // 这次读到了就清掉上一次的失败（换账号重读之后
+                            // 那句"权限不够"不该继续挂着）。
+                            db.users_error = None;
+                        }
+                        // 数据库列出来了、用户列表没列出来（多半是权限 ERROR 1142）：
+                        // 存进 `users_error`，**只画在用户 tab 里** —— 整页红色横幅会让
+                        // 人以为整个页面坏了，而「数据库」tab 明明能用（v0.16.0 实机反馈）。
                         Err(message) => {
                             if databases_ok {
-                                db.fail(message);
+                                db.fail_users(message);
                             }
                         }
                     }
@@ -4221,12 +4225,17 @@ impl Shell {
                         Err(message) => db.fail(message),
                     }
                     match lists.1 {
-                        Ok(users) => db.users = users,
-                        // 数据库列出来了、用户列表没列出来（多半是权限）：
-                        // 照样说出来，但别覆盖掉数据库那边的成功。
+                        Ok(users) => {
+                            db.users = users;
+                            // 这次读到了就清掉上一次的失败（换账号重读之后
+                            // 那句"权限不够"不该继续挂着）。
+                            db.users_error = None;
+                        }
+                        // 同上：用户列表的权限失败只画在用户 tab 里，
+                        // 不要升级成整页错误（「数据库」tab 是好的）。
                         Err(message) => {
                             if databases_ok {
-                                db.fail(message);
+                                db.fail_users(message);
                             }
                         }
                     }
