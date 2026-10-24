@@ -19,6 +19,7 @@
 use wslc_core::model::sqlresult::SqlResult;
 use wslc_core::model::schematree::SchemaTree;
 use wslc_db::{ConnSpec, TextTable};
+use wslc_core::db::DbKind;
 
 /// 解析连接串；错误消息直接可显示。
 pub fn parse(text: &str) -> Result<ConnSpec, String> {
@@ -42,23 +43,38 @@ pub fn run_sql(spec: &ConnSpec, script: &str) -> Result<Vec<SqlResult>, String> 
 pub use wslc_db::redact_dsn;
 /// 列出所有库（原生连接）。
 ///
-/// 复用 `wslc_core::model::postgres::databases_sql` —— 那是 v0.15 对着真容器
-/// 抓出来的（`datallowconn AND NOT datistemplate`）。
+/// 两个引擎的库列表语义不同，所以各走各的元数据查询 —— 但**解析只有一份**
+/// （MySQL 侧用 `to_batch_tsv` 把单元格还原成 `-B -N` 文本，见那个函数的注释）。
 pub fn databases(spec: &ConnSpec) -> Result<Vec<String>, String> {
     let mut session = wslc_db::open(spec).map_err(|e| e.to_string())?;
-    let tables = session
-        .query(wslc_core::model::postgres::databases_sql())
-        .map_err(|e| e.to_string())?;
-    Ok(tables
-        .first()
-        .map(|t| {
-            t.rows
-                .iter()
-                .filter_map(|r| r.first().cloned().flatten())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
-        .unwrap_or_default())
+    match spec.kind {
+        DbKind::Postgres => {
+            // v0.15 对着真容器抓的（`datallowconn AND NOT datistemplate`）
+            let tables = session
+                .query(wslc_core::model::postgres::databases_sql())
+                .map_err(|e| e.to_string())?;
+            Ok(tables
+                .first()
+                .map(|t| {
+                    t.rows
+                        .iter()
+                        .filter_map(|r| r.first().cloned().flatten())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default())
+        }
+        DbKind::MySql | DbKind::MariaDb => {
+            let tables = session
+                .query(wslc_core::model::mysql::list_databases_sql())
+                .map_err(|e| e.to_string())?;
+            let tsv = tables.first().map(to_tsv).unwrap_or_default();
+            Ok(wslc_core::model::mysql::parse_databases(&tsv)
+                .into_iter()
+                .map(|d| d.name)
+                .collect())
+        }
+    }
 }
 
 /// 服务端版本（原生连接）。
@@ -66,24 +82,50 @@ pub fn server_version(spec: &ConnSpec) -> Result<String, String> {
     let mut session = wslc_db::open(spec).map_err(|e| e.to_string())?;
     session.server_version().map_err(|e| e.to_string())
 }
-/// 读对象树（schema → 表 → 列）。
+
+/// 读对象树（库 → 表 → 列）。
 ///
-/// 复用 `wslc_core::model::postgres` 的元数据 SQL 和解析：
-/// 那套是 v0.15 对着真容器抓出来的，**和连接方式无关**。
+/// 复用 `wslc_core::model::{postgres,schematree}` 的元数据 SQL 与解析：
+/// 那两套都是对着真容器抓出来的，**和连接方式无关**。
 pub fn schema(spec: &ConnSpec) -> Result<SchemaTree, String> {
     let mut session = wslc_db::open(spec).map_err(|e| e.to_string())?;
-    let tables = session
-        .query(wslc_core::model::postgres::schema_tables_sql())
-        .map_err(|e| e.to_string())?;
     // 列读失败不算整体失败（和 exec 那条路同一个取舍）：
     // 树本身有用，补全少一档候选而已。
-    let columns = session
-        .query(wslc_core::model::postgres::schema_columns_sql())
-        .unwrap_or_default();
-    Ok(wslc_core::model::postgres::parse_schema_tree(
-        &tables.first().map(to_csv).unwrap_or_default(),
-        &columns.first().map(to_csv).unwrap_or_default(),
-    ))
+    match spec.kind {
+        DbKind::Postgres => {
+            let tables = session
+                .query(wslc_core::model::postgres::schema_tables_sql())
+                .map_err(|e| e.to_string())?;
+            let columns = session
+                .query(wslc_core::model::postgres::schema_columns_sql())
+                .unwrap_or_default();
+            Ok(wslc_core::model::postgres::parse_schema_tree(
+                &tables.first().map(to_csv).unwrap_or_default(),
+                &columns.first().map(to_csv).unwrap_or_default(),
+            ))
+        }
+        DbKind::MySql | DbKind::MariaDb => {
+            let tables = session
+                .query(wslc_core::model::schematree::schema_tree_sql())
+                .map_err(|e| e.to_string())?;
+            let columns = session
+                .query(wslc_core::model::schematree::schema_columns_sql())
+                .unwrap_or_default();
+            let mut tree = wslc_core::model::schematree::parse_schema_tree(
+                &tables.first().map(to_tsv).unwrap_or_default(),
+            );
+            wslc_core::model::schematree::merge_columns(
+                &mut tree,
+                &columns.first().map(to_tsv).unwrap_or_default(),
+            );
+            Ok(tree)
+        }
+    }
+}
+
+/// `TextTable` → `-B -N` 那种 TSV 文本（复用 MySQL 侧的解析）。
+fn to_tsv(table: &TextTable) -> String {
+    wslc_core::model::mysql::to_batch_tsv(&table.rows)
 }
 
 /// `TextTable` → `SqlResult`。

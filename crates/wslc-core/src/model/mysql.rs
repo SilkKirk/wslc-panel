@@ -535,6 +535,54 @@ pub fn unescape_batch_field(raw: &str) -> String {
     out
 }
 
+/// 把一个字段**转义**成 `-B`（batch）格式。
+///
+/// 是 [`unescape_batch_field`] 的逆运算。存在的理由见 [`to_batch_tsv`]。
+pub fn escape_batch_field(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        match c {
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\0' => out.push_str("\\0"),
+            '\\' => out.push_str("\\\\"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// 把「行的行」拼成 `mysql -B -N` 那种 TSV 文本（列之间一个真 tab，行之间换行）。
+///
+/// # 为什么要"倒回去"
+///
+/// 原生连接（`wslc-db`）拿到的是**结构化单元格**，而 `parse_schema_tree` /
+/// `parse_databases` / `parse_users` 吃的是 `-B -N` 的 TSV 文本。
+///
+/// 给原生连接再写一套"结构化"解析是**看起来很干净、实际很糟**的做法：
+/// 同一个语义会有两份实现，而两份实现的行为差异（空值、转义、行数不齐）
+/// 正是最难查的那类 bug —— 换个连接方式结果就变了一点，谁也不会想到去查解析。
+///
+/// 所以这里把数据还原成那套文本，**解析函数仍然只有一份**。
+///
+/// `None`（SQL NULL）输出成空串：调用它的都是元数据查询（库名 / 表名 / 列名），
+/// 那些字段不会是 NULL；真出现 NULL 时"空串"和 `-B` 打印的 `NULL` 都不影响
+/// 后续解析（那几处都会把空值丢掉）。
+pub fn to_batch_tsv(rows: &[Vec<Option<String>>]) -> String {
+    let mut out = String::new();
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            if i > 0 {
+                out.push('\t');
+            }
+            out.push_str(&escape_batch_field(cell.as_deref().unwrap_or("")));
+        }
+        out.push('\n');
+    }
+    out
+}
+
 /// 一行 TSV → 字段列表（**未转义的 tab 才是分隔符**）。
 pub fn split_tsv_line(line: &str) -> Vec<String> {
     line.split('\t').map(unescape_batch_field).collect()
@@ -1730,6 +1778,38 @@ mod tests {
     }
 
     // -- 解析 ---------------------------------------------------------------
+
+    #[test]
+    fn escape_is_the_inverse_of_unescape() {
+        // 这一对函数必须互为逆运算：一边改了另一边没改，原生连接和 exec 两条路
+        // 就会对同一个库名给出不同结果 —— 那种差异没人会想到去查解析。
+        for raw in ["plain", "a\tb", "line1\nline2", "back\\slash", "nul\0char", "cr\rhere"] {
+            assert_eq!(unescape_batch_field(&escape_batch_field(raw)), raw, "原文 {raw:?}");
+        }
+    }
+
+    #[test]
+    fn to_batch_tsv_round_trips_through_the_real_parser() {
+        // 端到端：结构化单元格 → TSV → 现有解析函数。
+        // 这就是"原生连接复用 -B 解析"的全部契约。
+        let rows = vec![
+            vec![Some("djxm".to_owned()), Some("t_order".to_owned()), Some("BASE TABLE".to_owned())],
+            vec![Some("djxm".to_owned()), Some("v_x".to_owned()), Some("VIEW".to_owned())],
+        ];
+        let tsv = to_batch_tsv(&rows);
+        let tree = crate::model::schematree::parse_schema_tree(&tsv);
+        assert_eq!(tree.databases.len(), 1);
+        assert_eq!(tree.table_count(), 2);
+        assert_eq!(tree.databases[0].tables[1].name, "v_x");
+    }
+
+    #[test]
+    fn to_batch_tsv_escapes_tabs_inside_a_field() {
+        // 表名里真有 tab（反引号里什么都允许）时，不能被当成列分隔符
+        let rows = vec![vec![Some("db".to_owned()), Some("we\tird".to_owned())]];
+        let line = to_batch_tsv(&rows);
+        assert_eq!(split_tsv_line(line.trim_end()), vec!["db", "we\tird"]);
+    }
 
     #[test]
     fn unescapes_batch_output_like_the_real_thing() {
