@@ -26,6 +26,9 @@ embed-resource = "3.0"
 
 [dependencies]
 wslc-core = { workspace = true }
+# 原生（进程内）数据库连接（v0.16）：能连远程库，不依赖容器里有没有客户端。
+# 判断逻辑在 `wslc-db`，这里只调用。
+wslc-db = { workspace = true }
 # 不依赖 GPUI 的那一半（偏好 / 状态 / 列宽 / 预设 / 纯函数）。
 # 拆出去是为了 CI：纯逻辑单测不必再编译并链接整棵 GPUI 依赖树。
 wslc-panel-core = { workspace = true }

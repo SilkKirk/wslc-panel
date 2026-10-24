@@ -2077,6 +2077,17 @@ pub struct DbState {
     pub client: String,
     /// 客户端版本那一行（`mysql  Ver 26.7.0 …`）。
     pub client_version: Option<String>,
+    /// 用户粘进来的**连接串**（v0.16）。`Some` 时这一页走原生连接。
+    ///
+    /// # 为什么是可选的字符串而不是 `ConnSpec`
+    ///
+    /// `ConnSpec` 在 `wslc-db` 里，而 `wslc-panel-core` 不依赖那个 crate
+    /// （它带 `postgres` 那棵树，没必要为了一个字段把整棵依赖拉进数据层）。
+    /// 所以状态里存原文，**解析在 `wslc-panel` 里做** —— 解析失败要能
+    /// 原样报给用户看（"端口不是合法数字：abc" 比 "连接失败" 有用得多）。
+    ///
+    /// ⚠️ 它**不落盘**：里面有口令。
+    pub dsn: Option<String>,
     /// 多驱动层的连接（v0.13）。
     ///
     /// # 现在它是什么
@@ -2393,6 +2404,7 @@ impl DbState {
             _ => family.fallback_client().to_owned(),
         };
         Self {
+            dsn: None,
             conn,
             container,
             image: image.into(),

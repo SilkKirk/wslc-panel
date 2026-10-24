@@ -39,6 +39,7 @@ mod app;
 // SQL 自动补全的 GPUI 适配层（v0.12.4）：把
 // `wslc-panel-core::sqlcomplete` 算好的候选包成 `lsp_types::CompletionItem`。
 // 判断逻辑全在 core（能单测），这里只做格式转换。
+mod native_db;
 mod sql_complete;
 // SQL 结果表格：把 `SqlResult` 接上 gpui-kit 的 `DataTable`。
 // 展示规则（列宽 / 单元格分类 / 页脚 / CSV）在 `wslc-panel-core::sqlview`，
