@@ -4835,6 +4835,8 @@ impl Shell {
         conn.database = database.clone();
         let driver = db.driver();
         let cred = state::to_credentials(&creds);
+        // v0.16：用户填了连接串就走**原生连接**（能连远程库），否则走原来的路径。
+        let dsn = db.dsn.clone();
 
         if let Some(db) = self.state.db.as_mut() {
             db.busy = true;
@@ -4858,6 +4860,7 @@ impl Shell {
                 let driver = driver.clone();
                 let conn = conn.clone();
                 let cred = cred.clone();
+                let dsn = dsn.clone();
                 cx.background_executor()
                     .spawn(async move {
                         let started = std::time::Instant::now();
@@ -4870,9 +4873,17 @@ impl Shell {
                         //   原文那一档**直接不给**（`raw = None`，界面上的
                         //   「看原始输出」按钮本来就会按 `sql_raw.is_some()` 隐藏）。
                         if matches!(conn.kind, DbKind::Postgres) {
-                            let structured = driver.run_script(&wslc, &conn, &cred, &sql);
+                            // 有连接串 → 原生 TCP（能连远程库，容器里有没有 psql 都不影响）；
+                            // 没有 → 退回 exec 那条路（在容器里跑 psql）。
+                            let structured = match dsn.as_deref() {
+                                Some(text) => crate::native_db::parse(text)
+                                    .and_then(|spec| crate::native_db::run_sql(&spec, &sql)),
+                                None => driver
+                                    .run_script(&wslc, &conn, &cred, &sql)
+                                    .map_err(|e| e.to_string()),
+                            };
                             let elapsed = started.elapsed().as_millis() as u64;
-                            return (structured.map_err(|e| e.to_string()), None, elapsed);
+                            return (structured, None, elapsed);
                         }
                         let structured = wslc_core::cmd::mysql::run_statements(
                             &wslc,
@@ -5324,16 +5335,26 @@ impl Shell {
         conn.database = db.sql_database.clone();
         let driver = db.driver();
         let cred = state::to_credentials(&creds);
+        let dsn = db.dsn.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
+                    // 有连接串 → 原生 TCP；没有 → exec（容器里跑 psql）。
+                    // 两条分支都要产出 `Result<SchemaTree, String>`，
+                    // 所以各自的错误都在分支里转成 String（外层的 map_err 去掉了）。
                     if matches!(conn.kind, DbKind::Postgres) {
-                        driver.schema(&wslc, &conn, &cred)
+                        match dsn.as_deref() {
+                            Some(text) => crate::native_db::parse(text)
+                                .and_then(|spec| crate::native_db::schema(&spec)),
+                            None => driver
+                                .schema(&wslc, &conn, &cred)
+                                .map_err(|e| e.to_string()),
+                        }
                     } else {
                         wslc_core::cmd::mysql::list_schema_tree(&wslc, &exec_container, &bin, &creds)
+                            .map_err(|e| e.to_string())
                     }
-                    .map_err(|e| e.to_string())
                 })
                 .await;
             let _ = this.update(cx, |shell, cx| {
