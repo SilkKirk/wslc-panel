@@ -34,6 +34,32 @@ pub fn run_sql(spec: &ConnSpec, script: &str) -> Result<Vec<SqlResult>, String> 
     Ok(tables.iter().map(to_sql_result).collect())
 }
 
+/// 列出所有库（原生连接）。
+///
+/// 复用 `wslc_core::model::postgres::databases_sql` —— 那是 v0.15 对着真容器
+/// 抓出来的（`datallowconn AND NOT datistemplate`）。
+pub fn databases(spec: &ConnSpec) -> Result<Vec<String>, String> {
+    let mut session = wslc_db::open(spec).map_err(|e| e.to_string())?;
+    let tables = session
+        .query(wslc_core::model::postgres::databases_sql())
+        .map_err(|e| e.to_string())?;
+    Ok(tables
+        .first()
+        .map(|t| {
+            t.rows
+                .iter()
+                .filter_map(|r| r.first().cloned().flatten())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// 服务端版本（原生连接）。
+pub fn server_version(spec: &ConnSpec) -> Result<String, String> {
+    let mut session = wslc_db::open(spec).map_err(|e| e.to_string())?;
+    session.server_version().map_err(|e| e.to_string())
+}
 /// 读对象树（schema → 表 → 列）。
 ///
 /// 复用 `wslc_core::model::postgres` 的元数据 SQL 和解析：

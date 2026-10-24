@@ -3953,6 +3953,8 @@ impl Shell {
         conn.database = db.sql_database.clone();
         let driver = db.driver();
         let cred = state::to_credentials(&self.db_creds(cx));
+        // v0.16：填了连接串就走原生连接（能连远程库）。
+        let dsn = db.dsn.clone();
 
         if let Some(db) = self.state.db.as_mut() {
             db.busy = true;
@@ -3970,8 +3972,24 @@ impl Shell {
                 let cred = cred.clone();
                 let driver = driver.clone();
                 let container = container.clone();
+                let dsn = dsn.clone();
                 cx.background_executor()
                     .spawn(async move {
+                        // 有连接串 → 原生 TCP（能连远程库，容器里有没有 psql 都不影响）；
+                        // 没有 → exec 那条路（在容器里跑 psql）。
+                        if let Some(text) = dsn.as_deref() {
+                            let spec = crate::native_db::parse(text)?;
+                            let version = crate::native_db::server_version(&spec)?;
+                            let names = crate::native_db::databases(&spec)?;
+                            return Ok::<_, String>((
+                                wslc_core::db::ServerInfo {
+                                    kind: wslc_core::db::DbKind::Postgres,
+                                    version: Some(version),
+                                    client: Some("native".to_owned()),
+                                },
+                                names,
+                            ));
+                        }
                         let info = driver
                             .probe(&wslc, &conn, &cred)
                             .map_err(|e| e.to_string())?;
