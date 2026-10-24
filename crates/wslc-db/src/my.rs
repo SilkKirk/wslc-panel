@@ -28,6 +28,17 @@ pub struct MySqlSession {
 
 impl MySqlSession {
     pub fn open(spec: &ConnSpec) -> Result<Self, DbError> {
+// ⚠️ 要求 TLS 时**明确报错**，不能静默用明文连上去。
+        //
+        // 静默降级是安全问题：用户以为"要加密"，结果口令和查询内容在网线上裸奔，
+        // 而界面上一切正常。宁可连不上，也不能这样"成功"。
+        // （`mysql` 28 的 TLS 要 `SslOpts` + 可信根证书，是独立一块工作量。）
+        if spec.tls {
+            return Err(DbError::new(
+                DbErrorKind::Tls,
+                "MySQL 的 TLS 还没接（现在只能连明文库）",
+            ));
+        }
         // `Opts::from_url` 认我们拼出来的那个 URL（用户名/口令已经百分号编码过）。
         let opts = mysql::Opts::from_url(&spec.mysql_url()).map_err(|e| {
             DbError::new(
@@ -155,7 +166,17 @@ mod tests {
         assert!(mysql::Opts::from_url(&url).is_ok(), "URL 解析不了：{url}");
     }
 
-    #[test]
+        #[test]
+    fn tls_is_refused_rather_than_silently_downgraded() {
+        let mut spec = ConnSpec::new(wslc_core::db::DbKind::MySql, "10.0.0.5", 3306, "u");
+        spec.tls = true;
+        let err = MySqlSession::open(&spec).unwrap_err();
+        assert_eq!(err.kind, DbErrorKind::Tls);
+        // 要说清"没接"，而不是让用户去猜口令 —— 这条错误是**给用户看的**
+        assert!(err.message.contains("TLS"), "{}", err.message);
+    }
+
+#[test]
     fn error_kinds_have_labels() {
         for kind in [DbErrorKind::Connect, DbErrorKind::Auth, DbErrorKind::Query] {
             assert!(!kind.label().is_empty());

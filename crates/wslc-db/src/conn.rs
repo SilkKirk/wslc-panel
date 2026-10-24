@@ -114,11 +114,8 @@ impl ConnSpec {
             url.push('/');
             url.push_str(&percent_encode(db));
         }
-        url.push_str(if self.tls {
-            "?ssl-mode=REQUIRED"
-        } else {
-            "?ssl-mode=PREFERRED"
-        });
+        // ⚠️ **不要加 `?ssl-mode=…`**：实测 `mysql::Opts::from_url` 不认这个参数
+        // （那是 Connector/J 的叫法），会直接解析失败。TLS 由 `my.rs` 显式处理。
         url
     }
 }
@@ -407,7 +404,9 @@ mod tests {
         assert!(c.postgres_conninfo().contains("sslmode=prefer"));
         c.tls = true;
         assert!(c.postgres_conninfo().contains("sslmode=require"));
-        assert!(c.mysql_url().contains("ssl-mode=REQUIRED"));
+        // MySQL 的 TLS **不**从 URL 传（`Opts::from_url` 不认 `ssl-mode`，
+        // 实测：那是 Connector/J 的叫法），所以 URL 里不该出现查询串。
+        assert!(!c.mysql_url().contains('?'));
     }
 
     #[test]
@@ -419,14 +418,14 @@ mod tests {
         // `@` `:` `/` 不编码会把 URL 解析歪（p@ss 会被当成主机）
         assert_eq!(
             url,
-            "mysql://root:p%40ss%3Aword%2F1@db.example.com:3306/my%20db?ssl-mode=PREFERRED"
+            "mysql://root:p%40ss%3Aword%2F1@db.example.com:3306/my%20db"
         );
     }
 
     #[test]
     fn mysql_url_without_credentials_or_database() {
         let c = ConnSpec::new(DbKind::MySql, "10.0.0.5", 3307, "");
-        assert_eq!(c.mysql_url(), "mysql://10.0.0.5:3307?ssl-mode=PREFERRED");
+        assert_eq!(c.mysql_url(), "mysql://10.0.0.5:3307");
     }
 
     #[test]

@@ -35,7 +35,14 @@ pub struct PgSession {
 
 impl PgSession {
     pub fn open(spec: &ConnSpec) -> Result<Self, DbError> {
-        debug_assert_eq!(spec.kind, DbKind::Postgres);
+debug_assert_eq!(spec.kind, DbKind::Postgres);
+        // 同 `my.rs`：要求 TLS 就报错，不静默降级成明文。
+        if spec.tls {
+            return Err(DbError::new(
+                DbErrorKind::Tls,
+                "PostgreSQL 的 TLS 还没接（现在只能连明文库）",
+            ));
+        }
         // ⚠️ `NoTls`：`postgres` 0.19 的 TLS 要靠额外的 `MakeTlsConnect`
         // 实现（`postgres-native-tls` 等）。阶段 A 先只做明文 ——
         // 远程库要 TLS 是**下一步必须补的**，见 `docs/PLAN-native-db.md`。
