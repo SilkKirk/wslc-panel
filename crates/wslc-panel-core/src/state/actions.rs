@@ -1,6 +1,5 @@
 //! 待确认 / 待执行的动作枚举（容器域与发行版域各一套），以及提示条。
 
-use super::format_bytes;
 use super::prelude::*;
 use crate::util::format_bytes;
 

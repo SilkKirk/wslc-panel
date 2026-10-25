@@ -1,7 +1,5 @@
 //! 导航与页面枚举：哪些页、怎么分组、哪些页要有输入框才能进。
 
-use super::prelude::*;
-
 /// 左侧导航的页面。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {

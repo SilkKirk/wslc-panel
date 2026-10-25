@@ -52,6 +52,10 @@ mod wslconf;
 #[cfg(test)]
 mod tests;
 
+// `OnlineListSource` 是 `wslc-core` 里的类型，`state` 对外**转发**一份：
+// 界面按它显示「在线清单来自 `wsl -l -o` 还是兜底 JSON」那句说明。
+pub use prelude::OnlineListSource;
+
 pub(crate) use actions::*;
 pub(crate) use app::*;
 pub(crate) use db::*;
@@ -59,7 +63,6 @@ pub(crate) use deploy::*;
 pub(crate) use install::*;
 pub(crate) use logs::*;
 pub(crate) use nav::*;
-pub(crate) use prelude::*;
 pub(crate) use registry::*;
 pub(crate) use snapshot::*;
 pub(crate) use wslconf::*;

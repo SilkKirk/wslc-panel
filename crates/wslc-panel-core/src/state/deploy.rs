@@ -1,7 +1,6 @@
 //! 部署域：记录、阶段、进度、站点配置。
 
 use super::prelude::*;
-use super::truncate_chars;
 use crate::util::truncate_chars;
 
 /// 启动时读一次部署记录存档（理由同 [`db_credentials_at_startup`]）。
