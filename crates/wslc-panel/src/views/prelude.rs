@@ -12,13 +12,16 @@
 // 注意：`primary()` / `danger()` 这些样式方法来自 trait `ButtonVariants`，
 // 光导入 `Button` 是不够的 —— 这里用 glob 把 button 模块全带上。
 pub(crate) use gpui_kit::component::button::*;
-// 官方折叠区：`Accordion` + `AccordionItem`（`common::disclosure` 与
-// wslconf 的分节折叠都用它）。
+// 官方折叠区：`Accordion`（`common::disclosure` 与 wslconf 的分节折叠都用它）。
 //
 // 为什么不再用 `Collapsible`：那只是个"展开/收起"的容器，折叠头要自己画
 // （我们原先用 `Button` + `Icon` + `rotate`，还照抄了 `Accordion` 的 trigger 写法）。
 // `Accordion` 自带那个 trigger、弹簧动画、以及"收起时卸载内容"。
-pub(crate) use gpui_kit::component::accordion::{Accordion, AccordionItem};
+//
+// ⚠️ 只导 `Accordion`，**不导 `AccordionItem`**：单项是通过
+// `Accordion::item(|item| …)` 的回调参数拿到的，类型名本身用不到
+// （导入它会被 clippy 判成 unused import，而 `lint` 是阻塞的）。
+pub(crate) use gpui_kit::component::accordion::Accordion;
 // `Editor` 是 SQL 控制台那个多行编辑器（v0.12）。和多行 `Textarea` 的区别：
 // `Editor` 带语法高亮（靠 `tree-sitter-sql` feature）+ 行号 + 缩进线。
 pub(crate) use gpui_kit::component::input::{Editor, Input, InputState};
