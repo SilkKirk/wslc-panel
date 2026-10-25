@@ -152,7 +152,7 @@ impl Render for PromptContent {
 /// 一个文本块里。开一个真正的终端窗口既简单又更好用 —— 用户可以滚、
 /// 可以 Ctrl+C 停。所以这里只做**快照**，跟随交给「在终端里跟随」，
 /// 那个按钮用的是同一份行数 / 时间戳选项。
-pub fn logs_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+pub(crate) fn logs_dialog_body(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     let Some(logs) = state.logs.as_ref() else {
         return div().into_any_element();
     };
@@ -228,16 +228,6 @@ pub fn logs_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
             .into_any_element()
     };
 
-    let close = {
-        let entity = entity.clone();
-        Button::new("logs-close")
-            .label("关闭")
-            .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.close_logs(cx));
-            })
-            .into_any_element()
-    };
 
     // -- 正文 --
     //
@@ -284,36 +274,27 @@ pub fn logs_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
             div().into_any_element()
         };
 
-    modal_scrim(
-        "logs",
-        modal_card(ModalSize::Wide)
-            .id("logs-card")
-            .max_h(px(760.))
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(modal_title(format!("日志 —— {}", logs.container)))
-                    .child(div().text_xs().text_color(theme::text_dim()).child(
-                        "这是一份快照，不会自动更新（点「刷新」重新拉）。\
-                                 要实时跟着看就点「在终端里跟随」，它会开一个独立窗口。",
-                    )),
-            )
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap_2()
-                    .flex_wrap()
-                    .items_center()
-                    .children(tail_buttons)
-                    .child(timestamps)
-                    .child(refresh)
-                    .child(follow),
-            )
-            .child(body)
-            .child(empty_hint)
-            .child(h_flex().w_full().justify_end().child(close)),
-    )
-    .into_any_element()
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(div().text_xs().text_color(theme::text_dim()).child(
+            "这是一份快照，不会自动更新（点「刷新」重新拉）。\
+             要实时跟着看就点「在终端里跟随」，它会开一个独立窗口。",
+        ))
+        .child(
+            h_flex()
+                .w_full()
+                .gap_2()
+                .flex_wrap()
+                .items_center()
+                .children(tail_buttons)
+                .child(timestamps)
+                .child(refresh)
+                .child(follow),
+        )
+        .child(body)
+        .child(empty_hint)
+        .into_any_element()
 }
 /// 「容器 exec」对话框的**内容**（标题 / 底部按钮由调用处拼）。
 ///

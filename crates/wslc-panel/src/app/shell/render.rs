@@ -310,8 +310,7 @@ impl Render for Shell {
         // 发行版配置（/etc/wsl.conf）弹窗。要 `cx` 才能读输入框的值。
         let wslconf_dialog: AnyElement = views::wslconf_overlay(self, &entity, cx);
 
-        // 容器日志浮层（状态全在 `AppState::logs` 里，不需要 `cx`）。
-        let logs_dialog: AnyElement = views::logs_overlay(state, &entity);
+        // NOTE: 容器日志走官方 Dialog 栈（DialogKey::ContainerLogs）。
 
         // ⚠️ 「容器 exec」不在这条链子上 —— 它走官方 `Dialog` 的窗口级层栈
         // （`Shell::open_exec` 里的 `window.open_dialog`，内容是
@@ -580,7 +579,6 @@ impl Render for Shell {
             // （见上面 `Shell::open_prompt` 那段的说明）。
             .child(wslconf_dialog)
             // 日志和 exec 都可能是从容器详情里打开的，所以排在它之后。
-            .child(logs_dialog)
             // 部署页的三个浮层：它们只在「部署管理」页上出现，
             // 不需要盖住数据库 / 备份那几层（那两组不会同时开着），
             // 所以插在数据库弹窗**之前**。

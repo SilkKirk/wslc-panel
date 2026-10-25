@@ -58,6 +58,8 @@ pub(crate) enum DialogKey {
     DbBackupProgress,
     /// 「正在导入 SQL」进度对话框。
     DbImportProgress,
+    /// 「容器日志」对话框。
+    ContainerLogs,
 }
 
 /// 应用外壳。
