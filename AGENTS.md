@@ -213,18 +213,22 @@ Invoke-RestMethod -Headers $H -Uri "$api/commits/<sha>/check-runs"
 ## 4. 发布流程
 
 1. **先让 CI 在 main 上全绿**（尤其是 `ui`）。
-2. 升版本号（**四个文件、六行**，少一处 CI 就会红）：
+2. 升版本号（**四个文件、七行**，少一处 CI 就会红）：
    - 根 `Cargo.toml` 的 `[workspace.package] version`
    - `crates/wslc-core/Cargo.toml` 里那个**显式**的 `version`（它还没改成
      `version.workspace = true`，是个小遗留）
-   - **`Cargo.lock` 里三个 workspace 成员的 `version`** —— 锁文件记着成员版本，
-     不改的话 `--locked` 直接报"锁文件与清单不一致"。本机没有 cargo 只能手改：
-     先 `Select-String` 确认**只有那三处**（都在 `[[package]]` 的成员条目下）。
-     ⚠️ **但别对这个版本号做全局替换**：`Select-String '0\.8\.0'` 实测命中**五**处，
-     只有三处在成员条目下（`wslc-core` / `wslc-panel` / `wslc-panel-core`），
-     另外两处是**第三方 crate** 恰好也叫这个版本（0.8.0 那轮是 `xkbcommon`
-     和 `y4m`）—— 一起改掉就是改坏锁文件。所以按 `name = "wslc-…"` +
-     紧跟一行的 `version` **成对**替换。不放心就用 `gen-lock.yml` 重新生成。
+   - **`Cargo.lock` 里四个 workspace 成员的 `version`** —— 锁文件记着成员版本，
+     不改的话 `--locked` 直接报"锁文件与清单不一致"。
+     ⚠️ **成员是四个，不是三个**：v0.16 加了 `wslc-db`
+     （`wslc-core` / `wslc-db` / `wslc-panel` / `wslc-panel-core`）。
+     漏掉其中任何一个的后果是**所有带 `--locked` 的步骤全红**（包括 release），
+     而现场只报"锁文件与清单不一致"，很难联想到是漏了一个 crate。
+     本机没有 cargo 只能手改。
+     ⚠️ **但别对这个版本号做全局替换**：`Select-String '0\.17\.0'` 实测命中**五**处，
+     只有四处在成员条目下，另一处是**第三方 crate** 恰好也叫这个版本
+     （0.17.0 这轮是 `glow`；0.8.0 那轮是 `xkbcommon` 和 `y4m`）——
+     一起改掉就是改坏锁文件。所以按 `name = "wslc-…"` + 紧跟一行的
+     `version` **成对**替换。不放心就用 `gen-lock.yml` 重新生成。
    - `README.md` 里那行启动日志样例（`版本 x.y.z，构建 <短 sha>`）
 3. 推 main → **等 CI 全绿** → 打 `vX.Y.Z` 标签 → 推标签。
 4. `release.yml` 由 `push: tags: ["v*"]` 触发，编译并发布三个资产：
@@ -235,7 +239,7 @@ Invoke-RestMethod -Headers $H -Uri "$api/commits/<sha>/check-runs"
    指向的都是它。改名等于让所有存量用户的"去发布页下载"落空。
    安装包和 zip 可以改名，它不能。
 
-   **版本号仍然只有那六行要改**（本节第 2 条）—— 安装包版本由
+   **版本号仍然只有那七行要改**（本节第 2 条）—— 安装包版本由
    `scripts/build-installer.ps1` 从 tag 读，`.iss` 里**不写死**，
    所以它**不是**第 5 个要手改版本号的文件。
 

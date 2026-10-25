@@ -19,6 +19,20 @@ on:
   push:
     branches: ["ci/gen-lock"]
   workflow_dispatch:
+    inputs:
+      # 可选：把指定包升到允许范围内的最新版本，例如
+      #   `tokio,serde_json,rustls,libc`
+      #
+      # 为什么需要这个入口：`cargo metadata`（本工作流默认走的那条）是
+      # **最小更新** —— 它只补"清单要求了、锁文件里还没有"的包，
+      # **不会**把已锁定的包抬到新版本。所以"升级补丁版本"必须显式
+      # `cargo update --package`。
+      #
+      # ⚠️ 留空 = 只做最小更新（平时就是这样）。填了包名才会动已有版本。
+      update:
+        description: '要升级的包（逗号分隔，留空=只补缺口）'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -76,13 +90,31 @@ jobs:
           # 早先那次 `generate-lockfile` 自己就把 cc 解成了 1.2.67 且成功。
           cargo update --package cc --precise 1.2.67
 
+          # 可选：把指定包升到允许范围内的最新版本（见文件顶部 `inputs.update`）。
+          #
+          # `cargo metadata` 是**最小更新**：只补"清单要求了、锁文件里还没有"的包，
+          # **不会**把已锁定的包抬到新版本。所以要把 tokio 1.53 这种补丁级更新
+          # 推上去，只能显式 `cargo update --package <名字>`。
+          #
+          # 放在 `cargo metadata` 之前：先按名字升级，再让它补缺失的依赖
+          $update = '${{ inputs.update }}'
+          if ($update.Trim()) {
+            foreach ($name in ($update -split ',')) {
+              $name = $name.Trim()
+              if (-not $name) { continue }
+              Write-Output "cargo update --package $name"
+              cargo update --package $name
+              if ($LASTEXITCODE -ne 0) { Write-Output "⚠ $name 升级失败（可能没有更新的版本）" }
+            }
+          }
+
           # 输出扔掉：它是给机器读的 JSON，几十兆。
           cargo metadata --format-version 1 | Out-Null
 
       - name: 打印关键版本（核对 GPUI 栈有没有被抬版本）
         shell: pwsh
         run: |
-          Write-Output "=== GPUI 栈（必须仍是 0.7.1 / 0.3.8）==="
+          Write-Output "=== GPUI 栈（v0.17.0 起是 0.8.0 / 0.3.9 —— 变了要看是不是 cargo update 顺手抬的）==="
           Select-String -Path Cargo.lock -Pattern '^name = "gpui' -Context 0,1 |
             ForEach-Object { "{0} {1}" -f $_.Line.Trim(), $_.Context.PostContext[0].Trim() }
           Write-Output "=== cc（应为 1.2.x）==="
