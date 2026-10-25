@@ -5,72 +5,98 @@ use super::common::{
 };
 use super::prelude::*;
 
-/// 单输入框提示对话框的**内容**（标题 / 底部按钮由官方 `Dialog` 自己给）。
+/// 提示对话框里那块**会随打字变化**的内容（官方 `Dialog` 的 body）。
 ///
-/// 弹窗**本身就是确认**：里面带着这个动作的代价说明和**实时**等效命令，
-/// 提交后直接执行 —— 所以没有再叠一层二次确认。
-/// 连续弹两个窗比一个信息充分的窗更烦人。
+/// # 为什么它是一个 `Entity`，而不是一个纯函数
 ///
-/// # 为什么不再自己画遮罩和卡片
+/// 官方的 dialog builder 闭包**只在"对话框层被重建"时重跑**，而**打字不会**
+/// 触发那次重建 —— v0.19.0 实机截图确认过这个 bug：输入框里已经填了
+/// `D:\wsl\MyDistro`，下面那行等效命令还停在 `wsl --manage … --move <待填>`。
 ///
-/// 这个浮层是**第一个**迁到官方 `Dialog` 的（窗口级层栈，见
-/// `Shell::open_prompt`）：遮罩、Esc、点遮罩关闭、层序都由组件负责。
-/// 所以这里只产出"中间那块内容"，外壳在打开处拼。
+/// 做成子实体之后，它 `observe` 输入框：打字 → `InputState` 通知 →
+/// 本实体 `cx.notify()` → **只重画这一块**，不依赖 dialog 层重建。
 ///
-/// 要 `cx` 才能从输入框里读数：底部那行命令是随打字变化的。
-pub(crate) fn prompt_dialog_content(
-    shell: &Shell,
-    entity: &Entity<Shell>,
-    cx: &App,
-) -> Option<AnyElement> {
-    let prompt = shell.prompt.as_ref()?;
+/// # 为什么标题和底部按钮不在这里
+///
+/// 官方 `Dialog` 的标题走 `.title(..)`、底部走 `.footer(..)`。注意普通
+/// `Dialog` **不会**自动画 OK / Cancel —— 那是 `AlertDialog` 的行为
+/// （`DialogButtonProps::render_ok/render_cancel` 只有 `AlertDialog` 调；
+/// `Dialog::render` 里只看 `self.footer`，而 `show_cancel` 默认 `false`）。
+/// v0.19.0 实机就是因为这条少了一整排按钮。
+pub struct PromptContent {
+    kind: PromptKind,
+    distro: String,
+    input: Entity<InputState>,
+    entity: Entity<Shell>,
+}
 
-    let kind = prompt.kind;
-    let typed = prompt.input.read(cx).value().trim().to_owned();
-    // 没填时给个占位符，别让预览行变成一条断掉的命令
-    let shown = if typed.is_empty() {
-        "<待填>".to_owned()
-    } else {
-        typed
-    };
-    // 等效命令**逐种拼**，不抽一个"flag"出来：导出的 `--export` 不是
-    // `--manage` 的子命令、创建卷走的甚至是另一个可执行文件（`wslc`），
-    // 硬塞进同一个模板反而要写一堆特例。
-    let preview = match kind {
-        PromptKind::MoveDistro => format!("wsl --manage {} --move {shown}", prompt.distro),
-        PromptKind::ResizeDistro => format!("wsl --manage {} --resize {shown}", prompt.distro),
-        PromptKind::SetDefaultUser => {
-            format!("wsl --manage {} --set-default-user {shown}", prompt.distro)
+impl PromptContent {
+    /// 建实体并**订阅输入框**（`observe` 返回的 `Subscription` 丢掉就取消订阅，
+    /// 所以必须 `detach`）。
+    pub fn new(
+        kind: PromptKind,
+        distro: String,
+        input: Entity<InputState>,
+        entity: Entity<Shell>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        cx.observe(&input, |_, _, cx| cx.notify()).detach();
+        Self {
+            kind,
+            distro,
+            input,
+            entity,
         }
-        PromptKind::ExportDistro => format!("wsl --export {} {shown}", prompt.distro),
-        PromptKind::CreateVolume => format!("wslc volume create {shown}"),
-    };
+    }
+}
 
-    // 「创建卷」不属于任何发行版（卷是全局的），所以那一行只在有主体时画。
-    // 画一行空的"发行版："比不画更让人困惑。
-    let subject: Option<AnyElement> = (!prompt.distro.is_empty()).then(|| {
-        div()
-            .text_xs()
-            .text_color(theme::text_dim())
-            .child(format!("发行版：{}", prompt.distro))
-            .into_any_element()
-    });
+impl Render for PromptContent {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let kind = self.kind;
+        let typed = self.input.read(cx).value().trim().to_owned();
+        // 没填时给个占位符，别让预览行变成一条断掉的命令
+        let shown = if typed.is_empty() {
+            "<待填>".to_owned()
+        } else {
+            typed
+        };
+        // 等效命令**逐种拼**，不抽一个"flag"出来：导出的 `--export` 不是
+        // `--manage` 的子命令、创建卷走的甚至是另一个可执行文件（`wslc`），
+        // 硬塞进同一个模板反而要写一堆特例。
+        let preview = match kind {
+            PromptKind::MoveDistro => format!("wsl --manage {} --move {shown}", self.distro),
+            PromptKind::ResizeDistro => format!("wsl --manage {} --resize {shown}", self.distro),
+            PromptKind::SetDefaultUser => {
+                format!("wsl --manage {} --set-default-user {shown}", self.distro)
+            }
+            PromptKind::ExportDistro => format!("wsl --export {} {shown}", self.distro),
+            PromptKind::CreateVolume => format!("wslc volume create {shown}"),
+        };
 
-    // 只有"要填路径"的那两种才给「浏览…」——
-    // 「调整大小」填的是 `50GB`，「设置默认用户」填的是用户名，
-    // 给它们这个按钮只会让人以为该去选一个文件。
-    let browse = kind.pick_target().map(|_| {
-        let entity = entity.clone();
-        Button::new("prompt-browse")
-            .label("浏览…")
-            .small()
-            .on_click(move |_, window, cx| {
-                entity.update(cx, |shell, cx| shell.browse_prompt_path(window, cx));
-            })
-            .into_any_element()
-    });
+        // 「创建卷」不属于任何发行版（卷是全局的），所以那一行只在有主体时画。
+        // 画一行空的"发行版："比不画更让人困惑。
+        let subject: Option<AnyElement> = (!self.distro.is_empty()).then(|| {
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child(format!("发行版：{}", self.distro))
+                .into_any_element()
+        });
 
-    Some(
+        // 只有"要填路径"的那两种才给「浏览…」——
+        // 「调整大小」填的是 `50GB`，「设置默认用户」填的是用户名，
+        // 给它们这个按钮只会让人以为该去选一个文件。
+        let browse = kind.pick_target().map(|_| {
+            let entity = self.entity.clone();
+            Button::new("prompt-browse")
+                .label("浏览…")
+                .small()
+                .on_click(move |_, window, cx| {
+                    entity.update(cx, |shell, cx| shell.browse_prompt_path(window, cx));
+                })
+                .into_any_element()
+        });
+
         v_flex()
             .w_full()
             .gap_3()
@@ -85,7 +111,7 @@ pub(crate) fn prompt_dialog_content(
                     .child(div().flex_1().min_w_0().child(form_field(
                         "prompt-input",
                         kind.label(),
-                        &prompt.input,
+                        &self.input,
                         cx,
                         true,
                     )))
@@ -115,10 +141,8 @@ pub(crate) fn prompt_dialog_content(
                             .child(preview),
                     ),
             )
-            .into_any_element(),
-    )
+    }
 }
-
 /// 「容器日志」浮层。
 ///
 /// # 为什么这里没有「跟随」

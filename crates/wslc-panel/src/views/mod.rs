@@ -45,7 +45,7 @@ mod wslconf;
 //
 // 列在这里的每一项都是 `app.rs` 真的调用过、或需要跨子模块使用的。
 // （`page` 是页面分发，见文件末尾。）
-pub(crate) use common::modal_scrim;
+pub(crate) use common::{modal_footer, modal_scrim};
 pub(crate) use create::create_dialog_overlay;
 pub(crate) use db_dialogs::{
     db_backup_dialog_overlay, db_backup_progress, db_dialog_overlay, db_import_progress,
@@ -57,7 +57,7 @@ pub(crate) use deploy::{
 };
 pub(crate) use details::{container_detail_overlay, distro_detail_overlay};
 pub(crate) use images::pull_dialog_overlay;
-pub(crate) use overlays::{exec_overlay, export_overlay, logs_overlay, prompt_dialog_content};
+pub(crate) use overlays::{PromptContent, exec_overlay, export_overlay, logs_overlay};
 pub(crate) use wslconf::wslconf_overlay;
 
 use prelude::*;

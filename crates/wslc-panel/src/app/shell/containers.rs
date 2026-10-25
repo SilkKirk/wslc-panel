@@ -3,6 +3,8 @@
 use super::super::prelude::*;
 use super::Shell;
 use super::state::{CreateDialog, DropdownItem, FactsState, TextPrompt};
+// 弹窗底部那行按钮的唯一实现（和 18 个浮层共用同一份，见 `views::common`）。
+use crate::views::modal_footer;
 
 impl Shell {
     /// 打开提示对话框，并把焦点交给输入框。
@@ -17,14 +19,22 @@ impl Shell {
     /// `Root` 渲染），所以：层序 = 栈序，遮罩自带 `.occlude()`、Esc 与点遮罩
     /// 关闭自带（`keyboard` / `overlay_closable`），不用我们维护。
     ///
-    /// # 两个要注意的地方
+    /// # 三个要注意的地方（都是 v0.19.0 实机踩出来的）
     ///
     /// 1. builder 闭包**可能被重跑**（gpui-component 的原话："it may run again
     ///    when the dialog layer is rebuilt. Keep it cheap and create persistent
     ///    entities before opening, not inside the builder"）—— 所以 `InputState`
     ///    是在**打开之前**建好、存进 `self.prompt` 的，闭包里只用它的 `Entity`；
-    /// 2. 闭包里要读 `Shell` 的当前状态（输入框的值），用 `entity.read(cx)`。
-    ///    这样打字时预览行跟着变，靠的就是"窗口重绘 → 层被重建 → 闭包重跑"。
+    /// 2. ⚠️ **别在闭包里现算"随打字变化"的内容**：闭包只在层被重建时重跑，
+    ///    **打字不触发它**。v0.19.0 实机就是这个 bug —— 输入框里已经填了
+    ///    `D:\wsl\MyDistro`，下面那行等效命令还停在 `--move <待填>`。
+    ///    正确做法是内容用**子实体**（[`crate::views::PromptContent`]）并
+    ///    `observe` 输入框，打字时只重画那一块；
+    /// 3. ⚠️ **底部按钮必须自己给**（`.footer(..)`）：普通 `Dialog` 不会自动画
+    ///    OK / Cancel —— 那是 `AlertDialog` 的行为。`DialogButtonProps` 的
+    ///    `render_ok` / `render_cancel` 只有 `AlertDialog` 调用，`Dialog::render`
+    ///    只看 `self.footer`，而 `show_cancel` 默认 `false`。v0.19.0 实机就是
+    ///    因为这条少了一整排按钮。
     pub fn open_prompt(
         &mut self,
         kind: PromptKind,
@@ -33,7 +43,6 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         use gpui_kit::component::WindowExt as _;
-        use gpui_kit::component::dialog::DialogButtonProps;
 
         // 已经在开着就别再压一层（连点两下会弹出两个一模一样的对话框）。
         if self.prompt.is_some() {
@@ -46,6 +55,15 @@ impl Shell {
         let handle = input.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
 
+        let entity = cx.entity();
+        // 内容做成**子实体**并订阅输入框：打字时只重画它（见 `PromptContent` 的注释）。
+        let content = cx.new({
+            let input = input.clone();
+            let entity = entity.clone();
+            let distro = distro.clone();
+            move |cx| crate::views::PromptContent::new(kind, distro, input, entity, cx)
+        });
+
         self.prompt = Some(TextPrompt {
             kind,
             distro,
@@ -53,7 +71,6 @@ impl Shell {
         });
         cx.notify();
 
-        let entity = cx.entity();
         let on_ok = {
             let entity = entity.clone();
             move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
@@ -76,28 +93,53 @@ impl Shell {
         };
 
         window.open_dialog(cx, move |dialog, _window, cx| {
-            // 内容要现读 `Shell`（输入框的值 + 预览行），所以每帧重建。
-            let body = {
-                let shell = entity.read(cx);
-                crate::views::prompt_dialog_content(shell, &entity, cx)
-                    .unwrap_or_else(|| div().into_any_element())
+            // 内容是一块**子实体**（`PromptContent`），它自己 `observe` 输入框：
+            // 打字时只重画那一块，不依赖 dialog 层重建。
+            //
+            // ⚠️ 别把它改成"在闭包里现算"：闭包只在层被重建时重跑，打字不触发 ——
+            // v0.19.0 实机就是这个 bug（输入框填了路径，等效命令还停在 `<待填>`）。
+            let body = content.clone();
+
+            // ⚠️ 底部按钮必须自己给：普通 `Dialog` **不会**自动画 OK / Cancel
+            // （那是 `AlertDialog` 的行为；`Dialog::render` 只看 `self.footer`，
+            // `show_cancel` 默认 `false`）。v0.19.0 实机就是因为这条少了一整排按钮。
+            let cancel = {
+                let entity = entity.clone();
+                Button::new("prompt-cancel")
+                    .label("取消")
+                    .small()
+                    .on_click(move |_, window, cx| {
+                        entity.update(cx, |shell, cx| shell.close_prompt(cx));
+                        window.close_dialog(cx);
+                    })
             };
+            let confirm = {
+                let entity = entity.clone();
+                Button::new("prompt-confirm")
+                    .label(kind.confirm_label())
+                    .small()
+                    .primary()
+                    .on_click(move |_, window, cx| {
+                        entity.update(cx, |shell, cx| shell.submit_prompt(cx));
+                        window.close_dialog(cx);
+                    })
+            };
+
             dialog
                 .title(kind.title())
                 .w(px(560.))
-                // 遮罩 / Esc / 点遮罩关闭都由官方负责。
+                // 遮罩 / Esc / 点遮罩关闭都由官方负责（Esc 与遮罩走 `on_cancel`）。
                 .overlay(true)
                 .overlay_closable(true)
                 .keyboard(true)
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text(kind.confirm_label())
-                        .cancel_text("取消"),
-                )
                 .on_ok(on_ok.clone())
                 .on_cancel(on_cancel.clone())
                 .on_close(on_close.clone())
                 .child(body)
+                .footer(modal_footer([
+                    cancel.into_any_element(),
+                    confirm.into_any_element(),
+                ]))
         });
     }
 
