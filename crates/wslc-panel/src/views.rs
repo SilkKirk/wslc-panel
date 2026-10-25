@@ -265,16 +265,30 @@ fn stat_tile(label: &'static str, value: String, color: Rgba) -> impl IntoElemen
 ///
 /// 底色由 [`theme::state_colors`] 统一给出（不透明的预置色），
 /// 不用 alpha 叠加 —— 叠出来的观感会随背后的容器背景变化。
+///
+/// # 为什么用 `Tag` 而不是自己画 div
+///
+/// 这条是"组件库有的就别自己写"的直接应用。自己画的那版只有
+/// `px_2 py_1 rounded_md` 三行样式，但**没有边框、没有 hover、圆角也不跟
+/// 组件库的 radius token** —— 于是同一个界面上，徽标是 8px、按钮是 6px、
+/// 输入框是另一档，看起来像几个人拼的。
+///
+/// `Tag::custom(fg_bg, fg, border)` 的三个颜色**完全由我们给**
+/// （读 `tag.rs` 的 `TagVariant::Custom` 确认过：它不碰 `cx.theme()`），
+/// 所以配色仍是 `theme.rs` 那一套，只是形状/圆角/边框/hover 交给组件库 ——
+/// **这正是"高内聚低耦合"想要的分工**：颜色归我们，形态归组件。
 fn badge(text: impl Into<SharedString>, fg: Rgba, bg: Rgba) -> impl IntoElement {
-    div()
+    use gpui_kit::component::tag::Tag;
+
+    // `Rgba -> Hsla` 要显式标注：`From` 实现推不出目标类型
+    // （同文件 `gauge()` 里那条注释说的是同一件事）。
+    let fg: Hsla = fg.into();
+    // 边框：`Tag` 要求三色都给，而 `theme` 没有"徽标边框"这一档取色。
+    // 用前景色的 30% 不透明度 —— 比"完全没有边框"有形状感，
+    // 又不会像实色边框那样抢戏。
+    let border = fg.opacity(0.3);
+    Tag::custom(bg.into(), fg, border)
         .flex_none()
-        .px_2()
-        .py_1()
-        .rounded_md()
-        .bg(bg)
-        .text_xs()
-        .font_semibold()
-        .text_color(fg)
         .child(text.into())
 }
 
