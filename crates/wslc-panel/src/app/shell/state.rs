@@ -335,7 +335,7 @@ impl KeepAlive {
     ///
     /// `try_wait` 会**顺手回收**已经退出的子进程 —— 不调它的话，
     /// 退掉的子进程会以僵尸状态一直挂在系统里。
-    fn is_alive(&mut self) -> bool {
+    pub(crate) fn is_alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
     }
 }
