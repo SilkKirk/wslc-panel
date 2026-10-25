@@ -518,6 +518,34 @@ pub(crate) fn cell_badge(state: ContainerState) -> AnyElement {
     badge(state.label().to_owned(), fg, bg).into_any_element()
 }
 
+/// **行内小按钮**的唯一实现：一行字、点下去跑一段动作。
+///
+/// # 为什么要有这一层
+///
+/// 下面那五个具名助手原先各写一份
+/// `Button::new(id).label(label).small().on_click(…)` —— 五份一模一样的外壳，
+/// 只有点击体不同。外壳一旦要改（换尺寸、加 tooltip、换成带图标的变体），
+/// 就得记得改五处；漏一处的表现是"这一列的按钮和别处长得不一样"，
+/// 而这种差异 CI 完全看不出来（`AGENTS.md` §8）。
+///
+/// 现在外壳只有这一份。五个具名助手保留，是因为**它们的名字说明语义**
+/// （这个按钮会弹确认 / 会直接跑 / 只是开个浮层），调用点读起来比
+/// `action_button(id, label, |shell, _, cx| …)` 清楚。
+fn action_button(
+    id: &str,
+    label: &'static str,
+    entity: &Entity<Shell>,
+    run: impl Fn(&mut Shell, &mut Window, &mut Context<Shell>) + 'static,
+) -> Button {
+    let entity = entity.clone();
+    Button::new(SharedString::from(id.to_owned()))
+        .label(label)
+        .small()
+        .on_click(move |_, window, cx| {
+            entity.update(cx, |shell, cx| run(shell, window, cx));
+        })
+}
+
 /// 危险操作按钮（点击后弹出二次确认）。
 pub(crate) fn danger_button(
     id: &str,
@@ -525,15 +553,9 @@ pub(crate) fn danger_button(
     action: PendingAction,
     entity: &Entity<Shell>,
 ) -> impl IntoElement {
-    let entity = entity.clone();
-    Button::new(SharedString::from(id.to_owned()))
-        .label(label)
-        .small()
-        .on_click(move |_, _, cx| {
-            entity.update(cx, |shell, cx| {
-                shell.request(action.clone(), cx);
-            });
-        })
+    action_button(id, label, entity, move |shell, _, cx| {
+        shell.request(action.clone(), cx);
+    })
 }
 
 /// 危险操作按钮（**发行版域**，点击后弹出二次确认）。
@@ -541,21 +563,16 @@ pub(crate) fn danger_button(
 /// 和 [`danger_button`] 分开写，而不是合并成一个泛型函数：
 /// 两个动作类型（[`PendingAction`] / [`DistroAction`]）没有任何共同方法，
 /// 合并就得引入 trait 或枚举包装，调用点反而更长。
+/// 重复的只是这一层薄包装 —— 按钮外壳已经收进 [`action_button`]。
 pub(crate) fn danger_button_distro(
     id: &str,
     label: &'static str,
     action: DistroAction,
     entity: &Entity<Shell>,
 ) -> impl IntoElement {
-    let entity = entity.clone();
-    Button::new(SharedString::from(id.to_owned()))
-        .label(label)
-        .small()
-        .on_click(move |_, _, cx| {
-            entity.update(cx, |shell, cx| {
-                shell.request_distro(action.clone(), cx);
-            });
-        })
+    action_button(id, label, entity, move |shell, _, cx| {
+        shell.request_distro(action.clone(), cx);
+    })
 }
 
 /// 打开「单输入框提示弹窗」的按钮（移动位置 / 调整大小 / 设置默认用户）。
@@ -568,19 +585,12 @@ pub(crate) fn prompt_button(
     distro: &str,
     entity: &Entity<Shell>,
 ) -> AnyElement {
-    let entity = entity.clone();
     let distro = distro.to_owned();
-    Button::new(SharedString::from(id.to_owned()))
-        .label(label)
-        .small()
-        .on_click(move |_, window, cx| {
-            // `window` 是必需的：`InputState::new` 要 `&mut Window`。
-            let distro = distro.clone();
-            entity.update(cx, |shell, cx| {
-                shell.open_prompt(kind, distro, window, cx);
-            });
-        })
-        .into_any_element()
+    action_button(id, label, entity, move |shell, window, cx| {
+        // `window` 是必需的：`InputState::new` 要 `&mut Window`。
+        shell.open_prompt(kind, distro.clone(), window, cx);
+    })
+    .into_any_element()
 }
 
 /// 即时操作按钮（启动 / 重启）。
@@ -592,15 +602,9 @@ pub(crate) fn immediate_button(
     action: ImmediateAction,
     entity: &Entity<Shell>,
 ) -> impl IntoElement {
-    let entity = entity.clone();
-    Button::new(SharedString::from(id.to_owned()))
-        .label(label)
-        .small()
-        .on_click(move |_, _, cx| {
-            entity.update(cx, |shell, cx| {
-                shell.run_immediate(action.clone(), cx);
-            });
-        })
+    action_button(id, label, entity, move |shell, _, cx| {
+        shell.run_immediate(action.clone(), cx);
+    })
 }
 
 /// 打开一个**面板内浮层**的按钮（日志 / exec）。
@@ -618,14 +622,7 @@ pub(crate) fn overlay_button(
     open: impl Fn(&mut Shell, &mut Window, &mut Context<Shell>) + 'static,
     entity: &Entity<Shell>,
 ) -> AnyElement {
-    let entity = entity.clone();
-    Button::new(SharedString::from(id.to_owned()))
-        .label(label)
-        .small()
-        .on_click(move |_, window, cx| {
-            entity.update(cx, |shell, cx| open(shell, window, cx));
-        })
-        .into_any_element()
+    action_button(id, label, entity, open).into_any_element()
 }
 
 // ---------------------------------------------------------------------------
