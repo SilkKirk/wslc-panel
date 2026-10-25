@@ -8,8 +8,16 @@ name: CI
 #    settings 注释保留、列宽、预设值……）。
 # 2. `ui` 任务跑 `cargo check` 而不是 `cargo build` —— 依赖树才是耗时大头，
 #    check 能拿到全部类型错误却省掉代码生成与链接，反馈快得多。
-# 3. `fmt` / `clippy` 目前是**建议性**的（continue-on-error）：
-#    代码是手写的、本机无法执行 rustfmt，先别让格式问题掩盖真正的编译错误。
+# 3. `lint` 任务（rustfmt + clippy）**是阻塞的**（2026-10-25 起）。
+#
+#    原先它是建议性的（`continue-on-error: true`），理由是"代码是手写的、
+#    本机无法执行 rustfmt，先别让格式问题掩盖真正的编译错误"。
+#    代价是实测出来的：37 条 clippy 警告从 v0.10 挂到 v0.17，没有任何后果，
+#    于是从来没人清；rustfmt 也攒到 210 处 diff。**"永远绿"等于"永远不看"。**
+#
+#    现在两条都清到 0 了，此时改成阻塞成本最低。
+#    ⚠️ 以后引入新的警告就红了 —— 修法要么改代码，要么 `#[allow(…)]` 写理由，
+#    **不要**把它改回不阻塞（那等于让这条又开始腐烂）。
 # 4. `push` **只监听 `main`**（原先写的是 `["**"]`）。
 #
 #    原因：原来 `push: branches: ["**"]` 和 `pull_request:` 都在监听，
@@ -142,10 +150,24 @@ jobs:
         run: cargo check -p wslc-panel --bins --locked
 
   lint:
-    name: 格式与 clippy（只报告，不阻塞）
+    name: 格式与 clippy
     runs-on: windows-latest
     timeout-minutes: 60
-    continue-on-error: true
+    # ⚠️ **不再 `continue-on-error`**（2026-10-25 起）。
+    #
+    # 原先它是"建议性"的，理由是"本机没有 rustfmt，别让格式问题掩盖真正的
+    # 编译错误"。那条理由在功能上成立，但代价是实测出来的：37 条 clippy
+    # 警告从 v0.10 一直挂到 v0.17，**没有任何后果**，于是从来没人清。
+    # "永远绿"等于"永远不看"。
+    #
+    # 现在清到 0 了（clippy 0 条、rustfmt 0 处 diff），此时改成阻塞的
+    # 成本最低：以后任何一个提交引入格式问题或新警告都会立刻红，而不是
+    # 静静躺在日志第 400 行等人翻。
+    #
+    # 回退办法：把这一行加回来。但加之前先看一眼是不是"真的清不动"——
+    # 如果只是几条噪音，加 `#[allow(…)]` 并写清理由（仓库里已有先例：
+    # `state.rs` 的 `field_reassign_with_default`、`sqlresult.rs` 的
+    # `tabs_in_doc_comments`）。
     steps:
       - uses: actions/checkout@v4
 
@@ -162,6 +184,10 @@ jobs:
 
       # 本机没有 Rust 工具链，所以这里是唯一能拿到 rustfmt diff 的地方。
       # 输出同时进日志和 Step Summary，方便直接照抄回去。
+      #
+      # ⚠️ `exit 1` 而不是 `exit 0`（2026-10-25 起）：这一步现在是**阻塞**的。
+      # 原先它永远 `exit 0`，靠 job 级的 `continue-on-error` 兜着 ——
+      # 两者一起去掉了。修法是本地跑不了 rustfmt，就点 Actions → Format 让它提交回来。
       - name: rustfmt
         shell: pwsh
         run: |
@@ -169,13 +195,12 @@ jobs:
           $code = $LASTEXITCODE
           Write-Output $out
           if ($code -ne 0) {
-            Write-Output "::warning title=rustfmt::代码未通过 rustfmt 检查，需要运行 cargo fmt"
+            Write-Output "::error title=rustfmt::代码未通过 rustfmt 检查 —— 跑一次 Actions → Format 工作流让它提交回来"
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## rustfmt 需要调整`n`n``````diff`n$out`n``````"
-          } else {
-            Write-Output "rustfmt 通过"
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## rustfmt 通过"
+            exit 1
           }
-          exit 0
+          Write-Output "rustfmt 通过"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## rustfmt 通过"
 
       - name: clippy
         shell: pwsh
@@ -190,10 +215,15 @@ jobs:
           $diag = $out -split "`n" | Where-Object { $_ -match '^\S+?:\d+:\d+: (warning|error)' }
           $warn = $diag.Count
           if ($warn -gt 0) {
-            Write-Output "::warning title=clippy::clippy 报告了 $warn 条问题"
+            Write-Output "::error title=clippy::clippy 报告了 $warn 条问题"
             $tail = ($diag | Select-Object -First 100) -join "`n"
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## clippy（$warn 条）`n`n``````n$tail`n``````"
-          } else {
-            Write-Output "clippy 通过"
+            # 阻塞（2026-10-25 起）。清不掉的噪音请加 `#[allow(…)]` 并写理由，
+            # 而不是把这条改回 `exit 0`。
+            #
+            # ⚠️ 例外：`cargo clippy` 自己失败（编译错误）时 `$warn` 可能是 0，
+            # 那时下面这行会 exit 0 —— 不要紧，`ui` / `core` 两个 job 会把
+            # 编译错误拦住，这里只负责"没有诊断"这一档。
+            exit 1
           }
-          exit 0
+          Write-Output "clippy 通过"

@@ -91,7 +91,7 @@ crates/
 |---|---|---|---|
 | `core` | 纯逻辑测试（wslc-core + wslc-panel-core，无需 GPU） | `cargo test --workspace --exclude wslc-panel --locked --profile ci` | ~1 分钟 |
 | `ui` | wslc-panel 编译检查（GPUI） | `cargo check --workspace --all-targets --locked` + `cargo check -p wslc-panel --bins --locked` | ~15 分钟（冷缓存） |
-| `lint` | 格式与 clippy（只报告，不阻塞） | rustfmt + clippy，`continue-on-error: true` | — |
+| `lint` | 格式与 clippy | rustfmt + clippy（**阻塞**，2026-10-25 起） | ~2 分钟 |
 
 要点：
 
@@ -136,10 +136,13 @@ crates/
 
 ⚠️ **别用 `git add --renormalize`** —— 见 §7.6 那条实测（会把假差异变成真差异）。
 
-> ⚠️ **「CI 绿」这个信号只覆盖：类型检查过 + 纯逻辑测试跑过。仅此而已。**
-> 它**不**包含：格式（`lint` 永远不阻塞，见下）、clippy、MSRV（CI 用浮动
-> `stable`，`rust-version = "1.75"` 无人校验）、以及界面到底渲染成什么样（§8）。
+> ⚠️ **「CI 绿」这个信号覆盖：类型检查过 + 纯逻辑测试跑过 + 格式与 clippy 过了。**
+> 它**仍然不**包含：MSRV（CI 用浮动 `stable`，`rust-version` 那个数字无人校验）、
+> 以及界面到底渲染成什么样（§8）。
 > 别把它当全能凭证。
+>
+> （`lint` 从 2026-10-25 起是**阻塞**的 —— 见 §3 的表格。它曾经是
+> `continue-on-error`，代价是 37 条 clippy 从 v0.10 挂到 v0.17 没人清。）
 
 ### 拿 CI 结果的可靠姿势
 

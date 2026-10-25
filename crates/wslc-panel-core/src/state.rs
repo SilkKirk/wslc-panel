@@ -2636,11 +2636,14 @@ impl DbState {
     /// 用户可能刚应用了一条连接串）。
     pub fn write_blocked_reason(&self) -> Option<&'static str> {
         if self.is_native() {
-            Some(
-                "原生连接下不支持备份 / 恢复 / 导入 / 建库建用户 / 删库 —— \
-                 这几条要用容器里的 mysql / mysqldump。先清空连接串并点「应用连接串」，\
-                 回到「在容器里执行」再来；SQL 控制台不受影响。",
-            )
+            // ⚠️ 保持**一句话**（40 字级）。这段文案出现在两个 tab 的顶部，
+            // 而它要说的其实只有"现在走原生了，这几条用不了，清空连接串即可"。
+            //
+            // 早先写的是 80+ 字的三行解释（还列举了 mysql / mysqldump、
+            // 「SQL 控制台不受影响」）—— 那类细节该在用户**真的卡住**时才出现，
+            // 不该每次进页面都铺一遍。正式软件（DataGrip / TablePlus）在这种
+            // 位置都只有一行提示 + 一个动作入口。
+            Some("原生连接不支持备份、导入、建库等操作，清空连接串即可恢复。")
         } else {
             None
         }
@@ -6719,8 +6722,13 @@ mod tests {
         let reason = state
             .write_blocked_reason()
             .expect("原生连接必须拦住写操作");
+        // 文案要短，但必须留着**动作**（"清空连接串"）——没有它用户只知道
+        // 按钮没了，不知道怎么办。
         assert!(reason.contains("连接串"), "理由要说清怎么改回去：{reason}");
-        assert!(reason.contains("SQL 控制台"), "要说明哪条还能用：{reason}");
+        assert!(
+            reason.chars().count() <= 40,
+            "这条提示要控制在 40 字以内（它出现在两个 tab 顶部）：{reason}"
+        );
 
         // ② 探测回来之后：`apply_probe` 把哨兵写进 `client`
         let mut probe = probe_with(RootCredHint::Unknown);

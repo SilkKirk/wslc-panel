@@ -615,7 +615,10 @@ pub fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
         // 和 `cx`（读编辑器 / 搜索框的值）。
         Page::Sql => match shell.db_form.as_ref() {
             Some(form) => sql_console_page(shell, form, cx, entity),
-            None => empty_state("SQL 编辑器还没建好 —— 请重新从数据库列表进入").into_any_element(),
+            // 防御分支（理论上走不到：进这一页时 `ensure_db_form` 已经建好了）。
+            // ⚠️ 文案不解释内部状态 —— "编辑器还没建好"是给开发看的，
+            // 用户只需要知道**下一步点哪**。
+            None => empty_state("请从「容器」页的「数据库」按钮重新进入").into_any_element(),
         },
         // 「部署管理」也要 `&Shell` + `cx`：「添加部署」弹窗那五格输入框
         // 住在 `Shell` 里（页面本身没有输入框）。
@@ -1608,7 +1611,7 @@ pub fn database(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
     // 的整页 `sql_console_page`，那儿的编辑器是 `EditorState`，也不在这儿读），
     // 绑了就是一个 unused 警告。
     if shell.db_form.is_none() {
-        return empty_state("连接表单还没建好 —— 请重新从容器列表进入这一页").into_any_element();
+        return empty_state("请从「容器」页的「数据库」按钮重新进入").into_any_element();
     }
 
     // 页头（含「基础信息」按钮）。
@@ -2731,27 +2734,26 @@ fn db_store_warning(text: &str) -> AnyElement {
         .into_any_element()
 }
 
-/// 原生连接下"这几条写操作用不了"的说明。
+/// 原生连接下"这几条写操作用不了"的一行说明。
 ///
-/// 用**提醒色**而不是危险色：这不是错误，是一个有明确出路的限制
-/// （清空连接串就回去了）。用红色会让人以为页面坏了。
+/// # 为什么是**一行灰字**而不是警告色卡片
+///
+/// 早先这里是一整块 `warning_soft` 底色 + 边框的卡片。文案缩到 29 字之后
+/// 那个视觉重量完全不匹配了 —— 一块黄色的块状提示会让人以为**页面出错了**，
+/// 而实际只是"这个连接方式不支持某几个动作，清空输入框就回去了"。
+///
+/// 正式软件（DataGrip 的 "read-only connection"、TablePlus 的受限提示）
+/// 在这个位置都是**一行次要文字**，不加底色。规则：
+/// 只有"需要你立刻处理"的才配警告色；"知道有这回事就行"的是灰字。
 ///
 /// 文案来自 [`DbState::write_blocked_reason`] —— 判据和文字在同一处，
 /// 改了判据不会忘了改文案。
 fn db_native_write_notice(reason: &'static str) -> AnyElement {
     div()
         .w_full()
-        .p_3()
-        .rounded_md()
-        .bg(theme::warning_soft())
-        .border_1()
-        .border_color(theme::warning().opacity(0.4))
-        .child(
-            div()
-                .text_sm()
-                .text_color(theme::warning())
-                .child(crate::util::strip_md(reason)),
-        )
+        .text_xs()
+        .text_color(theme::text_dim())
+        .child(crate::util::strip_md(reason))
         .into_any_element()
 }
 
@@ -4969,7 +4971,11 @@ pub fn deploy_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) ->
                 v_flex().w_full().gap_1()
                     .child(form_field("deploy-proxy-more", "更多反代规则", &form.proxy_more, cx, true))
                     .child(div().text_xs().text_color(theme::text_dim())
-                        .child("用分号分隔，例如 /auth/ => http://auth:9000; /ws/ => http://ws:9001 strip。路径前缀不能重复。")),
+                        // 这是**语法说明**（用户必须知道怎么写），不是解释性长文 ——
+                        // 所以留，但压到一行：示例本身已经把格式说清了，
+                        // "路径前缀不能重复"是校验规则，等真冲突时报错即可
+                        // （校验在 `valid_proxy_prefix` 里，有测试）。
+                        .child("每行一条，分号分隔：/auth/ => http://auth:9000")),
             ))
             .child({
                 let entity = entity.clone();
@@ -6337,10 +6343,10 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
             v_flex()
                 .w_full()
                 .gap_2()
-                .child(empty_state("表单还没准备好"))
-                .child(div().text_xs().text_color(theme::text_dim()).child(
-                    "回到「实例列表」，再点一次上面的「添加实例」按钮即可 —— 输入框必须在点击时创建。",
-                )),
+                // 一句就够：用户要知道的只有"回上一页再点一次"。
+                // 原来的第二行（"输入框必须在点击时创建"）是实现细节，
+                // 对用户没有任何操作价值。
+                .child(empty_state("回到「实例列表」，再点一次「添加实例」")),
         )
         .into_any_element();
     };
@@ -7841,10 +7847,11 @@ pub fn wsl_config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
         .child(disclosure(
             UiSection::WslHelp, "检查范围与生效方式", state, entity,
             v_flex().w_full().gap_2()
+                // 这段在**折叠区**里，用户主动点开才看到 —— 所以详细一点是对的。
+                // 但原来三段说的是同一件事的三面（检查范围 / 告警时机 / 两个文件），
+                // 合成两段更易读：一段讲"这个页面做什么"，一段讲"两个文件别混"。
                 .child(div().text_xs().text_color(theme::text_dim())
-                    .child("这里只检查已知的错位键，不是 WSL 的完整键表。发现问题时会显示行号、原文及应放置的位置。"))
-                .child(div().text_xs().text_color(theme::text_dim())
-                    .child("WSL 只在虚拟机启动时报告配置告警，读取状态或刷新列表不会触发完整校验。本页不会为校验而关闭所有实例。"))
+                    .child("只检查已知的错位键，不是 WSL 的完整键表。WSL 只在虚拟机启动时报告配置告警 —— 读取状态或刷新列表不会触发校验，本页也不会为校验而关闭实例。"))
                 .child(div().text_xs().text_color(theme::text_dim())
                     .child("全局配置文件是 Windows 用户目录下的 .wslconfig；发行版内部的 /etc/wsl.conf 管理默认用户、挂载和网络等，两者的键不能混用。")),
         ))
