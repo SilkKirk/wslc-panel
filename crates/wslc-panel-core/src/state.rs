@@ -2057,6 +2057,20 @@ fn truncate_chars(text: &str, max: usize) -> String {
     out
 }
 
+/// 原生连接时代替「容器里的客户端名」的那个**哨兵值**。
+///
+/// # 为什么需要一个哨兵而不只是 `Option`
+///
+/// `DbState.client` 被六条写路径直接塞进 `wslc exec <容器> <客户端>`，
+/// 而那些路径在不走原生时必须拿到真的二进制名。给它改成
+/// `Option<String>` 会把六处调用点全部改成 `let Some(bin) = … else …`，
+/// 而收益只是"少一个不可能撞上的字符串" —— 容器里不会有一个叫
+/// `native` 的可执行文件，撞上的概率为零。
+///
+/// 代价是**读它的地方必须知道这个值有特殊含义** —— 所以判据统一收在
+/// [`DbState::is_native`] 里，不要在别处再比字符串。
+pub const NATIVE_CLIENT: &str = "native";
+
 /// 「数据库管理」页的状态。
 ///
 /// 纯数据（一个 GPUI 类型都没有），所以住在 `AppState` 里、也能被单测；
@@ -2074,10 +2088,13 @@ pub struct DbState {
     /// 家族（MySQL / MariaDB / Percona）。
     pub family: MysqlFamily,
     /// 容器里的客户端二进制名（探测得来）。
+    ///
+    /// ⚠️ 走原生连接时这里是 [`NATIVE_CLIENT`]，**不是**二进制名 ——
+    /// 拿它去 `wslc exec` 会报"找不到命令"。用 [`DbState::is_native`] 判。
     pub client: String,
     /// 客户端版本那一行（`mysql  Ver 26.7.0 …`）。
     pub client_version: Option<String>,
-    /// 用户粘进来的**连接串**（v0.16）。`Some` 时这一页走原生连接。
+```    /// 用户粘进来的**连接串**（v0.16）。`Some` 时这一页走原生连接。
     ///
     /// # 为什么是可选的字符串而不是 `ConnSpec`
     ///
@@ -2485,6 +2502,50 @@ impl DbState {
             self.cred_note = probe.root_hint.note();
         }
         self.busy = false;
+    }
+
+    /// 这一页现在走的是**原生连接**吗（`wslc-db`，不经过容器里的客户端）。
+    ///
+    /// # 为什么看两处
+    ///
+    /// - `dsn.is_some()`：用户已经点了「应用连接串」，执行路径已经改了；
+    /// - `client == NATIVE_CLIENT`：探测回来、`apply_probe` 写进去的那个哨兵。
+    ///
+    /// 只看 `client` 会漏掉"刚点应用、还没读回来"那一小段（那时 `client`
+    /// 还是上一个容器的 `mysql`）；只看 `dsn` 则对"探测说原生、但 dsn 被
+    /// 别处清掉"这种不一致不设防。两个都看，任何一边为真就算原生 ——
+    /// 对这个判据来说，**宁可多拦一次，也别让一条命令去容器里找一个叫
+    /// `native` 的可执行文件**。
+    pub fn is_native(&self) -> bool {
+        self.dsn.is_some() || self.client == NATIVE_CLIENT
+    }
+
+    /// 这一页**不能**做哪些写操作；能全做时返回 `None`。
+    ///
+    /// # 为什么需要这条判据
+    ///
+    /// 备份 / 恢复 / 导入 / 建库建用户 / 删库 / 删用户这六条，走的都是
+    /// `wslc exec <容器> <客户端> …` —— 它们要的是**容器里的**
+    /// `mysql` / `mysqldump`。而原生连接根本不经过容器（可以连一台
+    /// 远程机器），`db.client` 那时是 [`NATIVE_CLIENT`] 这个哨兵值。
+    ///
+    /// 不拦的后果不是"报错"，而是**报一个指错方向的错**：用户点「备份」，
+    /// 拿到的是 `exec: native: not found` 之类，看上去像容器坏了 ——
+    /// 而真正的原因是这条路径压根没接原生驱动。
+    ///
+    /// ⚠️ 判据放这里而不是渲染层：渲染层决定"按钮画不画"，而**点下去的
+    /// 那一刻**才是真正要判的地方（浮层可能是几分钟前打开的，那期间
+    /// 用户可能刚应用了一条连接串）。
+    pub fn write_blocked_reason(&self) -> Option<&'static str> {
+        if self.is_native() {
+            Some(
+                "原生连接下不支持备份 / 恢复 / 导入 / 建库建用户 / 删库 —— \
+                 这几条要用容器里的 mysql / mysqldump。先清空连接串并点「应用连接串」，\
+                 回到「在容器里执行」再来；SQL 控制台不受影响。",
+            )
+        } else {
+            None
+        }
     }
 
     /// 记一次失败（分类 + 原文都留着）。
@@ -6533,6 +6594,47 @@ mod tests {
             root_hint: hint,
             container: "mysql".to_owned(),
         }
+    }
+
+    #[test]
+    fn native_connection_blocks_the_exec_only_write_paths() {
+        // v0.16 的缺口：填了连接串之后，页面读数据走原生（不经过容器），
+        // 但**备份 / 恢复 / 导入 / 建库建用户 / 删库 / 删用户**这六条仍然
+        // 是 `wslc exec <容器> <客户端>` —— 而那时 `db.client` 是 `native`
+        // 这个哨兵值（不是二进制名）。不拦的后果是用户拿到
+        // `exec: native: not found` 这种**指错方向**的错。
+        let mut state = DbState::from_probe(&probe_with(RootCredHint::Unknown), "mysql:8");
+        // 没填连接串：六条都能做
+        assert!(!state.is_native());
+        assert!(state.write_blocked_reason().is_none());
+
+        // ① 刚点「应用连接串」、结果还没读回来时也要算原生 —— 否则这一小段
+        //    窗口里 `client` 还是上一个容器的 `mysql`，点下去会真的去 exec。
+        state.dsn = Some("mysql://root:pw@10.0.0.5:3306/shop".to_owned());
+        assert!(state.is_native(), "dsn 已生效就该判成原生");
+        let reason = state.write_blocked_reason().expect("原生连接必须拦住写操作");
+        assert!(reason.contains("连接串"), "理由要说清怎么改回去：{reason}");
+        assert!(reason.contains("SQL 控制台"), "要说明哪条还能用：{reason}");
+
+        // ② 探测回来之后：`apply_probe` 把哨兵写进 `client`
+        let mut probe = probe_with(RootCredHint::Unknown);
+        probe.client.bin = NATIVE_CLIENT.to_owned();
+        state.dsn = None; // 只看 client 也必须判出来
+        state.apply_probe(&probe);
+        assert!(
+            state.is_native(),
+            "`apply_probe` 写进来的哨兵也要被判成原生 —— \
+             否则 dsn 一旦被别处清掉，写操作就会去打 exec"
+        );
+        assert!(state.write_blocked_reason().is_some());
+
+        // ③ 改回容器内执行：拦阻解除
+        state.client = "mysql".to_owned();
+        assert!(!state.is_native());
+        assert!(
+            state.write_blocked_reason().is_none(),
+            "改回容器内执行之后必须立刻放行"
+        );
     }
 
     #[test]

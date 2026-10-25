@@ -69,6 +69,33 @@ impl SqlResult {
     pub fn row_count(&self) -> usize {
         self.rows.len()
     }
+
+    /// 从「结构化单元格」建一个结果集。
+    ///
+    /// # 为什么这个函数在这里，而不是在面板的 `native_db.rs`
+    ///
+    /// 它是**原生连接**（`wslc-db` 的 `TextTable`，每格是 `Option<String>`）
+    /// 落到界面模型上的唯一翻译点。这行翻译做错了的表现是"NULL 显示成
+    /// 字符串 `None`"或者"整列错位"——**界面上不一定看得出来**，所以它
+    /// 必须有测试。而 `wslc-panel` 里的 `#[test]` 根本不会被执行
+    /// （CI 跑 `--workspace --exclude wslc-panel`，见 `AGENTS.md` §2）。
+    ///
+    /// 收在这里还有个附带好处：`wslc-db` 依赖 `wslc-core`（单向），
+    /// 所以 `wslc-db` 可以直接调它，而不用把 `SqlResult` 的定义搬过去。
+    ///
+    /// ⚠️ **NULL 变成空串**：`rows` 的单元格是 `String`，表达不了 NULL。
+    /// 这是项目既有的取舍（界面上不区分 NULL 与空串），但**数据层仍然保留
+    /// `Option`** —— 区别只在这一层丢掉。将来界面想区分时，改的是这个函数
+    /// 和 `SqlResult` 的类型，不是驱动。
+    pub fn from_cells(columns: Vec<String>, rows: &[Vec<Option<String>>]) -> Self {
+        Self {
+            columns,
+            rows: rows
+                .iter()
+                .map(|row| row.iter().map(|c| c.as_deref().unwrap_or("").to_owned()).collect())
+                .collect(),
+        }
+    }
 }
 
 /// 解析一条语句的 `-B`（带表头）输出。
@@ -372,5 +399,43 @@ mod tests {
         // 回归：`fix_row_width` 在 `want == 1` 时曾经会把整行清空
         let r = parse_batch_with_header("only\nx\n");
         assert_eq!(r.rows, vec![vec!["x"]]);
+    }
+
+    #[test]
+    fn null_becomes_empty_string_at_the_cells_boundary() {
+        // 原生连接（`wslc-db` 的 `TextTable`）给的是 `Option<String>`：
+        // `None` 是 NULL，`Some("")` 是空串。界面模型两者都画成空 ——
+        // 这是刻意的取舍，但**翻译必须丢的是 NULL 那个 Option，不是整格**。
+        //
+        // 这条测试原先在 `crates/wslc-panel/src/native_db.rs` 里，
+        // 而那个 crate 的 `#[test]` **不会被执行**（CI 用
+        // `--workspace --exclude wslc-panel`，见 `AGENTS.md` §2）——
+        // 所以它从 v0.16 加进去起就没跑过一次。搬到这里才真的是守卫。
+        let r = SqlResult::from_cells(
+            vec!["a".into(), "b".into()],
+            &[
+                vec![None, Some(String::new())],
+                vec![Some("x".into()), None],
+            ],
+        );
+        assert_eq!(r.columns, vec!["a", "b"]);
+        assert_eq!(r.rows[0], vec!["", ""], "NULL 与空串都该是空串");
+        assert_eq!(r.rows[1], vec!["x", ""]);
+        // 别把 `None` 打成字符串 "None" —— 那是这条翻译最典型的错法
+        assert!(!r.rows[0][0].contains("None"), "{:?}", r.rows[0]);
+    }
+
+    #[test]
+    fn from_cells_keeps_column_count_and_never_pads() {
+        // 翻译这一层**不做**补列：补列是驱动的责任（`TextTable::pad_rows`）。
+        // 在这里再补一次会让"驱动漏了"这件事永远暴露不出来。
+        let r = SqlResult::from_cells(vec!["a".into(), "b".into()], &[vec![Some("1".into())]]);
+        assert_eq!(r.rows[0].len(), 1, "翻译层不该擅自补列");
+        assert_eq!(r.row_count(), 1);
+        assert!(!r.is_empty(), "有列名就不算空结果集");
+
+        // 空输入 → 空结果集（DDL / 无结果集那条路）
+        let empty = SqlResult::from_cells(Vec::new(), &[]);
+        assert!(empty.is_empty());
     }
 }

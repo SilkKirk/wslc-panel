@@ -150,9 +150,11 @@ pub fn mysql_probe(text: &str, container: &str) -> Result<wslc_core::cmd::mysql:
     Ok(MysqlProbe {
         family,
         client: ClientProbe {
-            // `native` 不是真的二进制名，但它会显示在连接卡上 ——
-            // 让人一眼看出"这次没用容器里的 mysql 客户端"。
-            bin: "native".to_owned(),
+            // ⚠️ 这不是二进制名，是 `DbState::NATIVE_CLIENT` 那个哨兵 ——
+            // 谁把它塞进 `wslc exec` 就会报"找不到命令"。判据统一走
+            // `DbState::is_native` / `write_blocked_reason`，别在这里比字符串。
+            // 界面上它显示在连接卡上，让人一眼看出"这次没用容器里的客户端"。
+            bin: wslc_panel_core::state::NATIVE_CLIENT.to_owned(),
             path: "（面板内建连接）".to_owned(),
             version: Some(version),
         },
@@ -193,18 +195,11 @@ fn to_tsv(table: &TextTable) -> String {
 
 /// `TextTable` → `SqlResult`。
 ///
-/// ⚠️ **NULL 在这里变成空串**：`SqlResult` 的单元格是 `Vec<Vec<String>>`，
-/// 表达不了 NULL。这是项目既有的取舍（NULL 与空串在界面上不区分），
-/// 所以翻译点放在最外层，`wslc-db` 内部仍然保留 `Option`。
+/// 翻译本体在 [`SqlResult::from_cells`] —— 它住在 `wslc-core`，因为**那边
+/// 有测试**（这个 crate 的 `#[test]` 不会被执行，见文件开头的说明）。
+/// 这里只做参数搬运。
 fn to_sql_result(table: &TextTable) -> SqlResult {
-    SqlResult {
-        columns: table.columns.clone(),
-        rows: table
-            .rows
-            .iter()
-            .map(|row| row.iter().map(|c| c.clone().unwrap_or_default()).collect())
-            .collect(),
-    }
+    SqlResult::from_cells(table.columns.clone(), &table.rows)
 }
 
 /// `TextTable` → `CsvTable`（只为复用 `parse_schema_tree` 的解析）。
@@ -222,39 +217,15 @@ fn to_csv(table: &TextTable) -> wslc_core::model::postgres::CsvTable {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn dsn_errors_are_readable() {
-        // 错误要能直接显示给用户（带原文），不能只是一句"失败"
-        let e = parse("not-a-dsn").unwrap_err();
-        assert!(!e.is_empty());
-        assert!(e.contains("postgres://") || e.contains("://"), "{e}");
-        let e2 = parse("postgres://u@h:abc/db").unwrap_err();
-        assert!(e2.contains("端口"), "{e2}");
-    }
-
-    #[test]
-    fn parses_a_remote_dsn() {
-        let spec = parse("postgres://alice:pw@db.example.com:5432/shop").unwrap();
-        assert_eq!(spec.host, "db.example.com");
-        assert_eq!(spec.port, 5432);
-        assert_eq!(spec.database.as_deref(), Some("shop"));
-    }
-
-    #[test]
-    fn null_becomes_empty_string_at_the_boundary() {
-        // 这是刻意的取舍：界面不区分 NULL 与空串（项目既有决定），
-        // 但 `wslc-db` 内部仍然保留 Option —— 翻译只发生在这一层。
-        let table = TextTable {
-            columns: vec!["a".into(), "b".into()],
-            rows: vec![vec![None, Some("".into())], vec![Some("x".into()), None]],
-        };
-        let r = to_sql_result(&table);
-        assert_eq!(r.columns, vec!["a", "b"]);
-        assert_eq!(r.rows[0], vec!["", ""]);
-        assert_eq!(r.rows[1], vec!["x", ""]);
-    }
-}
+// ⚠️ 这个文件里**不要写 `#[cfg(test)] mod tests`**。
+//
+// CI 的测试任务是 `cargo test --workspace --exclude wslc-panel`（为了不把整棵
+// GPUI 依赖树链接一遍，见 `AGENTS.md` §2），所以写在这里的断言**只编译、
+// 不执行** —— 它看起来像守卫，实际是装饰。v0.16 起这里曾经躺着 3 条
+// （DSN 解析 ×2 + NULL 边界 ×1），一次都没跑过。
+//
+// 该放哪儿：
+// - DSN 解析 → `wslc-db/src/conn.rs`（已经覆盖了同样这几条，还更多）；
+// - `TextTable` → `SqlResult` 的翻译 → `wslc_core::model::sqlresult`
+//   （见 `SqlResult::from_cells`）；
+// - 只有 GPUI 类型才能表达的东西 → 本来就不该测。

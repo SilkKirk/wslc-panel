@@ -2931,6 +2931,30 @@ fn db_store_warning(text: &str) -> AnyElement {
         .into_any_element()
 }
 
+/// 原生连接下"这几条写操作用不了"的说明。
+///
+/// 用**提醒色**而不是危险色：这不是错误，是一个有明确出路的限制
+/// （清空连接串就回去了）。用红色会让人以为页面坏了。
+///
+/// 文案来自 [`DbState::write_blocked_reason`] —— 判据和文字在同一处，
+/// 改了判据不会忘了改文案。
+fn db_native_write_notice(reason: &'static str) -> AnyElement {
+    div()
+        .w_full()
+        .p_3()
+        .rounded_md()
+        .bg(theme::warning_soft())
+        .border_1()
+        .border_color(theme::warning().opacity(0.4))
+        .child(
+            div()
+                .text_sm()
+                .text_color(theme::warning())
+                .child(crate::util::strip_md(reason)),
+        )
+        .into_any_element()
+}
+
 /// 还没读到数据时占位。
 fn db_loading(busy: bool) -> AnyElement {
     let text = if busy {
@@ -3115,6 +3139,15 @@ fn db_databases_card(
     cx: &App,
     entity: &Entity<Shell>,
 ) -> AnyElement {
+    // 原生连接：这一页的写操作（备份 / 恢复 / 导入 / 建库建用户 / 删库）
+    // 走的是 `wslc exec <容器> <客户端>`，而那时客户端是 `native` 这个
+    // 哨兵值 —— 点下去只会拿到一句指错方向的 `not found`。
+    //
+    // 所以按钮**不画**（`AGENTS.md` §7.5：全项目不用 `.disabled()`），
+    // 并在下面给一张说清"为什么、怎么改回去、哪条还能用"的卡片。
+    // 判据在 `DbState::write_blocked_reason`（那边有测试）。
+    let blocked = db.write_blocked_reason();
+
     let new_database = {
         let entity = entity.clone();
         Button::new("db-new-database")
@@ -3200,6 +3233,30 @@ fn db_databases_card(
                 },
                 entity,
             );
+            // 原生连接下只留「SQL」：其余三个（备份 / 导入备份 / 删除）都要
+            // 容器里的客户端。判据见 `DbState::write_blocked_reason`。
+            let actions: AnyElement = if blocked.is_some() {
+                h_flex()
+                    .gap_2()
+                    .child(sql_button)
+                    .into_any_element()
+            } else {
+                h_flex()
+                    .gap_2()
+                    .child(backup_button)
+                    .child(import_button)
+                    .child(sql_button)
+                    .child(
+                        danger_button(
+                            &format!("db-drop-{}", entry.name),
+                            "删除",
+                            action,
+                            entity,
+                        )
+                        .into_any_element(),
+                    )
+                    .into_any_element()
+            };
             table_row(
                 DB_COLUMNS,
                 vec![
@@ -3216,21 +3273,7 @@ fn db_databases_card(
                     cell_muted(entry.collation.clone()),
                     cell_muted(entry.tables.to_string()),
                     cell_muted(format_bytes(entry.bytes)),
-                    h_flex()
-                        .gap_2()
-                        .child(backup_button)
-                        .child(import_button)
-                        .child(sql_button)
-                        .child(
-                            danger_button(
-                                &format!("db-drop-{}", entry.name),
-                                "删除",
-                                action,
-                                entity,
-                            )
-                            .into_any_element(),
-                        )
-                        .into_any_element(),
+                    actions,
                 ],
             )
             .into_any_element()
@@ -3246,9 +3289,22 @@ fn db_databases_card(
         format!("共 {} 个数据库", visible.len())
     };
 
+    // 页头那颗按钮：原生连接时不画（建库是 DDL，走容器里的客户端）。
+    //
+    // 用 `Vec` 而不是 `.when(…)`：项目里没验证过 `when` 存在
+    // （`views.rs` 里同类的注释，见树那一段），而 `.children(vec)` 到处都在用。
+    let head_buttons: Vec<AnyElement> = if blocked.is_none() {
+        vec![new_database.into_any_element()]
+    } else {
+        Vec::new()
+    };
+
     v_flex()
         .w_full()
         .gap_3()
+        // 原生连接的说明放在**最上面**：它解释了为什么这一页少了四个按钮，
+        // 而"按钮不见了但不解释"正是 `AGENTS.md` §7.5 说的那种"以为功能没了"。
+        .children(blocked.map(db_native_write_notice))
         .child(
             h_flex()
                 .w_full()
@@ -3256,7 +3312,7 @@ fn db_databases_card(
                 .items_center()
                 // 页头只剩「新建数据库…」：库级动作（导入备份 / SQL / 备份 /
                 // 删除）全在下面每一行上。
-                .child(h_flex().gap_2().child(new_database))
+                .children(head_buttons)
                 .child(
                     div()
                         .text_sm()
@@ -3305,6 +3361,11 @@ fn db_users_card(db: &DbState, shell: &Shell, cx: &App, entity: &Entity<Shell>) 
             )
             .into_any_element();
     }
+
+    // 原生连接：建用户 / 改密码 / 授权 / 删用户全是 DDL，走容器里的客户端。
+    // `users_error` 那段已经 return 了，所以这里的判据是**第二道**入口检查
+    // （第一道在 `db_databases_card`，但用户可以停在这个 tab 上再去应用连接串）。
+    let blocked = db.write_blocked_reason();
 
     let new_user = {
         let entity = entity.clone();
@@ -3407,13 +3468,19 @@ fn db_users_card(db: &DbState, shell: &Shell, cx: &App, entity: &Entity<Shell>) 
                     } else {
                         cell_muted("N")
                     },
-                    h_flex()
-                        .gap_2()
-                        .flex_wrap()
-                        .child(alter)
-                        .child(grant)
-                        .child(drop)
-                        .into_any_element(),
+                    // 原生连接下这一列不画：改密码 / 授权 / 删除都是 DDL，
+                    // 走的是容器里的客户端（判据见 `DbState::write_blocked_reason`）。
+                    if blocked.is_some() {
+                        cell_muted("—").into_any_element()
+                    } else {
+                        h_flex()
+                            .gap_2()
+                            .flex_wrap()
+                            .child(alter)
+                            .child(grant)
+                            .child(drop)
+                            .into_any_element()
+                    },
                 ],
             )
             .into_any_element()
@@ -3425,15 +3492,26 @@ fn db_users_card(db: &DbState, shell: &Shell, cx: &App, entity: &Entity<Shell>) 
         visible.len()
     );
 
+    // 原生连接时不画「新建用户…」—— 它是一条 DDL。
+    // 同上：用 `Vec` + `.children(vec)`，不用没验证过的 `.when(…)`。
+    let head_buttons: Vec<AnyElement> = if blocked.is_none() {
+        vec![new_user.into_any_element()]
+    } else {
+        Vec::new()
+    };
+
     v_flex()
         .w_full()
         .gap_3()
+        // 和「数据库」tab 同一张说明卡：用户切到这个 tab 上才知道按钮没了，
+        // 所以这里也要有（文案同一份，来自 `write_blocked_reason`）。
+        .children(blocked.map(db_native_write_notice))
         .child(
             h_flex()
                 .w_full()
                 .justify_between()
                 .items_center()
-                .child(new_user)
+                .children(head_buttons)
                 .child(
                     div()
                         .text_sm()

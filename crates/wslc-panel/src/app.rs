@@ -4248,6 +4248,29 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 第二道入口检查（第一道是渲染层不画那些按钮）。
+        //
+        // 为什么两道都要：渲染层拦的是"看不见"，而**浮层是几分钟前就能开着的**
+        // —— 用户完全可以开着「新建数据库」弹窗，再回「基础信息」粘一条连接串
+        // 应用，然后回来点确定。那一刻按钮早就在屏幕上了，只有这里能拦住。
+        //
+        // 走到这里说明某条路绕过了渲染层的判据（或者渲染没更新），
+        // 所以直接说清原因，别开一个填完必然失败的弹窗。
+        //
+        // ⚠️ 判据**先算成独立变量**再 notify：`write_blocked_reason` 要借着
+        // `self.state.db`，而 `notify` 要 `&mut self.state` —— 借用没结束就是
+        // 编译错误（这个仓库里踩过几次，见 `load_db` 里同类的注释）。
+        // 返回的是 `Option<&'static str>`，所以算出来之后借用就结束了。
+        let blocked = self
+            .state
+            .db
+            .as_ref()
+            .and_then(|db| db.write_blocked_reason());
+        if let Some(reason) = blocked {
+            self.state.notify(Toast::error(reason));
+            cx.notify();
+            return;
+        }
         self.state.set_section_open(UiSection::DbEncoding, false);
         let database = cx.new(|cx| InputState::new(window, cx).placeholder("shop"));
         let charset = cx.new(|cx| {
@@ -4506,6 +4529,17 @@ impl Shell {
             return;
         }
 
+        // 原生连接下导入走不通：它要把文件 `container cp` 进去、再用容器里的
+        // `mysql` 读它（见 `cmd::mysql::load_sql_file`）。
+        //
+        // ⚠️ 判据先算成独立变量：`db` 借着 `self.state`，而 notify 要
+        // `&mut self.state`（借用冲突）。
+        let blocked = self.state.db.as_ref().and_then(|db| db.write_blocked_reason());
+        if let Some(reason) = blocked {
+            self.state.notify(Toast::error(reason));
+            cx.notify();
+            return;
+        }
         let Some(db) = self.state.db.as_ref() else {
             return;
         };
@@ -7789,6 +7823,18 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 原生连接下备份走不通：`mysqldump` 要跑在**容器里**，而原生连接
+        // 可能连的是一台远程机器，`db.client` 那时是 `native` 哨兵。
+        // 不拦的后果是 `exec: native: not found` —— 看上去像容器坏了。
+        //
+        // ⚠️ 判据先算成独立变量：`db` 借着 `self.state`，而 notify 要
+        // `&mut self.state`（借用冲突）。
+        let blocked = self.state.db.as_ref().and_then(|db| db.write_blocked_reason());
+        if let Some(reason) = blocked {
+            self.state.notify(Toast::error(reason));
+            cx.notify();
+            return;
+        }
         let Some(db) = self.state.db.as_ref() else {
             return;
         };
@@ -7949,6 +7995,17 @@ impl Shell {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 浮层里的三个动作（立即备份 / 恢复 / 删除）在原生连接下全都走不通。
+        // 让它打开只会得到"一个列着文件、但每个按钮都报同一句话"的浮层 ——
+        // 不如在门口就说清。
+        //
+        // ⚠️ 判据先算成独立变量（`db` 的借用与 `notify` 的 `&mut self.state` 冲突）。
+        let blocked = self.state.db.as_ref().and_then(|db| db.write_blocked_reason());
+        if let Some(reason) = blocked {
+            self.state.notify(Toast::error(reason));
+            cx.notify();
+            return;
+        }
         let Some(db) = self.state.db.as_ref() else {
             return;
         };
@@ -7967,6 +8024,14 @@ impl Shell {
 
     /// 恢复一份备份（**覆盖**该库现有数据 —— 走二次确认）。
     pub fn restore_db_backup(&mut self, index: usize, cx: &mut Context<Self>) {
+        // 原生连接下恢复也走不通：它要 `container cp` + 容器里的 `mysql`。
+        // ⚠️ 判据先算成独立变量（借用冲突，同 `start_db_backup`）。
+        let blocked = self.state.db.as_ref().and_then(|db| db.write_blocked_reason());
+        if let Some(reason) = blocked {
+            self.state.notify(Toast::error(reason));
+            cx.notify();
+            return;
+        }
         let Some(db) = self.state.db.as_ref() else {
             return;
         };
@@ -8008,6 +8073,18 @@ impl Shell {
     /// `PendingAction::DeleteDatabaseBackup` 里那几个字段，不再自己查索引
     /// （确认框开着的期间列表可能已经变了，按索引取会删错一条）。
     pub fn delete_db_backup(&mut self, index: usize, cx: &mut Context<Self>) {
+        // 删除本身有一半是**容器内**的 `rm -f`。原生连接下那一步会去
+        // `exec … rm`（`rm` 是真的，所以它**会执行成功**）—— 但里面的
+        // 路径是按容器内约定拼的，远程库上根本没有那份文件。
+        // 所以和备份 / 恢复同一条判据：先拦住，别留下"删了但没删干净"。
+        //
+        // ⚠️ 判据先算成独立变量（借用冲突，同 `start_db_backup`）。
+        let blocked = self.state.db.as_ref().and_then(|db| db.write_blocked_reason());
+        if let Some(reason) = blocked {
+            self.state.notify(Toast::error(reason));
+            cx.notify();
+            return;
+        }
         let Some(db) = self.state.db.as_ref() else {
             return;
         };
