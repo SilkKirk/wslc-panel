@@ -61,7 +61,7 @@ pub struct WslConfState {
     /// 要不要显示"实际会写进去的内容"。
     pub show_preview: bool,
     /// 每次打开按当前文档初始化，避免承接其他发行版的展开状态。
-    pub(crate) expanded_sections: BTreeSet<&'static str>,
+    expanded_sections: BTreeSet<&'static str>,
 }
 
 impl WslConfState {

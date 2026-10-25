@@ -60,7 +60,7 @@ pub struct AppState {
     /// 当前页面。
     pub page: Page,
     /// 仅记本次界面的展开状态，不保存偏好，也不影响实际表单参数。
-    pub(crate) expanded_sections: BTreeSet<UiSection>,
+    expanded_sections: BTreeSet<UiSection>,
     /// 容器页的筛选 / 排序状态。
     ///
     /// **页面状态，不是偏好**：不写 `prefs.json`，重启后回到「全部 + 默认排序」。

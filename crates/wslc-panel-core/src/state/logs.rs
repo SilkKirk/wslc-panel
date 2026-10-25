@@ -22,7 +22,7 @@ pub struct LogsState {
     /// 上一次加载的错误。
     pub error: Option<String>,
     /// 已经发起了多少轮加载。用来**丢弃过期响应**，见 [`LogsState::begin_load`]。
-    pub(crate) load_seq: u64,
+    load_seq: u64,
 }
 
 impl LogsState {

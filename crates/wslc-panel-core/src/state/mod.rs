@@ -65,13 +65,17 @@ mod tests;
 // 界面按它显示「在线清单来自 `wsl -l -o` 还是兜底 JSON」那句说明。
 pub use prelude::OnlineListSource;
 
-pub(crate) use actions::*;
-pub(crate) use app::*;
-pub(crate) use db_state::*;
-pub(crate) use deploy::*;
-pub(crate) use install_state::*;
-pub(crate) use logs::*;
-pub(crate) use nav::*;
-pub(crate) use registry_state::*;
-pub(crate) use snapshot::*;
-pub(crate) use wslconf_state::*;
+// ⚠️ 这几行必须是 `pub` 而不是 `pub(crate)`：`wslc-panel/src/main.rs` 里有一层
+// 垫片 `pub use wslc_panel_core::state::*;`，那是**跨 crate**的再导出 ——
+// `pub(crate)` 在另一个 crate 里完全看不见（实测：ui job 报 29 个 E0432）。
+// 这些类型本来就是这个 crate 的公开 API，`pub` 才是它们原本的可见性。
+pub use actions::*;
+pub use app::*;
+pub use db_state::*;
+pub use deploy::*;
+pub use install_state::*;
+pub use logs::*;
+pub use nav::*;
+pub use registry_state::*;
+pub use snapshot::*;
+pub use wslconf_state::*;
