@@ -41,18 +41,15 @@ pub fn db_info_overlay(
             .id("db-info-card")
             .max_h(px(560.))
             .overflow_y_scroll()
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(modal_title("基础信息"))
-                    .child(div().text_xs().text_color(theme::text_dim()).child(format!(
-                        "容器 {} · {} · {} · 客户端 {}",
-                        db.container,
-                        db.engine_label(),
-                        db.image,
-                        db.client_version.as_deref().unwrap_or(db.client.as_str()),
-                    ))),
-            )
+            .child(v_flex().gap_1().child(modal_title("基础信息")).child(
+                div().text_xs().text_color(theme::text_dim()).child(format!(
+                    "容器 {} · {} · {} · 客户端 {}",
+                    db.container,
+                    db.engine_label(),
+                    db.image,
+                    db.client_version.as_deref().unwrap_or(db.client.as_str()),
+                )),
+            ))
             // 连接卡本体照旧用它自己那份渲染（表单 + 说明都在里面）
             .child(db_connection_card(db, form, entity, cx))
             .child(h_flex().w_full().justify_end().child(close)),
@@ -365,11 +362,8 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
             .id("db-dialog-card")
             .max_h(px(820.))
             .overflow_y_scroll()
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(modal_title(kind.title()))
-                    .child(div().text_xs().text_color(theme::text_dim()).child(format!(
+            .child(v_flex().gap_1().child(modal_title(kind.title())).child(
+                div().text_xs().text_color(theme::text_dim()).child(format!(
                                 "在容器 {} 上执行 —— 用的是数据库页连接卡里那个账号。",
                                 shell
                                     .state
@@ -377,8 +371,8 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
                                     .as_ref()
                                     .map(|db| db.container.clone())
                                     .unwrap_or_default()
-                            ))),
-            )
+                            )),
+            ))
             .children(fields)
             .child(modal_footer([cancel, confirm])),
     )

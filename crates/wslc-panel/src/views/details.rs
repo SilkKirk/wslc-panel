@@ -473,15 +473,12 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
             .max_h(px(860.))
             .overflow_y_scroll()
             .child(
-                v_flex()
-                    .gap_1()
-                    .child(modal_title(name.to_owned()))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::text_dim())
-                            .child("磁盘维护、导出与删除都在这里；删除不可撤销。"),
-                    ),
+                v_flex().gap_1().child(modal_title(name.to_owned())).child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child("磁盘维护、导出与删除都在这里；删除不可撤销。"),
+                ),
             )
             .child(v_flex().w_full().gap_2().children(rows))
             .child(

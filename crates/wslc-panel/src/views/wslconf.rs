@@ -346,7 +346,10 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEl
             .child(
                 v_flex()
                     .gap_1()
-                    .child(modal_title(format!("{} 配置（/etc/wsl.conf）", state.distro)))
+                    .child(modal_title(format!(
+                        "{} 配置（/etc/wsl.conf）",
+                        state.distro
+                    )))
                     .child(div().text_xs().text_color(theme::text_dim()).child(format!(
                         "{}　·　保存前会先备份到 /etc/wsl.conf.bak；\
                              注释和本程序不认识的键都会原样保留。",

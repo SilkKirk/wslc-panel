@@ -914,57 +914,58 @@ pub fn deploy_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) ->
         None
     };
 
-    let card =
-        card.children(site_block)
-            .child(form_field(
-                "deploy-port",
-                if runtime == wslc_core::model::AppRuntime::Nginx {
-                    if form.site_enabled {
-                        "站点监听端口"
-                    } else {
-                        "端口（检查主机映射）"
-                    }
+    let card = card
+        .children(site_block)
+        .child(form_field(
+            "deploy-port",
+            if runtime == wslc_core::model::AppRuntime::Nginx {
+                if form.site_enabled {
+                    "站点监听端口"
                 } else {
-                    "应用监听端口"
-                },
-                &form.port,
-                cx,
-                true,
-            ))
-            .child(
+                    "端口（检查主机映射）"
+                }
+            } else {
+                "应用监听端口"
+            },
+            &form.port,
+            cx,
+            true,
+        ))
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child("每个应用使用独立名称、目录和端口；主机端口映射须在创建容器时设置。"),
+        )
+        .children(
+            (runtime.kind() == wslc_core::model::DeployKind::Process).then(|| {
                 div()
                     .text_xs()
                     .text_color(theme::text_dim())
-                    .child("每个应用使用独立名称、目录和端口；主机端口映射须在创建容器时设置。"),
-            )
-            .children(
-                (runtime.kind() == wslc_core::model::DeployKind::Process).then(|| {
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_dim())
-                        .child("启动命令须监听此端口，面板不会自动修改命令。")
-                }),
-            )
-            .child(modal_footer([
-                {
-                    let entity = entity.clone();
-                    Button::new("deploy-cancel").label("取消").small().on_click(
-                        move |_, _, cx| {
-                            entity.update(cx, |shell, cx| shell.close_deploy_dialog(cx));
-                        },
-                    )
-                },
-                {
-                    let entity = entity.clone();
-                    Button::new("deploy-submit")
-                        .label(if re_deploy { "重新部署" } else { "部署" })
-                        .small()
-                        .primary()
-                        .on_click(move |_, window, cx| {
-                            entity.update(cx, |shell, cx| shell.submit_deploy(window, cx));
-                        })
-                },
-            ]));
+                    .child("启动命令须监听此端口，面板不会自动修改命令。")
+            }),
+        )
+        .child(modal_footer([
+            {
+                let entity = entity.clone();
+                Button::new("deploy-cancel")
+                    .label("取消")
+                    .small()
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |shell, cx| shell.close_deploy_dialog(cx));
+                    })
+            },
+            {
+                let entity = entity.clone();
+                Button::new("deploy-submit")
+                    .label(if re_deploy { "重新部署" } else { "部署" })
+                    .small()
+                    .primary()
+                    .on_click(move |_, window, cx| {
+                        entity.update(cx, |shell, cx| shell.submit_deploy(window, cx));
+                    })
+            },
+        ]));
 
     modal_scrim("deploy-dialog-scrim", card).into_any_element()
 }
@@ -1169,31 +1170,29 @@ pub fn deploy_remove_confirm_overlay(
                      删掉的就是**卷里**的那几个文件 —— 卷还在，文件不会回来。",
                 )),
         )
-        .child(
-            modal_footer([
-                {
-                    let entity = entity.clone();
-                    Button::new("deploy-remove-cancel")
-                        .label("取消")
-                        .small()
-                        .on_click(move |_, _, cx| {
-                            entity.update(cx, |shell, cx| shell.cancel_remove_deployment(cx));
-                        })
-                },
-                {
-                    let entity = entity.clone();
-                    let app = app.to_owned();
-                    Button::new("deploy-remove-confirm")
-                        .label("确认删除")
-                        .small()
-                        .danger()
-                        .on_click(move |_, _, cx| {
-                            let app = app.clone();
-                            entity.update(cx, |shell, cx| shell.confirm_remove_deployment(app, cx));
-                        })
-                },
-            ]),
-        );
+        .child(modal_footer([
+            {
+                let entity = entity.clone();
+                Button::new("deploy-remove-cancel")
+                    .label("取消")
+                    .small()
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |shell, cx| shell.cancel_remove_deployment(cx));
+                    })
+            },
+            {
+                let entity = entity.clone();
+                let app = app.to_owned();
+                Button::new("deploy-remove-confirm")
+                    .label("确认删除")
+                    .small()
+                    .danger()
+                    .on_click(move |_, _, cx| {
+                        let app = app.clone();
+                        entity.update(cx, |shell, cx| shell.confirm_remove_deployment(app, cx));
+                    })
+            },
+        ]));
 
     modal_scrim("deploy-remove-scrim", card).into_any_element()
 }
