@@ -1187,7 +1187,7 @@ fn snapshot_default_is_empty_and_has_no_data() {
 fn image_totals_dedupe_refs_pointing_at_the_same_id() {
     // 真机夹具：`e2ac70e7319a` 同时是
     // `docker.1panel.live/library/hello-world` 和 `hello-world` 两行。
-    const IMAGES: &str = include_str!("../../wslc-core/tests/fixtures/images.jsonl");
+    const IMAGES: &str = include_str!("../../../wslc-core/tests/fixtures/images.jsonl");
     let images: Vec<ImageListItem> = wslc_core::jsonl::parse_lines(IMAGES).expect("夹具应当能解析");
     assert_eq!(images.len(), 3, "夹具本身是 3 行（2 个镜像）");
 
@@ -1911,8 +1911,10 @@ fn session_label_uses_the_first_active_session() {
     use wslc_core::model::SystemInfo;
     let mut state = AppState::new(Wslc::new(), Wsl::new());
     state.snapshot.info = Some(
-        jsonl::parse_object::<SystemInfo>(include_str!("../../wslc-core/tests/fixtures/info.json"))
-            .unwrap(),
+        jsonl::parse_object::<SystemInfo>(include_str!(
+            "../../../wslc-core/tests/fixtures/info.json"
+        ))
+        .unwrap(),
     );
     assert_eq!(state.session_label(), "#1 wslc-cli-76434");
 }
