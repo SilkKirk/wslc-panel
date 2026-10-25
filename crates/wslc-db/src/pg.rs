@@ -161,20 +161,29 @@ fn classify(err: postgres::Error) -> DbError {
 ///
 /// ⚠️ 文本兜底**只用于连接层**（`code == None`）。服务端给出的错一律按
 /// SQLSTATE 判 —— 否则一句恰好含 "password" 的语法错误会被说成"认证失败"。
+///
+/// ⚠️ **大小写照原样比会漏**：`postgres` 自己的措辞是
+/// `error performing TLS handshake`（大写 `TLS`），而这行早先写的是
+/// `contains("tls")` —— 于是 TLS 握手失败**一直被归成 `Other`**
+/// （界面上说"数据库错误"，用户看不出该去查证书还是查口令）。
+/// 现在统一先 `to_lowercase()` 再比；`SSL` 那条原本是特意大写写的，
+/// 归一化之后 `ssl` 一样能命中。这是"判据归一化"而不是"多加一个关键词"。
 fn classify_parts(code: Option<&str>, message: &str) -> DbErrorKind {
     let Some(code) = code else {
         // 连接层：把常见情况分出来，其余归 Other。
-        return if message.contains("authentication")
-            || message.contains("password")
-            || message.contains("role")
+        //
+        // 归一化成小写再比：错误文本的措辞是大小写混用的（驱动自己的
+        // `TLS handshake`、系统给的 `Connection refused` / `Connection reset`）。
+        // ⚠️ 别改回逐条列举大小写变体 —— 那正是这条判据以前漏掉 TLS 的原因。
+        let lower = message.to_lowercase();
+        return if lower.contains("authentication")
+            || lower.contains("password")
+            || lower.contains("role")
         {
             DbErrorKind::Auth
-        } else if message.contains("tls") || message.contains("SSL") {
+        } else if lower.contains("tls") || lower.contains("ssl") {
             DbErrorKind::Tls
-        } else if message.contains("connect")
-            || message.contains("Connection")
-            || message.contains("refused")
-            || message.contains("timed out")
+        } else if lower.contains("connect") || lower.contains("refused") || lower.contains("timed out")
         {
             DbErrorKind::Connect
         } else {
@@ -254,10 +263,24 @@ mod tests {
             classify_parts(None, "password authentication failed for user \"app\""),
             DbErrorKind::Auth
         );
-        assert_eq!(
-            classify_parts(None, "error performing TLS handshake"),
-            DbErrorKind::Tls
-        );
+        // TLS：**大小写都要认**
+        //
+        // ⚠️ 这一条不是补充覆盖率，是 v0.17.0 的**回归钉**：原判据写的是
+        // `contains("tls")`（全小写），而 `postgres` 自己的措辞是
+        // `error performing TLS handshake` —— 大写 TLS 匹配不上，
+        // 于是 TLS 握手失败一直被归成 `Other`（"数据库错误"），
+        // 用户看不出该去查证书还是查口令。这个 bug 是靠这条测试暴露的。
+        for message in [
+            "error performing TLS handshake",
+            "error performing tls handshake",
+            "invalid SSL configuration",
+        ] {
+            assert_eq!(
+                classify_parts(None, message),
+                DbErrorKind::Tls,
+                "TLS 类错误没被认出来：{message}"
+            );
+        }
         // 认不出来就老实说"数据库错误"，别瞎猜
         assert_eq!(
             classify_parts(None, "something entirely unexpected"),
