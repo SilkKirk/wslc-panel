@@ -130,14 +130,41 @@ impl Session for PgSession {
 
 /// 把 `postgres::Error` 归类 —— 界面要能说清"是口令错还是网不通"。
 ///
-/// 依据是 SQLSTATE：`28xxx` 是认证类（`28P01` 口令错、`28000` 权限），
-/// `3D000` 是库不存在。没有 SQLSTATE 的基本都是连接层（DNS、拒绝、超时）。
+/// 真正的判断在 [`classify_parts`]（纯函数、有测试）；这里只负责从
+/// `postgres::Error` 里把「SQLSTATE」和「原文」两样东西取出来。
+///
+/// # 为什么要拆
+///
+/// `postgres::Error` **构造不出来**（字段全私有），所以只要判断逻辑还写在
+/// 这个函数里，它就一行都测不到。v0.16 起那份测试实际上只断言了
+/// `"28P01".starts_with("28")` —— 测的是标准库，不是我们。
 fn classify(err: postgres::Error) -> DbError {
     let message = err.to_string();
     // `as_db_error()` 只对"服务端返回的错"有值；连接阶段的错它是 `None`。
-    let Some(db) = err.as_db_error() else {
+    let code = err.as_db_error().map(|db| db.code().code().to_owned());
+    let kind = classify_parts(code.as_deref(), &message);
+    // 用服务端原文（含 `LINE n:` 和插入符），它比我们拼的任何话都清楚。
+    DbError::new(kind, message)
+}
+
+/// 归类的**判据本身**（纯函数，可测）。
+///
+/// `code` 是 SQLSTATE；`None` = 这条错没有 SQLSTATE，也就是**连接层**的错
+/// （DNS / 端口 / 拒绝 / 超时 / TLS 握手）。
+///
+/// # 判据
+///
+/// - SQLSTATE `28xxx` → 认证类（`28P01` 口令错、`28000` 权限不足）；
+/// - `3D000`（库不存在）/ `42501`（权限不足）→ [`DbErrorKind::Database`]；
+/// - 其余带 SQLSTATE 的 → [`DbErrorKind::Query`]（SQL 本身的问题）；
+/// - 不带 SQLSTATE 的按文本猜：认证 → TLS → 连接 → Other。
+///
+/// ⚠️ 文本兜底**只用于连接层**（`code == None`）。服务端给出的错一律按
+/// SQLSTATE 判 —— 否则一句恰好含 "password" 的语法错误会被说成"认证失败"。
+fn classify_parts(code: Option<&str>, message: &str) -> DbErrorKind {
+    let Some(code) = code else {
         // 连接层：把常见情况分出来，其余归 Other。
-        let kind = if message.contains("authentication")
+        return if message.contains("authentication")
             || message.contains("password")
             || message.contains("role")
         {
@@ -153,19 +180,15 @@ fn classify(err: postgres::Error) -> DbError {
         } else {
             DbErrorKind::Other
         };
-        return DbError::new(kind, message);
     };
 
-    let code = db.code().code();
-    let kind = if code.starts_with("28") {
+    if code.starts_with("28") {
         DbErrorKind::Auth
     } else if code == "3D000" || code == "42501" {
         DbErrorKind::Database
     } else {
         DbErrorKind::Query
-    };
-    // 用服务端原文（含 `LINE n:` 和插入符），它比我们拼的任何话都清楚。
-    DbError::new(kind, message)
+    }
 }
 
 #[cfg(test)]
@@ -174,17 +197,77 @@ mod tests {
 
     #[test]
     fn auth_errors_are_recognised_by_sqlstate_prefix() {
-        // `classify` 的输入是 `postgres::Error`，构造不出来，
-        // 所以这里钉的是**判据本身**：认证类 SQLSTATE 一律以 `28` 开头
-        // （`28P01` 口令错、`28000` 权限不足）。真正的端到端验证只能连一个
-        // 错口令的实例 —— 本机 `pg_hba=trust` 测不出来，
+        // SQLSTATE 的判据是 PostgreSQL 文档里定死的，不是我们的猜测：
+        // `28P01` 口令错、`28000` 权限不足，都归认证类。
+        // 端到端（连一个错口令的实例）本机测不出来 —— `pg_hba=trust`，
         // 见 `docs/postgres-measured.md` 里"测不出来的那一条"。
         for code in ["28P01", "28000"] {
-            assert!(code.starts_with("28"), "{code} 应该被归为认证类");
+            assert_eq!(classify_parts(Some(code), ""), DbErrorKind::Auth, "{code}");
         }
         // 库不存在不是认证问题，别混进去
-        assert!(!("3D000".starts_with("28")));
-        // 每类都要有能看的短句
+        assert_eq!(classify_parts(Some("3D000"), ""), DbErrorKind::Database);
+        // 权限不足（`42501`）在界面上也是"库不可用"那一档
+        assert_eq!(classify_parts(Some("42501"), ""), DbErrorKind::Database);
+        // 其余带 SQLSTATE 的都是 SQL 本身的问题
+        assert_eq!(classify_parts(Some("42601"), ""), DbErrorKind::Query);
+    }
+
+    #[test]
+    fn real_server_errors_are_classified_by_sqlstate_not_by_text() {
+        // 夹具是真机抓下来的（`psql` 的原文，见 `tests/fixtures/`）。
+        // 这一条钉的是"服务端的错**按 SQLSTATE 判**，不按文本猜"：
+        // `postgres_error_syntax.txt` 里那句语法错误如果走文本兜底，
+        // 它一个关键词都命中不了 —— 但更重要的是反过来那种：
+        // 一句恰好含 "password" 的 SyntaxError 不该被说成"认证失败"。
+        let syntax = include_str!("../../wslc-core/tests/fixtures/postgres_error_syntax.txt");
+        assert!(syntax.contains("syntax error"), "{syntax}");
+        assert_eq!(
+            classify_parts(Some("42601"), syntax),
+            DbErrorKind::Query,
+            "语法错误被归错了，界面会给一句无关的建议"
+        );
+        // 即使原文里有认证类的字眼，SQLSTATE 说了算
+        assert_eq!(
+            classify_parts(Some("42601"), "password authentication failed"),
+            DbErrorKind::Query
+        );
+
+        // 库不存在：`psql` 把 FATAL 写在连接阶段，但服务端**给了** SQLSTATE
+        let missing = include_str!("../../wslc-core/tests/fixtures/postgres_error_missing_db.txt");
+        assert!(missing.contains("does not exist"), "{missing}");
+        assert_eq!(classify_parts(Some("3D000"), missing), DbErrorKind::Database);
+    }
+
+    #[test]
+    fn connection_layer_errors_fall_back_to_text() {
+        // 没有 SQLSTATE = 还没连上（DNS / 端口 / 拒绝 / 超时 / TLS）。
+        // 这一类只能按文本分，判错的代价是那句"该怎么办"不对。
+        assert_eq!(
+            classify_parts(None, "error connecting to server: Connection refused"),
+            DbErrorKind::Connect
+        );
+        assert_eq!(
+            classify_parts(None, "error connecting to server: timed out"),
+            DbErrorKind::Connect
+        );
+        assert_eq!(
+            classify_parts(None, "password authentication failed for user \"app\""),
+            DbErrorKind::Auth
+        );
+        assert_eq!(
+            classify_parts(None, "error performing TLS handshake"),
+            DbErrorKind::Tls
+        );
+        // 认不出来就老实说"数据库错误"，别瞎猜
+        assert_eq!(
+            classify_parts(None, "something entirely unexpected"),
+            DbErrorKind::Other
+        );
+    }
+
+    #[test]
+    fn every_error_kind_has_a_label() {
+        // 每类都要有能看的短句 —— 界面上显示的就是它
         for kind in [
             DbErrorKind::Connect,
             DbErrorKind::Auth,
