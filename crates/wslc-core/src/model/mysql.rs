@@ -1025,7 +1025,9 @@ pub fn create_user_statements(
 /// 生成的密码不同"就够了。⚠️ **不是密码学安全的随机** —— 威胁模型是
 /// "别让两个库同密码"，不是"对抗能读你内存的攻击者"。这条写明了，是推的边界。
 pub fn generate_password() -> String {
-    use std::hash::{BuildHasher, Hasher};
+    // 只要 `Hasher` trait（`write_u64` / `finish`），`DefaultHasher::new()` 是
+    // 固有方法 —— 不需要 `BuildHasher`（多导入它会被 `unused_imports` 抓到）。
+    use std::hash::Hasher;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 

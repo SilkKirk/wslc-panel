@@ -2094,7 +2094,7 @@ pub struct DbState {
     pub client: String,
     /// 客户端版本那一行（`mysql  Ver 26.7.0 …`）。
     pub client_version: Option<String>,
-```    /// 用户粘进来的**连接串**（v0.16）。`Some` 时这一页走原生连接。
+    /// 用户粘进来的**连接串**（v0.16）。`Some` 时这一页走原生连接。
     ///
     /// # 为什么是可选的字符串而不是 `ConnSpec`
     ///
@@ -2104,14 +2104,21 @@ pub struct DbState {
     /// 原样报给用户看（"端口不是合法数字：abc" 比 "连接失败" 有用得多）。
     ///
     /// ⚠️ 它**不落盘**：里面有口令。
+    ///
+    /// ⚠️ 它也是 [`DbState::is_native`] 的两个判据之一 —— 填了它，那六条
+    /// 只能走容器内客户端的写操作就会被拦住（见 `write_blocked_reason`）。
     pub dsn: Option<String>,
     /// 多驱动层的连接（v0.13）。
     ///
     /// # 现在它是什么
     ///
     /// 一份**镜像**：由 `container` + `family` 推出来（`host` 就是那个容器、
-    /// `kind` 由家族换算、`addr`/`port` 取引擎默认值）。**还没有代码读它** ——
-    /// 阶段 0 只负责把类型摆到位，做到行为零变化。
+    /// `kind` 由家族换算、`addr`/`port` 取引擎默认值）。
+    ///
+    /// ⚠️ 早先这里写的是"**还没有代码读它**"—— 那句话**已经过时**：
+    /// `DbState::is_mysql_family` / `engine_label` 都读 `conn.kind`，
+    /// 而 `db.driver()`（`wslc-panel`）也是从它选驱动的。
+    /// 留着那句旧注释会让下一个人以为这是个空字段。
     ///
     /// # 为什么要有它
     ///

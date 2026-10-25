@@ -49,7 +49,7 @@
 //! `--column-type-info` 或者执行前先 `LIMIT 0` 探一次，代价都不值。
 //! → 界面上把这种情况说成"执行成功，没有返回行"，而不是画一张空表。
 
-use super::mysql::{split_tsv_line, unescape_batch_field};
+use super::mysql::split_tsv_line;
 
 /// 一条语句的执行结果。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
