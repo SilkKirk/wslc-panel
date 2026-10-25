@@ -2775,6 +2775,16 @@ fn db_blocked_card(failure: &DbFailure) -> AnyElement {
 }
 
 /// 上一次失败：一句"该怎么办" +（可滚动的）原文。
+///
+/// # 为什么这里**不**用官方的 `Alert`
+///
+/// 读 `alert.rs` 确认过：`Alert` 的 `message` 是 `impl Into<Text>`，而 `Text`
+/// 只实现了 `From<SharedString | String | &str | TextView>` —— 接不了任意
+/// `Element`（`TextView` 另需 `Entity<TextViewState>`，是为了可编辑富文本）。
+///
+/// 而这个横幅是**两段**（摘要 + 可滚动的原文），压成一句就没法滚动、
+/// 也丢掉了"原文保留换行"这个排查价值。所以外壳保留手写，
+/// 但配色仍走 `theme::danger_*`（和 `Alert` 背后是同一组色）。
 fn db_error_banner(failure: &DbFailure) -> AnyElement {
     v_flex()
         .w_full()
@@ -2800,19 +2810,16 @@ fn db_error_banner(failure: &DbFailure) -> AnyElement {
 /// 提示，是针对 SQL 报错分类的）；存档读坏不是 SQL 失败，没有可分类的东西，
 /// 硬塞成 `DbFailure` 只会让分类器瞎猜一条不相干的建议。
 fn db_store_warning(text: &str) -> AnyElement {
-    div()
-        .w_full()
-        .p_3()
-        .rounded_md()
-        .bg(theme::danger_soft())
-        .border_1()
-        .border_color(theme::danger_edge())
-        .child(
-            div()
-                .text_sm()
-                .text_color(theme::danger())
-                .child(text.to_owned()),
-        )
+    use gpui_kit::component::alert::Alert;
+
+    // 官方 `Alert`：底色 / 边框 / 图标 / 关闭按钮都由组件库给，而它的
+    // `danger` 已经由 `theme::tune_component_theme` 换成我们自己的红 ——
+    // 所以观感和其余页面一致，不用再手写「底色 + 边框 + 文字色」三件套。
+    //
+    // `banner()`：整条铺满、无圆角（错误横幅的形态），不是那种飘在内容里的
+    // 圆角小卡片。
+    Alert::error("db-store-warning", text.to_owned())
+        .banner()
         .into_any_element()
 }
 
@@ -2840,18 +2847,35 @@ fn db_native_write_notice(reason: &'static str) -> AnyElement {
 }
 
 /// 还没读到数据时占位。
+///
+/// 忙着的时候用官方 `Spinner`（转圈），不忙时是一句静态提示 ——
+/// **两者的区别要一眼看得出**：只换文字（"正在读取…" / "还没有读到数据"）
+/// 在截图和余光里几乎一样，用户会以为卡住了。正式软件都有那个转圈。
 fn db_loading(busy: bool) -> AnyElement {
-    let text = if busy {
-        "正在读取…"
-    } else {
-        "还没有读到数据 —— 点右上角「重新读取」"
-    };
+    use gpui_kit::component::spinner::Spinner;
+
+    if busy {
+        return v_flex()
+            .w_full()
+            .py_8()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .child(Spinner::new())
+            .child(div().text_sm().text_color(theme::text_dim()).child("正在读取…"))
+            .into_any_element();
+    }
     v_flex()
         .w_full()
         .py_8()
         .items_center()
         .justify_center()
-        .child(div().text_sm().text_color(theme::text_dim()).child(text))
+        .child(
+            div()
+                .text_sm()
+                .text_color(theme::text_dim())
+                .child("还没有读到数据 —— 点右上角「重新读取」"),
+        )
         .into_any_element()
 }
 
@@ -4508,6 +4532,30 @@ fn deploy_error_banner(text: &str) -> AnyElement {
 
 /// 「正在读取…」占位（和 `db_loading` 同一形状）。
 fn deploy_loading(busy: bool) -> AnyElement {
+    use gpui_kit::component::spinner::Spinner;
+
+    // 和 `db_loading` 同一个判断：busy 时必须有**转圈**，只换文字不够。
+    // 另外那句括号里的实现细节（"先看容器认不认得出…"）删掉了 ——
+    // 用户只想知道"还要不要等"。
+    let body: AnyElement = if busy {
+        h_flex()
+            .gap_2()
+            .items_center()
+            .child(Spinner::new())
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme::text_muted())
+                    .child("正在读取…"),
+            )
+            .into_any_element()
+    } else {
+        div()
+            .text_sm()
+            .text_color(theme::text_muted())
+            .child("还没读到数据 —— 点右上角「重新读取」")
+            .into_any_element()
+    };
     div()
         .w_full()
         .p_6()
@@ -4515,16 +4563,7 @@ fn deploy_loading(busy: bool) -> AnyElement {
         .bg(theme::bg_card())
         .border_1()
         .border_color(theme::border())
-        .child(
-            div()
-                .text_sm()
-                .text_color(theme::text_muted())
-                .child(if busy {
-                    "正在读取…（先看容器认不认得出，再问每一条现在跑没跑）"
-                } else {
-                    "还没读到数据 —— 点右上角「重新读取」"
-                }),
-        )
+        .child(body)
         .into_any_element()
 }
 
