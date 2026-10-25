@@ -92,7 +92,7 @@ impl Shell {
             }
         };
 
-        window.open_dialog(cx, move |dialog, _window, cx| {
+        window.open_dialog(cx, move |dialog, _window, _cx| {
             // 内容是一块**子实体**（`PromptContent`），它自己 `observe` 输入框：
             // 打字时只重画那一块，不依赖 dialog 层重建。
             //
