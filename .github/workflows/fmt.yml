@@ -49,10 +49,32 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
+          # ⚠️ **不要用 `git add -A`**（AGENTS.md §5 明令禁止）。
+          #
+          # 那个坑在本仓库踩过：`-A` 会把工作区里**一切**改动都提交进去 ——
+          # 包括临时文件（`.tmp-msg*.txt`）、以及 `.gitattributes` 里
+          # `eol=crlf` 那些文件因换行规范化产生的差异。
+          # 2026-10-25 这一轮实测：`cargo fmt` 只该改 `.rs`，而 `-A`
+          # 顺手把 `build-installer.ps1` / `wslc-panel.iss` /
+          # `ChineseSimplified.isl` 三个文件的 blob 也从"历史遗留的 CRLF"
+          # 规范成了 LF（内容一字未变，只是 git 的存储形态）—— 混进了一个
+          # 名叫 `style: cargo fmt` 却改了安装脚本的提交里。
+          #
+          # 这里只收 `*.rs`：`cargo fmt` 的输出范围**就是**它们，
+          # 多收任何一个文件都说明有别的东西混进来了。
+          git add -- '*.rs'
           if (git diff --cached --quiet) {
             Write-Output "没有需要格式化的改动"
           } else {
+            # 自查：这个提交里只能有 .rs 文件（`-A` 那种事故的守门）
+            $staged = git diff --cached --name-only
+            $nonRs = $staged | Where-Object { $_ -notmatch '\.rs$' }
+            if ($nonRs) {
+              Write-Output "::error title=fmt::暂存区里有非 .rs 文件，拒绝提交：$($nonRs -join ', ')"
+              exit 1
+            }
+            Write-Output "将提交 $($staged.Count) 个文件："
+            $staged | ForEach-Object { Write-Output "  $_" }
             git commit -m "style: cargo fmt"
             git push
             Write-Output "已提交格式化结果"
