@@ -4889,18 +4889,13 @@ pub fn deploy_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) ->
     let runtime = deploy.runtime;
     let re_deploy = form.editing.is_some();
 
-    let card = v_flex()
-        .w(px(560.0))
-        .gap_3()
-        .p_4()
-        // 站点块出现后弹窗会高出一截；带 id 的滚动容器（AGENTS §7.5）。
+    // 站点块出现后弹窗会高出一截；带 id 的滚动容器（AGENTS §7.5）。
+    // 宽度从 560 提到 `ModalSize::Wide`（800）：这个弹窗里有「目标目录」
+    // 「启动命令」这类长路径，560 宽时输入框里的路径几乎全是省略号。
+    let card = modal_card(ModalSize::Wide)
         .id("deploy-dialog-scroll")
-        .max_h(px(760.0))
+        .max_h(px(760.))
         .overflow_y_scroll()
-        .rounded_lg()
-        .bg(theme::bg_card())
-        .border_1()
-        .border_color(theme::border())
         .child(
             v_flex()
                 .gap_1()
@@ -5284,55 +5279,47 @@ pub fn deploy_site_conf_overlay(conf: &DeploySiteConf, entity: &Entity<Shell>) -
             .into_any_element()
     };
 
-    let card =
-        v_flex()
-            .w(px(720.0))
-            .max_h(px(560.0))
-            .gap_3()
-            .p_4()
-            .rounded_lg()
-            .bg(theme::bg_card())
-            .border_1()
-            .border_color(theme::border())
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_semibold()
-                            .child(format!("站点配置 · {}", conf.app)),
-                    )
-                    .child(div().text_xs().text_color(theme::text_dim()).child(
-                        crate::util::strip_md(
-                            "容器里的 `/etc/nginx/conf.d/00-wslc-panel-<应用名>.conf`（只读）。\
-                             重新部署会整份覆盖；要改就改部署弹窗里的站点区，别直接改这个文件。",
-                        ),
-                    ))
-                    .child(div().text_xs().text_color(theme::text_dim()).child(
-                        crate::util::strip_md(
-                            "容器重建后这份 conf 会丢 —— 可以点「重写配置」补回来\
-                             （只写 conf，不重新铺文件 / 不重新接网络）。",
-                        ),
-                    )),
-            )
-            .child(body)
-            .child(
-                h_flex()
-                    .w_full()
-                    .justify_end()
-                    .gap_2()
-                    .child(reapply)
-                    .child({
-                        let entity = entity.clone();
-                        Button::new("deploy-site-conf-close")
-                            .label("关闭")
-                            .small()
-                            .on_click(move |_, _, cx| {
-                                entity.update(cx, |shell, cx| shell.close_deploy_site_conf(cx));
-                            })
-                    }),
-            );
+    let card = modal_card(ModalSize::Medium)
+        .max_h(px(560.))
+        .child(
+            v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .text_lg()
+                        .font_semibold()
+                        .child(format!("站点配置 · {}", conf.app)),
+                )
+                .child(div().text_xs().text_color(theme::text_dim()).child(
+                    crate::util::strip_md(
+                        "容器里的 `/etc/nginx/conf.d/00-wslc-panel-<应用名>.conf`（只读）。\
+                         重新部署会整份覆盖；要改就改部署弹窗里的站点区，别直接改这个文件。",
+                    ),
+                ))
+                .child(div().text_xs().text_color(theme::text_dim()).child(
+                    crate::util::strip_md(
+                        "容器重建后这份 conf 会丢 —— 可以点「重写配置」补回来\
+                         （只写 conf，不重新铺文件 / 不重新接网络）。",
+                    ),
+                )),
+        )
+        .child(body)
+        .child(
+            h_flex()
+                .w_full()
+                .justify_end()
+                .gap_2()
+                .child(reapply)
+                .child({
+                    let entity = entity.clone();
+                    Button::new("deploy-site-conf-close")
+                        .label("关闭")
+                        .small()
+                        .on_click(move |_, _, cx| {
+                            entity.update(cx, |shell, cx| shell.close_deploy_site_conf(cx));
+                        })
+                }),
+        );
 
     modal_scrim("deploy-site-conf-scrim", card).into_any_element()
 }
@@ -5355,8 +5342,12 @@ pub fn deploy_remove_confirm_overlay(
         .and_then(|d| d.index_of(app).map(|i| d.entries[i].is_process()))
         .unwrap_or(false);
 
+    // ⚠️ 这一处**不能**用 `modal_card`：它是唯一一个"危险配色"的确认框
+    // （`danger_edge` 边框 + 红色标题），而 `modal_card` 给的是常规边框。
+    // 那个差异是**有意义的**（用户要一眼看出这是不可撤销的操作），不是散落。
+    // 但宽度仍走 `ModalSize::Narrow` —— 尺寸该统一，配色该区分。
     let card = v_flex()
-        .w(px(520.0))
+        .w(px(ModalSize::Narrow.width()))
         .gap_3()
         .p_4()
         .rounded_lg()
