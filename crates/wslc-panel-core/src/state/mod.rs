@@ -24,12 +24,12 @@
 //! |---|---|
 //! | [`actions`] | 待确认 / 待执行的动作枚举（容器域与发行版域各一套），以及提示条。 |
 //! | [`app`] | **顶层**状态：`AppState` 与它直接持有的加载入口。 |
-//! | [`db`] | 数据库域：连接状态、库表用户、备份与导入。 |
+//! | [`db_state`] | 数据库域：连接状态、库表用户、备份与导入。 |
 //! | [`deploy`] | 部署域：记录、阶段、进度、站点配置。 |
-//! | [`install`] | 安装域：来源、在线清单、镜像源探测与安装进度。 |
+//! | [`install_state`] | 安装域：来源、在线清单、镜像源探测与安装进度。 |
 //! | [`logs`] | 日志 / exec / 进度三类**长任务的中间状态**。 |
 //! | [`nav`] | 导航与页面枚举：哪些页、怎么分组、哪些页要有输入框才能进。 |
-//! | [`registry`] | 镜像仓库（Registry V2）查询状态、容器详情巡检结果。 |
+//! | [`registry_state`] | 镜像仓库（Registry V2）查询状态、容器详情巡检结果。 |
 //! | [`snapshot`] | 数据快照：一次采集回来的一切，以及从它派生的总览数字。 |
 //! | [`wslconf_state`] | `/etc/wsl.conf` 编辑器的状态与字段 id。 |
 //!
@@ -40,14 +40,19 @@ mod prelude;
 
 mod actions;
 mod app;
-mod db;
+mod db_state;
 mod deploy;
-mod install;
+mod install_state;
 mod logs;
 mod nav;
-mod registry;
+mod registry_state;
 mod snapshot;
-// ⚠️ 文件名叫 `wslconf_state` 而不是 `wslconf`：`prelude` 里
+// ⚠️ 这几个文件都带 `_state` 后缀：`prelude` 里有 `use wslc_core::{cmd, registry}`
+// 和 `model::{db, install, wslconf}` 这类**路径段**，若模块同名，
+// `use super::prelude::*;` 之后那个名字就说不清指谁（`E0659: ambiguous`）。
+// 实测踩了 3 次（`wslconf` / `registry` / `db` / `install`），一次改到位。
+//
+// 原注释：`prelude` 里
 // `pub(crate) use wslc_core::model::wslconf;` 会引入一个**同名**的
 // 模块路径，两者在 `use super::prelude::*;` 之后就成了 `E0659: ambiguous`
 // （实测踩过，8 处报错）。
@@ -62,11 +67,11 @@ pub use prelude::OnlineListSource;
 
 pub(crate) use actions::*;
 pub(crate) use app::*;
-pub(crate) use db::*;
+pub(crate) use db_state::*;
 pub(crate) use deploy::*;
-pub(crate) use install::*;
+pub(crate) use install_state::*;
 pub(crate) use logs::*;
 pub(crate) use nav::*;
-pub(crate) use registry::*;
+pub(crate) use registry_state::*;
 pub(crate) use snapshot::*;
 pub(crate) use wslconf_state::*;
