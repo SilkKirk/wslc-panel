@@ -676,9 +676,15 @@ pub(crate) fn radio_row(
 ///
 /// `render` 闭包收 `(&Shell, &App)`，返回 `AnyElement` —— 保持"纯函数渲染"那套写法，
 /// 只是外面多了一层会重画的壳。
+/// `ShellView` 的渲染闭包类型。
+///
+/// 抽成别名不只是为了少打字 —— 直接写在字段上会被 clippy 的
+/// `type_complexity` 判为"类型太复杂"（`lint` 是阻塞的）。
+type ShellRenderFn = Rc<dyn Fn(&Shell, &App) -> AnyElement>;
+
 pub(crate) struct ShellView {
     entity: Entity<Shell>,
-    render: Rc<dyn Fn(&Shell, &App) -> AnyElement>,
+    render: ShellRenderFn,
 }
 
 impl ShellView {
