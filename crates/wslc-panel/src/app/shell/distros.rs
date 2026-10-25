@@ -756,7 +756,7 @@ impl Shell {
 /// 兜底 —— 按现在的状态机走不到（上层挡着下层），但正确性优先。
 ///
 /// 每帧都会调一次，但**只在真的要变时才动窗口**（第一行那个 return）。
-fn sync_dialog_stack(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+pub(crate) fn sync_dialog_stack(&mut self, window: &mut Window, cx: &mut Context<Self>) {
     let mut desired: Vec<DialogKey> = Vec::new();
     if self.state.exporting.is_some() {
         desired.push(DialogKey::Export);
@@ -802,7 +802,7 @@ fn sync_dialog_stack(&mut self, window: &mut Window, cx: &mut Context<Self>) {
 }
 
 /// 打开一个我们已经迁到官方 `Dialog` 的浮层。
-fn open_dialog_for(&mut self, key: DialogKey, window: &mut Window, cx: &mut Context<Self>) {
+pub(crate) fn open_dialog_for(&mut self, key: DialogKey, window: &mut Window, cx: &mut Context<Self>) {
     use gpui_kit::component::WindowExt as _;
 
     match key {
