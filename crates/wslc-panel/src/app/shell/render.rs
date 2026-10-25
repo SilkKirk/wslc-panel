@@ -307,8 +307,9 @@ impl Render for Shell {
         // 容器日志浮层（状态全在 `AppState::logs` 里，不需要 `cx`）。
         let logs_dialog: AnyElement = views::logs_overlay(state, &entity);
 
-        // 容器 exec 浮层。要 `cx` 才能读命令输入框的值。
-        let exec_dialog: AnyElement = views::exec_overlay(self, &entity, cx);
+        // ⚠️ 「容器 exec」不在这条链子上 —— 它走官方 `Dialog` 的窗口级层栈
+        // （`Shell::open_exec` 里的 `window.open_dialog`，内容是
+        // `views::exec_dialog_body` 包在 `ShellView` 里）。
 
         // 数据库页的动作弹窗（新建库 / 新建用户 / 改密码 / 授权）。
         // 要 `cx` 才能读表单里那几格的值。
@@ -581,7 +582,6 @@ impl Render for Shell {
             .child(wslconf_dialog)
             // 日志和 exec 都可能是从容器详情里打开的，所以排在它之后。
             .child(logs_dialog)
-            .child(exec_dialog)
             // 部署页的三个浮层：它们只在「部署管理」页上出现，
             // 不需要盖住数据库 / 备份那几层（那两组不会同时开着），
             // 所以插在数据库弹窗**之前**。

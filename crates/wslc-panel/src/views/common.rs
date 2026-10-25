@@ -3,6 +3,8 @@
 //! 这里的每一样都被两个以上的页面用到 —— 只被一处用到的助手留在那个页面自己的模块里。
 
 use super::prelude::*;
+// `ShellView` 的渲染闭包要共享所有权；`views` 的 prelude 里没有 `Rc`。
+use std::rc::Rc;
 
 /// 卡片：标题 + 内容。
 pub(crate) fn card(title: &'static str, body: impl IntoElement) -> impl IntoElement {
@@ -646,6 +648,61 @@ pub(crate) fn radio_row(
             entity.update(cx, |shell, cx| pick(shell, ix, window, cx));
         })
         .into_any_element()
+}
+
+/// 把"读 `Shell` 状态画一块内容"包成**子实体**，让它能随状态变化自动重画。
+///
+/// # 为什么需要它（这是 v0.19.0 那个 bug 的一般形式）
+///
+/// 官方 `Dialog` 的 builder 闭包**只在"对话框层被重建"时重跑**，
+/// 普通的状态变化（打字、后台任务推进、`cx.notify()`）**不会**触发它。
+///
+/// v0.19.0 实机就是这条：输入框里填了路径，等效命令还停在 `<待填>`。
+/// 修法是把内容做成子实体 —— 而"日志 / exec 输出 / 进度"这些浮层是同一个问题：
+/// 它们的内容**一直在变**（后台任务每几帧 notify 一次）。
+///
+/// 所以这里把这件事做成通用件：`ShellView` 持有 `Entity<Shell>` 并 `observe` 它，
+/// Shell 一 notify 它就 `cx.notify()` 自己，于是**只重画这块内容**。
+///
+/// # 用法
+///
+/// ```ignore
+/// let body = cx.new({
+///     let entity = entity.clone();
+///     move |cx| ShellView::new(entity, |shell, cx| views::exec_dialog_body(shell, cx))
+/// });
+/// // 然后 dialog.child(body)
+/// ```
+///
+/// `render` 闭包收 `(&Shell, &App)`，返回 `AnyElement` —— 保持"纯函数渲染"那套写法，
+/// 只是外面多了一层会重画的壳。
+pub(crate) struct ShellView {
+    entity: Entity<Shell>,
+    render: Rc<dyn Fn(&Shell, &App) -> AnyElement>,
+}
+
+impl ShellView {
+    /// 建实体并**订阅 `Shell`**（`observe` 的返回值丢掉就取消订阅，所以必须 `detach`）。
+    pub(crate) fn new(
+        entity: Entity<Shell>,
+        render: impl Fn(&Shell, &App) -> AnyElement + 'static,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        cx.observe(&entity, |_, _, cx| cx.notify()).detach();
+        Self {
+            entity,
+            render: Rc::new(render),
+        }
+    }
+}
+
+impl Render for ShellView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let render = self.render.clone();
+        let shell = self.entity.read(cx);
+        // `read` 的借用要在 `cx` 再被借之前结束 —— 所以先把元素算出来。
+        render(shell, cx)
+    }
 }
 
 /// 单元格文字。

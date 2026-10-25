@@ -315,19 +315,12 @@ pub fn logs_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     )
     .into_any_element()
 }
-
-/// 「容器 exec」浮层：跑一条命令，把输出显示出来。
+/// 「容器 exec」对话框的**内容**（标题 / 底部按钮由调用处拼）。
 ///
-/// # 这不是终端
-///
-/// `wslc exec` **不带 `-it`**，所以没有 TTY：`vi` / `top` / `less` 这类
-/// 需要终端的程序在这里用不了（要么直接报错、要么立刻退出）。
-/// 那是「打开终端」那个按钮的事 —— 两边的说明里都写清楚了，
-/// 免得用户以为这里能顶替终端。
-///
-/// 命令走 `/bin/sh -c`，所以管道、重定向、`&&` 都能用（见
-/// [`wslc_panel_core::state::exec_argv`] 的说明）。
-pub fn exec_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyElement {
+/// 见 [`super::common::ShellView`]：这个浮层的内容会随后台任务变化
+/// （`exec.running` / `exec.output` / `exec.last_command`），所以它必须包在
+/// `ShellView` 里，否则会出现 v0.19.0 那种"内容僵在打开那一刻"的问题。
+pub(crate) fn exec_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyElement {
     let Some(exec) = shell.state.exec.as_ref() else {
         return div().into_any_element();
     };
@@ -352,17 +345,6 @@ pub fn exec_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEleme
             .primary()
             .on_click(move |_, _, cx| {
                 entity.update(cx, |shell, cx| shell.run_exec(cx));
-            })
-            .into_any_element()
-    };
-
-    let close = {
-        let entity = entity.clone();
-        Button::new("exec-close")
-            .label("关闭")
-            .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.close_exec(cx));
             })
             .into_any_element()
     };
@@ -410,35 +392,25 @@ pub fn exec_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEleme
             .into_any_element()
     });
 
-    modal_scrim(
-        "exec",
-        modal_card(ModalSize::Wide)
-            .id("exec-card")
-            .max_h(px(720.))
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(modal_title(format!("执行命令 —— {}", exec.container)))
-                    .child(div().text_xs().text_color(theme::text_dim()).child(
-                        "使用 /bin/sh 执行，支持管道和重定向，不提供 TTY；交互程序请用容器列表「更多 → 终端」。",
-                    )),
-            )
-            .child(form_field("exec-command", "命令", input, cx, true))
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap_2()
-                    .flex_wrap()
-                    .items_center()
-                    .child(run_area),
-            )
-            .children(echo)
-            .child(output)
-            .child(h_flex().w_full().justify_end().child(close)),
-    )
-    .into_any_element()
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(div().text_xs().text_color(theme::text_dim()).child(
+            "使用 /bin/sh 执行，支持管道和重定向，不提供 TTY；交互程序请用容器列表「更多 → 终端」。",
+        ))
+        .child(form_field("exec-command", "命令", input, cx, true))
+        .child(
+            h_flex()
+                .w_full()
+                .gap_2()
+                .flex_wrap()
+                .items_center()
+                .child(run_area),
+        )
+        .children(echo)
+        .child(output)
+        .into_any_element()
 }
-
 /// 导出进度浮层。
 ///
 /// # 为什么它和拉取镜像的浮层长得不一样

@@ -4,7 +4,7 @@ use super::super::prelude::*;
 use super::Shell;
 use super::state::{CreateDialog, DropdownItem, FactsState, TextPrompt};
 // 弹窗底部那行按钮的唯一实现（和 18 个浮层共用同一份，见 `views::common`）。
-use crate::views::modal_footer;
+use crate::views::{ShellView, modal_footer};
 
 impl Shell {
     /// 打开提示对话框，并把焦点交给输入框。
@@ -984,15 +984,70 @@ impl Shell {
 
     /// 打开 exec 浮层（要 `&mut Window` 才能建输入框）。
     pub fn open_exec(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::WindowExt as _;
+
         let input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("ls -la /  （可以用管道、重定向、&&）")
         });
         let handle = input.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
 
+        let title = format!("执行命令 —— {name}");
         self.state.exec = Some(ExecState::new(name));
         self.exec_input = Some(input);
         cx.notify();
+
+        let entity = cx.entity();
+        // ⚠️ 内容必须包在 `ShellView` 里：exec 的输出 / running / last_command
+        // 会随后台任务一直变，而 dialog builder **不会**因此重跑
+        // （v0.19.0 的教训，见 `common::ShellView` 的注释）。
+        let content = {
+            let view_entity = entity.clone();
+            let body_entity = entity.clone();
+            cx.new(move |cx| {
+                ShellView::new(
+                    view_entity,
+                    move |shell, cx| crate::views::exec_dialog_body(shell, &body_entity, cx),
+                    cx,
+                )
+            })
+        };
+        let on_cancel = {
+            let entity = entity.clone();
+            move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
+                entity.update(cx, |shell, cx| shell.close_exec(cx));
+                true
+            }
+        };
+        let on_close = {
+            let entity = entity.clone();
+            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                entity.update(cx, |shell, cx| shell.close_exec(cx));
+            }
+        };
+
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let close = {
+                let entity = entity.clone();
+                Button::new("exec-close")
+                    .label("关闭")
+                    .small()
+                    .on_click(move |_, window, cx| {
+                        entity.update(cx, |shell, cx| shell.close_exec(cx));
+                        window.close_dialog(cx);
+                    })
+            };
+            dialog
+                .title(title.clone())
+                .w(px(760.))
+                .overlay(true)
+                .overlay_closable(true)
+                .keyboard(true)
+                .on_cancel(on_cancel.clone())
+                .on_close(on_close.clone())
+                .child(content.clone())
+                .footer(modal_footer([close.into_any_element()]))
+        });
     }
 
     /// 关闭 exec 浮层，输入框一起丢掉。
