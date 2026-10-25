@@ -328,9 +328,15 @@ pub(crate) fn theme_card(state: &AppState, entity: &Entity<Shell>) -> AnyElement
     let selected = crate::prefs::ThemePref::ALL
         .iter()
         .position(|theme| *theme == current);
-    let picker = radio_row("theme-picker", labels, selected, entity, |shell, ix, _, cx| {
-        shell.set_theme(crate::prefs::ThemePref::ALL[ix], cx);
-    });
+    let picker = radio_row(
+        "theme-picker",
+        labels,
+        selected,
+        entity,
+        |shell, ix, _, cx| {
+            shell.set_theme(crate::prefs::ThemePref::ALL[ix], cx);
+        },
+    );
     card(
         "界面",
         v_flex()
@@ -401,9 +407,15 @@ pub(crate) fn refresh_secs_picker(state: &AppState, entity: &Entity<Shell>) -> i
     let selected = crate::prefs::REFRESH_PRESETS
         .iter()
         .position(|secs| *secs == current);
-    let picker = radio_row("refresh-picker", labels, selected, entity, |shell, ix, _, cx| {
-        shell.set_refresh_secs(crate::prefs::REFRESH_PRESETS[ix], cx);
-    });
+    let picker = radio_row(
+        "refresh-picker",
+        labels,
+        selected,
+        entity,
+        |shell, ix, _, cx| {
+            shell.set_refresh_secs(crate::prefs::REFRESH_PRESETS[ix], cx);
+        },
+    );
     // 手动改过 prefs.json、值不在预设里时，补一个只读提示，
     // 免得用户看到"一个都没选中"而困惑。
     let extra = if crate::prefs::REFRESH_PRESETS.contains(&current) {
@@ -418,7 +430,12 @@ pub(crate) fn refresh_secs_picker(state: &AppState, entity: &Entity<Shell>) -> i
         )
     };
 
-    h_flex().w_full().gap_2().flex_wrap().child(picker).children(extra)
+    h_flex()
+        .w_full()
+        .gap_2()
+        .flex_wrap()
+        .child(picker)
+        .children(extra)
 }
 
 /// 「终端」卡：新终端的起始目录。
@@ -450,18 +467,26 @@ pub(crate) fn terminal_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement
         .chain(std::iter::once(SharedString::from("自定义路径…")))
         .collect();
     let selected = match current {
-        crate::prefs::TerminalStartDir::Custom(_) => Some(crate::prefs::TerminalStartDir::FIXED.len()),
+        crate::prefs::TerminalStartDir::Custom(_) => {
+            Some(crate::prefs::TerminalStartDir::FIXED.len())
+        }
         other => crate::prefs::TerminalStartDir::FIXED
             .iter()
             .position(|dir| dir == other),
     };
-    let picker = radio_row("terminal-dir-picker", labels, selected, entity, |shell, ix, window, cx| {
-        match crate::prefs::TerminalStartDir::FIXED.get(ix) {
-            Some(dir) => shell.set_terminal_dir(dir.clone(), cx),
-            // 下标越界 = 最后那一项「自定义路径…」
-            None => shell.edit_terminal_dir(window, cx),
-        }
-    });
+    let picker = radio_row(
+        "terminal-dir-picker",
+        labels,
+        selected,
+        entity,
+        |shell, ix, window, cx| {
+            match crate::prefs::TerminalStartDir::FIXED.get(ix) {
+                Some(dir) => shell.set_terminal_dir(dir.clone(), cx),
+                // 下标越界 = 最后那一项「自定义路径…」
+                None => shell.edit_terminal_dir(window, cx),
+            }
+        },
+    );
     let mut body = v_flex()
         .w_full()
         .gap_3()

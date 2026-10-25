@@ -469,9 +469,15 @@ pub(crate) fn grant_kind_row(current: GrantKind, entity: &Entity<Shell>) -> AnyE
         .map(|kind| SharedString::from(kind.label()))
         .collect();
     let selected = GrantKind::ALL.iter().position(|kind| *kind == current);
-    let picker = radio_row("db-grant-picker", labels, selected, entity, |shell, ix, _, cx| {
-        shell.set_db_grant(GrantKind::ALL[ix], cx);
-    });
+    let picker = radio_row(
+        "db-grant-picker",
+        labels,
+        selected,
+        entity,
+        |shell, ix, _, cx| {
+            shell.set_db_grant(GrantKind::ALL[ix], cx);
+        },
+    );
 
     h_flex()
         .w_full()

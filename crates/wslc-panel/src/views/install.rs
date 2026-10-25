@@ -80,9 +80,15 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
     let selected = InstallSourceKind::ALL
         .iter()
         .position(|kind| *kind == source);
-    let source_picker = radio_row("install-source-picker", labels, selected, entity, |shell, ix, _, cx| {
-        shell.set_install_source(InstallSourceKind::ALL[ix], cx);
-    });
+    let source_picker = radio_row(
+        "install-source-picker",
+        labels,
+        selected,
+        entity,
+        |shell, ix, _, cx| {
+            shell.set_install_source(InstallSourceKind::ALL[ix], cx);
+        },
+    );
     // -- 输入框 --
     let mut fields: Vec<AnyElement> = vec![form_field_with_error(
         "install-name",
@@ -419,16 +425,12 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
         .gap_4()
         .child(card(
             "安装来源",
-            v_flex()
-                .w_full()
-                .gap_3()
-                .child(source_picker)
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_dim())
-                        .child(crate::util::strip_md(source.hint())),
-                ),
+            v_flex().w_full().gap_3().child(source_picker).child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child(crate::util::strip_md(source.hint())),
+            ),
         ))
         .child(card(
             "参数",
