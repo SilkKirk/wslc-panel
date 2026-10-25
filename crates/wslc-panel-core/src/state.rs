@@ -7414,6 +7414,13 @@ mod tests {
     }
 
     #[test]
+    // `field_reassign_with_default`：这个测试只关心 `tags` / `input_tag` 两个
+    // 字段，而 `RegistryState` 有十几个 —— 结构体更新语法要把其余全部写一遍
+    // `..Default::default()`，反而看不出"这个测试只设了这两样"。
+    //
+    // ⚠️ 属性放在这里（`fn` 上）而不是赋值语句上：后者是 nightly-only
+    // （`E0658: attributes on expressions are experimental`，CI 抓到过）。
+    #[allow(clippy::field_reassign_with_default)]
     fn a_typed_tag_that_the_list_lacks_is_still_a_choice() {
         // 实机 bug（v0.9.4）：用户打 `openjdk:8-jre-slim`，而这个 registry 的
         // tags/list 里**没有**它（实测 docker.1panel.live 对 library/openjdk
@@ -7425,10 +7432,10 @@ mod tests {
         // 关心其中两个；用结构体更新语法要把其余全部写一遍 `..Default::default()`，
         // 反而看不出"这个测试只设了 tags 和 input_tag"。
         //
-        // ⚠️ `#[allow]` 必须挂在**第一条赋值**上，不是 `let` 上 ——
-        // clippy 报的是 `field assignment outside of initializer` 这一行。
+        // ⚠️ `#[allow]` 挂在 **`fn`** 上（见函数签名上方），不能挂在赋值语句上
+        // —— 属性放在**表达式**位置是 nightly-only（`E0658: attributes on
+        // expressions are experimental`，CI 抓到过）。
         let mut registry = RegistryState::default();
-        #[allow(clippy::field_reassign_with_default)]
         registry.tags = vec!["28-ea".to_owned(), "10-ea".to_owned()];
         registry.input_tag = Some("8-jre-slim".to_owned());
 
