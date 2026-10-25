@@ -185,9 +185,17 @@ pub(crate) fn pull_policy_row(current: &PullPolicy, entity: &Entity<Shell>) -> A
         .map(|(label, _)| SharedString::from(*label))
         .collect();
     let selected = options.iter().position(|(_, policy)| policy == current);
-    let picker = radio_row("create-pull-picker", labels, selected, entity, |shell, ix, _, cx| {
-        shell.set_create_pull(options[ix].1, cx);
-    });
+    // `move`：闭包要 `'static`，而 `options` 是本地数组。
+    // 它是 `Copy`（`PullPolicy` 也是 `Copy`），所以整体搬进闭包不丢东西。
+    let picker = radio_row(
+        "create-pull-picker",
+        labels,
+        selected,
+        entity,
+        move |shell, ix, _, cx| {
+            shell.set_create_pull(options[ix].1, cx);
+        },
+    );
 
     h_flex()
         .w_full()
