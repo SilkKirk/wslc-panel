@@ -140,7 +140,7 @@ impl Shell {
                 } else if code == 0 {
                     let size = std::fs::metadata(&target)
                         .ok()
-                        .map(|m| state::format_bytes(m.len()))
+                        .map(|m| crate::util::format_bytes(m.len()))
                         .unwrap_or_else(|| "大小未知".to_owned());
                     shell.state.notify(Toast::success(format!(
                         "{name} 已导出到 {target}（{size}）"
