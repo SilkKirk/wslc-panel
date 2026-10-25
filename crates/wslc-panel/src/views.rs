@@ -2883,44 +2883,64 @@ fn db_loading(busy: bool) -> AnyElement {
 ///
 /// `mysql_family` 为假时**一个 tab 都不画**：那两个 tab 里全是 MySQL 专有的
 /// 动作（建库 / 建用户 / 授权），对 PostgreSQL 点了只会报错。
+/// 「数据库 / 用户」两个 tab。
+///
+/// # 用官方 `TabBar` 而不是拿 `Button` 拼
+///
+/// 原来这里是「两个 `Button`，选中的那个 `.primary()`」—— 那是最早的表单做法，
+/// 而组件库有专门的 `TabBar` / `Tab`：
+///
+/// - **选中态**由组件自己画（下划线 / 胶囊，跟着 `TabVariant` 走），不用我们
+///   手动在 `.primary()` 和默认样式之间切；
+/// - `selected_index(ix)` 是**声明式**的 —— 我们只需要报告"现在是第几个"，
+///   点击由组件回调出来，不用为每个 tab 各建一个 `on_click`；
+/// - 键盘导航（左右箭头）、无障碍 role 都是组件带的。
+///
+/// 这正是"规范统一"的意思：**同一类控件在同一个应用里长得一样、行为一样**，
+/// 而不是"tab 用按钮拼、另一个 tab 用组件"。
 fn db_tabs(
     current: DbTab,
     entity: &Entity<Shell>,
     mysql_family: bool,
     users_failed: bool,
 ) -> AnyElement {
+    use gpui_kit::component::tab::{Tab, TabBar};
+
     if !mysql_family {
         return div().into_any_element();
     }
-    let buttons: Vec<AnyElement> = DbTab::ALL
+
+    let tabs: Vec<Tab> = DbTab::ALL
         .iter()
         .map(|tab| {
             let tab = *tab;
-            let entity = entity.clone();
-            // id 用 `{:?}`：稳定、且与显示语言无关（和设置页那几个 tab 一致）
-            let mut button = Button::new(SharedString::from(format!("db-tab-{tab:?}")))
-                // 用户列表读失败时打个标记：否则用户不知道点进来会看到什么
-                // （整页横幅已经不占地方了，见 `db_users_card`）。
-                .label(if users_failed && tab == DbTab::Users {
-                    "用户（读取失败）"
-                } else {
-                    tab.label()
-                })
-                .small()
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |shell, cx| shell.set_db_tab(tab, cx));
-                });
-            if current == tab {
-                button = button.primary();
-            }
-            button.into_any_element()
+            // 用户列表读失败时打个标记：否则用户不知道点进来会看到什么
+            // （整页横幅已经不占地方了，见 `db_users_card`）。
+            Tab::new().label(if users_failed && tab == DbTab::Users {
+                "用户（读取失败）"
+            } else {
+                tab.label()
+            })
         })
         .collect();
 
-    h_flex()
-        .w_full()
-        .gap_2()
-        .children(buttons)
+    let selected = DbTab::ALL
+        .iter()
+        .position(|tab| *tab == current)
+        .unwrap_or(0);
+
+    let entity = entity.clone();
+    TabBar::new("db-tabs")
+        .pill()
+        .selected_index(selected)
+        .children(tabs)
+        .on_click(move |ix, _, cx| {
+            // `ix` 是 TabBar 给的**下标**，换回域类型再交给 Shell。
+            if let Some(tab) = DbTab::ALL.get(*ix) {
+                let tab = *tab;
+                entity.update(cx, |shell, cx| shell.set_db_tab(tab, cx));
+            }
+        })
         .into_any_element()
 }
 
@@ -7415,30 +7435,33 @@ pub fn app_settings(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
 /// 用 Button 而不是 gpui-kit 的 `TabBar`：项目现有的"选中态"就是这么做的
 /// （见 [`theme_card`]），风格一致，而且是**已经编译通过**的形式。
 /// 想换成 `TabBar` 的话，替换点只有这一个函数。
+/// 「应用设置」的四个 tab（常规 / wslc 配置 / WSL 配置 / 关于）。
+///
+/// 和 [`db_tabs`] 同一个做法：官方 `TabBar` + `Tab`，不是拿 `Button` 拼。
 fn settings_tabs(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
-    let buttons: Vec<AnyElement> = SettingsTab::ALL
+    use gpui_kit::component::tab::{Tab, TabBar};
+
+    let tabs: Vec<Tab> = SettingsTab::ALL
         .iter()
-        .map(|tab| {
-            let tab = *tab;
-            let entity = entity.clone();
-            // id 用 `{:?}`：稳定且与显示语言无关
-            let mut button = Button::new(SharedString::from(format!("settings-tab-{tab:?}")))
-                .label(tab.label())
-                .small()
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |shell, cx| shell.set_settings_tab(tab, cx));
-                });
-            if state.settings_tab == tab {
-                button = button.primary();
-            }
-            button.into_any_element()
-        })
+        .map(|tab| Tab::new().label(tab.label()))
         .collect();
 
-    h_flex()
-        .w_full()
-        .gap_2()
-        .children(buttons)
+    let selected = SettingsTab::ALL
+        .iter()
+        .position(|tab| *tab == state.settings_tab)
+        .unwrap_or(0);
+
+    let entity = entity.clone();
+    TabBar::new("settings-tabs")
+        .pill()
+        .selected_index(selected)
+        .children(tabs)
+        .on_click(move |ix, _, cx| {
+            if let Some(tab) = SettingsTab::ALL.get(*ix) {
+                let tab = *tab;
+                entity.update(cx, |shell, cx| shell.set_settings_tab(tab, cx));
+            }
+        })
         .into_any_element()
 }
 
