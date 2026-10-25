@@ -239,14 +239,12 @@ fn dialog_spike_card() -> AnyElement {
 
     card(
         "Dialog spike（仅 debug 构建）",
-        v_flex()
-            .w_full()
-            .gap_2()
-            .child(open)
-            .child(div().text_xs().text_color(theme::text_dim()).child(
+        v_flex().w_full().gap_2().child(open).child(
+            div().text_xs().text_color(theme::text_dim()).child(
                 "验证用：官方 Dialog 走窗口级栈。若四项都通过，18 个手写模态就可以迁过去 —— \
                  顺带删掉遮罩的 occlude、入场动画 id、以及 Shell::render 末尾那条手工层序链子。",
-            )),
+            ),
+        ),
     )
     .into_any_element()
 }
