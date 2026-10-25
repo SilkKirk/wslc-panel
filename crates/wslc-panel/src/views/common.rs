@@ -752,7 +752,9 @@ pub(crate) fn overlay_button(
 ///
 /// `full` 决定宽度：直接放进 `v_flex` 的用 `w_full`，
 /// 放进 `h_flex` 成对排列的用 `flex_1`。
-/// （在 `v_flex` 里写 `flex_1` 会把字段**竖向**拉长，是个容易踩的坑。）
+/// （在 `v_flex` 里写 `flex_1` 会把字段**竖向**拉长，是个容易踩的坑 ——
+/// 官方 `Field::render` 第一行就是 `.flex_1()`，所以**两种宽度都必须显式覆盖**，
+/// 见 [`form_field_with_error`]。）
 pub(crate) fn form_field(
     id: &'static str,
     label: &'static str,
@@ -767,6 +769,34 @@ pub(crate) fn form_field(
 ///
 /// 只给「添加实例」用：那一页点「开始安装」校验失败后，用红框指出哪一格
 /// 要改，而不是在页面底部再堆一段和步骤预览重复的错误清单。
+///
+/// # 为什么外壳改用官方 `Field`
+///
+/// 原先这里是手写的 `v_flex().gap_1().child(标签 div).child(输入框)` —— 52 处调用点
+/// 拼出来的形状完全一样。官方 `form` 模块给的正是这个壳（`Form` / `Field`），
+/// 所以壳交给它，我们只保留"颜色"和"错误态"这两件它管不了的事
+/// （`AGENTS.md` §5：颜色归我们，形态归组件）。
+///
+/// 读 `form/field.rs`（0.8.0）确认过的四件事：
+///
+/// 1. `Field::render` **第一行是 `.flex_1()`** —— 直接放进 `v_flex` 会把字段竖向
+///    拉长（就是上面那条注释说的坑）。所以下面两种宽度都**显式覆盖**：
+///    `full` → `.flex_none().w_full()`，否则 → `.flex_1().min_w_0()`。
+///    `refine_style(&self.style)` 在 render 的最后才执行，我们的能盖掉它的默认值；
+/// 2. 标签默认是 `text_sm + font_medium` + 主题色。我们这一套设计是
+///    **`text_xs` + 变暗表示"必填未填"**，所以走 `label_fn` 自己画 ——
+///    外面那层 `wrap_label` 的字号继承会被内层的 `.text_xs()` 覆盖；
+/// 3. `description(..)` 渲染成 `text_xs + muted_foreground`，正好是我们要的"提示"
+///    档位，将来要加说明不必再手写；
+/// 4. **`Field` 没有 error 态**（只有 `required` 的红色星号）—— 所以"标签变红"
+///    仍然由我们通过 `label_fn` 的颜色表达，"边框变红"仍然打在 `Input` 上。
+///
+/// ⚠️ 一处已知瑕疵：`Field` 内部会给自己的包裹层 `.id(self.id)`，而 `self.id`
+/// 只有在**经由 `Form` 的 enumerate** 构建时才被喂进 `ix`（`Field::props`）。
+/// 我们这里是**单独**建 `Field`（为了保留每个弹窗自己的布局），所以 id 恒为 0 ——
+/// 多个字段共用一个元素 id。这些包裹层不挂任何 hover / 点击 / 滚动处理，
+/// 共享的只是"没有状态"的那份状态，所以现在看不出问题；
+/// 哪天有字段需要在 `Field` 外壳上做悬停效果，就得改成由 `Form` 统一建。
 pub(crate) fn form_field_with_error(
     id: &'static str,
     label: &'static str,
@@ -775,12 +805,6 @@ pub(crate) fn form_field_with_error(
     full: bool,
     invalid: bool,
 ) -> AnyElement {
-    let field = if full {
-        v_flex().w_full()
-    } else {
-        v_flex().flex_1().min_w_0()
-    };
-
     // 取值只为在为空时把标签调暗一点，让"必填未填"看得见。
     let empty = input.read(cx).value().trim().is_empty();
     let label_color = if invalid {
@@ -796,11 +820,16 @@ pub(crate) fn form_field_with_error(
         input_el = input_el.border_color(theme::danger());
     }
 
-    field
-        .gap_1()
-        .child(div().text_xs().text_color(label_color).child(label))
-        .child(input_el)
-        .into_any_element()
+    let field = Field::new()
+        // 标签自己画：颜色要说"必填未填"，字号要压到 `text_xs`。
+        .label_fn(move |_, _| div().text_xs().text_color(label_color).child(label))
+        .child(input_el);
+
+    if full {
+        field.flex_none().w_full().into_any_element()
+    } else {
+        field.flex_1().min_w_0().into_any_element()
+    }
 }
 
 /// 等宽文本块（日志 / 命令输出共用）。

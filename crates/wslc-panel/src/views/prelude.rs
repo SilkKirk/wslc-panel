@@ -46,7 +46,7 @@ pub(crate) use gpui_kit::component::progress::ProgressCircle;
 // SQL 结果表格（v0.11）：`DataTable` 是 gpui-kit 自带的虚拟滚动表格，
 // 支持列宽拖拽 / 排序 / 单元格选择。delegate 在 `crate::sql_table`。
 pub(crate) use gpui_kit::component::table::DataTable;
-// 官方的**静态**表格组件族：8 个列表页用它替代自己拼的 `div` 表格。
+// 官方**静态**表格组件族：9 张表用它替代自己拼的 `div` 表格。
 //
 // 和上面的 `DataTable` 是两个东西（读 `table.rs` 的模块文档确认）：
 // `Table` 是"简单、无状态、可组合"的静态表格，**没有**虚拟滚动和列管理；
@@ -62,6 +62,12 @@ pub(crate) use gpui_kit::component::table::DataTable;
 pub(crate) use gpui_kit::component::table::{
     Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 };
+// 官方表单格：`Field` 是"标签 + 控件"的那层壳，用在 `common::form_field`。
+// `Form`（多个 Field 的容器，带 `label_width` / `columns`）暂时没用到 ——
+// 我们的表单是**每个弹窗自己排布局**（还混着 `h_flex` 成对排列），
+// 强行套一个 `Form` 会把每个弹窗的布局重排一遍，收益只在"标签列宽统一"。
+// 将来真要统一标签列宽时，从这里开始。
+pub(crate) use gpui_kit::component::form::Field;
 // 注意：这里**不导入** `Disableable` —— 全项目不再使用 `.disabled()`：
 // gpui-component 的禁用态文字几乎看不清，改用"守卫 + 文案"表达不可用状态。
 pub(crate) use gpui_kit::component::description_list::DescriptionList;
