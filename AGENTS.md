@@ -49,21 +49,42 @@ crates/
 │       └── picker.rs  文件/目录选择器（借独立进程弹 Windows 原生对话框）
 │
 ├── wslc-panel-core/  面板里**不依赖 GPUI** 的那一半。edition 2024
+│   ├── state/        AppState / Snapshot / 各域状态（按域分 10 个模块 + tests.rs）
 │   ├── prefs.rs      本程序自己的偏好（refresh_secs / theme）
-│   ├── state.rs      AppState / Snapshot / 各种动作枚举
 │   ├── columns.rs    表格列定义
 │   ├── presets.rs    预设值
-│   └── util.rs       纯函数（format_bytes 之类）
+│   └── util.rs       纯函数（format_bytes / human_secs / strip_md …）
 │
 └── wslc-panel/       只有 UI。edition 2024，rust-version 1.85
     ├── main.rs       入口、启动日志、应用主题
-    ├── app.rs        Shell（GPUI 实体）+ 所有动作 + 弹窗浮层（约 160 KB）
-    ├── views.rs      渲染 + 全部弹窗浮层（约 180 KB / 5000 行，**很大**）
+    ├── app/          Shell（GPUI 实体）：shell/ 下按域分 9 个子模块
+    ├── views/        渲染：按页面/浮层分 18 个模块（common 放共用小组件）
     └── theme.rs      颜色
 ```
 
-> 这两个文件大是**已知**的：往里加东西之前先问一句"这能不能放
-> `wslc-panel-core`"，判断标准就是下面那节（"这个文件 `use gpui` 吗"）。
+> **两个"大文件"已经拆掉了**（2026-10-25）。原先 `app.rs` 11201 行、
+> `views.rs` 10546 行、`state.rs` 7492 行，现在是三个目录：
+>
+> | 目录 | 拆法 | 判断"新代码放哪" |
+> |---|---|---|
+> | `crates/wslc-panel/src/views/` | 一个页面/一类浮层一个文件；共用小组件进 `common.rs`，共用导入进 `prelude.rs` | **被两个以上页面用到？** 是 → `common`；否 → 那个页面自己的模块 |
+> | `crates/wslc-panel/src/app/shell/` | 一个功能域一个文件，`impl Shell` **整块**搬（不按方法拆） | 新动作按**它属于哪个页面**归域（db / deploy / containers …） |
+> | `crates/wslc-panel-core/src/state/` | 一个域一个文件，`impl` 跟着它修饰的类型走 | 新状态类型跟着它的域走 |
+>
+> 两条硬约束（都踩过）：
+>
+> 1. **`Shell` 的结构体必须留在 `app/shell/mod.rs`** —— 域模块是它的**后代**
+>    才能读那 20 个私有字段。挪进 `core.rs` 就变成兄弟，`self.state` 都访问不到。
+> 2. **按域命名文件要避开 `prelude` 里已有的路径段** —— `state/wslconf.rs` 会和
+>    `use wslc_core::model::wslconf;` 撞成 `E0659: ambiguous`（`registry` /
+>    `db` / `install` 同理，所以它们叫 `*_state.rs`）。
+>
+> 还有一条：`wslc-panel/src/main.rs` 顶部有一层 `pub use wslc_panel_core::state::*;`
+> 的**跨 crate 垫片**。所以 `state/mod.rs` 里的子模块再导出必须是 `pub` 而不是
+> `pub(crate)` —— 后者在别的 crate 里完全看不见（实测报了 29 个 `E0432`）。
+>
+> 往里加东西之前仍先问一句"这能不能放 `wslc-panel-core`"，判断标准就是下面
+> 那节（"这个文件 `use gpui` 吗"）。
 
 ### 为什么把 `wslc-panel-core` 拆出来
 
@@ -344,7 +365,7 @@ Release 与两个资产都是它建出来的。
 画的是**纯文本** —— 不过一遍 `util::strip_md`，屏幕上就真的显示 `**` 和反引号。
 
 规矩：**凡是把字面量直接 `.child("…")` 到 `div` 上的地方，都过 `strip_md`**。
-（提示条不用手写 —— `toast` 的渲染处已经统一清了；见 `app.rs` 里那一处。）
+（提示条不用手写 —— `toast` 的渲染处已经统一清了；见 `views::common` 里那一处。）
 
 ⚠️ v0.9.13 审查时一次补了 **15 处** `strip_md` 调用（部署页 9 处 + 更早的版本留下的
 6 处：数据库「连接」卡、备份浮层的说明、拉取弹窗的报错说明、设置页「终端」两段、
@@ -357,7 +378,7 @@ Release 与两个资产都是它建出来的。
 `image_env_hint` 的第二支、日志浮层的空状态提示。
 
 这一轮暴露的是**机制问题**而不是手滑：这些文案散在三个 crate 里，
-而 `wslc-panel` 的渲染**没有任何测试**（`views.rs` 不在任何测试目标里），
+而 `wslc-panel` 的渲染**没有任何测试**（`views/` 不在任何测试目标里），
 所以"哪一处又漏了"只能靠人肉扫。要根治就得让文案集中在
 `wslc-panel-core`（那里有 `util::strip_md` 和它的测试），
 或者加一条"所有会直接 `.child()` 的文案经 `strip_md` 后不含 `**`/反引号"的遍历断言。
@@ -509,7 +530,7 @@ cx.spawn_in(window, async move |this, cx| {
   `overflow_y_scroll` 来自 `StatefulInteractiveElement`，只对**带 id 的**元素
   可用，漏了 `.id()` 是**编译错误**（`no method named overflow_y_scroll`）。
   也就是说 `ui` job 会直接拦住，这类缺陷溜不进 main —— 不用把它当"会崩"来防。
-  （`crates/wslc-panel/src/app.rs` 的 `app-body-scroll` 那段注释也说了这件事。）
+  （`crates/wslc-panel/src/app/shell/render.rs` 的 `app-body-scroll` 那段注释也说了这件事。）
 - `InputState::new` 要 `&mut Window` → 表单只能**懒创建**（点击时建）。
   渲染时建会每帧重建输入框，**字都打不进去**。
 - 输入框的焦点在打开时用 `window.focus(&handle, cx)` 给过去，
@@ -694,7 +715,7 @@ PATCH /git/refs/heads/X  { sha: <新 commit>, force: true }
 | 版本解析 / 比较、GitHub 响应解析 | `wslc-core/src/update.rs`（纯逻辑 + 真 fixture） |
 | 起 `curl.exe` | `wslc-core/src/cmd/update.rs`（**阻塞**，必须走 `background_executor`） |
 | 节流判据 / 提示判据 / 卡片文案 | `wslc-panel-core/src/update.rs`（纯逻辑，`core` job 能测） |
-| 动作与状态迁移 | `crates/wslc-panel/src/app.rs`（`check_update` / `apply_update_check`） |
+| 动作与状态迁移 | `crates/wslc-panel/src/app/shell/update.rs`（`check_update` / `apply_update_check`） |
 
 ⚠️ **自动检查失败必须静默**（只写 `warn` 日志，卡片回 `Idle`）——
 这是个本地工具，每天开面板弹一句"检查更新失败"比不检查更糟。
@@ -754,12 +775,12 @@ CI 只能证明**编译过、纯逻辑测试过**。下面这些**必须在本�
   - 有子代理报"`columns.rs:84` 该按 clippy 改"，而那处 `!(total > 0.0)` 是
     **故意的** NaN 兜底（改成 `total <= 0.0` 对 NaN 也是 false，会算出一堆
     NaN 宽度）—— 照它改就是引入 bug；
-  - 另有子代理报 `app.rs` 里的 `user_refreshing` 是死代码，实际它在
+  - 另有子代理报 `app/shell/render.rs` 里的 `user_refreshing` 是死代码，实际它在
     `hint` 那里有用。
 
   核一遍的时间往往不比自己做少，所以"派出去"并不自动等于"省事"。
 - 并行跑多个还会互相覆盖同一个文件、或在同一分支上抢提交（这个仓库的改动
-  经常集中在 `app.rs` / `views.rs` 这两个大文件上）。
+  经常集中在同一个域的几个文件上）。
 
 **所以默认自己做。** 只有同时满足这两条才派：
 
