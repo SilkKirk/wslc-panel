@@ -1,0 +1,107 @@
+//! `views` 下所有子模块共用的导入。
+//!
+//! # 为什么要有它
+//!
+//! 拆成子模块之后，每个文件都得把这一整串写一遍 —— 而它们本来就该**只有一份**：
+//! 三套按钮样式（`ButtonVariants`）、`Styled` 家族、`gpui_kit::*` 那些 trait，
+//! 漏一个的表现是一大片 `no method named …`。集中在这里之后，子模块只要
+//! `use super::prelude::*;`，并且**新的共用导入也只加这一处**。
+//!
+//! `pub(crate) use` 而不是 `use`：子模块靠 glob 拿到这些名字，私有导入不会外传。
+
+// 注意：`primary()` / `danger()` 这些样式方法来自 trait `ButtonVariants`，
+// 光导入 `Button` 是不够的 —— 这里用 glob 把 button 模块全带上。
+pub(crate) use gpui_kit::component::button::*;
+// `StyledExt` 提供 `font_bold` / `font_semibold` 等字重方法（由宏生成）。
+pub(crate) use gpui_kit::component::collapsible::Collapsible;
+// `Editor` 是 SQL 控制台那个多行编辑器（v0.12）。和多行 `Textarea` 的区别：
+// `Editor` 带语法高亮（靠 `tree-sitter-sql` feature）+ 行号 + 缩进线。
+pub(crate) use gpui_kit::component::input::{Editor, Input, InputState};
+// `ListItem` 是树控件里"一行"的类型（`Tree` 的回调必须返回它）。
+// 它比 `Button` 合适得多：`Button` 会把文字**居中**、给整行套底色和内边距，
+// 画出来像一排色块（v0.12 实机就是这个效果，用户说"太丑了"）；
+// `ListItem` 是给列表 / 树用的，悬停与选中态由组件自己管。
+pub(crate) use gpui_kit::component::list::ListItem;
+// 折叠应用级侧边栏的按钮。SQL 页不画应用级页头（见 `app.rs`），
+// 所以那个按钮必须由这一页自己提供。
+pub(crate) use gpui_kit::component::sidebar::SidebarToggleButton;
+// 「微软商店」与「在线发行版」两张清单都是**下拉框**（参考实现也是
+// `CustomComboBox`，不是我们原先那种按钮列表）。
+pub(crate) use gpui_kit::component::select::Select;
+// 列表行那颗「更多」用的下拉菜单（v0.9.14）。
+//
+// ⚠️ 它来自 gpui-kit 的**扩展 trait**：`Button::dropdown_menu(…)`（和
+// `ButtonVariants` 一样，光导入 `Button` 是不够的），菜单项是 `PopupMenuItem`。
+// 走的是组件的 popover 层（`deferred` + `POPUP_PRIORITY`），所以**不会被表格的
+// `overflow_hidden` 裁掉** —— 那是这一类弹出能用的前提（见 `AGENTS.md` §7.5）。
+pub(crate) use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+// 基本信息页那四只圆环（v0.9.17）。
+//
+// 为什么用它而不是自己拿 `div` 拼：圆环要画弧（`canvas` + `PathBuilder`），
+// 那条路本仓库一次都没走过；组件库里现成有 `ProgressCircle`（已核对 0.7.1 的
+// 源码：`progress/progress_circle.rs`），直接用它就不必去赌没验证过的 API。
+// ⚠️ 它的大小只能用 `Sizable::with_size()` 设，别用 Styled 的 `.size()`
+// —— 见 `views::gauge` 里那段说明。
+pub(crate) use gpui_kit::component::progress::ProgressCircle;
+// SQL 结果表格（v0.11）：`DataTable` 是 gpui-kit 自带的虚拟滚动表格，
+// 支持列宽拖拽 / 排序 / 单元格选择。delegate 在 `crate::sql_table`。
+pub(crate) use gpui_kit::component::table::DataTable;
+// 注意：这里**不导入** `Disableable` —— 全项目不再使用 `.disabled()`：
+// gpui-component 的禁用态文字几乎看不清，改用"守卫 + 文案"表达不可用状态。
+pub(crate) use gpui_kit::component::description_list::DescriptionList;
+pub(crate) use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
+pub(crate) use gpui_kit::*;
+// 弹窗的入场动画要一个时长（`Animation::new(Duration)`）。
+pub(crate) use std::time::Duration;
+
+pub(crate) use wslc_core::cmd::container::{PullPolicy, RunSpec};
+// 安装的**计划**是纯逻辑（在 `wslc-core` 里）：页面直接把它的步骤列表画出来，
+// 和执行时读的是同一份数据 —— 预览不会和执行走偏。
+pub(crate) use wslc_core::mirrors;
+pub(crate) use wslc_core::model::install as install_model;
+// MySQL 容器的识别是**纯逻辑**（镜像名 / 命令 / 3306 端口），
+// 所以列表行每帧都能白拿这个判断 —— 见 `container_row_actions`。
+pub(crate) use wslc_core::model::mysql as mysql_model;
+// 「部署应用」的识别也是纯逻辑（镜像名 / 命令），同一个理由 ——
+// 列表行每帧都要判断"这一行该不该画「部署管理」按钮"。
+pub(crate) use wslc_core::model::deploy as deploy_model;
+pub(crate) use wslc_core::model::{
+    ContainerListItem, ContainerState, ContainerSummary, DbUser, Distro, DistroState, GrantKind,
+    ImageListItem, VolumeListItem,
+};
+// 镜像仓库（Registry V2）的纯逻辑：常用镜像清单、引用/主机名校验、体积累加。
+pub(crate) use wslc_core::registry;
+// `/etc/wsl.conf` 的字段表与保序文档模型（纯逻辑，在 `wslc-core` 里）。
+pub(crate) use wslc_core::model::wslconf;
+pub(crate) use wslc_core::settings::{SETTING_KEYS, SettingKey, SettingKind};
+
+// 显式导入而不靠 `gpui_kit::*`：勾选框是这一页独有的组件，
+// 写明来源比"碰巧 glob 里有"可靠。
+pub(crate) use gpui_kit::component::checkbox::Checkbox;
+
+// `FactsState` 是「创建容器」弹窗里那条"从镜像读来的信息"的状态机
+// （`ImageForm` 则是「拉取镜像」弹窗的表单）—— 两者的纯数据部分都在
+// `wslc-core` / `wslc-panel-core`，这里只是画出来。
+pub(crate) use crate::app::{
+    CreateDialog, DbDialog, DbDialogKind, DbPageForm, FactsState, ImageForm, InstallForm, Shell,
+    WslConfDialog,
+};
+// 列宽定义与配置项预设值都是纯数据，住在不依赖 GPUI 的 `wslc-panel-core` 里
+// —— 这样它们的单测不必链接 GPUI（见那个 crate 的顶层说明）。
+pub(crate) use crate::columns::{
+    ALL_COLUMNS, BACKUP_COLUMNS, DB_COLUMNS, DB_USER_COLUMNS, DEPLOY_COLUMNS, DISTRO_COLUMNS,
+    IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS,
+};
+// 容器列表的筛选 / 排序状态与纯逻辑（在 `wslc-panel-core`，带单测）。
+pub(crate) use crate::listview::{ContainerScope, ContainerSort, ContainerView};
+pub(crate) use crate::presets::presets_for;
+pub(crate) use crate::state::{
+    AppState, DashboardStats, DbFailure, DbState, DbTab, DeployEntry, DeployLogs, DeploySiteConf,
+    DeployState, DistroAction, ImmediateAction, InstallOutcome, InstallProgress, InstallSourceKind,
+    LogsState, OnlineListSource, Page, PendingAction, PromptKind, PullProgress, SettingsTab,
+    UiSection, WslConfState, format_bytes,
+};
+pub(crate) use crate::theme;
+// 基本信息页那排圆环用的纯逻辑：用量分档（≥60% 黄、≥85% 红）。
+// 它在 `wslc-panel-core` 里（带单测），因为这个文件里的断言 CI 不会跑。
+pub(crate) use crate::util::{LoadLevel, load_level};
