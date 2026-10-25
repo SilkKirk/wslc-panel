@@ -91,7 +91,10 @@ pub fn visible_containers<'a>(
 ) -> Vec<&'a ContainerSummary> {
     let mut visible: Vec<&ContainerSummary> = items
         .iter()
-        .filter(|summary| in_scope(*summary, view.scope) && matches_query(*summary, query))
+        // ⚠️ `filter` 的闭包参数是 `&&ContainerSummary`，传给要
+        // `&ContainerSummary` 的参数时会自动解一层 —— 写 `*summary` 是多余的
+        // （clippy 的 `explicit_auto_deref`）。
+        .filter(|summary| in_scope(summary, view.scope) && matches_query(summary, query))
         .collect();
 
     match view.sort {

@@ -16,11 +16,25 @@
 //!
 //! 实测（本机 wslc 3.0.3.0 / mysql 26.7.0，2026-10）：
 //!
+//! **带 `-N`（没有表头）** —— `SET @x=1` 这类也是零字节，和"空结果集"分不开：
+//!
 //! ```text
-//! $ mysql -uroot -N -B -e "SELECT 1 AS a, 'x' AS b"     $ mysql -uroot -B -e "SELECT 1 AS a, 'x' AS b"
-//! 1	x                                                    a	b
-//!                                                        1	x
+//! $ mysql -uroot -N -B -e "SELECT 1 AS a, 'x' AS b"
+//! 1	x
 //! ```
+//!
+//! **不带 `-N`（有表头）** —— 首行是列名，这就是我们要的：
+//!
+//! ```text
+//! $ mysql -uroot -B -e "SELECT 1 AS a, 'x' AS b"
+//! a	b
+//! 1	x
+//! ```
+//!
+//! ⚠️ 上面两段的列之间是**真实的 TAB**（`-B` 的分隔符就是它）。
+//! clippy 的 `tabs_in_doc_comments` 会建议换成空格 —— **别换**：
+//! 换成空格之后这个例子就不再是 `-B` 的实际输出了，而这段文档的全部价值
+//! 就是"让你看见它长什么样"。
 //!
 //! 现有的 [`crate::model::mysql::SqlMode::Batch`] 是 `-N -B`（**不要**表头，
 //! 给"列名已知"的解析用，比如 `SHOW DATABASES`）；这里需要表头，所以用
@@ -48,6 +62,12 @@
 //! 这不是解析器的 bug，是 `mysql` 客户端的行为；要拿到列名得改用
 //! `--column-type-info` 或者执行前先 `LIMIT 0` 探一次，代价都不值。
 //! → 界面上把这种情况说成"执行成功，没有返回行"，而不是画一张空表。
+
+// 上面那段 `-B` 输出示例里的列分隔符**就是真实的 TAB**（`-B` 的分隔符就是它）。
+// clippy 的 `tabs_in_doc_comments` 会建议换成空格 —— **换不得**：
+// 换成空格之后这个例子就不再是 `-B` 的实际输出了，而那段文档的全部价值
+// 就是"让你看见它长什么样"。
+#![allow(clippy::tabs_in_doc_comments)]
 
 use super::mysql::split_tsv_line;
 

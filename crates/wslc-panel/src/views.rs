@@ -5429,9 +5429,13 @@ pub fn images(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
         Some(progress) => format!("正在拉取 {} …", progress.image),
         None => {
             let (distinct, total) = state.snapshot.image_totals();
-            let total_part = (total > 0)
-                .then(|| format!(" · 合计 {}", format_bytes(total)))
-                .unwrap_or_default();
+            // `if/else` 比 `(cond).then(...).unwrap_or_default()` 直白
+            // （clippy 的 `unnecessary_lazy_evaluations` 一类建议）。
+            let total_part = if total > 0 {
+                format!(" · 合计 {}", format_bytes(total))
+            } else {
+                String::new()
+            };
             format!(
                 "共 {} 条记录（{} 个镜像）{}",
                 state.snapshot.images.len(),

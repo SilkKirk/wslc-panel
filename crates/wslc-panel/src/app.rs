@@ -8888,7 +8888,10 @@ impl Shell {
                 .await;
 
             let _ = this.update(cx, |shell, cx| {
-                let ok = matches!(&result, Ok(_));
+                // `matches!(&result, Ok(_))` 就是 `.is_ok()`（clippy 的
+                // `redundant_pattern_matching`）。用 `.is_ok()` 还有个好处：
+                // 它不借用整个 `result`，下面的 `match result` 才能直接移动。
+                let ok = result.is_ok();
                 match result {
                     Ok(message) => shell.state.notify(Toast::success(message)),
                     Err(e) => shell

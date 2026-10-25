@@ -7420,6 +7420,11 @@ mod tests {
         // 只回 17282 个，没有 8-jre-slim 也没有 latest，但两者的 manifest 都是
         // 200）。那时下拉框必须**仍然把用户要的那个列出来** —— 否则组件找不到
         // 选中项就会自己选中第一项，把"将拉取"换成另一个 tag（**拉错镜像**）。
+        //
+        // `field_reassign_with_default`：`RegistryState` 有十几个字段，这里只
+        // 关心其中两个；用结构体更新语法要把其余全部写一遍 `..Default::default()`，
+        // 反而看不出"这个测试只设了 tags 和 input_tag"。
+        #[allow(clippy::field_reassign_with_default)]
         let mut registry = RegistryState::default();
         registry.tags = vec!["28-ea".to_owned(), "10-ea".to_owned()];
         registry.input_tag = Some("8-jre-slim".to_owned());
