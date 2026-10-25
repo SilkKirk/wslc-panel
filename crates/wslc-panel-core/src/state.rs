@@ -7424,8 +7424,11 @@ mod tests {
         // `field_reassign_with_default`：`RegistryState` 有十几个字段，这里只
         // 关心其中两个；用结构体更新语法要把其余全部写一遍 `..Default::default()`，
         // 反而看不出"这个测试只设了 tags 和 input_tag"。
-        #[allow(clippy::field_reassign_with_default)]
+        //
+        // ⚠️ `#[allow]` 必须挂在**第一条赋值**上，不是 `let` 上 ——
+        // clippy 报的是 `field assignment outside of initializer` 这一行。
         let mut registry = RegistryState::default();
+        #[allow(clippy::field_reassign_with_default)]
         registry.tags = vec!["28-ea".to_owned(), "10-ea".to_owned()];
         registry.input_tag = Some("8-jre-slim".to_owned());
 
