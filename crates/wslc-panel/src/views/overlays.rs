@@ -439,9 +439,7 @@ pub(crate) fn export_dialog_body(state: &AppState) -> AnyElement {
                 .gap_2()
                 .child(kv_block("目标文件", progress.path.clone()).into_any_element())
                 .child(kv("已写入", written).into_any_element())
-                .child(
-                    kv("已用时", format!("{} 秒", progress.elapsed_secs)).into_any_element(),
-                ),
+                .child(kv("已用时", format!("{} 秒", progress.elapsed_secs)).into_any_element()),
         )
         .child(div().text_xs().text_color(theme::text_dim()).child(
             "wsl 不报告导出百分比，所以「已写入」是目标文件当前的大小 —— \
