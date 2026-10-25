@@ -391,6 +391,25 @@ pub(crate) fn exec_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App) 
             )
             .into_any_element()
     });
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(div().text_xs().text_color(theme::text_dim()).child(
+            "使用 /bin/sh 执行，支持管道和重定向，不提供 TTY；交互程序请用容器列表「更多 → 终端」。",
+        ))
+        .child(form_field("exec-command", "命令", input, cx, true))
+        .child(
+            h_flex()
+                .w_full()
+                .gap_2()
+                .flex_wrap()
+                .items_center()
+                .child(run_area),
+        )
+        .children(echo)
+        .child(output)
+        .into_any_element()
+}
 /// 「正在导出」对话框的**内容**（标题 / 底部按钮由 `Shell::open_dialog_for` 拼）。
 ///
 /// 内容会变（已写入 / 已用时 / 最后一行），所以外面要包 `ShellView`
