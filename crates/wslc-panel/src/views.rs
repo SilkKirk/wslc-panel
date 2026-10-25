@@ -400,7 +400,11 @@ fn badge(text: impl Into<SharedString>, fg: Rgba, bg: Rgba) -> impl IntoElement 
         .child(text.into())
 }
 
-/// 空状态占位。
+/// 空状态占位 —— **表格内部**用的那种（一行灰字，不带边框）。
+///
+/// ⚠️ 整页 / 整卡片的空状态请用 [`page_empty`]（官方 `Empty`）。
+/// 这两个不能合并：`Empty` 会画一圈**虚线边框**并 `flex_1` 撑满，
+/// 放在表格里会把表头和数据行之间的分隔线盖掉、还会把行高拉到整屏。
 fn empty_state(text: &'static str) -> impl IntoElement {
     v_flex()
         .w_full()
@@ -408,6 +412,33 @@ fn empty_state(text: &'static str) -> impl IntoElement {
         .items_center()
         .justify_center()
         .child(div().text_sm().text_color(theme::text_dim()).child(text))
+}
+
+/// 整页 / 整卡片的空状态 —— 官方 `Empty`。
+///
+/// 和 [`empty_state`] 的区别（选哪个看容器）：
+///
+/// | | `empty_state` | `page_empty` |
+/// |---|---|---|
+/// | 边框 | 无 | 虚线（组件库画） |
+/// | 高度 | 自然高度 + `py_8` | `flex_1` 撑满父级 |
+/// | 用在 | **表格内部**的空行 | 一整页 / 一整张卡片 |
+///
+/// 文案走 `EmptyTitle`（它实现 `Styled`），所以颜色仍是我们的
+/// `theme::text_dim()`，不跟组件库主题走。
+fn page_empty(text: &'static str) -> AnyElement {
+    use gpui_kit::component::empty::{Empty, EmptyHeader, EmptyTitle};
+
+    Empty::new()
+        .header(
+            EmptyHeader::new().title(
+                EmptyTitle::new()
+                    .text_sm()
+                    .text_color(theme::text_dim())
+                    .child(text),
+            ),
+        )
+        .into_any_element()
 }
 
 /// 表格表头。
@@ -1596,7 +1627,8 @@ pub fn containers(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> impl IntoE
     // 筛选后为空：不要显示成"没有任何容器"（那是在说"你机器上没容器"）。
     let empty: AnyElement = if rows.is_empty() {
         if all_count == 0 {
-            empty_state("没有任何容器").into_any_element()
+            // 整个列表区就是空的 → 官方 `Empty`（虚线框 + 撑满）
+            page_empty("没有任何容器")
         } else {
             let entity = entity.clone();
             let input = shell.container_search.clone();
@@ -1723,8 +1755,7 @@ pub fn database(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
     let Some(db) = shell.state.db.as_ref() else {
         // 理论上来不到（只可能从容器行上的按钮进，那里已经建好状态了），
         // 但真到了这里就说一句人话，别画一片空白。
-        return empty_state("还没有选中容器 —— 请到「容器」页点某一行的「数据库」")
-            .into_any_element();
+        return page_empty("还没有选中容器 —— 请到「容器」页点某一行的「数据库」");
     };
     // 表单没建好就没法渲染（输入框是懒创建的）。
     //
@@ -1897,8 +1928,7 @@ pub fn sql_console_page(
     entity: &Entity<Shell>,
 ) -> AnyElement {
     let Some(db) = shell.state.db.as_ref() else {
-        return empty_state("还没有选中容器 —— 请到「容器」页点某一行的「数据库」")
-            .into_any_element();
+        return page_empty("还没有选中容器 —— 请到「容器」页点某一行的「数据库」");
     };
     // 页头：返回 + 库名徽标 + 刷新表结构。
     //
@@ -4274,7 +4304,8 @@ pub fn db_backup_dialog_overlay(
                     )),
             )
             .child(if rows.is_empty() {
-                empty_state("还没有备份 —— 点右上角的「立即备份」生成第一份").into_any_element()
+                // 备份列表整块是空的 → 官方 `Empty`
+                page_empty("还没有备份 —— 点右上角的「立即备份」生成第一份")
             } else {
                 v_flex()
                     .w_full()
@@ -4324,8 +4355,7 @@ pub fn deploy_page(shell: &Shell, _cx: &App, entity: &Entity<Shell>) -> AnyEleme
     let Some(deploy) = shell.state.deploy.as_ref() else {
         // 理论上来不到（只可能从容器行上的按钮进，那里已经建好状态了），
         // 但真到了这里就说一句人话，别画一片空白。
-        return empty_state("还没有选中容器 —— 请到「容器」页点某一行的「部署管理」")
-            .into_any_element();
+        return page_empty("还没有选中容器 —— 请到「容器」页点某一行的「部署管理」");
     };
 
     let header = deploy_header(deploy, entity);
