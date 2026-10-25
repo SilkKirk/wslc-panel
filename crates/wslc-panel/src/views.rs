@@ -2295,375 +2295,181 @@ fn sql_tree_pane(
 
 
 /// 右下：结果区（多语句 tab + 结果表格 + 页脚 + 导出 / 原始输出）。
-
 ///
-
 /// # 三种形态
-
 ///
-
 /// 1. **没有任何结果**（全是 DDL）→ 一句话，不画空表格；
-
 /// 2. **有表格** → `DataTable` + 页脚；
-
 /// 3. **结果集为空但有列名**（`SELECT ... WHERE 1=0`）→ 也画表格（空的），
-
 ///    因为列名本身是有效信息。
-
 ///
-
 /// # 为什么表格是 `flex_1`
-
 ///
-
 /// `DataTable` 是**虚拟滚动**的：它需要知道"我有多高"才能算出可见行范围。
-
 /// 放在高度不定的容器里会算错（表现为滚动条乱跳 / 底部空白）。
-
 /// 所以这一层用 `flex_1 + min_h_0`，让布局给出确定高度 ——
-
 /// 父链上每一层都有确定高度（页面 `h_full` → 右侧列 `h_full` → 这里 `flex_1`）。
-
 fn sql_results_pane(
-
     db: &DbState,
-
     shell: &Shell,
-
     entity: &Entity<Shell>,
-
     _cx: &App,
-
 ) -> AnyElement {
-
     // 统一的容器：吃满剩余高度 + 内边距。三种形态共用，免得各写一遍。
-
     let shell_area = |inner: AnyElement| -> AnyElement {
-
         v_flex()
-
             .w_full()
-
             .flex_1()
-
             .min_h_0()
-
             .p_4()
-
             .child(inner)
-
             .into_any_element()
-
     };
-
-
-
     // 报错优先：这时候没有结果表格可看。
-
     if let Some(error) = db.sql_error.as_ref() {
-
         return shell_area(
-
             v_flex()
-
                 .w_full()
-
                 .gap_1()
-
                 .child(
-
                     div()
-
                         .text_xs()
-
                         .text_color(theme::danger())
-
                         .child("执行失败"),
-
                 )
-
                 // 原样保留换行：`run_statements` 会说清第几条出错、
-
                 // 以及前几条已经生效了。
-
                 .child(log_text(Some(error), "db-sql-error"))
-
                 .into_any_element(),
-
         );
-
     }
-
     if !db.sql_ran {
-
         return shell_area(
-
             div()
-
                 .text_sm()
-
                 .text_color(theme::text_dim())
-
                 .child("还没有执行任何语句")
-
                 .into_any_element(),
-
         );
-
     }
-
-
-
     let Some(result) = db.sql_results.get(shell.sql_result_tab) else {
-
         return shell_area(
-
             div()
-
                 .text_sm()
-
                 .text_color(theme::text_dim())
-
                 .child("执行成功，没有返回行")
-
                 .into_any_element(),
-
         );
-
     };
-
-
-
     // 多语句：结果之间用一排小按钮切换。
-
     let tabs: AnyElement = if db.sql_results.len() > 1 {
-
         let buttons: Vec<AnyElement> = db
-
             .sql_results
-
             .iter()
-
             .enumerate()
-
             .map(|(ix, r)| {
-
                 let entity = entity.clone();
-
                 let active = ix == shell.sql_result_tab;
-
                 let label = crate::sqlview::result_tab_label(ix, r);
-
                 let mut b = Button::new(SharedString::from(format!("db-sql-tab-{ix}")))
-
                     .label(label)
-
                     .small();
-
                 if active {
-
                     b = b.primary();
-
                 }
-
                 b.on_click(move |_, window, cx| {
-
                     entity.update(cx, |shell, cx| shell.switch_sql_result_tab(ix, window, cx));
-
                 })
-
                 .into_any_element()
-
             })
-
             .collect();
-
         h_flex().w_full().gap_1().children(buttons).into_any_element()
-
     } else {
-
         div().into_any_element()
-
     };
-
-
-
     // 表格本体。`shell.sql_table` 为 `None` 说明这个结果没有表格
-
     // （DDL / 无输出），画一句话就够。
-
     let grid: AnyElement = match shell.sql_table.as_ref() {
-
         Some(state) => div()
-
             .w_full()
-
             .flex_1()
-
             .min_h_0()
-
             .child(DataTable::new(state))
-
             .into_any_element(),
-
         None => div()
-
             .text_sm()
-
             .text_color(theme::text_dim())
-
             .child("执行成功，没有返回行")
-
             .into_any_element(),
-
     };
-
-
-
     // 页脚：行数 / 列数 / 耗时。文案规则在 `sqlview::footer_text`（有单测）。
-
     let footer = div()
-
         .text_xs()
-
         .text_color(theme::text_muted())
-
         .child(crate::sqlview::footer_text(result, db.sql_elapsed_ms));
-
-
-
     // 导出 CSV：只有真的有表格时才给按钮 —— 空结果导出一个只有表头的 CSV
-
     // 没有意义，只会让用户以为导出坏了。
-
     let export: AnyElement = if result.columns.is_empty() {
-
         div().into_any_element()
-
     } else {
-
         let entity = entity.clone();
-
         Button::new("db-sql-export")
-
             .label("导出 CSV")
-
             .small()
-
             .on_click(move |_, window, cx| {
-
                 entity.update(cx, |shell, cx| shell.export_sql_result_csv(window, cx));
-
             })
-
             .into_any_element()
-
     };
-
-
-
     // 原始输出开关：排查列宽 / 字符集问题时，mysql 原样打了什么最有用。
-
     let raw_toggle: AnyElement = match db.sql_raw.as_ref() {
-
         Some(raw) if !raw.trim().is_empty() => {
-
             let entity = entity.clone();
-
             Button::new("db-sql-raw-toggle")
-
                 .label("看原始输出")
-
                 .small()
-
                 .on_click(move |_, _, cx| {
-
                     entity.update(cx, |shell, cx| shell.toggle_sql_raw(cx));
-
                 })
-
                 .into_any_element()
-
         }
-
         _ => div().into_any_element(),
-
     };
-
-
-
     let raw_panel: AnyElement = if shell.sql_raw_open {
-
         match db.sql_raw.as_deref() {
-
             Some(raw) => log_text(Some(raw), "db-sql-raw"),
-
             None => div().into_any_element(),
-
         }
-
     } else {
-
         div().into_any_element()
-
     };
-
-
-
     shell_area(
-
         v_flex()
-
             .w_full()
-
             .h_full()
-
             .min_h_0()
-
             .gap_2()
-
             .child(tabs)
-
             .child(grid)
-
             .child(
-
                 h_flex()
-
                     .w_full()
-
                     .flex_none()
-
                     .justify_between()
-
                     .items_center()
-
                     .child(footer)
-
                     .child(
-
                         h_flex()
-
                             .gap_2()
-
                             .items_center()
-
                             .child(raw_toggle)
-
                             .child(export),
-
                     ),
-
             )
-
             .child(raw_panel)
-
             .into_any_element(),
-
     )
-
 }
-
 /// 页头：容器 / 镜像 / 家族 / 客户端 + 「← 返回容器」「基础信息」「重新读取」。
 fn db_header(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
     let back = {
