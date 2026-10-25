@@ -1,8 +1,8 @@
 //! ③ 镜像页：表格、行内动作、拉取弹窗与进度。
 
 use super::common::{
-    card, cell_muted, cell_text, cell_text_full, danger_button, disclosure,
-    empty_state, form_field, modal_scrim, table_header, table_row,
+    cell_muted, cell_text, cell_text_full, danger_button, disclosure, empty_state, form_field,
+    modal_scrim, table_header, table_row,
 };
 use super::prelude::*;
 
@@ -552,4 +552,3 @@ pub(crate) fn pull_progress_body(progress: &PullProgress, entity: &Entity<Shell>
         )
         .into_any_element()
 }
-

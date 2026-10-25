@@ -563,4 +563,3 @@ pub(crate) fn terminal_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement
 
     card("终端", body).into_any_element()
 }
-

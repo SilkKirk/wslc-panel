@@ -1,9 +1,6 @@
 //! 容器日志 / exec / 导出 / 单输入框提示 —— 四个容器域浮层。
 
-use super::common::{
-    ModalSize, form_field, kv, kv_block, log_text, modal_card,
-    modal_scrim,
-};
+use super::common::{ModalSize, form_field, kv, kv_block, log_text, modal_card, modal_scrim};
 use super::prelude::*;
 
 /// 单输入框提示弹窗（移动位置 / 调整大小 / 设置默认用户）。
@@ -532,4 +529,3 @@ pub fn export_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
 // ---------------------------------------------------------------------------
 // ⑧ 发行版配置（/etc/wsl.conf）
 // ---------------------------------------------------------------------------
-

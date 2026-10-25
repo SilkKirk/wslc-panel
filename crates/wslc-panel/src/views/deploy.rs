@@ -1,9 +1,9 @@
 //! ②c 应用部署管理页：表格、行内动作、三个浮层。
 
 use super::common::{
-    ModalSize, card, cell_link, cell_muted_full, cell_text, disclosure,
-    empty_state, form_field, immediate_button, kv_block, log_text, modal_card,
-    modal_scrim, overlay_button, page_empty, table_header, table_row,
+    ModalSize, cell_link, cell_muted_full, cell_text, disclosure, empty_state, form_field,
+    immediate_button, kv_block, log_text, modal_card, modal_scrim, overlay_button, page_empty,
+    table_header, table_row,
 };
 use super::prelude::*;
 
@@ -216,7 +216,10 @@ pub(crate) fn deploy_header(deploy: &DeployState, entity: &Entity<Shell>) -> Any
 }
 
 /// 探测就失败时的说明卡（不是这几类容器 / 容器没运行）。
-pub(crate) fn deploy_blocked_card(deploy: &DeployState, failure: &crate::state::DeployFailure) -> AnyElement {
+pub(crate) fn deploy_blocked_card(
+    deploy: &DeployState,
+    failure: &crate::state::DeployFailure,
+) -> AnyElement {
     let note = if failure.kind == wslc_core::model::DeployErrorKind::ContainerNotRunning {
         "这一页的每一个动作都要进容器里执行（准备目录 → 传文件 → 起进程），\
          所以容器得先跑起来。「启动」就在容器列表那一行上。"
@@ -1231,4 +1234,3 @@ pub fn deploy_remove_confirm_overlay(
 // ---------------------------------------------------------------------------
 // ③ 镜像 / 网络 / 卷
 // ---------------------------------------------------------------------------
-

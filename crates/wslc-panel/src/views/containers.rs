@@ -1,8 +1,8 @@
 //! ② 容器页：工具栏、表格、行内动作与「更多」菜单。
 
 use super::common::{
-    badge, cell_badge, cell_muted, cell_muted_full, cell_text, danger_button,
-    immediate_button, overlay_button, page_empty, table_header, table_row,
+    badge, cell_badge, cell_muted, cell_muted_full, cell_text, danger_button, immediate_button,
+    overlay_button, page_empty, table_header, table_row,
 };
 use super::prelude::*;
 
@@ -118,7 +118,10 @@ pub(crate) fn container_name_link(name: &str, entity: &Entity<Shell>) -> AnyElem
 ///
 /// MySQL / MariaDB 容器多一个「数据库」按钮（v0.7.0）：它是那一类容器上
 /// 最高频的动作，而且**只能从这里进**（数据库管理页不在侧边栏里）。
-pub(crate) fn container_row_actions(item: &ContainerListItem, entity: &Entity<Shell>) -> AnyElement {
+pub(crate) fn container_row_actions(
+    item: &ContainerListItem,
+    entity: &Entity<Shell>,
+) -> AnyElement {
     let name = item.display_name();
     let running = item.is_running();
     let mut actions: Vec<AnyElement> = Vec::new();
@@ -563,4 +566,3 @@ pub fn containers(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> impl IntoE
 // ---------------------------------------------------------------------------
 // ②b 容器里的数据库管理（MySQL / MariaDB，v0.7.0）
 // ---------------------------------------------------------------------------
-

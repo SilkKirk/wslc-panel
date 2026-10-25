@@ -1,8 +1,7 @@
 //! ③ 网络页。
 
 use super::common::{
-    cell_muted, cell_muted_full, cell_text, danger_button, empty_state, table_header,
-    table_row,
+    cell_muted, cell_muted_full, cell_text, danger_button, empty_state, table_header, table_row,
 };
 use super::prelude::*;
 
@@ -81,4 +80,3 @@ pub(crate) fn network_row_actions(ix: usize, name: &str, entity: &Entity<Shell>)
     )
     .into_any_element()
 }
-

@@ -1,8 +1,6 @@
 //! 「创建容器」弹窗，以及它依赖的那几个从镜像读来的提示块。
 
-use super::common::{
-    ModalSize, disclosure, form_field, modal_card, modal_scrim,
-};
+use super::common::{ModalSize, disclosure, form_field, modal_card, modal_scrim};
 use super::prelude::*;
 
 /// 「创建容器」弹窗里那条**从镜像读来的**信息（声明端口 / 启动命令）。
@@ -503,4 +501,3 @@ pub fn create_dialog_overlay(
     )
     .into_any_element()
 }
-

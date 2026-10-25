@@ -1,10 +1,10 @@
 //! 数据库的弹窗与进度浮层：新建库 / 建用户 / 改密 / 授权 / 备份 / 导入 / 基础信息。
 
 use super::common::{
-    ModalSize, cell_muted, cell_text_full, disclosure, form_field, modal_card,
-    modal_scrim, overlay_button, page_empty, table_header, table_row,
+    ModalSize, cell_muted, cell_text_full, disclosure, form_field, modal_card, modal_scrim,
+    overlay_button, page_empty, table_header, table_row,
 };
-use super::database::{database, db_connection_card};
+use super::database::db_connection_card;
 use super::prelude::*;
 
 /// 「基础信息」浮层：连接卡（用户名 / 密码 + 那两段说明）。
@@ -429,7 +429,11 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
 ///
 /// 用户的心智是"先挑一个常见的，挑不到再手打"；反过来的话，手打完看见下面
 /// 还挂着一个"请选择"的下拉框，会以为那一格没填好。
-pub(crate) fn grant_db_field(dialog: &DbDialog, id: &'static str, label: &'static str) -> AnyElement {
+pub(crate) fn grant_db_field(
+    dialog: &DbDialog,
+    id: &'static str,
+    label: &'static str,
+) -> AnyElement {
     v_flex()
         .w_full()
         .gap_1()
@@ -862,4 +866,3 @@ pub fn db_backup_dialog_overlay(
 // ---------------------------------------------------------------------------
 // ②c 容器里的应用部署管理（nginx / Java / Node.js / Go，v0.9）
 // ---------------------------------------------------------------------------
-

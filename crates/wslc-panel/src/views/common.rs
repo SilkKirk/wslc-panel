@@ -359,7 +359,10 @@ pub(crate) fn table_header(columns: &'static [(&'static str, f32)]) -> impl Into
 }
 
 /// 表格行容器（列宽与 [`table_header`] 同一套比例，两边必须一致）。
-pub(crate) fn table_row(columns: &'static [(&'static str, f32)], cells: Vec<AnyElement>) -> impl IntoElement {
+pub(crate) fn table_row(
+    columns: &'static [(&'static str, f32)],
+    cells: Vec<AnyElement>,
+) -> impl IntoElement {
     let fractions = crate::columns::column_fractions(columns);
     // 行里多出来的 cell（列定义没写）按平均宽度兜底，别让它挤成一条线
     let fallback = 1.0 / columns.len().max(1) as f32;
@@ -410,12 +413,18 @@ pub(crate) fn cell_muted(text: impl Into<SharedString>) -> AnyElement {
 }
 
 /// 正常色的「可悬停看全文」单元格（表格里的主要标识，比如镜像引用）。
-pub(crate) fn cell_text_full(key: impl Into<SharedString>, text: impl Into<SharedString>) -> AnyElement {
+pub(crate) fn cell_text_full(
+    key: impl Into<SharedString>,
+    text: impl Into<SharedString>,
+) -> AnyElement {
     cell_full(key, text, false, None)
 }
 
 /// 次要色的「可悬停看全文」单元格（镜像、安装位置、挂载点这类长文本）。
-pub(crate) fn cell_muted_full(key: impl Into<SharedString>, text: impl Into<SharedString>) -> AnyElement {
+pub(crate) fn cell_muted_full(
+    key: impl Into<SharedString>,
+    text: impl Into<SharedString>,
+) -> AnyElement {
     cell_full(key, text, true, None)
 }
 
@@ -718,4 +727,3 @@ pub(crate) fn log_text(text: Option<&str>, id: &'static str) -> AnyElement {
             .into_any_element(),
     }
 }
-

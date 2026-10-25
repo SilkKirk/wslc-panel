@@ -17,7 +17,6 @@
 //! 页面分发 [`page`] 留在本文件 —— 它是唯一需要认识所有页面的地方。
 
 mod common;
-mod prelude;
 mod config;
 mod containers;
 mod create;
@@ -31,6 +30,7 @@ mod install;
 mod instances;
 mod networks;
 mod overlays;
+mod prelude;
 mod settings;
 mod sql;
 mod volumes;
@@ -49,10 +49,10 @@ pub(crate) use common::modal_scrim;
 pub(crate) use create::create_dialog_overlay;
 pub(crate) use db_dialogs::{
     db_backup_dialog_overlay, db_backup_progress, db_dialog_overlay, db_import_progress,
-    db_info_overlay, grant_db_field,
+    db_info_overlay,
 };
 pub(crate) use deploy::{
-    deploy_dialog_overlay, deploy_logs_overlay, deploy_remove_confirm_overlay, deploy_row_actions,
+    deploy_dialog_overlay, deploy_logs_overlay, deploy_remove_confirm_overlay,
     deploy_site_conf_overlay,
 };
 pub(crate) use details::{container_detail_overlay, distro_detail_overlay};
@@ -66,14 +66,23 @@ use prelude::*;
 // 这正是「唯一需要认识所有页面的地方」该有的样子（加一个页面就会在这里
 // 编译失败，而不是渲染成一页空白）。
 //
-// ⚠️ 名字与模块同名的那些（`dashboard` / `containers` / `images` …）不用导入：
-// `dashboard::dashboard(...)` 的模块路径本来就解析得到，再 `use` 一次反而
-// 会让"这是模块还是函数"变得含混。只有**名字和模块不同**的入口需要列出来。
+// ⚠️ 名字与模块同名的那些（`dashboard` / `containers` / `images` …）**也要写**：
+// `use common::dashboard;` 引入的是**函数** `dashboard`，`mod dashboard;` 引入的
+// 是**模块**，两者在同一个命名空间里互不冲突 —— 但少了 `use` 这一行，
+// `dashboard(state)` 就只剩模块名，报 `cannot find function`。
+// （这一条是 CI 抓出来的，不是推的。）
 use common::empty_state;
+use containers::containers;
+use dashboard::dashboard;
+use database::database;
 use deploy::deploy_page;
+use images::images;
 use install::add_instance;
+use instances::instances;
+use networks::networks;
 use settings::app_settings;
 use sql::sql_console_page;
+use volumes::volumes;
 
 /// 渲染当前页面。
 ///
@@ -117,4 +126,3 @@ pub fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
         Page::AppSettings => app_settings(shell, entity),
     }
 }
-

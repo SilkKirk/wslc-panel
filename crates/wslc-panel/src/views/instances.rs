@@ -1,8 +1,8 @@
 //! ④ WSL 实例（发行版）页。
 
 use super::common::{
-    badge, card, cell_muted, cell_muted_full, danger_button_distro, empty_state,
-    immediate_button, table_header, table_row,
+    badge, card, cell_muted, cell_muted_full, danger_button_distro, empty_state, immediate_button,
+    table_header, table_row,
 };
 use super::prelude::*;
 
@@ -324,4 +324,3 @@ pub(crate) fn cell_distro_badge(state: DistroState) -> AnyElement {
 // ---------------------------------------------------------------------------
 // ④b 添加实例
 // ---------------------------------------------------------------------------
-

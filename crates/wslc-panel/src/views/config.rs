@@ -2,9 +2,7 @@
 //!
 //! 两页共用 [`setting_row`] 那套「一行一个设置项」的画法，所以合在一个模块里。
 
-use super::common::{
-    card, cell_muted_full, disclosure, empty_state, kv, kv_block,
-};
+use super::common::{card, cell_muted_full, disclosure, empty_state, kv, kv_block};
 use super::prelude::*;
 
 /// 配置页。
@@ -413,4 +411,3 @@ pub(crate) fn reload_button(entity: &Entity<Shell>) -> impl IntoElement {
             });
         })
 }
-

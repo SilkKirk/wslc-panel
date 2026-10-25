@@ -476,7 +476,11 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
 ///
 /// 不需要 `cx`：下拉框的选中由 `Shell` 那边订阅，这里只负责画
 /// （不像镜像源那块还要读自定义 URL 输入框）。
-pub(crate) fn online_block(state: &AppState, form: &InstallForm, entity: &Entity<Shell>) -> AnyElement {
+pub(crate) fn online_block(
+    state: &AppState,
+    form: &InstallForm,
+    entity: &Entity<Shell>,
+) -> AnyElement {
     let refresh = {
         let entity = entity.clone();
         Button::new("online-refresh")
@@ -949,4 +953,3 @@ pub(crate) fn install_log_card(
 // ---------------------------------------------------------------------------
 // ⑤ 应用设置
 // ---------------------------------------------------------------------------
-

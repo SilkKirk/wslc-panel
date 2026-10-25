@@ -1,8 +1,6 @@
 //! ⑧ 发行版配置（`/etc/wsl.conf`）浮层。
 
-use super::common::{
-    ModalSize, badge, cell_muted_full, modal_card, modal_scrim,
-};
+use super::common::{ModalSize, badge, cell_muted_full, modal_card, modal_scrim};
 use super::prelude::*;
 
 /// 「这一项显示的是 WSL 的默认值」的小标记。

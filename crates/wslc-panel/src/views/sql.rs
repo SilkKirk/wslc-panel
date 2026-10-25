@@ -371,7 +371,12 @@ pub(crate) fn sql_editor_pane(
 /// - 没搜索：库是父节点、表是子节点，点库名展开；
 /// - 有搜索：拍平成一层的「库.表」—— 否则用户搜到的那张表还藏在一个
 ///   收起的库节点里，等于白搜。
-pub(crate) fn sql_tree_pane(db: &DbState, shell: &Shell, entity: &Entity<Shell>, _cx: &App) -> AnyElement {
+pub(crate) fn sql_tree_pane(
+    db: &DbState,
+    shell: &Shell,
+    entity: &Entity<Shell>,
+    _cx: &App,
+) -> AnyElement {
     let pane = |inner: AnyElement| -> AnyElement {
         v_flex()
             .w(px(260.))
@@ -561,7 +566,12 @@ pub(crate) fn sql_tree_pane(db: &DbState, shell: &Shell, entity: &Entity<Shell>,
 /// 放在高度不定的容器里会算错（表现为滚动条乱跳 / 底部空白）。
 /// 所以这一层用 `flex_1 + min_h_0`，让布局给出确定高度 ——
 /// 父链上每一层都有确定高度（页面 `h_full` → 右侧列 `h_full` → 这里 `flex_1`）。
-pub(crate) fn sql_results_pane(db: &DbState, shell: &Shell, entity: &Entity<Shell>, _cx: &App) -> AnyElement {
+pub(crate) fn sql_results_pane(
+    db: &DbState,
+    shell: &Shell,
+    entity: &Entity<Shell>,
+    _cx: &App,
+) -> AnyElement {
     // 统一的容器：吃满剩余高度 + 内边距。三种形态共用，免得各写一遍。
     let shell_area = |inner: AnyElement| -> AnyElement {
         v_flex()

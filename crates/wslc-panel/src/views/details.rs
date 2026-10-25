@@ -1,8 +1,8 @@
 //! 容器详情 / 发行版详情两个浮层。
 
 use super::common::{
-    ModalSize, danger_button, danger_button_distro, immediate_button, kv, kv_block,
-    modal_card, modal_scrim, overlay_button, prompt_button,
+    ModalSize, danger_button, danger_button_distro, immediate_button, kv, kv_block, modal_card,
+    modal_scrim, overlay_button, prompt_button,
 };
 use super::prelude::*;
 
@@ -513,4 +513,3 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
     )
     .into_any_element()
 }
-
