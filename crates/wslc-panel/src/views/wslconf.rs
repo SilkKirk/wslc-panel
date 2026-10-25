@@ -211,18 +211,13 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEl
                 .bordered(false)
                 .h_auto()
                 .item(move |item| {
-                    item.title(title)
-                        .open(open)
-                        .bg(theme::bg_card())
-                        .child(
-                            v_flex()
-                                .w_full()
-                                .gap_2()
-                                .children(bool_rows)
-                                .children(other_fields.iter().map(|f| {
-                                    wslconf_row(state, dialog, f, entity)
-                                })),
-                        )
+                    item.title(title).open(open).bg(theme::bg_card()).child(
+                        v_flex().w_full().gap_2().children(bool_rows).children(
+                            other_fields
+                                .iter()
+                                .map(|f| wslconf_row(state, dialog, f, entity)),
+                        ),
+                    )
                 })
                 // 幂等判断：容器级回调在"点内容区"时也可能被触发，
                 // 所以只在官方报的状态和我们的**不一致**时才翻（同 `common::disclosure`）。
