@@ -3600,7 +3600,9 @@ impl Shell {
             Ok(dsn) => {
                 let switched = dsn.is_some();
                 if let Some(db) = self.state.db.as_mut() {
-                    db.dsn = dsn;
+                    // `DsnText` 是 newtype（`Debug` 手写脱敏）—— 状态里存的是它，
+                    // 不是裸 `String`（见那个类型的文档：口令不能进日志）。
+                    db.dsn = dsn.map(wslc_panel_core::state::DsnText::new);
                     // 树是从**上一个**连接读的，换了连接就必须重读。
                     db.schema_tree.databases.clear();
                 }
@@ -3785,8 +3787,18 @@ impl Shell {
             // （两个容器恰好都有个 root 账号时，这个错误会非常难发现）。
             // 用户名也要跟着换成该引擎的默认值：PostgreSQL 没有 root 账号，
             // 留着 `root` 会让第一次连接直接报 role "root" does not exist。
+            //
+            // ⚠️ **连接串也要清**（v0.17 补）：它比密码更危险 ——
+            // 一条 `mysql://root:pw@10.0.0.5:3306/shop` 里既有口令又有**主机**，
+            // 留着它，切过去的那个容器页会静默地去连**上一台机器**，
+            // 而页面上还写着"这一页是 <新容器>"。
+            // 同一个理由（clear on switch）在这一段已经写过一次，这里漏了一处。
             if let Some(form) = self.db_form.as_ref() {
                 form.password
+                    .update(cx, |state, cx| state.set_value(String::new(), window, cx));
+                // 状态里的 `dsn` 已经随新 `DbState` 一起变成 `None` 了（上面刚重建），
+                // 所以这里只需清**输入框**，两者才不会再自相矛盾。
+                form.dsn
                     .update(cx, |state, cx| state.set_value(String::new(), window, cx));
                 let default_user = kind.default_user().to_owned();
                 form.user.update(cx, |state, cx| {
@@ -3834,7 +3846,10 @@ impl Shell {
         }
         let container = db.container.clone();
         // v0.16：填了连接串就走原生连接（能连远程库）。
-        let dsn = db.dsn.clone();
+        // 连接串在状态里是 DsnText（Debug 手写脱敏，见那个类型）。sync move
+        // 闭包里要的是 &str，所以在克隆点就取成原文 —— DsnText::as_str 引用
+        // 的是 db，跨不过 move。
+        let dsn = db.dsn.as_ref().map(|d| d.as_str().to_owned());
         // 用户此刻填在连接卡上的值。密码为空 = "还没填" → 用探测到的那个
         // （容器环境变量里的 `MYSQL_ROOT_PASSWORD` 就是给这种时候用的）。
         let (typed_user, typed_password) = self.read_db_form(cx);
@@ -4041,7 +4056,10 @@ impl Shell {
         let driver = db.driver();
         let cred = state::to_credentials(&self.db_creds(cx));
         // v0.16：填了连接串就走原生连接（能连远程库）。
-        let dsn = db.dsn.clone();
+        // 连接串在状态里是 DsnText（Debug 手写脱敏，见那个类型）。sync move
+        // 闭包里要的是 &str，所以在克隆点就取成原文 —— DsnText::as_str 引用
+        // 的是 db，跨不过 move。
+        let dsn = db.dsn.as_ref().map(|d| d.as_str().to_owned());
 
         if let Some(db) = self.state.db.as_mut() {
             db.busy = true;
@@ -4159,7 +4177,10 @@ impl Shell {
         let container = db.container.clone();
         let bin = db.client.clone();
         // v0.16：填了连接串就走原生连接。
-        let dsn = db.dsn.clone();
+        // 连接串在状态里是 DsnText（Debug 手写脱敏，见那个类型）。sync move
+        // 闭包里要的是 &str，所以在克隆点就取成原文 —— DsnText::as_str 引用
+        // 的是 db，跨不过 move。
+        let dsn = db.dsn.as_ref().map(|d| d.as_str().to_owned());
         // 也走连接卡：用户可能刚在「基础信息」里改过密码再建库，这时
         // 重读列表必须用**新**的那份 —— 用 `db.creds`（上一次 load_db 的）
         // 会让"建库成功、列表却报 Access denied"。
@@ -4988,7 +5009,10 @@ impl Shell {
         let driver = db.driver();
         let cred = state::to_credentials(&creds);
         // v0.16：用户填了连接串就走**原生连接**（能连远程库），否则走原来的路径。
-        let dsn = db.dsn.clone();
+        // 连接串在状态里是 DsnText（Debug 手写脱敏，见那个类型）。sync move
+        // 闭包里要的是 &str，所以在克隆点就取成原文 —— DsnText::as_str 引用
+        // 的是 db，跨不过 move。
+        let dsn = db.dsn.as_ref().map(|d| d.as_str().to_owned());
 
         if let Some(db) = self.state.db.as_mut() {
             db.busy = true;
@@ -5498,7 +5522,10 @@ impl Shell {
         conn.database = db.sql_database.clone();
         let driver = db.driver();
         let cred = state::to_credentials(&creds);
-        let dsn = db.dsn.clone();
+        // 连接串在状态里是 DsnText（Debug 手写脱敏，见那个类型）。sync move
+        // 闭包里要的是 &str，所以在克隆点就取成原文 —— DsnText::as_str 引用
+        // 的是 db，跨不过 move。
+        let dsn = db.dsn.as_ref().map(|d| d.as_str().to_owned());
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()

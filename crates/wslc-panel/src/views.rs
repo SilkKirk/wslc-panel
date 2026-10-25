@@ -2204,7 +2204,10 @@ fn sql_tree_pane(
             let entity = entity.clone();
             gpui_kit::component::tree::tree(
                 state,
-                move |ix, entry, _selected, _window, cx| {
+                // ⚠️ 最后一个参数是 `_cx`（不是 `cx`）：这个回调**不用** `Context`
+                // —— 点击是塞进内层 `on_click` 的闭包里的，那儿的 `cx` 是另一个。
+                // 写成 `cx` 会被 `unused_variables` 报（clippy 日志里一直有这条）。
+                move |ix, entry, _selected, _window, _cx| {
                     let item = entry.item();
                     // 只取这三样：`TreeEntry` 每帧每行都会被调用，
                     // 克隆整棵子树（`item.clone()`）会把它的 children 一起复制。
@@ -2825,14 +2828,19 @@ fn db_connection_card(
             .items_center()
             .child(apply_dsn)
             // 当前生效的是哪条路要说出来 —— 否则用户不知道"到底按哪份配置在跑"。
-            .child(div().text_xs().text_color(theme::text_dim()).child(match db.dsn.as_deref() {
-                Some(dsn) => crate::util::strip_md(&format!(
-                    "当前：**原生连接** {}",
-                    // 连接串里有口令，界面上只显示协议+主机+库，不显示口令段
-                    crate::native_db::redact_dsn(dsn)
-                )),
-                None => crate::util::strip_md("当前：在容器里执行（未使用连接串）"),
-            })),
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child(match db.dsn.as_ref().map(|d| d.as_str()) {
+                        Some(dsn) => crate::util::strip_md(&format!(
+                            "当前：**原生连接** {}",
+                            // 连接串里有口令，界面上只显示协议+主机+库，不显示口令段
+                            crate::native_db::redact_dsn(dsn)
+                        )),
+                        None => crate::util::strip_md("当前：在容器里执行（未使用连接串）"),
+                    }),
+            ),
     );
 
     if let Some(note) = db.cred_note.clone() {
@@ -7582,7 +7590,10 @@ pub fn settings_about(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                 // 会话名从页头挪过来：报问题时它和构建号一样有用，但不该
                 // 每页都占着页头。
                 .child(kv("会话", state.session_label()))
-                .child(kv("界面库", "gpui-kit 0.7.1（GPUI）"))
+                // ⚠️ 版本号要跟着 `Cargo.toml` 的 `gpui-kit` 走 —— 忘了改就会
+                // 让「关于」页显示一个**用户会当真**的错版本（报 issue 时会照抄它）。
+                // v0.17.0 起是 0.8.0。
+                .child(kv("界面库", "gpui-kit 0.8.0（GPUI）"))
                 .child(div().text_xs().text_color(theme::text_dim()).child(
                     "许可证 Apache-2.0。参考项目 owu/wsl-dashboard 是 GPL-3.0-only，\
                      只用来理解机制，没有代码进入本仓库。",

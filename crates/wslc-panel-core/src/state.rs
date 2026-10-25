@@ -2071,6 +2071,90 @@ fn truncate_chars(text: &str, max: usize) -> String {
 /// [`DbState::is_native`] 里，不要在别处再比字符串。
 pub const NATIVE_CLIENT: &str = "native";
 
+/// 用户粘进来的连接串（`mysql://root:pw@10.0.0.5:3306/shop`）。
+///
+/// # 为什么是 newtype 而不是 `Option<String>`
+///
+/// `DbState` / `AppState` 都是 `#[derive(Debug)]`，而这个字符串**带口令**。
+/// 如果它是裸 `String`，那么任何一次 `tracing::debug!("{:?}", state)`
+/// 或者 `dbg!()` 都会把口令打进日志文件 —— 而日志是用户会贴到 issue 里的
+/// 东西。这个仓库在密码这件事上一直是同一套做法
+/// （[`MysqlCreds`] / `DbCredential` 都手写了脱敏 `Debug`），这里保持一致。
+///
+/// 用一个 newtype 而不是"给 `DbState` 手写整个 `Debug`"：后者要手写几十个
+/// 字段，加一个字段忘了补就会**悄悄丢掉**诊断信息；newtype 只影响这一个字段。
+///
+/// [`MysqlCreds`]: wslc_core::model::MysqlCreds
+#[derive(Clone, PartialEq, Eq)]
+pub struct DsnText(String);
+
+impl DsnText {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self(text.into())
+    }
+
+    /// 原文。**只给真正要连接的地方用**（解析 / 拼 `ConnSpec`）。
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// 是否为空（空串等于"没填"）。
+    pub fn is_empty(&self) -> bool {
+        self.0.trim().is_empty()
+    }
+}
+
+impl std::fmt::Debug for DsnText {
+    /// 口令段打 `***`，其余原样保留。
+    ///
+    /// 和 `MysqlCreds` 那种"整段打 `***`"不同：连接串里的**协议 / 主机 /
+    /// 端口 / 库名 / 用户名**正是排障要看的东西（"我连的是哪台机器"），
+    /// 遮掉它们等于让这条 Debug 失去价值。只遮口令那一段。
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "DsnText({})", redact_dsn_password(&self.0))
+    }
+}
+
+/// 把 `scheme://user:password@host…` 里的 `password` 换成 `***`。
+///
+/// 判据刻意和 `wslc-db::redact_dsn` **一致**（那边是 `wslc-db` 里唯一
+/// 有测试的那份实现，但 `wslc-panel-core` 不依赖那个 crate）：
+///
+/// - 先找 `://`，没有就原样返回（不像连接串的东西，没什么可遮的）；
+/// - 再在**权限段**（`://` 到第一个 `/` 或 `?`）里找**最后一个** `@`；
+/// - 那之后如果还有 `:`，`:` 到 `@` 之间就是口令。
+///
+/// ⚠️ 用**最后一个** `@`：口令里出现未编码的 `@` 很常见
+/// （`mysql://root:p@ss@h/db`），按第一个切会把主机名当成口令的一部分。
+fn redact_dsn_password(text: &str) -> String {
+    let Some(scheme_end) = text.find("://") else {
+        return text.to_owned();
+    };
+    let auth_start = scheme_end + 3;
+    // 权限段结束：第一个 `/` 或 `?`（都没有就到末尾）
+    let auth_end = text[auth_start..]
+        .find(['/', '?'])
+        .map(|i| auth_start + i)
+        .unwrap_or(text.len());
+    let auth = &text[auth_start..auth_end];
+    let Some(at) = auth.rfind('@') else {
+        // 没有 `@` = 没有 userinfo，也就没有口令
+        return text.to_owned();
+    };
+    let userinfo = &auth[..at];
+    let Some(colon) = userinfo.find(':') else {
+        // `user@host` 形式：没有口令
+        return text.to_owned();
+    };
+    // `user:` + `***` + `@host…`
+    format!(
+        "{}{}:***{}",
+        &text[..auth_start],
+        &userinfo[..colon],
+        &text[auth_start + at..]
+    )
+}
+
 /// 「数据库管理」页的状态。
 ///
 /// 纯数据（一个 GPUI 类型都没有），所以住在 `AppState` 里、也能被单测；
@@ -2105,9 +2189,12 @@ pub struct DbState {
     ///
     /// ⚠️ 它**不落盘**：里面有口令。
     ///
+    /// ⚠️ 类型是 [`DsnText`] 而不是 `String`：这个结构体派生了 `Debug`，
+    /// 裸 `String` 会把口令打进日志（见那个 newtype 的文档）。
+    ///
     /// ⚠️ 它也是 [`DbState::is_native`] 的两个判据之一 —— 填了它，那六条
     /// 只能走容器内客户端的写操作就会被拦住（见 `write_blocked_reason`）。
-    pub dsn: Option<String>,
+    pub dsn: Option<DsnText>,
     /// 多驱动层的连接（v0.13）。
     ///
     /// # 现在它是什么
@@ -6617,7 +6704,7 @@ mod tests {
 
         // ① 刚点「应用连接串」、结果还没读回来时也要算原生 —— 否则这一小段
         //    窗口里 `client` 还是上一个容器的 `mysql`，点下去会真的去 exec。
-        state.dsn = Some("mysql://root:pw@10.0.0.5:3306/shop".to_owned());
+        state.dsn = Some(DsnText::new("mysql://root:pw@10.0.0.5:3306/shop"));
         assert!(state.is_native(), "dsn 已生效就该判成原生");
         let reason = state.write_blocked_reason().expect("原生连接必须拦住写操作");
         assert!(reason.contains("连接串"), "理由要说清怎么改回去：{reason}");
@@ -6641,6 +6728,59 @@ mod tests {
         assert!(
             state.write_blocked_reason().is_none(),
             "改回容器内执行之后必须立刻放行"
+        );
+    }
+
+    #[test]
+    fn dsn_debug_never_leaks_the_password() {
+        // `DbState` / `AppState` 都是 `#[derive(Debug)]` —— 只要 `dsn` 是裸
+        // `String`，任何一次 `{:?}` 就会把口令打进日志文件（而日志是用户会
+        // 贴到 issue 里的东西）。这个 newtype 就是为了堵这一条。
+        let dsn = DsnText::new("mysql://root:s3cret-pw@10.0.0.5:3306/shop");
+        let shown = format!("{dsn:?}");
+        assert!(
+            !shown.contains("s3cret-pw"),
+            "Debug 里漏了口令：{shown}"
+        );
+        assert!(shown.contains("***"), "该遮的那段要显示成 ***：{shown}");
+        // 其余部分**保留** —— 协议 / 主机 / 库名正是排障要看的
+        assert!(shown.contains("10.0.0.5"), "主机名不该被遮：{shown}");
+        assert!(shown.contains("shop"), "库名不该被遮：{shown}");
+        assert!(shown.contains("root"), "用户名不该被遮：{shown}");
+
+        // 原文仍然取得到（真正连接要用它）
+        assert_eq!(dsn.as_str(), "mysql://root:s3cret-pw@10.0.0.5:3306/shop");
+    }
+
+    #[test]
+    fn dsn_redaction_handles_the_shapes_people_actually_paste() {
+        // 口令里带未编码的 `@`：按**最后一个** `@` 切，否则主机名会被当成口令
+        assert_eq!(
+            redact_dsn_password("mysql://root:p@ss@10.0.0.5:3306/db"),
+            "mysql://root:***@10.0.0.5:3306/db"
+        );
+        // 没有口令（`user@host`）：原样
+        assert_eq!(
+            redact_dsn_password("postgres://alice@h:5432/db"),
+            "postgres://alice@h:5432/db"
+        );
+        // 没有 userinfo：原样
+        assert_eq!(
+            redact_dsn_password("postgres://h:5432/db"),
+            "postgres://h:5432/db"
+        );
+        // 不像连接串的东西：原样返回，别瞎改
+        assert_eq!(redact_dsn_password("host=127.0.0.1"), "host=127.0.0.1");
+        assert_eq!(redact_dsn_password(""), "");
+        // 没有库名、也没有端口
+        assert_eq!(
+            redact_dsn_password("mysql://root:pw@h"),
+            "mysql://root:***@h"
+        );
+        // 查询串（我们目前拒绝带它的连接串，但脱敏不该因此 panic）
+        assert_eq!(
+            redact_dsn_password("postgres://u:p@h:5432/db?sslmode=require"),
+            "postgres://u:***@h:5432/db?sslmode=require"
         );
     }
 
