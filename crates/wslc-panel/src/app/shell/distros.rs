@@ -795,7 +795,7 @@ impl Shell {
             }
         }
         // 4. 缺的依次追加
-        for key in desired[common..].to_vec() {
+        for key in desired[common..].iter().copied() {
             self.open_dialog_for(key, window, cx);
         }
         self.dialog_stack = desired;
