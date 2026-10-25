@@ -4949,11 +4949,30 @@ pub fn deploy_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) ->
     let more_filled = !form.proxy_more.read(cx).value().trim().is_empty();
     let proxy_block = disclosure(
         UiSection::DeployProxy,
-        if proxy_filled { "反向代理 · 已填写" } else { "反向代理 · 未配置" },
-        &shell.state, entity,
-        v_flex().w_full().gap_2()
-            .child(form_field("deploy-proxy-prefix", "路径前缀（如 /api/）", &form.proxy_prefix, cx, true))
-            .child(form_field("deploy-proxy-upstream", "上游地址（如 http://api:8080）", &form.proxy_upstream, cx, true))
+        if proxy_filled {
+            "反向代理 · 已填写"
+        } else {
+            "反向代理 · 未配置"
+        },
+        &shell.state,
+        entity,
+        v_flex()
+            .w_full()
+            .gap_2()
+            .child(form_field(
+                "deploy-proxy-prefix",
+                "路径前缀（如 /api/）",
+                &form.proxy_prefix,
+                cx,
+                true,
+            ))
+            .child(form_field(
+                "deploy-proxy-upstream",
+                "上游地址（如 http://api:8080）",
+                &form.proxy_upstream,
+                cx,
+                true,
+            ))
             .child({
                 let entity = entity.clone();
                 Checkbox::new("deploy-proxy-strip")
@@ -4966,16 +4985,33 @@ pub fn deploy_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) ->
             })
             .child(disclosure(
                 UiSection::DeployProxyMore,
-                if more_filled { "更多规则 · 已填写" } else { "添加更多规则" },
-                &shell.state, entity,
-                v_flex().w_full().gap_1()
-                    .child(form_field("deploy-proxy-more", "更多反代规则", &form.proxy_more, cx, true))
-                    .child(div().text_xs().text_color(theme::text_dim())
-                        // 这是**语法说明**（用户必须知道怎么写），不是解释性长文 ——
-                        // 所以留，但压到一行：示例本身已经把格式说清了，
-                        // "路径前缀不能重复"是校验规则，等真冲突时报错即可
-                        // （校验在 `valid_proxy_prefix` 里，有测试）。
-                        .child("每行一条，分号分隔：/auth/ => http://auth:9000")),
+                if more_filled {
+                    "更多规则 · 已填写"
+                } else {
+                    "添加更多规则"
+                },
+                &shell.state,
+                entity,
+                v_flex()
+                    .w_full()
+                    .gap_1()
+                    .child(form_field(
+                        "deploy-proxy-more",
+                        "更多反代规则",
+                        &form.proxy_more,
+                        cx,
+                        true,
+                    ))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_dim())
+                            // 这是**语法说明**（用户必须知道怎么写），不是解释性长文 ——
+                            // 所以留，但压到一行：示例本身已经把格式说清了，
+                            // "路径前缀不能重复"是校验规则，等真冲突时报错即可
+                            // （校验在 `valid_proxy_prefix` 里，有测试）。
+                            .child("每行一条，分号分隔：/auth/ => http://auth:9000"),
+                    ),
             ))
             .child({
                 let entity = entity.clone();
@@ -4987,8 +5023,12 @@ pub fn deploy_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) ->
                         entity.update(cx, |shell, cx| shell.set_deploy_auto_connect(enabled, cx));
                     })
             })
-            .child(div().text_xs().text_color(theme::text_dim())
-                .child("上游容器需网络可达；关闭自动接通后须自行连接用户网络。")),
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_dim())
+                    .child("上游容器需网络可达；关闭自动接通后须自行连接用户网络。"),
+            ),
     );
     let site_block = if runtime == wslc_core::model::AppRuntime::Nginx {
         Some(v_flex().w_full().gap_2().p_3().rounded_md()
