@@ -5279,47 +5279,48 @@ pub fn deploy_site_conf_overlay(conf: &DeploySiteConf, entity: &Entity<Shell>) -
             .into_any_element()
     };
 
-    let card = modal_card(ModalSize::Medium)
-        .max_h(px(560.))
-        .child(
-            v_flex()
-                .gap_1()
-                .child(
-                    div()
-                        .text_lg()
-                        .font_semibold()
-                        .child(format!("站点配置 · {}", conf.app)),
-                )
-                .child(div().text_xs().text_color(theme::text_dim()).child(
-                    crate::util::strip_md(
-                        "容器里的 `/etc/nginx/conf.d/00-wslc-panel-<应用名>.conf`（只读）。\
+    let card =
+        modal_card(ModalSize::Medium)
+            .max_h(px(560.))
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_semibold()
+                            .child(format!("站点配置 · {}", conf.app)),
+                    )
+                    .child(div().text_xs().text_color(theme::text_dim()).child(
+                        crate::util::strip_md(
+                            "容器里的 `/etc/nginx/conf.d/00-wslc-panel-<应用名>.conf`（只读）。\
                          重新部署会整份覆盖；要改就改部署弹窗里的站点区，别直接改这个文件。",
-                    ),
-                ))
-                .child(div().text_xs().text_color(theme::text_dim()).child(
-                    crate::util::strip_md(
-                        "容器重建后这份 conf 会丢 —— 可以点「重写配置」补回来\
+                        ),
+                    ))
+                    .child(div().text_xs().text_color(theme::text_dim()).child(
+                        crate::util::strip_md(
+                            "容器重建后这份 conf 会丢 —— 可以点「重写配置」补回来\
                          （只写 conf，不重新铺文件 / 不重新接网络）。",
-                    ),
-                )),
-        )
-        .child(body)
-        .child(
-            h_flex()
-                .w_full()
-                .justify_end()
-                .gap_2()
-                .child(reapply)
-                .child({
-                    let entity = entity.clone();
-                    Button::new("deploy-site-conf-close")
-                        .label("关闭")
-                        .small()
-                        .on_click(move |_, _, cx| {
-                            entity.update(cx, |shell, cx| shell.close_deploy_site_conf(cx));
-                        })
-                }),
-        );
+                        ),
+                    )),
+            )
+            .child(body)
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_end()
+                    .gap_2()
+                    .child(reapply)
+                    .child({
+                        let entity = entity.clone();
+                        Button::new("deploy-site-conf-close")
+                            .label("关闭")
+                            .small()
+                            .on_click(move |_, _, cx| {
+                                entity.update(cx, |shell, cx| shell.close_deploy_site_conf(cx));
+                            })
+                    }),
+            );
 
     modal_scrim("deploy-site-conf-scrim", card).into_any_element()
 }
