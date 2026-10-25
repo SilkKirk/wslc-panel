@@ -1,8 +1,0 @@
-public	t_user	id
-public	t_user	name
-public	t_user	nick
-public	t_user	active
-public	t_user	tags
-public	t_user	created
-public	v_user	id
-public	v_user	name
