@@ -733,7 +733,6 @@ impl Shell {
     }
 
     // -- 添加实例 ----------------------------------------------------------
-}
 
 /// 把「窗口级对话框栈」对齐到当前状态（官方 `Dialog`）。
 ///
@@ -853,4 +852,5 @@ fn open_dialog_for(&mut self, key: DialogKey, window: &mut Window, cx: &mut Cont
             });
         }
     }
+}
 }
