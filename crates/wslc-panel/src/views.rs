@@ -125,6 +125,16 @@ fn card(title: &'static str, body: impl IntoElement) -> impl IntoElement {
 }
 
 /// 展开状态只控制展示，折叠不会清空表单实体里的参数。
+///
+/// # 折叠头用官方 `Icon`，不用 `▾` / `▸` 字符
+///
+/// 早先标题是 `format!("{} {title}", if open { "▾" } else { "▸" })` —— 那两个
+/// 是**字体里的字符**，不同字体下大小 / 基线不一样（中文界面里常偏上偏下），
+/// 也不会跟着"减弱动态效果"之类的偏好走。
+///
+/// 现在用 Lucide 的 `ChevronDown` + `rotate(…)`：展开时转 180° ——
+/// **和 `Accordion` 的 trigger 完全一致**（读 `accordion.rs` 确认过它的写法），
+/// 同一类交互在同一个应用里应该有同一个样子。
 fn disclosure(
     section: UiSection,
     title: impl Into<String>,
@@ -132,6 +142,8 @@ fn disclosure(
     entity: &Entity<Shell>,
     body: impl IntoElement,
 ) -> AnyElement {
+    use gpui_kit::component::{Icon, IconName};
+
     let open = state.section_open(section);
     let title = title.into();
     let entity = entity.clone();
@@ -140,14 +152,35 @@ fn disclosure(
         .w_full()
         .child(
             Button::new(SharedString::from(format!("section-{section:?}")))
-                .label(format!("{} {title}", if open { "▾" } else { "▸" }))
                 .small()
                 .on_click(move |_, _, cx| {
                     entity.update(cx, |shell, cx| {
                         shell.state.toggle_section(section);
                         cx.notify();
                     });
-                }),
+                })
+                // 内容自己画：左边标题、右边箭头。`Button::label()` 只能放一段
+                // 文字，放不下"标题 + 图标"这个组合。
+                //
+                // ⚠️ `rotate(percentage(...))` 是照 `accordion.rs` 的 trigger 抄的
+                // —— `rotate` 吃 `impl Into<Radians>`，而 `Percentage` 有那个
+                // `From`（`0.5` = 半圈 = 180°）。本仓库没有别的 `Radians` 用法，
+                // 别自己造一个 `Radians(PI)` 那种写法。
+                .child(
+                    h_flex()
+                        .w_full()
+                        .justify_between()
+                        .items_center()
+                        .gap_2()
+                        .child(div().text_sm().child(title))
+                        .child(
+                            Icon::new(IconName::ChevronDown)
+                                .xsmall()
+                                .flex_none()
+                                .text_color(theme::text_dim())
+                                .rotate(gpui_kit::percentage(if open { 0.5 } else { 0. })),
+                        ),
+                ),
         )
         .content(v_flex().w_full().gap_3().pt_2().child(body))
         .into_any_element()
