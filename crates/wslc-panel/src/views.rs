@@ -153,13 +153,88 @@ fn disclosure(
         .into_any_element()
 }
 
+/// 弹窗卡片的**统一尺寸档**。
+///
+/// # 为什么需要它
+///
+/// 原来 18 个弹窗各写各的 `.w(px(…))`，实测下来有 **6 种**宽度：
+///
+/// ```text
+/// 560 / 620 / 680 / 700 / 760 / 780 / 820
+/// ```
+///
+/// 但它们的实际分布是**三簇**：`560/620`（3 处，确认与单输入）、
+/// `680/700`（4 处，表单）、`760/780/820`（6 处，详情 / 日志 / 表格）。
+/// 簇内那 ±20~60px 的差别不是布局需要 —— 同样 680 宽的两个弹窗，
+/// 一个 `max_h 560`、一个 `max_h 820`，纯属各写各的。
+///
+/// 后果用户能看见：点「创建容器」(780) 再点「执行命令」(760)，
+/// **卡片边缘会挪动 20px**。正式软件里同一种模态只有一两档宽度。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModalSize {
+    /// 窄：确认框、单输入弹窗（原 560 / 620）。
+    Narrow,
+    /// 中：常规表单（原 680 / 700）。
+    Medium,
+    /// 宽：详情 / 日志 / 表格（原 760 / 780 / 820）。
+    Wide,
+}
+
+impl ModalSize {
+    /// 这一档的像素宽度。
+    pub fn width(self) -> f32 {
+        match self {
+            Self::Narrow => 560.,
+            // 680 → 700：簇内取整，和 `Medium` 的另一处（700）对齐。
+            Self::Medium => 700.,
+            // 760 / 780 / 820 → 800：同上，取簇内中位。
+            Self::Wide => 800.,
+        }
+    }
+}
+
+/// 弹窗卡片的**视觉外壳**：宽度 / 内边距 / 圆角 / 底色 / 边框。
+///
+/// 只做这一件事 —— **`id`、`max_h`、滚动都不在这里**。原因：
+///
+/// - `id` 只有"需要滚动 / 需要 hover"的卡片才有（18 处里 9 处），
+///   做成必填会逼着另外 9 处编一个假的；
+/// - `max_h` 各弹窗差得多（确认框 3 行 vs 日志几百行），这里猜不了。
+///
+/// 所以调用方式是把本函数当成**起点**，返回 `Div` 可以继续挂：
+///
+/// ```ignore
+/// modal_card(ModalSize::Medium)
+///     .id("create-dialog-card")        // 需要滚动时才有
+///     .max_h(px(880.))
+///     .overflow_y_scroll()             // 只对带 id 的元素可用
+///     .child(…)
+/// ```
+///
+/// ⚠️ 返回 `Div` 而不是 `impl IntoElement`：调用方要能继续 `.id(…)`
+/// （`StatefulInteractiveElement` 的方法）。
+pub fn modal_card(size: ModalSize) -> gpui_kit::Div {
+    v_flex()
+        .w(px(size.width()))
+        .gap_4()
+        .p_5()
+        .rounded_lg()
+        .bg(theme::bg_card())
+        .border_1()
+        .border_color(theme::border())
+}
+
 /// 模态浮层的**外壳**：满屏遮罩 + 居中的卡片槽。
 ///
-/// # 为什么只抽"外壳"这一层
+/// # 分工
 ///
-/// 里面那张卡片的宽度 / 内边距 / 标题 / 是否带 `id` / 要不要 `max_h` ——
-/// 8 个弹窗各不相同，把它们都做成参数只会让每个调用点更长
-/// （同一个判断见本文件里那四个按钮包装的注释）。
+/// - 这里只管**遮罩**（行为 + 入场动画）；
+/// - 卡片本体的视觉走 [`modal_card`]；
+/// - 具体内容由调用方给。
+///
+/// 早先这里写着"8 个弹窗各不相同，做成参数只会让调用点更长" ——
+/// 那句话后来被实测推翻了：不是"各不相同"，是**没人统一**，
+/// 于是攒出 6 种宽度（见 [`ModalSize`]）。
 ///
 /// # 但这一层必须抽
 ///
@@ -1721,16 +1796,9 @@ pub fn db_info_overlay(
 
     modal_scrim(
         "db-info",
-        v_flex()
+        modal_card(ModalSize::Medium)
             .id("db-info-card")
-            .w(px(680.))
             .max_h(px(560.))
-            .gap_4()
-            .p_5()
-            .rounded_lg()
-            .bg(theme::bg_card())
-            .border_1()
-            .border_color(theme::border())
             .overflow_y_scroll()
             .child(
                 v_flex()
@@ -3651,17 +3719,10 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
 
     modal_scrim(
         "db-dialog",
-        v_flex()
+        modal_card(ModalSize::Medium)
             .id("db-dialog-card")
-            .w(px(680.))
             .max_h(px(820.))
             .overflow_y_scroll()
-            .gap_4()
-            .p_5()
-            .rounded_lg()
-            .bg(theme::bg_card())
-            .border_1()
-            .border_color(theme::border())
             .child(
                 v_flex()
                     .gap_1()
@@ -3832,14 +3893,7 @@ pub fn db_backup_progress(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
 
     modal_scrim(
         "db-backup-progress",
-        v_flex()
-            .w(px(560.))
-            .gap_4()
-            .p_5()
-            .rounded_lg()
-            .bg(theme::bg_card())
-            .border_1()
-            .border_color(theme::border())
+        modal_card(ModalSize::Narrow)
             .child(
                 v_flex()
                     .gap_1()
@@ -3920,14 +3974,7 @@ pub fn db_import_progress(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
 
     modal_scrim(
         "db-import-progress",
-        v_flex()
-            .w(px(560.))
-            .gap_4()
-            .p_5()
-            .rounded_lg()
-            .bg(theme::bg_card())
-            .border_1()
-            .border_color(theme::border())
+        modal_card(ModalSize::Narrow)
             .child(
                 v_flex()
                     .gap_1()
@@ -4113,16 +4160,9 @@ pub fn db_backup_dialog_overlay(
 
     modal_scrim(
         "db-backup-dialog",
-        v_flex()
+        modal_card(ModalSize::Wide)
             .id("db-backup-dialog-card")
-            .w(px(780.))
             .max_h(px(560.))
-            .gap_4()
-            .p_5()
-            .rounded_lg()
-            .bg(theme::bg_card())
-            .border_1()
-            .border_color(theme::border())
             .overflow_y_scroll()
             .child(
                 v_flex()
@@ -8744,18 +8784,11 @@ pub fn create_dialog_overlay(
 
     modal_scrim(
         "create-dialog",
-        v_flex()
+        modal_card(ModalSize::Wide)
             // 字段多，窗口矮时允许滚动，别把底部按钮挤没
             .id("create-dialog-card")
-            .w(px(780.))
             .max_h(px(880.))
             .overflow_y_scroll()
-            .gap_4()
-            .p_5()
-            .rounded_lg()
-            .bg(theme::bg_card())
-            .border_1()
-            .border_color(theme::border())
             .child(
                 div()
                     .text_lg()
@@ -9129,17 +9162,10 @@ pub fn container_detail_overlay(
 
     modal_scrim(
         "container-detail",
-        v_flex()
+        modal_card(ModalSize::Medium)
             .id("detail-card")
-            .w(px(700.))
             .max_h(px(860.))
             .overflow_y_scroll()
-            .gap_4()
-            .p_5()
-            .rounded_lg()
-            .bg(theme::bg_card())
-            .border_1()
-            .border_color(theme::border())
             .child(
                 div()
                     .text_lg()
@@ -9377,17 +9403,10 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
 
     modal_scrim(
         "distro-detail",
-        v_flex()
+        modal_card(ModalSize::Wide)
             .id("distro-detail-card")
-            .w(px(760.))
             .max_h(px(860.))
             .overflow_y_scroll()
-            .gap_4()
-            .p_5()
-            .rounded_lg()
-            .bg(theme::bg_card())
-            .border_1()
-            .border_color(theme::border())
             .child(
                 v_flex()
                     .gap_1()
@@ -9504,14 +9523,7 @@ pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEle
 
     modal_scrim(
         "prompt",
-        v_flex()
-            .w(px(620.))
-            .gap_4()
-            .p_5()
-            .rounded_lg()
-            .bg(theme::bg_card())
-            .border_1()
-            .border_color(theme::border())
+        modal_card(ModalSize::Narrow)
             .child(
                 v_flex()
                     .gap_1()
@@ -9758,16 +9770,9 @@ pub fn logs_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
 
     modal_scrim(
         "logs",
-        v_flex()
+        modal_card(ModalSize::Wide)
             .id("logs-card")
-            .w(px(820.))
             .max_h(px(760.))
-            .gap_4()
-            .p_5()
-            .rounded_lg()
-            .bg(theme::bg_card())
-            .border_1()
-            .border_color(theme::border())
             .child(
                 v_flex()
                     .gap_1()
@@ -9897,16 +9902,9 @@ pub fn exec_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEleme
 
     modal_scrim(
         "exec",
-        v_flex()
+        modal_card(ModalSize::Wide)
             .id("exec-card")
-            .w(px(760.))
             .max_h(px(720.))
-            .gap_4()
-            .p_5()
-            .rounded_lg()
-            .bg(theme::bg_card())
-            .border_1()
-            .border_color(theme::border())
             .child(
                 v_flex()
                     .gap_1()
@@ -9973,14 +9971,7 @@ pub fn export_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
 
     modal_scrim(
         "export",
-        v_flex()
-            .w(px(680.))
-            .gap_4()
-            .p_5()
-            .rounded_lg()
-            .bg(theme::bg_card())
-            .border_1()
-            .border_color(theme::border())
+        modal_card(ModalSize::Medium)
             .child(
                 div()
                     .text_lg()
@@ -10356,17 +10347,10 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEl
 
     modal_scrim(
         "wslconf",
-        v_flex()
+        modal_card(ModalSize::Wide)
             .id("wslconf-card")
             // 只有正文滚动，保存区固定在卡片底部，展开配置也不把按钮挤走。
-            .w(px(780.))
             .max_h(px(620.))
-            .gap_4()
-            .p_4()
-            .rounded_lg()
-            .bg(theme::bg_card())
-            .border_1()
-            .border_color(theme::border())
             .child(
                 v_flex()
                     .gap_1()
