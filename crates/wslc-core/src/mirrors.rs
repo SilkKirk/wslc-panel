@@ -404,11 +404,7 @@ pub fn parse_update_time(json: &str) -> Option<String> {
         .and_then(serde_json::Value::as_str)?
         .trim()
         .to_owned();
-    if time.is_empty() {
-        None
-    } else {
-        Some(time)
-    }
+    if time.is_empty() { None } else { Some(time) }
 }
 
 /// `curl.exe` 拉 JSON 的参数（正文走 stdout）。

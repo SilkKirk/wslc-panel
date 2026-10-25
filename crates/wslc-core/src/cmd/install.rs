@@ -1601,9 +1601,11 @@ mod tests {
             .filter(|e| matches!(e, InstallEvent::Step { .. }))
             .count();
         assert_eq!(steps, 1, "失败之后不该继续跑下一步：{events:?}");
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, InstallEvent::StepDone { ok: false, .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, InstallEvent::StepDone { ok: false, .. }))
+        );
     }
 
     #[test]

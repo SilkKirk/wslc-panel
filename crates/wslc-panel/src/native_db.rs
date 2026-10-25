@@ -16,10 +16,10 @@
 //! 远程也就几十毫秒 —— 相对一次查询可以忽略。等真的需要长连接（比如
 //! 要做"监听通知"）再引池子。
 
-use wslc_core::model::sqlresult::SqlResult;
-use wslc_core::model::schematree::SchemaTree;
-use wslc_db::{ConnSpec, TextTable};
 use wslc_core::db::DbKind;
+use wslc_core::model::schematree::SchemaTree;
+use wslc_core::model::sqlresult::SqlResult;
+use wslc_db::{ConnSpec, TextTable};
 
 /// 解析连接串；错误消息直接可显示。
 pub fn parse(text: &str) -> Result<ConnSpec, String> {
@@ -137,7 +137,10 @@ pub fn schema(spec: &ConnSpec) -> Result<SchemaTree, String> {
 /// ⚠️ 错误类型用 `String` 而不是 `anyhow::Error`：`wslc-panel` **没有** anyhow 依赖
 /// （它只在 `wslc-core` / `wslc-panel-core` 里）。加一个依赖要走 `gen-lock`，
 /// 而这里唯一需要的就是"一句能显示给用户的话"。
-pub fn mysql_probe(text: &str, container: &str) -> Result<wslc_core::cmd::mysql::MysqlProbe, String> {
+pub fn mysql_probe(
+    text: &str,
+    container: &str,
+) -> Result<wslc_core::cmd::mysql::MysqlProbe, String> {
     use wslc_core::cmd::mysql::MysqlProbe;
     use wslc_core::model::mysql::{ClientProbe, MysqlFamily, RootCredHint};
 

@@ -143,15 +143,7 @@ pub fn returns_rows(sql: &str) -> bool {
     let head = first_keyword(sql);
     matches!(
         head.as_str(),
-        "SELECT"
-            | "SHOW"
-            | "DESCRIBE"
-            | "DESC"
-            | "EXPLAIN"
-            | "WITH"
-            | "TABLE"
-            | "VALUES"
-            | "CALL"
+        "SELECT" | "SHOW" | "DESCRIBE" | "DESC" | "EXPLAIN" | "WITH" | "TABLE" | "VALUES" | "CALL"
     )
 }
 
@@ -205,15 +197,16 @@ fn first_keyword(sql: &str) -> String {
 /// 让服务端自己报错（它的报错比我们切错之后那堆语法错误有意义得多）。
 fn starts_a_routine(sql: &str) -> bool {
     // 只看开头几个词，避免把 `SELECT 'CREATE PROCEDURE'` 误判成例程。
-    let head: String = sql
-        .chars()
-        .take(200)
-        .collect::<String>()
-        .to_uppercase();
+    let head: String = sql.chars().take(200).collect::<String>().to_uppercase();
     let head = head.trim_start();
-    ["CREATE PROCEDURE", "CREATE TRIGGER", "CREATE FUNCTION", "CREATE EVENT"]
-        .iter()
-        .any(|prefix| head.starts_with(prefix))
+    [
+        "CREATE PROCEDURE",
+        "CREATE TRIGGER",
+        "CREATE FUNCTION",
+        "CREATE EVENT",
+    ]
+    .iter()
+    .any(|prefix| head.starts_with(prefix))
 }
 
 /// 从 `start`（一个引号字符）跳到配对收尾引号之后。
@@ -316,7 +309,10 @@ mod tests {
         // 尾部的 `;` 不产生空语句
         assert_eq!(split("SELECT 1;"), vec!["SELECT 1"]);
         // 连续分号 / 只有空白，都不产出空语句
-        assert_eq!(split("SELECT 1;;;  ; SELECT 2"), vec!["SELECT 1", "SELECT 2"]);
+        assert_eq!(
+            split("SELECT 1;;;  ; SELECT 2"),
+            vec!["SELECT 1", "SELECT 2"]
+        );
         assert!(split("").is_empty());
         assert!(split("   \n\t ").is_empty());
         assert!(split(";;;").is_empty());
@@ -375,7 +371,10 @@ mod tests {
     fn minus_minus_needs_whitespace_to_be_a_comment() {
         // `1--2` 是 `1 - (-2)`，不是注释 —— 所以它的 `;` 仍然是分隔符。
         // （MySQL 要求 `--` 后跟空白或行尾才是注释。）
-        assert_eq!(split("SELECT 1--2; SELECT 3"), vec!["SELECT 1--2", "SELECT 3"]);
+        assert_eq!(
+            split("SELECT 1--2; SELECT 3"),
+            vec!["SELECT 1--2", "SELECT 3"]
+        );
     }
 
     #[test]

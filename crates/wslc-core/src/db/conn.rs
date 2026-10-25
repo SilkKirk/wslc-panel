@@ -7,7 +7,7 @@
 //! 而那些逻辑在 `cmd/` 与 `model/` 里 —— 这两个都在 `wslc-core`。
 //! 反过来 `wslc-panel-core` 的补全也要用它的方言数据，方向是单向的。
 
-use crate::db::dialect::{dialect_for, DialectData};
+use crate::db::dialect::{DialectData, dialect_for};
 
 /// 支持的数据库引擎。
 ///

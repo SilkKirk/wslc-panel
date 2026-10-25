@@ -53,7 +53,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::{image_last_segment, ContainerInspect, ContainerListItem};
+use super::{ContainerInspect, ContainerListItem, image_last_segment};
 
 // ---------------------------------------------------------------------------
 // 运行时与形态
@@ -207,7 +207,9 @@ impl AppRuntime {
             }
             Self::Node => Some("npm start".to_owned()),
             Self::Go => {
-                let bin = artifact.map(str::to_owned).unwrap_or_else(|| app.to_owned());
+                let bin = artifact
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| app.to_owned());
                 Some(format!("./{bin}"))
             }
         }
@@ -346,7 +348,9 @@ pub fn runtime_from_image(image: &str) -> Option<AppRuntime> {
         "nginx" | "openresty" | "tengine" => Some(AppRuntime::Nginx),
         // JVM 一族：官方 jdk 镜像 + 常见的应用服务器 / 构建工具镜像
         "openjdk" | "temurin" | "eclipse-temurin" | "amazoncorretto" | "corretto" | "zulu"
-        | "liberica" | "maven" | "gradle" | "tomcat" | "jetty" | "wildfly" => Some(AppRuntime::Java),
+        | "liberica" | "maven" | "gradle" | "tomcat" | "jetty" | "wildfly" => {
+            Some(AppRuntime::Java)
+        }
         // Node.js
         "node" | "nodejs" | "iojs" => Some(AppRuntime::Node),
         // Go
@@ -1464,9 +1468,9 @@ pub fn normalize_upstream(raw: &str) -> Result<String, String> {
     } else {
         ("http", raw)
     };
-    let (host, port) = rest.rsplit_once(':').ok_or_else(|| {
-        "上游要写成 host:port（例如 http://api:8080）".to_owned()
-    })?;
+    let (host, port) = rest
+        .rsplit_once(':')
+        .ok_or_else(|| "上游要写成 host:port（例如 http://api:8080）".to_owned())?;
     if host.is_empty()
         || !host
             .chars()
@@ -1542,11 +1546,13 @@ pub fn format_proxy_rule(rule: &ProxyRule) -> String {
 /// 用 `;` 分隔（单行输入框里最稳；上游本身不允许 `;`，不会有歧义）。
 pub fn parse_proxy_rules(raw: &str) -> Result<Vec<ProxyRule>, String> {
     let mut out = Vec::new();
-    for part in raw.split(';').map(str::trim).filter(|part| !part.is_empty()) {
+    for part in raw
+        .split(';')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
         let Some((prefix, rest)) = part.split_once("=>") else {
-            return Err(format!(
-                "这条反代看不懂（要 /path/ => host:port）：{part}"
-            ));
+            return Err(format!("这条反代看不懂（要 /path/ => host:port）：{part}"));
         };
         let prefix = valid_proxy_prefix(prefix)?;
         let mut tokens = rest.split_whitespace();
@@ -1710,9 +1716,9 @@ impl DeployErrorKind {
                 "文件没有可执行位（从 Windows 传过去的文件默认没有）。\
                  这是面板的 bug，请把它报出来",
             ),
-            Self::PathNotFound => {
-                Some("容器里的这个路径不存在、建不出来，或者被别的东西占着 —— 换一个目录试试（比如 /opt 底下）")
-            }
+            Self::PathNotFound => Some(
+                "容器里的这个路径不存在、建不出来，或者被别的东西占着 —— 换一个目录试试（比如 /opt 底下）",
+            ),
             Self::Other => None,
         }
     }
@@ -1822,11 +1828,20 @@ mod tests {
     #[test]
     fn recognizes_runtimes_by_image_name() {
         assert_eq!(runtime_from_image("nginx"), Some(AppRuntime::Nginx));
-        assert_eq!(runtime_from_image("nginx:1.27-alpine"), Some(AppRuntime::Nginx));
-        assert_eq!(runtime_from_image("openresty/openresty"), Some(AppRuntime::Nginx));
+        assert_eq!(
+            runtime_from_image("nginx:1.27-alpine"),
+            Some(AppRuntime::Nginx)
+        );
+        assert_eq!(
+            runtime_from_image("openresty/openresty"),
+            Some(AppRuntime::Nginx)
+        );
 
         assert_eq!(runtime_from_image("openjdk"), Some(AppRuntime::Java));
-        assert_eq!(runtime_from_image("eclipse-temurin:21-jre"), Some(AppRuntime::Java));
+        assert_eq!(
+            runtime_from_image("eclipse-temurin:21-jre"),
+            Some(AppRuntime::Java)
+        );
         assert_eq!(runtime_from_image("amazoncorretto"), Some(AppRuntime::Java));
         assert_eq!(runtime_from_image("tomcat"), Some(AppRuntime::Java));
 
@@ -1862,7 +1877,11 @@ mod tests {
     #[test]
     fn unknown_images_are_not_guessed() {
         for image in ["mysql", "alpine", "redis", "postgres", "hello-world", ""] {
-            assert_eq!(runtime_from_image(image), None, "{image} 不该被认成能部署的应用");
+            assert_eq!(
+                runtime_from_image(image),
+                None,
+                "{image} 不该被认成能部署的应用"
+            );
         }
     }
 
@@ -1876,7 +1895,10 @@ mod tests {
             runtime_from_command("java -jar /app/app.jar"),
             Some(AppRuntime::Java)
         );
-        assert_eq!(runtime_from_command("node server.js"), Some(AppRuntime::Node));
+        assert_eq!(
+            runtime_from_command("node server.js"),
+            Some(AppRuntime::Node)
+        );
         assert_eq!(runtime_from_command("npm start"), Some(AppRuntime::Node));
         // Go **刻意不猜**：二进制的名字是任意的，启动命令里没有线索
         assert_eq!(runtime_from_command("./myapp"), None);
@@ -2236,10 +2258,7 @@ mod tests {
 
     #[test]
     fn chmod_exec_bit_script_quotes_the_path() {
-        assert_eq!(
-            chmod_exec_script("/opt/app/bin"),
-            "chmod +x '/opt/app/bin'"
-        );
+        assert_eq!(chmod_exec_script("/opt/app/bin"), "chmod +x '/opt/app/bin'");
         // 注入形状必须被引号吃掉
         let injected = chmod_exec_script("/opt/a; rm -rf /");
         assert!(injected.contains("'/opt/a; rm -rf /'"), "{injected}");
@@ -2313,7 +2332,10 @@ mod tests {
         assert!(script.contains("> '/opt/my app/app.log'"), "{script}");
         assert!(script.contains("> '/opt/my app/app.pid'"), "{script}");
         // 命令是用户写的**代码** → 原样，不能被引号包起来
-        assert!(script.contains("nohup node server.js --flag=1 >"), "{script}");
+        assert!(
+            script.contains("nohup node server.js --flag=1 >"),
+            "{script}"
+        );
     }
 
     #[test]
@@ -2561,7 +2583,10 @@ mod tests {
         let text = render_log_output(NO_LOG);
         assert!(text.contains("还没有日志文件"), "{text}");
         assert!(!text.contains(NO_LOG), "哨兵不该露给用户：{text}");
-        assert_eq!(render_log_output(""), "（日志是空的 —— 应用启动了，但还没有任何输出）");
+        assert_eq!(
+            render_log_output(""),
+            "（日志是空的 —— 应用启动了，但还没有任何输出）"
+        );
         assert_eq!(render_log_output("a\nb\n\n"), "a\nb");
     }
 
@@ -2616,25 +2641,36 @@ mod tests {
         assert_eq!(AppRuntime::Nginx.kind(), DeployKind::Content);
         assert_eq!(AppRuntime::Java.kind(), DeployKind::Process);
 
-        assert_eq!(AppRuntime::Nginx.default_target_dir("x"), "/usr/share/nginx/html");
+        assert_eq!(
+            AppRuntime::Nginx.default_target_dir("x"),
+            "/usr/share/nginx/html"
+        );
         assert_eq!(AppRuntime::Java.default_target_dir("shop"), "/opt/shop");
 
         assert_eq!(AppRuntime::Nginx.default_start_command("x", None), None);
         // Java / Go 要的是**源文件的名字**（见函数文档）
         assert_eq!(
-            AppRuntime::Java.default_start_command("shop", Some("shop-1.2.jar")).as_deref(),
+            AppRuntime::Java
+                .default_start_command("shop", Some("shop-1.2.jar"))
+                .as_deref(),
             Some("java -jar shop-1.2.jar")
         );
         assert_eq!(
-            AppRuntime::Java.default_start_command("shop", None).as_deref(),
+            AppRuntime::Java
+                .default_start_command("shop", None)
+                .as_deref(),
             Some("java -jar shop.jar")
         );
         assert_eq!(
-            AppRuntime::Go.default_start_command("api", Some("api")).as_deref(),
+            AppRuntime::Go
+                .default_start_command("api", Some("api"))
+                .as_deref(),
             Some("./api")
         );
         assert_eq!(
-            AppRuntime::Node.default_start_command("web", None).as_deref(),
+            AppRuntime::Node
+                .default_start_command("web", None)
+                .as_deref(),
             Some("npm start")
         );
 
@@ -2702,11 +2738,17 @@ mod tests {
             DeployErrorKind::PathNotFound
         );
         assert_eq!(
-            classify_error("tar: /nope: Cannot open: No such file or directory", Some(2)),
+            classify_error(
+                "tar: /nope: Cannot open: No such file or directory",
+                Some(2)
+            ),
             DeployErrorKind::PathNotFound
         );
         assert_eq!(
-            classify_error("OCI runtime exec failed: exec: \"mysql\": executable file not found in $PATH", Some(126)),
+            classify_error(
+                "OCI runtime exec failed: exec: \"mysql\": executable file not found in $PATH",
+                Some(126)
+            ),
             DeployErrorKind::MissingTool
         );
         assert_eq!(classify_error("没什么线索", None), DeployErrorKind::Other);
@@ -2894,7 +2936,10 @@ mod tests {
             default_app_target(AppRuntime::Java, "api", Some("/data/www")),
             "/opt/api"
         );
-        assert_eq!(default_app_target(AppRuntime::Node, "api", None), "/opt/api");
+        assert_eq!(
+            default_app_target(AppRuntime::Node, "api", None),
+            "/opt/api"
+        );
     }
 
     #[test]
@@ -2912,7 +2957,11 @@ mod tests {
             Some(TargetOverlap::Same),
             "尾部 / 要归一化"
         );
-        assert_eq!(target_overlap("/root", "/root2"), None, "按路径边界，不是前缀");
+        assert_eq!(
+            target_overlap("/root", "/root2"),
+            None,
+            "按路径边界，不是前缀"
+        );
         assert_eq!(
             target_overlap("/", "/root"),
             Some(TargetOverlap::ExistingInsideNew)
@@ -3152,13 +3201,7 @@ mod tests {
         ];
         let mut site = site(rules);
         site.spa = false;
-        let text = site_conf(
-            "site",
-            &site,
-            "/data/www/site",
-            8080,
-            Some("127.0.0.11"),
-        );
+        let text = site_conf("site", &site, "/data/www/site", 8080, Some("127.0.0.11"));
         assert_eq!(text.matches("    location ").count(), 2, "{text}");
         assert!(text.contains("location /api/ {"), "{text}");
         assert!(text.contains("location ~ ^/auth/(.*)$ {"), "{text}");

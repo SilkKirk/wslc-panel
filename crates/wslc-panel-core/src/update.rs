@@ -5,7 +5,7 @@
 //! 「提示判据」能被 `core` job 的单测覆盖 —— 这两条错了的表现是
 //! "每天弹一次"或"永远不弹"，都是靠肉眼很难发现的那类问题。
 
-use wslc_core::update::{is_newer, Release, Version};
+use wslc_core::update::{Release, Version, is_newer};
 
 use crate::prefs::Prefs;
 

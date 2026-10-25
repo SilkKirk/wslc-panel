@@ -1746,14 +1746,18 @@ mod tests {
         assert!(name_syntax_errors("Ubuntu-24.04").is_empty());
         assert!(name_syntax_errors("a_b.c-d").is_empty());
 
-        assert!(name_syntax_errors("")
-            .iter()
-            .any(|e| e.contains("不能为空")));
+        assert!(
+            name_syntax_errors("")
+                .iter()
+                .any(|e| e.contains("不能为空"))
+        );
         assert!(name_syntax_errors("a b").iter().any(|e| e.contains(' ')));
         assert!(name_syntax_errors("中文").iter().any(|e| e.contains('中')));
-        assert!(name_syntax_errors(&"a".repeat(MAX_NAME_LEN + 1))
-            .iter()
-            .any(|e| e.contains("不能超过")));
+        assert!(
+            name_syntax_errors(&"a".repeat(MAX_NAME_LEN + 1))
+                .iter()
+                .any(|e| e.contains("不能超过"))
+        );
         // 恰好等于上限是合法的
         assert!(name_syntax_errors(&"a".repeat(MAX_NAME_LEN)).is_empty());
     }
@@ -2411,10 +2415,12 @@ mod tests {
                 fallback_id: None,
             },
         );
-        assert!(super::plan(&same, &ctx())
-            .unwrap()
-            .source_names()
-            .is_empty());
+        assert!(
+            super::plan(&same, &ctx())
+                .unwrap()
+                .source_names()
+                .is_empty()
+        );
 
         // 只差大小写也算"同一个名字"（`busy_with` 那边本来就不区分大小写）
         let cased = InstallSpec::new(
@@ -2426,10 +2432,12 @@ mod tests {
                 fallback_id: None,
             },
         );
-        assert!(super::plan(&cased, &ctx())
-            .unwrap()
-            .source_names()
-            .is_empty());
+        assert!(
+            super::plan(&cased, &ctx())
+                .unwrap()
+                .source_names()
+                .is_empty()
+        );
 
         // 本地来源不会"先注册成别的名字" → 永远是空的
         for source in [
@@ -2468,11 +2476,12 @@ mod tests {
         let last = plan.steps.last().unwrap();
         assert_eq!(last.program, PlanProgram::Wsl);
         assert_eq!(last.args, vec!["--set-default", "Ubuntu"]);
-        assert!(plan
-            .preview_lines()
-            .last()
-            .unwrap()
-            .contains("--set-default"));
+        assert!(
+            plan.preview_lines()
+                .last()
+                .unwrap()
+                .contains("--set-default")
+        );
 
         // `.wslconfig` 要求稀疏 → 在设默认之前插一步
         let sparse_ctx = PlanContext {
@@ -2585,9 +2594,11 @@ mod tests {
                 format: "tar.xz".to_owned(),
             },
         );
-        assert!(super::plan(&no_url, &ctx())
-            .unwrap_err()
-            .contains("还没有选好下载地址"));
+        assert!(
+            super::plan(&no_url, &ctx())
+                .unwrap_err()
+                .contains("还没有选好下载地址")
+        );
         let bad_url = InstallSpec::new(
             "X",
             InstallSource::Mirror {

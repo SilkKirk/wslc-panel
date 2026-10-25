@@ -615,8 +615,7 @@ pub fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
         // 和 `cx`（读编辑器 / 搜索框的值）。
         Page::Sql => match shell.db_form.as_ref() {
             Some(form) => sql_console_page(shell, form, cx, entity),
-            None => empty_state("SQL 编辑器还没建好 —— 请重新从数据库列表进入")
-                .into_any_element(),
+            None => empty_state("SQL 编辑器还没建好 —— 请重新从数据库列表进入").into_any_element(),
         },
         // 「部署管理」也要 `&Shell` + `cx`：「添加部署」弹窗那五格输入框
         // 住在 `Shell` 里（页面本身没有输入框）。
@@ -1850,7 +1849,13 @@ pub fn sql_console_page(
     // （`Shell::creds_for_row`）。所以必须写出来 —— 否则用户以为自己是 root 在查，
     // 实际是业务账号，遇上报错会对不上（实机反馈过）。
     let account = match db.sql_database.as_deref() {
-        Some(name) if shell.state.db_credentials.get(&db.container, name).is_some() => {
+        Some(name)
+            if shell
+                .state
+                .db_credentials
+                .get(&db.container, name)
+                .is_some() =>
+        {
             format!(
                 "账号 {}（这个库的）",
                 shell.creds_for_row(&db.container, name, cx).user
@@ -1861,31 +1866,29 @@ pub fn sql_console_page(
     // 树那一栏：收起时留一条**窄条**（32px）而不是完全消失 ——
     // 窄条上就是"展开"按钮，否则用户把树收起来之后找不到开回来的入口。
     // （专业 SQL 客户端也是这个做法：侧栏收起后留一条能点开的边。）
-    let tree_column: AnyElement = if shell.tree_collapsed {
-        let entity = entity.clone();
-        v_flex()
-            .w(px(32.))
-            .h_full()
-            .flex_none()
-            .items_center()
-            .p_1()
-            .border_r_1()
-            .border_color(theme::border())
-            .child(
-                Button::new("sql-expand-tree")
-                    .label("»")
-                    .small()
-                    .on_click(move |_, _, cx| {
+    let tree_column: AnyElement =
+        if shell.tree_collapsed {
+            let entity = entity.clone();
+            v_flex()
+                .w(px(32.))
+                .h_full()
+                .flex_none()
+                .items_center()
+                .p_1()
+                .border_r_1()
+                .border_color(theme::border())
+                .child(Button::new("sql-expand-tree").label("»").small().on_click(
+                    move |_, _, cx| {
                         entity.update(cx, |shell, cx| {
                             shell.tree_collapsed = false;
                             cx.notify();
                         });
-                    }),
-            )
-            .into_any_element()
-    } else {
-        sql_tree_pane(db, shell, entity, cx)
-    };
+                    },
+                ))
+                .into_any_element()
+        } else {
+            sql_tree_pane(db, shell, entity, cx)
+        };
     v_flex()
         .w_full()
         .h_full()
@@ -1973,7 +1976,9 @@ fn sql_target_db(db: &DbState, entity: &Entity<Shell>, account: &str) -> AnyElem
         None => div()
             .text_xs()
             .text_color(theme::text_dim())
-.child(format!("当前库：不指定（语句里要自己 USE <库>）· {account}"))
+            .child(format!(
+                "当前库：不指定（语句里要自己 USE <库>）· {account}"
+            ))
             .into_any_element(),
     }
 }
@@ -2067,17 +2072,15 @@ fn sql_editor_pane(
         // （它读 `.value()`、画 `Input`）。`Editor` 的 API 不一样，
         // 硬套会编不过 —— 而它也不会因为这个就"看起来像"，是直接报错。
         .child(div().w_full().child(Editor::new(&form.sql).h(px(170.))))
-        .child(
-            div().text_xs().text_color(theme::text_muted()).child(
-                // ⚠️ 这句话说的是"多条语句是一条条单独跑的"，那是**用户看不出来**
-                // 的行为（会以为是一次性提交），而且解释了为什么语句多会慢。
-                //
-                // 🔴 **不要**再写"每条约 70ms"。那是 exec 时代（每条起一个 `mysql`
-                // 子进程）的实测数字；v0.16 起走原生连接，固定开销变成一次建连，
-                // 那个数字已经不成立 —— 写着只会让人以为查询本身慢。
-                "多条语句逐条执行",
-            ),
-        )
+        .child(div().text_xs().text_color(theme::text_muted()).child(
+            // ⚠️ 这句话说的是"多条语句是一条条单独跑的"，那是**用户看不出来**
+            // 的行为（会以为是一次性提交），而且解释了为什么语句多会慢。
+            //
+            // 🔴 **不要**再写"每条约 70ms"。那是 exec 时代（每条起一个 `mysql`
+            // 子进程）的实测数字；v0.16 起走原生连接，固定开销变成一次建连，
+            // 那个数字已经不成立 —— 写着只会让人以为查询本身慢。
+            "多条语句逐条执行",
+        ))
         .child(echo)
         .into_any_element()
 }
@@ -2106,12 +2109,7 @@ fn sql_editor_pane(
 /// - 没搜索：库是父节点、表是子节点，点库名展开；
 /// - 有搜索：拍平成一层的「库.表」—— 否则用户搜到的那张表还藏在一个
 ///   收起的库节点里，等于白搜。
-fn sql_tree_pane(
-    db: &DbState,
-    shell: &Shell,
-    entity: &Entity<Shell>,
-    _cx: &App,
-) -> AnyElement {
+fn sql_tree_pane(db: &DbState, shell: &Shell, entity: &Entity<Shell>, _cx: &App) -> AnyElement {
     let pane = |inner: AnyElement| -> AnyElement {
         v_flex()
             .w(px(260.))
@@ -2147,15 +2145,11 @@ fn sql_tree_pane(
                 h_flex()
                     .gap_1()
                     .items_center()
-                    .child(
-                        Button::new("sql-reload-tree")
-                            .label("⟳")
-                            .small()
-                            .on_click(move |_, _, cx| {
-                                refresh_entity
-                                    .update(cx, |shell, cx| shell.load_schema_tree(cx));
-                            }),
-                    )
+                    .child(Button::new("sql-reload-tree").label("⟳").small().on_click(
+                        move |_, _, cx| {
+                            refresh_entity.update(cx, |shell, cx| shell.load_schema_tree(cx));
+                        },
+                    ))
                     .child(
                         Button::new("sql-collapse-tree")
                             .label("«")
@@ -2285,18 +2279,10 @@ fn sql_tree_pane(
             .gap_2()
             .child(tree_header(format!("表结构 · {total} 张表")))
             .child(search)
-            .child(
-                div()
-                    .w_full()
-                    .flex_1()
-                    .min_h_0()
-                    .child(tree_body),
-            )
+            .child(div().w_full().flex_1().min_h_0().child(tree_body))
             .into_any_element(),
     )
 }
-
-
 
 /// 右下：结果区（多语句 tab + 结果表格 + 页脚 + 导出 / 原始输出）。
 ///
@@ -2313,12 +2299,7 @@ fn sql_tree_pane(
 /// 放在高度不定的容器里会算错（表现为滚动条乱跳 / 底部空白）。
 /// 所以这一层用 `flex_1 + min_h_0`，让布局给出确定高度 ——
 /// 父链上每一层都有确定高度（页面 `h_full` → 右侧列 `h_full` → 这里 `flex_1`）。
-fn sql_results_pane(
-    db: &DbState,
-    shell: &Shell,
-    entity: &Entity<Shell>,
-    _cx: &App,
-) -> AnyElement {
+fn sql_results_pane(db: &DbState, shell: &Shell, entity: &Entity<Shell>, _cx: &App) -> AnyElement {
     // 统一的容器：吃满剩余高度 + 内边距。三种形态共用，免得各写一遍。
     let shell_area = |inner: AnyElement| -> AnyElement {
         v_flex()
@@ -2387,7 +2368,11 @@ fn sql_results_pane(
                 .into_any_element()
             })
             .collect();
-        h_flex().w_full().gap_1().children(buttons).into_any_element()
+        h_flex()
+            .w_full()
+            .gap_1()
+            .children(buttons)
+            .into_any_element()
     } else {
         div().into_any_element()
     };
@@ -2638,19 +2623,16 @@ fn db_connection_card(
             .items_center()
             .child(apply_dsn)
             // 当前生效的是哪条路要说出来 —— 否则用户不知道"到底按哪份配置在跑"。
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme::text_dim())
-                    .child(match db.dsn.as_ref().map(|d| d.as_str()) {
-                        Some(dsn) => crate::util::strip_md(&format!(
-                            "当前：**原生连接** {}",
-                            // 连接串里有口令，界面上只显示协议+主机+库，不显示口令段
-                            crate::native_db::redact_dsn(dsn)
-                        )),
-                        None => crate::util::strip_md("当前：在容器里执行（未使用连接串）"),
-                    }),
-            ),
+            .child(div().text_xs().text_color(theme::text_dim()).child(
+                match db.dsn.as_ref().map(|d| d.as_str()) {
+                    Some(dsn) => crate::util::strip_md(&format!(
+                        "当前：**原生连接** {}",
+                        // 连接串里有口令，界面上只显示协议+主机+库，不显示口令段
+                        crate::native_db::redact_dsn(dsn)
+                    )),
+                    None => crate::util::strip_md("当前：在容器里执行（未使用连接串）"),
+                },
+            )),
     );
 
     if let Some(note) = db.cred_note.clone() {
@@ -3054,10 +3036,7 @@ fn db_databases_card(
             // 原生连接下只留「SQL」：其余三个（备份 / 导入备份 / 删除）都要
             // 容器里的客户端。判据见 `DbState::write_blocked_reason`。
             let actions: AnyElement = if blocked.is_some() {
-                h_flex()
-                    .gap_2()
-                    .child(sql_button)
-                    .into_any_element()
+                h_flex().gap_2().child(sql_button).into_any_element()
             } else {
                 h_flex()
                     .gap_2()
@@ -3065,13 +3044,8 @@ fn db_databases_card(
                     .child(import_button)
                     .child(sql_button)
                     .child(
-                        danger_button(
-                            &format!("db-drop-{}", entry.name),
-                            "删除",
-                            action,
-                            entity,
-                        )
-                        .into_any_element(),
+                        danger_button(&format!("db-drop-{}", entry.name), "删除", action, entity)
+                            .into_any_element(),
                     )
                     .into_any_element()
             };
@@ -7447,8 +7421,7 @@ fn update_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     // 状态行。检查中/有新版时用正文色，其余用次要色 —— 一眼能看出"有情况"。
     // 用 guard 而不是 `skipped: false` 字面量模式：`phase` 是引用，
     // 在引用上匹配字段字面量要绕一层解引用，guard 更直白也不会写错。
-    let emphasise =
-        checking || matches!(phase, Phase::Available { skipped, .. } if !*skipped);
+    let emphasise = checking || matches!(phase, Phase::Available { skipped, .. } if !*skipped);
     body = body.child(
         div()
             .text_sm()

@@ -202,7 +202,11 @@ pub fn family_from_inspect(inspect: &ContainerInspect) -> Option<MysqlFamily> {
     }
 
     // 端口（`inspect` 的 Ports 键形如 `3306/tcp`）。
-    if inspect.ports().iter().any(|(key, _)| key.starts_with("3306/")) {
+    if inspect
+        .ports()
+        .iter()
+        .any(|(key, _)| key.starts_with("3306/"))
+    {
         return Some(MysqlFamily::Mysql);
     }
 
@@ -268,7 +272,11 @@ impl MysqlCreds {
 
     /// 用户名 / 主机对（错误提示里用它说清"是谁连不上"）。
     pub fn user_label(&self) -> String {
-        format!("{}@{}", self.user, self.host.as_deref().unwrap_or("localhost"))
+        format!(
+            "{}@{}",
+            self.user,
+            self.host.as_deref().unwrap_or("localhost")
+        )
     }
 }
 
@@ -816,14 +824,17 @@ pub fn validate_ident(kind: &str, name: &str) -> Result<()> {
 pub fn validate_host(host: &str) -> Result<()> {
     let host = host.trim();
     if host.is_empty() {
-        return Err(Error::InvalidArgument("主机不能为空（本机请填 localhost）".to_owned()));
+        return Err(Error::InvalidArgument(
+            "主机不能为空（本机请填 localhost）".to_owned(),
+        ));
     }
     if host.len() > 255 {
         return Err(Error::InvalidArgument("主机名过长".to_owned()));
     }
-    if let Some(bad) = host.chars().find(|c| {
-        !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '%' | ':' | '*'))
-    }) {
+    if let Some(bad) = host
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '%' | ':' | '*')))
+    {
         return Err(Error::InvalidArgument(format!(
             "主机「{host}」里有不支持的字符 `{bad}`"
         )));
@@ -933,7 +944,11 @@ pub fn alter_user_password_sql(user: &str, host: &str, password: &str) -> Result
 pub fn drop_user_sql(user: &str, host: &str) -> Result<String> {
     validate_ident("用户名", user)?;
     validate_host(host)?;
-    Ok(format!("DROP USER IF EXISTS '{}'@'{}'", user.trim(), host.trim()))
+    Ok(format!(
+        "DROP USER IF EXISTS '{}'@'{}'",
+        user.trim(),
+        host.trim()
+    ))
 }
 
 /// 授权级别。
@@ -1378,9 +1393,9 @@ impl MysqlErrorKind {
     /// 给用户的一句话建议（`None` = 直接看原文就行）。
     pub fn hint(self) -> Option<&'static str> {
         match self {
-            Self::ContainerNotRunning => Some(
-                "容器没在运行 —— 先到「容器」页把它启动起来，再回来点「重新读取」。",
-            ),
+            Self::ContainerNotRunning => {
+                Some("容器没在运行 —— 先到「容器」页把它启动起来，再回来点「重新读取」。")
+            }
             Self::ClientMissing => Some(
                 "这个镜像里没有 mysql / mariadb 客户端，面板没法在里面执行 SQL。\
                  请换官方 mysql / mariadb 镜像，或者用「终端」自己进去装一个。",
@@ -1388,9 +1403,9 @@ impl MysqlErrorKind {
             Self::AccessDenied => {
                 Some("用户名或密码不对。密码可以在容器详情里核对，或者看容器日志里那行临时密码。")
             }
-            Self::ServerNotReady => Some(
-                "mysqld 还没准备好（第一次初始化要十几秒）。等几秒再点一次「重新读取」。",
-            ),
+            Self::ServerNotReady => {
+                Some("mysqld 还没准备好（第一次初始化要十几秒）。等几秒再点一次「重新读取」。")
+            }
             Self::PermissionDenied => {
                 Some("当前账号权限不够（比如读 mysql.user 需要高权限账号）。换个账号试试。")
             }
@@ -1584,7 +1599,11 @@ mod tests {
 
     #[test]
     fn recognises_by_command_when_untouched() {
-        let it = item("some.internal/mydb:1", "\"mysqld --defaults-file=/etc/my.cnf\"", "");
+        let it = item(
+            "some.internal/mydb:1",
+            "\"mysqld --defaults-file=/etc/my.cnf\"",
+            "",
+        );
         let found = mysql_container_kind(&it).expect("应按命令认出来");
         assert_eq!(found.signal, MysqlSignal::Command);
         assert_eq!(found.family, MysqlFamily::Mysql);
@@ -1747,13 +1766,7 @@ mod tests {
     #[test]
     fn client_args_table_mode_and_database_flag() {
         let creds = MysqlCreds::root("");
-        let args = client_args(
-            "mariadb",
-            &creds,
-            "SELECT 1",
-            Some("shop"),
-            SqlMode::Table,
-        );
+        let args = client_args("mariadb", &creds, "SELECT 1", Some("shop"), SqlMode::Table);
         assert_eq!(
             args,
             vec![
@@ -1847,8 +1860,19 @@ mod tests {
     fn escape_is_the_inverse_of_unescape() {
         // 这一对函数必须互为逆运算：一边改了另一边没改，原生连接和 exec 两条路
         // 就会对同一个库名给出不同结果 —— 那种差异没人会想到去查解析。
-        for raw in ["plain", "a\tb", "line1\nline2", "back\\slash", "nul\0char", "cr\rhere"] {
-            assert_eq!(unescape_batch_field(&escape_batch_field(raw)), raw, "原文 {raw:?}");
+        for raw in [
+            "plain",
+            "a\tb",
+            "line1\nline2",
+            "back\\slash",
+            "nul\0char",
+            "cr\rhere",
+        ] {
+            assert_eq!(
+                unescape_batch_field(&escape_batch_field(raw)),
+                raw,
+                "原文 {raw:?}"
+            );
         }
     }
 
@@ -1857,8 +1881,16 @@ mod tests {
         // 端到端：结构化单元格 → TSV → 现有解析函数。
         // 这就是"原生连接复用 -B 解析"的全部契约。
         let rows = vec![
-            vec![Some("djxm".to_owned()), Some("t_order".to_owned()), Some("BASE TABLE".to_owned())],
-            vec![Some("djxm".to_owned()), Some("v_x".to_owned()), Some("VIEW".to_owned())],
+            vec![
+                Some("djxm".to_owned()),
+                Some("t_order".to_owned()),
+                Some("BASE TABLE".to_owned()),
+            ],
+            vec![
+                Some("djxm".to_owned()),
+                Some("v_x".to_owned()),
+                Some("VIEW".to_owned()),
+            ],
         ];
         let tsv = to_batch_tsv(&rows);
         let tree = crate::model::schematree::parse_schema_tree(&tsv);
@@ -1973,7 +2005,11 @@ mod tests {
         assert_eq!(probe.bin, "mysql");
         assert_eq!(probe.path, "/usr/bin/mysql");
         assert!(
-            probe.version.as_deref().unwrap_or_default().contains("26.7.0"),
+            probe
+                .version
+                .as_deref()
+                .unwrap_or_default()
+                .contains("26.7.0"),
             "{probe:?}"
         );
         // 只有一行（老版本 / 探测脚本被裁剪）也要能用
@@ -2004,10 +2040,7 @@ mod tests {
             "shop\ndrop",
             "库",
         ] {
-            assert!(
-                validate_ident("库名", bad).is_err(),
-                "应拒绝：{bad:?}"
-            );
+            assert!(validate_ident("库名", bad).is_err(), "应拒绝：{bad:?}");
         }
     }
 
@@ -2062,10 +2095,7 @@ mod tests {
             drop_user_sql("app", "%").unwrap(),
             "DROP USER IF EXISTS 'app'@'%'"
         );
-        assert_eq!(
-            drop_database_sql("shop").unwrap(),
-            "DROP DATABASE `shop`"
-        );
+        assert_eq!(drop_database_sql("shop").unwrap(), "DROP DATABASE `shop`");
 
         // host 比标识符宽松：`%` 和网段都要能过
         assert!(validate_host("%").is_ok());
@@ -2106,7 +2136,9 @@ mod tests {
         let only = create_user_statements("app", "%", "pw", None).unwrap();
         assert!(!only.contains(';'), "{only}");
         // 授权对象非法 → 整条拒绝（不会出现"建了用户但没授权"的半成品）
-        assert!(create_user_statements("app", "%", "pw", Some(("bad name", GrantKind::All))).is_err());
+        assert!(
+            create_user_statements("app", "%", "pw", Some(("bad name", GrantKind::All))).is_err()
+        );
     }
 
     // -- 建库同时建用户 / 备份（v0.8）---------------------------------------
@@ -2171,7 +2203,8 @@ mod tests {
             "{args:?}"
         );
         assert!(
-            args.windows(2).any(|w| w[0] == "--databases" && w[1] == "shop"),
+            args.windows(2)
+                .any(|w| w[0] == "--databases" && w[1] == "shop"),
             "{args:?}"
         );
         for flag in ["--single-transaction", "--quick", "--set-gtid-purged=OFF"] {
@@ -2258,7 +2291,10 @@ mod tests {
         // 面板生成的路径必须能过 `sh_quote`（它只拒单引号 / 换行）——
         // 过不了的话恢复会在本地就被拒，而那是没人会料到的
         let path = restore_container_path("djxm-20261015-035901.sql");
-        assert!(sh_quote(&path).is_ok(), "面板自己生成的路径过不了 sh_quote：{path}");
+        assert!(
+            sh_quote(&path).is_ok(),
+            "面板自己生成的路径过不了 sh_quote：{path}"
+        );
         assert!(
             path.chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.')),
@@ -2330,7 +2366,10 @@ mod tests {
         );
         // SQL 本身的错：原文照给，不给误导性的建议
         assert_eq!(
-            classify_error("SQL 执行出错：ERROR:  syntax error at or near \"SELEC\"", None),
+            classify_error(
+                "SQL 执行出错：ERROR:  syntax error at or near \"SELEC\"",
+                None
+            ),
             MysqlErrorKind::SqlError
         );
         // TLS：原因和"连不上"完全不同（证书 / 服务端配置），别给"等几秒"
@@ -2343,7 +2382,10 @@ mod tests {
         // 它没有那六个中文标签前缀，所以照旧按 MySQL 的规则走 ——
         // 否则就是"修好了原生、弄坏了原来那条"。
         assert_eq!(
-            classify_error("ERROR 2002 (HY000): Can't connect to local MySQL server", Some(1)),
+            classify_error(
+                "ERROR 2002 (HY000): Can't connect to local MySQL server",
+                Some(1)
+            ),
             MysqlErrorKind::ServerNotReady,
             "容器里的 mysqld 没起来，仍然要建议「等几秒」"
         );
@@ -2370,7 +2412,10 @@ mod tests {
             MysqlErrorKind::UnknownDatabase
         );
         assert_eq!(
-            classify_error("ERROR 1064 (42000): You have an error in your SQL syntax", Some(1)),
+            classify_error(
+                "ERROR 1064 (42000): You have an error in your SQL syntax",
+                Some(1)
+            ),
             MysqlErrorKind::SqlError
         );
         assert_eq!(classify_error("莫名其妙", Some(1)), MysqlErrorKind::Unknown);

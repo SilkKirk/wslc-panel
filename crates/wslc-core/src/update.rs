@@ -223,8 +223,8 @@ pub fn parse_release(json: &str) -> Result<Release, String> {
         return Err(format!("{tag} 是预发布版"));
     }
 
-    let version = Version::parse(&tag)
-        .ok_or_else(|| format!("tag「{tag}」不是 X.Y.Z 形式，没法比较版本"))?;
+    let version =
+        Version::parse(&tag).ok_or_else(|| format!("tag「{tag}」不是 X.Y.Z 形式，没法比较版本"))?;
 
     let page_url = value
         .get("html_url")
@@ -346,10 +346,7 @@ fn brief(text: &str) -> String {
     // 按定义就把 `\r` / `\n` / 连续空白全当成 ASCII 空白，行为一模一样
     // （clippy 的 `collapsible_str_replace` 报的就是它）。
     // 去掉之后语义不变，还少两次整串扫描 —— 这段输入可能是几十 KB 的 JSON。
-    let flat = text
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.is_empty() {
         return "（没有更多信息）".to_owned();
     }
@@ -416,13 +413,10 @@ mod tests {
     #[test]
     fn rejects_malformed_versions() {
         for bad in [
-            "", "  ", "v", "V", "1", "1.2", "1.2.3.4", "1.2.x", "1..3", ".1.2", "1.2.",
-            "1.2.3-", "-1.2.3", "1.+3.0", "v0.9.25-", "abc",
+            "", "  ", "v", "V", "1", "1.2", "1.2.3.4", "1.2.x", "1..3", ".1.2", "1.2.", "1.2.3-",
+            "-1.2.3", "1.+3.0", "v0.9.25-", "abc",
         ] {
-            assert!(
-                Version::parse(bad).is_none(),
-                "{bad:?} 不该被当成版本号"
-            );
+            assert!(Version::parse(bad).is_none(), "{bad:?} 不该被当成版本号");
         }
     }
 
@@ -594,7 +588,8 @@ mod tests {
             .expect("GitHub 强制要求 User-Agent");
         assert!(ua.starts_with("User-Agent: wslc-panel/"), "{ua}");
         assert!(
-            args.iter().any(|a| a.starts_with("Accept: application/vnd.github")),
+            args.iter()
+                .any(|a| a.starts_with("Accept: application/vnd.github")),
             "指明媒体类型，避免将来 API 默认格式变化"
         );
     }

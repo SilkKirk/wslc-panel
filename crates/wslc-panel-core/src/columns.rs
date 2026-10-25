@@ -223,8 +223,8 @@ pub fn column_fractions(columns: &[(&str, f32)]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ALL_COLUMNS, BACKUP_COLUMNS, DB_COLUMNS, DB_USER_COLUMNS, DEPLOY_COLUMNS,
-        DISTRO_COLUMNS, IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS,
+        ALL_COLUMNS, BACKUP_COLUMNS, DB_COLUMNS, DB_USER_COLUMNS, DEPLOY_COLUMNS, DISTRO_COLUMNS,
+        IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS,
     };
 
     /// 汇总所有表格的列定义，方便逐个检查。

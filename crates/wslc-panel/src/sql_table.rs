@@ -33,8 +33,8 @@ use std::sync::Arc;
 // `Styled` 家族 trait，而 `views.rs` 那 9000 行证明**通过 `gpui_kit::*`
 // 引入是靠得住的**（它自己就是 `pub use ::gpui::*`）。
 // 逐项导入容易漏掉某个 trait，报一堆"no method named ..."。
-use gpui_kit::*;
 use gpui_kit::component::table::{Column, ColumnSort, TableDelegate};
+use gpui_kit::*;
 use wslc_core::model::sqlresult::SqlResult;
 use wslc_panel_core::sqlview::{self, CellLook};
 
@@ -64,9 +64,10 @@ impl SqlResultDelegate {
             .enumerate()
             .map(|(ix, name)| {
                 // 宽度按"这一列前 100 行里最长的值"估（`sqlview` 里有单测）。
-                let values = result.rows.iter().map(|r| {
-                    r.get(ix).cloned().unwrap_or_default()
-                });
+                let values = result
+                    .rows
+                    .iter()
+                    .map(|r| r.get(ix).cloned().unwrap_or_default());
                 let width = sqlview::estimate_column_width(name, values);
                 Column::new(SharedString::from(format!("c{ix}")), name.clone())
                     .width(px(width))

@@ -10,8 +10,8 @@ use wslc_core::model::{
     ContainerInspect, ContainerListItem, ContainerState, ContainerStats, ContainerSummary,
     ImageListItem, NetworkListItem, Session, SystemInfo,
 };
-use wslc_core::settings::{SettingsDoc, SETTING_KEYS};
-use wslc_core::{jsonl, Wslc};
+use wslc_core::settings::{SETTING_KEYS, SettingsDoc};
+use wslc_core::{Wslc, jsonl};
 
 // ---------------------------------------------------------------------------
 // 1. fixture 测试
@@ -184,9 +184,10 @@ fn settings_fixture_round_trip_preserves_comments() {
 
     // 改写一项，必须保留它上方的英文说明和其它所有内容。
     assert!(doc.set(Some("session"), "cpuCount", Some("4")));
-    assert!(doc
-        .raw()
-        .contains("Number of virtual CPUs allocated to the session"));
+    assert!(
+        doc.raw()
+            .contains("Number of virtual CPUs allocated to the session")
+    );
     assert!(doc.raw().starts_with("# wslc user settings"));
     assert_eq!(doc.values().cpu_count.as_deref(), Some("4"));
 
@@ -211,12 +212,16 @@ fn settings_fixture_round_trip_preserves_comments() {
 #[test]
 fn empty_outputs_never_error() {
     // 0 个容器 / 0 个卷时 wslc 输出 0 字节，必须变成空 Vec。
-    assert!(jsonl::parse_lines::<ContainerListItem>("")
-        .unwrap()
-        .is_empty());
-    assert!(jsonl::parse_lines::<ImageListItem>("\n\n")
-        .unwrap()
-        .is_empty());
+    assert!(
+        jsonl::parse_lines::<ContainerListItem>("")
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        jsonl::parse_lines::<ImageListItem>("\n\n")
+            .unwrap()
+            .is_empty()
+    );
     assert!(wslc_core::model::session::parse_session_table("").is_empty());
 }
 

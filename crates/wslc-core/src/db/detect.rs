@@ -158,7 +158,11 @@ mod tests {
 
     #[test]
     fn postgres_family_and_forks() {
-        for img in ["postgres:16-alpine", "postgis/postgis:16-3.4", "timescale/timescaledb:latest-pg16"] {
+        for img in [
+            "postgres:16-alpine",
+            "postgis/postgis:16-3.4",
+            "timescale/timescaledb:latest-pg16",
+        ] {
             assert_eq!(
                 guess_kind(&ConnHint::new(img)),
                 Some((DbKind::Postgres, Confidence::High)),
@@ -186,7 +190,10 @@ mod tests {
             command: "docker-entrypoint.sh postgres -c max_connections=200",
             container_ports: &[],
         };
-        assert_eq!(guess_kind(&hint), Some((DbKind::Postgres, Confidence::High)));
+        assert_eq!(
+            guess_kind(&hint),
+            Some((DbKind::Postgres, Confidence::High))
+        );
     }
 
     #[test]
@@ -197,7 +204,10 @@ mod tests {
 
         let ports2 = [5432u16];
         let hint2 = ConnHint::new("mycompany/whatever:1.0").with_ports(&ports2);
-        assert_eq!(guess_kind(&hint2), Some((DbKind::Postgres, Confidence::Low)));
+        assert_eq!(
+            guess_kind(&hint2),
+            Some((DbKind::Postgres, Confidence::Low))
+        );
     }
 
     #[test]
@@ -205,7 +215,10 @@ mod tests {
         // 镜像说 postgres、端口是 3306（谁映射的谁知道）→ 信镜像
         let ports = [3306u16];
         let hint = ConnHint::new("postgres:16").with_ports(&ports);
-        assert_eq!(guess_kind(&hint), Some((DbKind::Postgres, Confidence::High)));
+        assert_eq!(
+            guess_kind(&hint),
+            Some((DbKind::Postgres, Confidence::High))
+        );
     }
 
     #[test]

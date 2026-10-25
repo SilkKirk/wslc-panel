@@ -192,10 +192,22 @@ pub fn any_has_grid(results: &[SqlResult]) -> bool {
 /// 这是我们**唯一**会写出去的文件格式，所以规矩写死在这里、配单测。
 pub fn to_csv(result: &SqlResult) -> String {
     let mut out = String::new();
-    out.push_str(&result.columns.iter().map(|c| csv_field(c)).collect::<Vec<_>>().join(","));
+    out.push_str(
+        &result
+            .columns
+            .iter()
+            .map(|c| csv_field(c))
+            .collect::<Vec<_>>()
+            .join(","),
+    );
     out.push_str("\r\n");
     for row in &result.rows {
-        out.push_str(&row.iter().map(|c| csv_field(c)).collect::<Vec<_>>().join(","));
+        out.push_str(
+            &row.iter()
+                .map(|c| csv_field(c))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
         out.push_str("\r\n");
     }
     out
@@ -352,7 +364,10 @@ mod tests {
         let mut values: Vec<String> = (0..5000).map(|_| "1".to_owned()).collect();
         values.push("x".repeat(500));
         let w = estimate_column_width("c", values.into_iter());
-        assert!(w < MAX_COL_WIDTH, "只采样前 {WIDTH_SAMPLE_ROWS} 行，实际 {w}");
+        assert!(
+            w < MAX_COL_WIDTH,
+            "只采样前 {WIDTH_SAMPLE_ROWS} 行，实际 {w}"
+        );
     }
 
     #[test]
@@ -366,13 +381,24 @@ mod tests {
     #[test]
     fn footer_says_something_true_in_all_three_shapes() {
         // 1) 空结果（空结果集 / 无结果集，分不出来）
-        assert_eq!(footer_text(&SqlResult::default(), 12), "执行成功，没有返回行");
+        assert_eq!(
+            footer_text(&SqlResult::default(), 12),
+            "执行成功，没有返回行"
+        );
         // 2) 有列名、0 行
         let r = res(&["a", "b"], vec![]);
-        assert!(footer_text(&r, 12).starts_with("0 行 · 2 列"), "{}", footer_text(&r, 12));
+        assert!(
+            footer_text(&r, 12).starts_with("0 行 · 2 列"),
+            "{}",
+            footer_text(&r, 12)
+        );
         // 3) 正常
         let r = res(&["a"], vec![vec!["1"], vec!["2"]]);
-        assert!(footer_text(&r, 12).starts_with("2 行 · 1 列"), "{}", footer_text(&r, 12));
+        assert!(
+            footer_text(&r, 12).starts_with("2 行 · 1 列"),
+            "{}",
+            footer_text(&r, 12)
+        );
     }
 
     #[test]
@@ -385,8 +411,14 @@ mod tests {
 
     #[test]
     fn tab_labels_mention_row_counts() {
-        assert_eq!(result_tab_label(0, &res(&["a"], vec![vec!["1"]])), "结果 1（1 行）");
-        assert_eq!(result_tab_label(1, &SqlResult::default()), "结果 2（无输出）");
+        assert_eq!(
+            result_tab_label(0, &res(&["a"], vec![vec!["1"]])),
+            "结果 1（1 行）"
+        );
+        assert_eq!(
+            result_tab_label(1, &SqlResult::default()),
+            "结果 2（无输出）"
+        );
     }
 
     #[test]
@@ -400,7 +432,11 @@ mod tests {
     fn csv_escapes_per_rfc4180() {
         let r = res(
             &["id", "name"],
-            vec![vec!["1", "a,b"], vec!["2", "he said \"hi\""], vec!["3", "line1\nline2"]],
+            vec![
+                vec!["1", "a,b"],
+                vec!["2", "he said \"hi\""],
+                vec!["3", "line1\nline2"],
+            ],
         );
         let csv = to_csv(&r);
         let lines: Vec<&str> = csv.split("\r\n").collect();

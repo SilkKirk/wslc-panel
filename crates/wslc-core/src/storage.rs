@@ -269,8 +269,8 @@ fn volume_root(path: &Path) -> Option<PathBuf> {
 /// 与其让用户跑到一半才失败，不如开始前就说清"还差多少"。
 #[cfg(windows)]
 pub fn volume_space(path: &Path) -> Option<VolumeSpace> {
-    use windows::core::HSTRING;
     use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    use windows::core::HSTRING;
 
     let root = volume_root(path)?;
     let root = HSTRING::from(root.to_string_lossy().as_ref());

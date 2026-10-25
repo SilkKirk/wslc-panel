@@ -628,9 +628,11 @@ mod tests {
         }
         assert!(TerminalStartDir::FIXED.contains(&TerminalStartDir::default()));
         // 自定义不在固定档位里：它要配一个输入框，是单独一个按钮
-        assert!(!TerminalStartDir::FIXED
-            .iter()
-            .any(|d| matches!(d, TerminalStartDir::Custom(_))));
+        assert!(
+            !TerminalStartDir::FIXED
+                .iter()
+                .any(|d| matches!(d, TerminalStartDir::Custom(_)))
+        );
     }
 
     #[test]

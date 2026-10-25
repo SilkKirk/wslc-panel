@@ -363,8 +363,14 @@ pub fn is_valid_host(host: &str) -> bool {
     name.split('.').all(|label| {
         !label.is_empty()
             && label.len() <= 63
-            && label.chars().next().is_some_and(|ch| ch.is_ascii_alphanumeric())
-            && label.chars().last().is_some_and(|ch| ch.is_ascii_alphanumeric())
+            && label
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_alphanumeric())
+            && label
+                .chars()
+                .last()
+                .is_some_and(|ch| ch.is_ascii_alphanumeric())
             && label
                 .chars()
                 .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
@@ -1003,21 +1009,31 @@ mod tests {
     fn tag_parsing_reports_the_real_failure_modes() {
         // 空正文 / 不是 JSON / 业务错误信封 / tags 是 null / tags 是空数组 / tags 不是数组
         assert!(parse_tags("").unwrap_err().contains("空内容"));
-        assert!(parse_tags("<html>502</html>")
-            .unwrap_err()
-            .contains("不是 JSON"));
-        assert!(parse_tags(ERR_NAME_UNKNOWN)
-            .unwrap_err()
-            .contains("library/no-such-image-xyz"));
-        assert!(parse_tags(r#"{"name":"a","tags":null}"#)
-            .unwrap_err()
-            .contains("没有任何 tag"));
-        assert!(parse_tags(r#"{"name":"a","tags":[]}"#)
-            .unwrap_err()
-            .contains("没有任何 tag"));
-        assert!(parse_tags(r#"{"name":"a","tags":"latest"}"#)
-            .unwrap_err()
-            .contains("不是数组"));
+        assert!(
+            parse_tags("<html>502</html>")
+                .unwrap_err()
+                .contains("不是 JSON")
+        );
+        assert!(
+            parse_tags(ERR_NAME_UNKNOWN)
+                .unwrap_err()
+                .contains("library/no-such-image-xyz")
+        );
+        assert!(
+            parse_tags(r#"{"name":"a","tags":null}"#)
+                .unwrap_err()
+                .contains("没有任何 tag")
+        );
+        assert!(
+            parse_tags(r#"{"name":"a","tags":[]}"#)
+                .unwrap_err()
+                .contains("没有任何 tag")
+        );
+        assert!(
+            parse_tags(r#"{"name":"a","tags":"latest"}"#)
+                .unwrap_err()
+                .contains("不是数组")
+        );
         // 非字符串元素要跳过而不是 panic
         let tags = parse_tags(r#"{"name":"a","tags":["1","", 2, null, " 3 "]}"#).unwrap();
         assert_eq!(tags, vec!["1".to_owned(), "3".to_owned()]);
@@ -1167,9 +1183,18 @@ mod tests {
     #[test]
     fn normalize_host_strips_what_a_copy_paste_brings() {
         // 从浏览器地址栏/别处复制过来的常见形状
-        assert_eq!(normalize_host("  docker.1panel.live  "), "docker.1panel.live");
-        assert_eq!(normalize_host("https://docker.1panel.live"), "docker.1panel.live");
-        assert_eq!(normalize_host("http://docker.1panel.live/"), "docker.1panel.live");
+        assert_eq!(
+            normalize_host("  docker.1panel.live  "),
+            "docker.1panel.live"
+        );
+        assert_eq!(
+            normalize_host("https://docker.1panel.live"),
+            "docker.1panel.live"
+        );
+        assert_eq!(
+            normalize_host("http://docker.1panel.live/"),
+            "docker.1panel.live"
+        );
         assert_eq!(normalize_host("Docker.1Panel.Live"), "docker.1panel.live");
         // 收拾完仍然不合法的东西，交给 `is_valid_host` 去拒 —— 这里不越权
         assert_eq!(normalize_host("https://"), "");

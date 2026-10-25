@@ -56,4 +56,4 @@ pub use cli::{CancelToken, CommandOutput, StreamHandle, Wsl, Wslc};
 pub use error::{Error, Result};
 pub use mirrors::{Offer, OfferSource};
 pub use storage::{StorageInfo, StoragePathOrigin, VolumeSpace};
-pub use wslconfig::{config_path, MisplacedKey};
+pub use wslconfig::{MisplacedKey, config_path};

@@ -501,10 +501,30 @@ mod dsn_tests {
 
     #[test]
     fn rejects_unknown_scheme_and_shape() {
-        assert!(parse_dsn("redis://h:6379").unwrap_err().to_string().contains("不认识的协议"));
-        assert!(parse_dsn("db.example.com:5432").unwrap_err().to_string().contains("postgres://"));
-        assert!(parse_dsn("postgres://u@:5432/db").unwrap_err().to_string().contains("主机名"));
-        assert!(parse_dsn("postgres://u@h:notaport/db").unwrap_err().to_string().contains("端口"));
+        assert!(
+            parse_dsn("redis://h:6379")
+                .unwrap_err()
+                .to_string()
+                .contains("不认识的协议")
+        );
+        assert!(
+            parse_dsn("db.example.com:5432")
+                .unwrap_err()
+                .to_string()
+                .contains("postgres://")
+        );
+        assert!(
+            parse_dsn("postgres://u@:5432/db")
+                .unwrap_err()
+                .to_string()
+                .contains("主机名")
+        );
+        assert!(
+            parse_dsn("postgres://u@h:notaport/db")
+                .unwrap_err()
+                .to_string()
+                .contains("端口")
+        );
     }
 
     #[test]
@@ -520,14 +540,17 @@ mod dsn_tests {
         assert!(s.contains("dbname=shop"));
     }
 
-        #[test]
+    #[test]
     fn redact_dsn_hides_the_password_but_keeps_the_rest() {
         assert_eq!(
             redact_dsn("postgres://alice:s3cret@db.example.com:5432/shop"),
             "postgres://alice:***@db.example.com:5432/shop"
         );
         // 没有口令段 → 原样（别把 `@` 后面的东西吃掉）
-        assert_eq!(redact_dsn("postgres://alice@h:5432/db"), "postgres://alice@h:5432/db");
+        assert_eq!(
+            redact_dsn("postgres://alice@h:5432/db"),
+            "postgres://alice@h:5432/db"
+        );
         // 认不出形状 → 原样返回，不猜
         assert_eq!(redact_dsn("host=127.0.0.1"), "host=127.0.0.1");
         // 未编码的 `@` 也要打掉口令段（取最后一个 @）
@@ -537,7 +560,7 @@ mod dsn_tests {
         );
     }
 
-#[test]
+    #[test]
     fn debug_of_a_parsed_dsn_still_hides_the_password() {
         let c = parse_dsn("postgres://u:hunter2@h:5432/db").unwrap();
         let text = format!("{c:?}");

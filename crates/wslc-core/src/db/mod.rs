@@ -33,8 +33,8 @@ pub mod mysql_driver;
 pub mod postgres_driver;
 
 pub use conn::{DbConn, DbHost, DbKind};
-pub use detect::{guess_kind, Confidence, ConnHint};
-pub use dialect::{dialect_for, Capabilities, DialectData, LimitSyntax, QuoteStyle};
+pub use detect::{Confidence, ConnHint, guess_kind};
+pub use dialect::{Capabilities, DialectData, LimitSyntax, QuoteStyle, dialect_for};
 pub use driver::{Credentials, ServerInfo, SqlDriver};
 pub use mysql_driver::MySqlDriver;
 pub use postgres_driver::PostgresDriver;

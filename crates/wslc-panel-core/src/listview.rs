@@ -128,7 +128,10 @@ pub fn visible_containers<'a>(
 /// 状态格用的是**同一个**判断。`wslc list` 那份「只列运行中」的输出
 /// 只用于「停止全部」的影响面（它执行时会现查一遍），不在这里数。
 pub fn scope_counts(items: &[ContainerSummary]) -> (usize, usize, usize) {
-    let running = items.iter().filter(|summary| summary.item.is_running()).count();
+    let running = items
+        .iter()
+        .filter(|summary| summary.item.is_running())
+        .count();
     (items.len(), running, items.len().saturating_sub(running))
 }
 
@@ -216,7 +219,11 @@ mod tests {
     #[test]
     fn empty_query_returns_all_in_original_order() {
         let items = sample();
-        let visible = visible_containers(&items, "", view(ContainerScope::All, ContainerSort::Default));
+        let visible = visible_containers(
+            &items,
+            "",
+            view(ContainerScope::All, ContainerSort::Default),
+        );
         let names: Vec<&str> = visible.iter().map(|s| s.item.names.as_str()).collect();
         assert_eq!(names, vec!["web", "db", "job", "cache"]);
     }
@@ -274,11 +281,8 @@ mod tests {
             summary("Zeta", "a", "running"),
             summary("alpha", "b", "running"),
         ];
-        let visible = visible_containers(
-            &items,
-            "",
-            view(ContainerScope::All, ContainerSort::Name),
-        );
+        let visible =
+            visible_containers(&items, "", view(ContainerScope::All, ContainerSort::Name));
         let names: Vec<&str> = visible.iter().map(|s| s.item.names.as_str()).collect();
         assert_eq!(names, vec!["alpha", "Zeta"]);
     }
@@ -290,11 +294,8 @@ mod tests {
             summary("beta", "b", "running"),
             summary("alpha", "c", "running"),
         ];
-        let visible = visible_containers(
-            &items,
-            "",
-            view(ContainerScope::All, ContainerSort::State),
-        );
+        let visible =
+            visible_containers(&items, "", view(ContainerScope::All, ContainerSort::State));
         let names: Vec<&str> = visible.iter().map(|s| s.item.names.as_str()).collect();
         assert_eq!(names, vec!["alpha", "beta", "zeta"]);
     }

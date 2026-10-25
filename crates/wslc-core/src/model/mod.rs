@@ -53,24 +53,24 @@ pub mod wslconf;
 pub mod install;
 
 pub use container::{
-    parse_wsl_metadata, suggest_container_name, ContainerInspect, ContainerListItem,
-    ContainerMount, ContainerState, ContainerStats, ContainerSummary, Platform, PortMapping,
-    WslPortSpec,
+    ContainerInspect, ContainerListItem, ContainerMount, ContainerState, ContainerStats,
+    ContainerSummary, Platform, PortMapping, WslPortSpec, parse_wsl_metadata,
+    suggest_container_name,
 };
 // 「部署应用」那一族的类型，和 mysql 一样在这里平铺出来
 // （函数仍走 `model::deploy::`，一看就知道来自哪）。
 pub use deploy::{
-    container_app_kind, AppRuntime, DeployCandidate, DeployErrorKind, DeployKind, DeploySignal,
-    DeploySite, PortMap, ProbeResult, ProcessStatus, ProxyRule, SourceKind,
+    AppRuntime, DeployCandidate, DeployErrorKind, DeployKind, DeploySignal, DeploySite, PortMap,
+    ProbeResult, ProcessStatus, ProxyRule, SourceKind, container_app_kind,
 };
-pub use distro::{parse_distro_list, Distro, DistroState, WslStatus};
+pub use distro::{Distro, DistroState, WslStatus, parse_distro_list};
 pub use image::{
-    image_preset, local_references, parse_image_inspect, prefilled_env_left_empty,
-    suggest_port_mappings, ImageFacts, ImageListItem, ImagePreset,
+    ImageFacts, ImageListItem, ImagePreset, image_preset, local_references, parse_image_inspect,
+    prefilled_env_left_empty, suggest_port_mappings,
 };
 pub use install::{
-    plan, preflight, InstallPlan, InstallSource, InstallSpec, PlanContext, PlanProgram,
-    PlannedStep, Preflight, WSL_VERSION,
+    InstallPlan, InstallSource, InstallSpec, PlanContext, PlanProgram, PlannedStep, Preflight,
+    WSL_VERSION, plan, preflight,
 };
 pub use network::NetworkListItem;
 // MySQL 这一族的类型：面板的 `DbState`（在 `wslc-panel-core` 里）直接装它们，
@@ -79,7 +79,7 @@ pub use mysql::{
     ClientProbe, DbEntry, DbUser, GrantKind, MysqlCandidate, MysqlCreds, MysqlErrorKind,
     MysqlFamily, MysqlSignal, RootCredHint, SqlMode,
 };
-pub use session::{parse_session_table, Session};
+pub use session::{Session, parse_session_table};
 pub use system::{ClientInfo, ServerInfo, SessionInfo, SystemInfo};
 pub use volume::VolumeListItem;
 

@@ -35,8 +35,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use wslc_core::model::deploy::{TargetOverlap, target_overlap};
 use wslc_core::model::DeploySite;
+use wslc_core::model::deploy::{TargetOverlap, target_overlap};
 
 /// 一条部署记录。
 ///
@@ -134,11 +134,7 @@ impl DeployStore {
     }
 
     /// 记 / 更新一条（同名即覆盖 —— "重新部署"就是这条路）。
-    pub fn put(
-        &mut self,
-        container: &str,
-        record: DeployRecord,
-    ) -> Option<DeployRecord> {
+    pub fn put(&mut self, container: &str, record: DeployRecord) -> Option<DeployRecord> {
         let app = record.app.clone();
         self.entries.insert(key(container, &app), record)
     }
@@ -211,12 +207,7 @@ impl DeployStore {
     /// - 相同 / 新目标是已有目标的父目录 → 拦；
     /// - 新目标在旧目录里面 → 只有当"子目录第一段"不在旧应用的
     ///   [`DeployRecord::members`] 里才放行（否则旧应用的逐名删除会带走它）。
-    pub fn target_blocker(
-        &self,
-        container: &str,
-        app: &str,
-        target: &str,
-    ) -> Option<TargetBlock> {
+    pub fn target_blocker(&self, container: &str, app: &str, target: &str) -> Option<TargetBlock> {
         let target = normalize_target(target);
         for record in self.for_container(container) {
             if record.app.as_str() == app.trim() {
@@ -366,7 +357,11 @@ mod tests {
     fn merge_members_handles_the_empty_shapes() {
         let one = vec!["x".to_owned()];
         assert_eq!(merge_members(&[], &one), one, "第一次部署：只有这次的");
-        assert_eq!(merge_members(&one, &[]), one, "这次没铺东西（理论上到不了）");
+        assert_eq!(
+            merge_members(&one, &[]),
+            one,
+            "这次没铺东西（理论上到不了）"
+        );
         assert!(merge_members(&[], &[]).is_empty());
         // 老存档里没有 `members`（`#[serde(default)]` → 空表）：那就是只有这次的
         assert_eq!(merge_members(&[], &["x".to_owned()]), vec!["x"]);
@@ -479,9 +474,8 @@ mod tests {
 
     #[test]
     fn missing_file_is_an_empty_store_not_an_error() {
-        let (store, error) = DeployStore::load(Path::new(
-            r"Z:\definitely\not\a\real\path\deployments.json",
-        ));
+        let (store, error) =
+            DeployStore::load(Path::new(r"Z:\definitely\not\a\real\path\deployments.json"));
         assert!(store.is_empty());
         assert!(error.is_none(), "文件不存在不算错：{error:?}");
     }
@@ -565,9 +559,21 @@ mod tests {
             "web",
             record_of("site", "nginx", 80, "/root", &["index.html"]),
         );
-        assert!(store.target_blocker("web", "app-2", "/root/app-2").is_none());
-        assert!(store.target_blocker("web", "app-2", "/root/app-2/").is_none());
-        assert!(store.target_blocker("web", "app-2", "/root-other").is_none());
+        assert!(
+            store
+                .target_blocker("web", "app-2", "/root/app-2")
+                .is_none()
+        );
+        assert!(
+            store
+                .target_blocker("web", "app-2", "/root/app-2/")
+                .is_none()
+        );
+        assert!(
+            store
+                .target_blocker("web", "app-2", "/root-other")
+                .is_none()
+        );
     }
 
     #[test]

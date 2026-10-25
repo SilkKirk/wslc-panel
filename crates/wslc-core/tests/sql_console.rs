@@ -93,7 +93,10 @@ fn a_three_statement_script_yields_three_results_in_order() {
         include_str!("fixtures/sql_multi_col.tsv"),
         include_str!("fixtures/sql_no_rows.tsv"),
     ];
-    let results: Vec<_> = fixtures.iter().map(|f| parse_batch_with_header(f)).collect();
+    let results: Vec<_> = fixtures
+        .iter()
+        .map(|f| parse_batch_with_header(f))
+        .collect();
 
     assert_eq!(results[0].columns, ["id", "name"]);
     assert_eq!(results[1].columns, ["a", "b", "c"]);

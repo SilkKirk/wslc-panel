@@ -1033,9 +1033,8 @@ pub struct Shell {
     /// 每次跑完 SQL 就**整个换掉**（见 [`Shell::apply_db_console_result`]）：
     /// 结果集变了，列定义、行、排序全都要重新来。缓存着旧的不如重建 ——
     /// 重建的代价只是按列名估一次宽度（前 100 行），微不足道。
-    pub(crate) sql_table: Option<
-        Entity<gpui_kit::component::table::TableState<crate::sql_table::SqlResultDelegate>>,
-    >,
+    pub(crate) sql_table:
+        Option<Entity<gpui_kit::component::table::TableState<crate::sql_table::SqlResultDelegate>>>,
     /// 当前在看的**第几个**结果（多语句时按 tab 分开）。
     pub(crate) sql_result_tab: usize,
     /// 「看原始输出」是不是展开着。
@@ -2636,9 +2635,7 @@ impl Shell {
     /// 8 秒之后窗口已经画出来了，多这一件事没人会发现。
     fn start_auto_check(&self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_secs(8))
-                .await;
+            cx.background_executor().timer(Duration::from_secs(8)).await;
             // 实体已销毁（用户 8 秒内就关了窗口）→ `update` 返回 Err，忽略即可。
             let _ = this.update(cx, |shell, cx| shell.maybe_auto_check(cx));
         })
@@ -2725,23 +2722,26 @@ impl Shell {
         match outcome {
             Ok(release) => {
                 let newer = wslc_core::update::is_newer(&release.version, &current);
-                let skipped =
-                    crate::update::is_skipped(&release, self.state.prefs.skipped_version.as_deref());
+                let skipped = crate::update::is_skipped(
+                    &release,
+                    self.state.prefs.skipped_version.as_deref(),
+                );
 
                 tracing::info!(
                     "检查更新：当前 {}，远端 {}（{}），{}",
                     current,
                     release.raw_version,
                     release.tag,
-                    if newer { "有新版本" } else { "已是最新" }
+                    if newer {
+                        "有新版本"
+                    } else {
+                        "已是最新"
+                    }
                 );
 
                 if newer {
                     let version = release.raw_version.clone();
-                    self.state.update = crate::update::Phase::Available {
-                        release,
-                        skipped,
-                    };
+                    self.state.update = crate::update::Phase::Available { release, skipped };
                     if !skipped {
                         self.state.notify(Toast::info(format!(
                             "有新版本 {version} —— 在「设置 → 关于」里打开发布页"
@@ -3566,7 +3566,8 @@ impl Shell {
         let password = cx.new(|cx| InputState::new(window, cx).placeholder("root 的密码"));
         // 连接串（可选）：粘一条 `postgres://…` 就走原生连接。
         let dsn = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("postgres://user:pass@host:5432/db（留空＝在容器里执行）")
+            InputState::new(window, cx)
+                .placeholder("postgres://user:pass@host:5432/db（留空＝在容器里执行）")
         });
         // SQL 编辑器（v0.12）：多行 + 行号 + SQL 语法高亮。
         //
@@ -3677,7 +3678,6 @@ impl Shell {
         }
     }
 
-
     /// 给 SQL 编辑器装上 **自动补全**（v0.12.4）。
     ///
     /// # 为什么要"装"而不是渲染时读
@@ -3771,7 +3771,6 @@ impl Shell {
         }
     }
 
-
     /// **数据库列表那一行**该用哪个账号 —— 行内四个按钮 + 恢复共用这一个。
     ///
     /// # 规则（只有一条，按顺序取第一个有的）
@@ -3858,9 +3857,8 @@ impl Shell {
                 form.dsn
                     .update(cx, |state, cx| state.set_value(String::new(), window, cx));
                 let default_user = kind.default_user().to_owned();
-                form.user.update(cx, |state, cx| {
-                    state.set_value(default_user, window, cx)
-                });
+                form.user
+                    .update(cx, |state, cx| state.set_value(default_user, window, cx));
             }
             self.goto_page(Page::Database, cx);
             self.load_db(window, cx);
@@ -3927,19 +3925,19 @@ impl Shell {
             let target = container.clone();
             let wslc_probe = wslc.clone();
             let probe_dsn = dsn.clone();
-            let probe = cx
-                .background_executor()
-                .spawn(async move {
-                    match probe_dsn.as_deref() {
-                        // 有连接串 → 原生探测（不需要容器里的 mysql 客户端）。
-                        Some(text) => crate::native_db::mysql_probe(text, &target)
-                            .map_err(|e| e.to_string()),
-                        // 没有 → 原来的 exec 那条路。
-                        None => wslc_core::cmd::mysql::detect(&wslc_probe, &target)
-                            .map_err(|e| e.to_string()),
-                    }
-                })
-                .await;
+            let probe =
+                cx.background_executor()
+                    .spawn(async move {
+                        match probe_dsn.as_deref() {
+                            // 有连接串 → 原生探测（不需要容器里的 mysql 客户端）。
+                            Some(text) => crate::native_db::mysql_probe(text, &target)
+                                .map_err(|e| e.to_string()),
+                            // 没有 → 原来的 exec 那条路。
+                            None => wslc_core::cmd::mysql::detect(&wslc_probe, &target)
+                                .map_err(|e| e.to_string()),
+                        }
+                    })
+                    .await;
 
             let probe = match probe {
                 Ok(probe) => probe,
@@ -4612,7 +4610,11 @@ impl Shell {
         //
         // ⚠️ 判据先算成独立变量：`db` 借着 `self.state`，而 notify 要
         // `&mut self.state`（借用冲突）。
-        let blocked = self.state.db.as_ref().and_then(|db| db.write_blocked_reason());
+        let blocked = self
+            .state
+            .db
+            .as_ref()
+            .and_then(|db| db.write_blocked_reason());
         if let Some(reason) = blocked {
             self.state.notify(Toast::error(reason));
             cx.notify();
@@ -4867,17 +4869,17 @@ impl Shell {
         cx.notify();
     }
 
-/// 提交动作弹窗。
-///
-/// 这里最重要的一条：**参数不合法就在本地拦下，不关弹窗** ——
-/// 用户就在那一格里，改一个字比重打一遍强（`AGENTS.md` §7.5 的
-/// 「空值等于没填」也是这个思路）。
-///
-/// 「建库同时建用户」（v0.8）返回第三样 `to_record`：账号要等 SQL
-/// **成功之后**才写进本地存档 —— 列表上不能出现一个 MySQL 里
-/// 根本不存在的账号。所有段**先都拼出来、都校验过**再合并成一条
-/// `-e`（`;` 分隔，实测能跑）—— 半途失败时一条都不会发出去，
-/// 不会留下"建了库没建用户"的半成品。
+    /// 提交动作弹窗。
+    ///
+    /// 这里最重要的一条：**参数不合法就在本地拦下，不关弹窗** ——
+    /// 用户就在那一格里，改一个字比重打一遍强（`AGENTS.md` §7.5 的
+    /// 「空值等于没填」也是这个思路）。
+    ///
+    /// 「建库同时建用户」（v0.8）返回第三样 `to_record`：账号要等 SQL
+    /// **成功之后**才写进本地存档 —— 列表上不能出现一个 MySQL 里
+    /// 根本不存在的账号。所有段**先都拼出来、都校验过**再合并成一条
+    /// `-e`（`;` 分隔，实测能跑）—— 半途失败时一条都不会发出去，
+    /// 不会留下"建了库没建用户"的半成品。
     pub fn submit_db_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // 先把要用的东西取成 owned 的（下面要改 `self`，不能再借着它）
         // 闭包**返回 `Result<_, wslc_core::Error>`**：里面的 `?` 全是
@@ -5357,8 +5359,7 @@ impl Shell {
         };
 
         let Some((suggested, row_count, csv)) = prepared else {
-            self.state
-                .notify(Toast::error("这个结果没有表格可以导出"));
+            self.state.notify(Toast::error("这个结果没有表格可以导出"));
             cx.notify();
             return;
         };
@@ -5427,9 +5428,7 @@ impl Shell {
                         "已导出 {row_count} 行到 {}",
                         target.display()
                     ))),
-                    Err(e) => shell
-                        .state
-                        .notify(Toast::error(format!("写文件失败：{e}"))),
+                    Err(e) => shell.state.notify(Toast::error(format!("写文件失败：{e}"))),
                 }
                 cx.notify();
             });
@@ -5444,9 +5443,7 @@ impl Shell {
         if self.schema_search.is_some() {
             return;
         }
-        let input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("过滤库 / 表名")
-        });
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("过滤库 / 表名"));
         // 订阅：打字时**重建树**（不是"只重绘"）。
         //
         // 过滤不能用"渲染时临时筛"那套了：`TreeState` 的 items 是**喂进去**的，
@@ -5550,12 +5547,7 @@ impl Shell {
     ///
     /// `id` 的格式见 [`leaf_id`] / [`folder_id`]：`t\u{1}库\u{1}表` 是表，
     /// `d\u{1}库` 是库（点库由组件自己展开/收起，这里什么都不做）。
-    pub fn on_schema_tree_click(
-        &mut self,
-        id: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn on_schema_tree_click(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let mut parts = id.split('\u{1}');
         let Some(kind) = parts.next() else {
             return;
@@ -5618,10 +5610,16 @@ impl Shell {
                         }
                     } else if let Some(text) = dsn.as_deref() {
                         // 有连接串 → 原生（能读远程库的对象树）。
-                        crate::native_db::parse(text).and_then(|spec| crate::native_db::schema(&spec))
+                        crate::native_db::parse(text)
+                            .and_then(|spec| crate::native_db::schema(&spec))
                     } else {
-                        wslc_core::cmd::mysql::list_schema_tree(&wslc, &exec_container, &bin, &creds)
-                            .map_err(|e| e.to_string())
+                        wslc_core::cmd::mysql::list_schema_tree(
+                            &wslc,
+                            &exec_container,
+                            &bin,
+                            &creds,
+                        )
+                        .map_err(|e| e.to_string())
                     }
                 })
                 .await;
@@ -7821,12 +7819,7 @@ impl Shell {
     ///
     /// 和 [`Shell::run_db_console`] 的区别：那个把结果显示在控制台里，
     /// 这个只报一句成功 / 失败（表单提交的路径上没有"结果区"）。
-    fn run_db_statement(
-        &mut self,
-        req: DbStatement,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn run_db_statement(&mut self, req: DbStatement, window: &mut Window, cx: &mut Context<Self>) {
         // 拆回局部变量：下面那句 `async move` 会逐个把它们搬走，写成
         // `req.container` / `req.bin` 反而要在每个用的地方跟一遍 `req.`。
         let DbStatement {
@@ -7933,7 +7926,11 @@ impl Shell {
         //
         // ⚠️ 判据先算成独立变量：`db` 借着 `self.state`，而 notify 要
         // `&mut self.state`（借用冲突）。
-        let blocked = self.state.db.as_ref().and_then(|db| db.write_blocked_reason());
+        let blocked = self
+            .state
+            .db
+            .as_ref()
+            .and_then(|db| db.write_blocked_reason());
         if let Some(reason) = blocked {
             self.state.notify(Toast::error(reason));
             cx.notify();
@@ -8024,10 +8021,11 @@ impl Shell {
             // 重扫备份目录也要在**后台**做（`read_dir` + 每条 metadata）：
             // 下面那个 `update_in` 跑在界面线程上。失败不致命 —— 列表保持原样。
             let rescanned = match backup_scan_dir {
-                Some(dir) => cx
-                    .background_executor()
-                    .spawn(async move { state::scan_backup_dir(&dir).ok() })
-                    .await,
+                Some(dir) => {
+                    cx.background_executor()
+                        .spawn(async move { state::scan_backup_dir(&dir).ok() })
+                        .await
+                }
                 None => None,
             };
 
@@ -8104,7 +8102,11 @@ impl Shell {
         // 不如在门口就说清。
         //
         // ⚠️ 判据先算成独立变量（`db` 的借用与 `notify` 的 `&mut self.state` 冲突）。
-        let blocked = self.state.db.as_ref().and_then(|db| db.write_blocked_reason());
+        let blocked = self
+            .state
+            .db
+            .as_ref()
+            .and_then(|db| db.write_blocked_reason());
         if let Some(reason) = blocked {
             self.state.notify(Toast::error(reason));
             cx.notify();
@@ -8130,7 +8132,11 @@ impl Shell {
     pub fn restore_db_backup(&mut self, index: usize, cx: &mut Context<Self>) {
         // 原生连接下恢复也走不通：它要 `container cp` + 容器里的 `mysql`。
         // ⚠️ 判据先算成独立变量（借用冲突，同 `start_db_backup`）。
-        let blocked = self.state.db.as_ref().and_then(|db| db.write_blocked_reason());
+        let blocked = self
+            .state
+            .db
+            .as_ref()
+            .and_then(|db| db.write_blocked_reason());
         if let Some(reason) = blocked {
             self.state.notify(Toast::error(reason));
             cx.notify();
@@ -8183,7 +8189,11 @@ impl Shell {
         // 所以和备份 / 恢复同一条判据：先拦住，别留下"删了但没删干净"。
         //
         // ⚠️ 判据先算成独立变量（借用冲突，同 `start_db_backup`）。
-        let blocked = self.state.db.as_ref().and_then(|db| db.write_blocked_reason());
+        let blocked = self
+            .state
+            .db
+            .as_ref()
+            .and_then(|db| db.write_blocked_reason());
         if let Some(reason) = blocked {
             self.state.notify(Toast::error(reason));
             cx.notify();
@@ -8843,13 +8853,7 @@ impl Shell {
         {
             let (container, database) = (container.clone(), database.clone());
             let (windows_path, container_path) = (windows_path.clone(), container_path.clone());
-            self.delete_db_backup_confirmed(
-                container,
-                database,
-                windows_path,
-                container_path,
-                cx,
-            );
+            self.delete_db_backup_confirmed(container, database, windows_path, container_path, cx);
             return;
         }
 
@@ -10502,16 +10506,16 @@ impl Render for Shell {
                 last_group = page.group();
             }
             let item_entity = entity.clone();
-            let item = SidebarMenuItem::new(page.label()).active(state.page.highlights_nav(page)).on_click(
-                move |_, window, cx| {
+            let item = SidebarMenuItem::new(page.label())
+                .active(state.page.highlights_nav(page))
+                .on_click(move |_, window, cx| {
                     // `on_click` 给的是 `&mut App`（不是 `Context<Self>`），
                     // 所以走 `entity.update` 拿 `Context`。
                     //
                     // ⚠️ `window` 是必需的：「添加实例」页要现场创建输入框，
                     // 而 `InputState::new` 需要 `&mut Window`。
                     item_entity.update(cx, |shell, cx| shell.set_page(page, window, cx));
-                },
-            );
+                });
             // 填进**最后一组**（`SidebarGroup` 不实现 Clone，所以取出来再放回）。
             if let Some(g) = groups.pop() {
                 groups.push(g.child(item));
@@ -10912,25 +10916,27 @@ impl Render for Shell {
                             .collapsible(SidebarCollapsible::Offcanvas)
                             .collapsed(self.sidebar_collapsed)
                             .w(px(216.))
-                            .header(SidebarHeader::new().child(
-                                h_flex()
-                                    .w_full()
-                                    .gap_2()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .text_lg()
-                                            .font_bold()
-                                            .text_color(theme::primary())
-                                            .child("wslc"),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .text_color(theme::text_dim())
-                                            .child("panel"),
-                                    ),
-                            ))
+                            .header(
+                                SidebarHeader::new().child(
+                                    h_flex()
+                                        .w_full()
+                                        .gap_2()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .text_lg()
+                                                .font_bold()
+                                                .text_color(theme::primary())
+                                                .child("wslc"),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .text_color(theme::text_dim())
+                                                .child("panel"),
+                                        ),
+                                ),
+                            )
                             .children(groups),
                     )
                     // 主区域
@@ -11130,7 +11136,6 @@ fn leaf_id(database: &str, table: &str) -> String {
 fn folder_id(database: &str) -> String {
     format!("d{TREE_ID_SEP}{database}")
 }
-
 
 /// 危险操作的确认浮层。
 ///

@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use crate::cli::{self, StreamHandle, Wsl};
 use crate::error::{Error, Result};
-use crate::model::distro::{parse_distro_list, Distro, WslStatus};
+use crate::model::distro::{Distro, WslStatus, parse_distro_list};
 // 绝对路径校验只在 `model::install` 里实现一次（它和"安装目录推导"一起被单测），
 // 本模块的 `--move` / `--export` 直接复用它。
 use crate::model::install::is_absolute_windows_path;
@@ -287,8 +287,8 @@ pub fn start(wsl: &Wsl, name: &str) -> Result<std::process::Child> {
 //
 // 这里只留"起进程"的那部分，并把类型转出去，免得调用方到处改 import。
 pub use crate::model::install::WSL_VERSION;
-use crate::model::install::{parse_distribution_info, OnlineListSource, OnlineListing};
-pub use crate::model::install::{parse_online_list, InstallSource, InstallSpec, OnlineDistro};
+pub use crate::model::install::{InstallSource, InstallSpec, OnlineDistro, parse_online_list};
+use crate::model::install::{OnlineListSource, OnlineListing, parse_distribution_info};
 
 /// `wsl --list --online` 的超时。
 ///

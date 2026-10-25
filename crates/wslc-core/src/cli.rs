@@ -416,8 +416,7 @@ const HELPER_NOT_FOUND_HINT: &str = "请确认它位于 PATH 中（它随 Window
 ///
 /// 它从 Windows 10 1803 起随系统提供，所以"找不到"要么是被裁剪过的系统、
 /// 要么是被 EDR 拦了。不管哪种，用户该知道的是**还有一条不需要它的路**。
-pub const CURL_NOT_FOUND_HINT: &str =
-    "它随 Windows 10 1803 以上版本提供。也可以用「本地 rootfs 文件（tar / tar.gz / tar.xz）」那条路 —— 它不联网、也不需要 curl。";
+pub const CURL_NOT_FOUND_HINT: &str = "它随 Windows 10 1803 以上版本提供。也可以用「本地 rootfs 文件（tar / tar.gz / tar.xz）」那条路 —— 它不联网、也不需要 curl。";
 
 /// `wsl.exe`（WSL **发行版** / 实例）调用器。
 ///
@@ -1348,7 +1347,11 @@ mod tests {
         let out = dir.join("out.txt");
 
         let handle = wslc
-            .spawn_to_file(&["/c", "echo data-line& echo warn-line 1>&2"], &out, callback)
+            .spawn_to_file(
+                &["/c", "echo data-line& echo warn-line 1>&2"],
+                &out,
+                callback,
+            )
             .expect("应能启动 cmd");
 
         let mut code = None;
@@ -1366,7 +1369,10 @@ mod tests {
         // 文件里**只有** stdout 那条；回调里**只有** stderr 那条。
         let content = std::fs::read_to_string(&out).unwrap();
         assert!(content.contains("data-line"), "{content:?}");
-        assert!(!content.contains("warn-line"), "stderr 混进了文件：{content:?}");
+        assert!(
+            !content.contains("warn-line"),
+            "stderr 混进了文件：{content:?}"
+        );
 
         let lines = got.lock().unwrap().clone();
         assert!(

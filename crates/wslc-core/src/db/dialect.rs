@@ -103,7 +103,11 @@ impl DialectData {
     /// `const` 里做不了。每次补全调一次，几十个元素的分配相对于"弹一个
     /// 补全菜单"可以忽略。
     pub fn keywords(&self) -> Vec<&'static str> {
-        COMMON_WORDS.iter().chain(self.words.iter()).copied().collect()
+        COMMON_WORDS
+            .iter()
+            .chain(self.words.iter())
+            .copied()
+            .collect()
     }
 
     /// `SELECT * FROM … LIMIT n` 的尾部。
@@ -119,26 +123,104 @@ impl DialectData {
 ///
 /// 不按字母排：用户敲 `SEL` 时 `SELECT` 应该排在 `SHOW` 前面。
 const COMMON_WORDS: &[&str] = &[
-    "SELECT", "FROM", "WHERE", "GROUP BY", "HAVING", "ORDER BY", "LIMIT", "OFFSET", "JOIN",
-    "LEFT JOIN", "RIGHT JOIN", "INNER JOIN", "CROSS JOIN", "ON", "USING", "INSERT INTO", "VALUES",
-    "UPDATE", "SET", "DELETE FROM", "CREATE TABLE", "CREATE DATABASE", "CREATE INDEX", "CREATE VIEW",
-    "ALTER TABLE", "DROP TABLE", "DROP DATABASE", "TRUNCATE TABLE", "DISTINCT", "AS", "AND", "OR",
-    "NOT", "NULL", "IS NULL", "IS NOT NULL", "IN", "BETWEEN", "LIKE", "EXISTS", "UNION",
-    "UNION ALL", "CASE", "WHEN", "THEN", "ELSE", "END", "ASC", "DESC", "COUNT", "SUM", "AVG", "MIN",
-    "MAX", "COALESCE", "NOW",
+    "SELECT",
+    "FROM",
+    "WHERE",
+    "GROUP BY",
+    "HAVING",
+    "ORDER BY",
+    "LIMIT",
+    "OFFSET",
+    "JOIN",
+    "LEFT JOIN",
+    "RIGHT JOIN",
+    "INNER JOIN",
+    "CROSS JOIN",
+    "ON",
+    "USING",
+    "INSERT INTO",
+    "VALUES",
+    "UPDATE",
+    "SET",
+    "DELETE FROM",
+    "CREATE TABLE",
+    "CREATE DATABASE",
+    "CREATE INDEX",
+    "CREATE VIEW",
+    "ALTER TABLE",
+    "DROP TABLE",
+    "DROP DATABASE",
+    "TRUNCATE TABLE",
+    "DISTINCT",
+    "AS",
+    "AND",
+    "OR",
+    "NOT",
+    "NULL",
+    "IS NULL",
+    "IS NOT NULL",
+    "IN",
+    "BETWEEN",
+    "LIKE",
+    "EXISTS",
+    "UNION",
+    "UNION ALL",
+    "CASE",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+    "ASC",
+    "DESC",
+    "COUNT",
+    "SUM",
+    "AVG",
+    "MIN",
+    "MAX",
+    "COALESCE",
+    "NOW",
 ];
 
 const MYSQL_WORDS: &[&str] = &[
-    "SHOW DATABASES", "SHOW TABLES", "SHOW COLUMNS", "SHOW INDEX", "SHOW CREATE TABLE",
-    "SHOW VARIABLES", "SHOW STATUS", "SHOW PROCESSLIST", "DESCRIBE", "EXPLAIN", "USE",
-    "REPLACE INTO", "STRAIGHT_JOIN", "SQL_CALC_FOUND_ROWS", "FOUND_ROWS", "GROUP_CONCAT", "IFNULL",
-    "DATE_FORMAT", "ON DUPLICATE KEY UPDATE",
+    "SHOW DATABASES",
+    "SHOW TABLES",
+    "SHOW COLUMNS",
+    "SHOW INDEX",
+    "SHOW CREATE TABLE",
+    "SHOW VARIABLES",
+    "SHOW STATUS",
+    "SHOW PROCESSLIST",
+    "DESCRIBE",
+    "EXPLAIN",
+    "USE",
+    "REPLACE INTO",
+    "STRAIGHT_JOIN",
+    "SQL_CALC_FOUND_ROWS",
+    "FOUND_ROWS",
+    "GROUP_CONCAT",
+    "IFNULL",
+    "DATE_FORMAT",
+    "ON DUPLICATE KEY UPDATE",
 ];
 
 const MARIA_WORDS: &[&str] = &[
-    "SHOW DATABASES", "SHOW TABLES", "SHOW COLUMNS", "SHOW INDEX", "SHOW CREATE TABLE",
-    "SHOW VARIABLES", "SHOW STATUS", "SHOW PROCESSLIST", "DESCRIBE", "EXPLAIN", "USE",
-    "REPLACE INTO", "RETURNING", "GROUP_CONCAT", "IFNULL", "DATE_FORMAT", "SEQUENCE",
+    "SHOW DATABASES",
+    "SHOW TABLES",
+    "SHOW COLUMNS",
+    "SHOW INDEX",
+    "SHOW CREATE TABLE",
+    "SHOW VARIABLES",
+    "SHOW STATUS",
+    "SHOW PROCESSLIST",
+    "DESCRIBE",
+    "EXPLAIN",
+    "USE",
+    "REPLACE INTO",
+    "RETURNING",
+    "GROUP_CONCAT",
+    "IFNULL",
+    "DATE_FORMAT",
+    "SEQUENCE",
     "NEXT VALUE FOR",
 ];
 
@@ -151,10 +233,30 @@ const MARIA_WORDS: &[&str] = &[
 /// - 有 `RETURNING`（比 MariaDB 早得多，且是 INSERT/UPDATE/DELETE 都能用）；
 /// - 有 `SERIAL` / `ON CONFLICT` / `ILIKE` / `DISTINCT ON` 这些独有的东西。
 const POSTGRES_WORDS: &[&str] = &[
-    "RETURNING", "ON CONFLICT", "DO NOTHING", "DO UPDATE SET", "ILIKE", "DISTINCT ON", "SERIAL",
-    "BIGSERIAL", "JSONB", "TEXT", "BOOLEAN", "TIMESTAMPTZ", "UUID", "GEN_RANDOM_UUID",
-    "EXPLAIN ANALYZE", "VACUUM", "ANALYZE", "TRUNCATE", "SET search_path", "CURRENT_TIMESTAMP",
-    "DATE_TRUNC", "TO_CHAR", "ARRAY_AGG", "STRING_AGG",
+    "RETURNING",
+    "ON CONFLICT",
+    "DO NOTHING",
+    "DO UPDATE SET",
+    "ILIKE",
+    "DISTINCT ON",
+    "SERIAL",
+    "BIGSERIAL",
+    "JSONB",
+    "TEXT",
+    "BOOLEAN",
+    "TIMESTAMPTZ",
+    "UUID",
+    "GEN_RANDOM_UUID",
+    "EXPLAIN ANALYZE",
+    "VACUUM",
+    "ANALYZE",
+    "TRUNCATE",
+    "SET search_path",
+    "CURRENT_TIMESTAMP",
+    "DATE_TRUNC",
+    "TO_CHAR",
+    "ARRAY_AGG",
+    "STRING_AGG",
 ];
 
 static MYSQL_DIALECT: DialectData = DialectData {
@@ -231,10 +333,7 @@ mod tests {
     #[test]
     fn limit_clause_is_per_dialect() {
         assert_eq!(dialect_for(DbKind::MySql).limit_clause(200), "LIMIT 200");
-        assert_eq!(
-            dialect_for(DbKind::Postgres).limit_clause(200),
-            "LIMIT 200"
-        );
+        assert_eq!(dialect_for(DbKind::Postgres).limit_clause(200), "LIMIT 200");
         // FETCH FIRST 这一支现在没有引擎在用，但分支必须是活的
         let fetch = DialectData {
             limit: LimitSyntax::FetchFirst,

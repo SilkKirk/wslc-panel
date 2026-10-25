@@ -3,8 +3,8 @@
 use crate::cli::Wslc;
 use crate::error::{Error, Result};
 use crate::jsonl;
-use crate::model::deploy;
 use crate::model::NetworkListItem;
+use crate::model::deploy;
 
 /// `wslc network list --format json`
 pub fn list(wslc: &Wslc) -> Result<Vec<NetworkListItem>> {
@@ -76,10 +76,7 @@ pub fn ensure_shared_network(
     if !exists(wslc, name)? {
         create(wslc, name)?;
     }
-    if !left_networks
-        .iter()
-        .any(|network| network.as_str() == name)
-    {
+    if !left_networks.iter().any(|network| network.as_str() == name) {
         connect(wslc, name, left_container)?;
     }
     if !right_networks

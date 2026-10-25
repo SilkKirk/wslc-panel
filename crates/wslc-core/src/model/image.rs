@@ -205,11 +205,7 @@ pub fn suggest_port_mappings(ports: &[u16]) -> String {
     let mut used: Vec<u16> = Vec::new();
     let mut out: Vec<String> = Vec::new();
     for &port in ports {
-        let mut host = if port < 1024 {
-            8000 + port
-        } else {
-            port
-        };
+        let mut host = if port < 1024 { 8000 + port } else { port };
         while used.contains(&host) {
             host = host.saturating_add(1);
         }
@@ -389,7 +385,10 @@ mod tests {
         assert_eq!(facts.exposed_ports, vec![80]);
         // `Entrypoint` + `Cmd` 按顺序拼起来
         assert_eq!(facts.command, "/docker-entrypoint.sh nginx -g daemon off;");
-        assert!(facts.has_cmd, "nginx 的 Cmd 是 `nginx -g daemon off;`：{facts:?}");
+        assert!(
+            facts.has_cmd,
+            "nginx 的 Cmd 是 `nginx -g daemon off;`：{facts:?}"
+        );
         assert_eq!(suggest_port_mappings(&facts.exposed_ports), "8080:80");
     }
 
@@ -459,7 +458,11 @@ mod tests {
         // 键可能是 `80`（无协议）或 `53/udp`；只收 tcp，非数字直接丢
         let json = r#"{"Config":{"ExposedPorts":{"80":{},"53/udp":{},"8080/tcp":{},"x/tcp":{}}}}"#;
         let facts = parse_image_inspect(json).unwrap();
-        assert_eq!(facts.exposed_ports, vec![80, 8080], "udp 与非数字都该被丢掉");
+        assert_eq!(
+            facts.exposed_ports,
+            vec![80, 8080],
+            "udp 与非数字都该被丢掉"
+        );
     }
 
     #[test]
@@ -474,7 +477,8 @@ mod tests {
 
     #[test]
     fn ports_are_sorted_and_deduped() {
-        let json = r#"{"Config":{"ExposedPorts":{"443/tcp":{},"80/tcp":{},"80/tcp ":{},"80/tcp":{}}}}"#;
+        let json =
+            r#"{"Config":{"ExposedPorts":{"443/tcp":{},"80/tcp":{},"80/tcp ":{},"80/tcp":{}}}}"#;
         let facts = parse_image_inspect(json).unwrap();
         assert_eq!(facts.exposed_ports, vec![80, 443]);
     }
@@ -589,7 +593,10 @@ mod tests {
         );
         // 用户**把它删了**（或换成别的合法选项）→ 不拦：
         // 他可能是故意复用一份已经初始化好的数据卷，那种情况下本来不需要这些变量
-        assert_eq!(prefilled_env_left_empty("mysql:8", &pairs(&[("TZ", "UTC")])), None);
+        assert_eq!(
+            prefilled_env_left_empty("mysql:8", &pairs(&[("TZ", "UTC")])),
+            None
+        );
         assert_eq!(
             prefilled_env_left_empty(
                 "mysql:8",
@@ -603,7 +610,10 @@ mod tests {
         );
         // 不认识这个镜像 → 没资格拦
         assert_eq!(prefilled_env_left_empty("alpine", &[]), None);
-        assert_eq!(prefilled_env_left_empty("", &pairs(&[("MYSQL_ROOT_PASSWORD", "")])), None);
+        assert_eq!(
+            prefilled_env_left_empty("", &pairs(&[("MYSQL_ROOT_PASSWORD", "")])),
+            None
+        );
         // 空字符串值（比如用户手打了空格）也算没填
         assert_eq!(
             prefilled_env_left_empty("postgres", &pairs(&[("POSTGRES_PASSWORD", "   ")])),

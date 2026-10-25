@@ -62,7 +62,9 @@ fn main() {
         // （v0.10.0 就是这么发出去的）。release.yml 里那一步
         // `verify-exe-icon.ps1` 再兜一层 —— 它现在会真的比图标**内容**。
         .manifest_optional()
-        .unwrap_or_else(|e| panic!("嵌入资源失败：{e}（rc.exe 找不到？本机没有 Windows SDK 是正常的，CI 有）"));
+        .unwrap_or_else(|e| {
+            panic!("嵌入资源失败：{e}（rc.exe 找不到？本机没有 Windows SDK 是正常的，CI 有）")
+        });
 }
 
 /// 把 `0.10.0` 变成 `0,10,0,0`。

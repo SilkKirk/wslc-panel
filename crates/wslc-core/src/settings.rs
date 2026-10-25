@@ -624,9 +624,10 @@ mod tests {
         assert_eq!(values.cpu_count.as_deref(), Some("4"));
         assert!(d.raw().contains("\n  cpuCount: 4\n"));
         // 该键上方的英文说明注释必须保留。
-        assert!(d
-            .raw()
-            .contains("Number of virtual CPUs allocated to the session"));
+        assert!(
+            d.raw()
+                .contains("Number of virtual CPUs allocated to the session")
+        );
         // 其它键仍然处于注释状态。
         assert_eq!(d.values().memory_size, None);
         assert!(d.is_dirty());

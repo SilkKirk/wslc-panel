@@ -112,7 +112,11 @@ impl SqlResult {
             columns,
             rows: rows
                 .iter()
-                .map(|row| row.iter().map(|c| c.as_deref().unwrap_or("").to_owned()).collect())
+                .map(|row| {
+                    row.iter()
+                        .map(|c| c.as_deref().unwrap_or("").to_owned())
+                        .collect()
+                })
                 .collect(),
         }
     }

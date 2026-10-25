@@ -198,7 +198,10 @@ impl Page {
     /// 那种垃圾。同理，「镜像」的拉取表单在弹窗里，也不在这里。
     pub fn needs_window_to_enter(self) -> bool {
         // `Page::Sql` 也要：SQL 编辑框 + 树里的过滤框都是 `InputState`。
-        matches!(self, Page::AddInstance | Page::Database | Page::Containers | Page::Sql)
+        matches!(
+            self,
+            Page::AddInstance | Page::Database | Page::Containers | Page::Sql
+        )
     }
 
     /// 这一页在侧边栏里应该高亮哪一项。
@@ -2450,9 +2453,10 @@ impl DbState {
     /// `mariadb` 或 `mysql`，用错名字就是"命令不存在"。
     pub fn driver(&self) -> std::sync::Arc<dyn SqlDriver> {
         match self.conn.kind {
-            DbKind::MySql | DbKind::MariaDb => std::sync::Arc::new(
-                MySqlDriver::with_client(self.conn.kind, self.client.clone()),
-            ),
+            DbKind::MySql | DbKind::MariaDb => std::sync::Arc::new(MySqlDriver::with_client(
+                self.conn.kind,
+                self.client.clone(),
+            )),
             DbKind::Postgres => std::sync::Arc::new(PostgresDriver::new()),
         }
     }
@@ -6712,7 +6716,9 @@ mod tests {
         //    窗口里 `client` 还是上一个容器的 `mysql`，点下去会真的去 exec。
         state.dsn = Some(DsnText::new("mysql://root:pw@10.0.0.5:3306/shop"));
         assert!(state.is_native(), "dsn 已生效就该判成原生");
-        let reason = state.write_blocked_reason().expect("原生连接必须拦住写操作");
+        let reason = state
+            .write_blocked_reason()
+            .expect("原生连接必须拦住写操作");
         assert!(reason.contains("连接串"), "理由要说清怎么改回去：{reason}");
         assert!(reason.contains("SQL 控制台"), "要说明哪条还能用：{reason}");
 
@@ -6744,10 +6750,7 @@ mod tests {
         // 贴到 issue 里的东西）。这个 newtype 就是为了堵这一条。
         let dsn = DsnText::new("mysql://root:s3cret-pw@10.0.0.5:3306/shop");
         let shown = format!("{dsn:?}");
-        assert!(
-            !shown.contains("s3cret-pw"),
-            "Debug 里漏了口令：{shown}"
-        );
+        assert!(!shown.contains("s3cret-pw"), "Debug 里漏了口令：{shown}");
         assert!(shown.contains("***"), "该遮的那段要显示成 ***：{shown}");
         // 其余部分**保留** —— 协议 / 主机 / 库名正是排障要看的
         assert!(shown.contains("10.0.0.5"), "主机名不该被遮：{shown}");
@@ -7283,7 +7286,9 @@ mod tests {
         let action = PendingAction::DeleteDatabaseBackup {
             container: "mysql".to_owned(),
             database: "djxm".to_owned(),
-            windows_path: std::path::PathBuf::from(r"C:\Users\x\backups\mysql\djxm-20261015-035901.sql"),
+            windows_path: std::path::PathBuf::from(
+                r"C:\Users\x\backups\mysql\djxm-20261015-035901.sql",
+            ),
             container_path: "/tmp/wslc-backups/djxm-20261015-035901.sql".to_owned(),
         };
 
@@ -7292,11 +7297,20 @@ mod tests {
 
         let body = action.body();
         // 用户必须看见**两份**都会没：Windows 侧那份是主体，容器内那份也会删
-        assert!(body.contains(r"C:\Users\x\backups\mysql\djxm-20261015-035901.sql"), "{body}");
-        assert!(body.contains("/tmp/wslc-backups/djxm-20261015-035901.sql"), "{body}");
+        assert!(
+            body.contains(r"C:\Users\x\backups\mysql\djxm-20261015-035901.sql"),
+            "{body}"
+        );
+        assert!(
+            body.contains("/tmp/wslc-backups/djxm-20261015-035901.sql"),
+            "{body}"
+        );
         // 说清"数据库本身不受影响" —— 否则用户会以为连库一起删了
         assert!(body.contains("数据库 djxm 本身不受影响"), "{body}");
-        assert!(body.contains("不可撤销") || body.contains("没有回收站"), "{body}");
+        assert!(
+            body.contains("不可撤销") || body.contains("没有回收站"),
+            "{body}"
+        );
 
         // 它**不**走 `PendingAction::execute`（那个形状表达不了"删完再重扫目录"），
         // 所以执行入口必须给一句人话，而不是 panic。

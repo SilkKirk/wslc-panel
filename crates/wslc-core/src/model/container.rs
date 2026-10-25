@@ -1395,7 +1395,10 @@ mod tests {
             "nginx"
         );
         // 带命名空间的
-        assert_eq!(suggest_container_name("grafana/grafana:11", &none), "grafana");
+        assert_eq!(
+            suggest_container_name("grafana/grafana:11", &none),
+            "grafana"
+        );
         // 裸名字 / 带 digest / 带端口的 registry
         assert_eq!(suggest_container_name("alpine", &none), "alpine");
         assert_eq!(

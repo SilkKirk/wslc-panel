@@ -450,7 +450,7 @@ fn tables_of_db(tree: &SchemaTree, lower_db: &str) -> Option<Vec<Candidate>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wslc_core::model::schematree::{parse_schema_tree, DbNode, TableKind, TableNode};
+    use wslc_core::model::schematree::{DbNode, TableKind, TableNode, parse_schema_tree};
 
     fn sample() -> SchemaTree {
         let mut tree = parse_schema_tree(

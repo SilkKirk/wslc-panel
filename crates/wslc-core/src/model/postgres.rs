@@ -372,7 +372,9 @@ pub fn split_statements(script: &str) -> Vec<String> {
                         break;
                     }
                 }
-                if closed && (tag.is_empty() || tag.chars().next().is_some_and(|c| !c.is_ascii_digit())) {
+                if closed
+                    && (tag.is_empty() || tag.chars().next().is_some_and(|c| !c.is_ascii_digit()))
+                {
                     cur.push('$');
                     cur.push_str(&tag);
                     cur.push('$');
@@ -513,7 +515,10 @@ pub fn parse_databases(table: &CsvTable) -> Vec<String> {
 ///
 /// 代价写在明处：树里显示的是 `public` / `myschema` 而不是库名。
 /// 所以界面上要同时显示"当前连的是哪个库"（`DbState::sql_database` 那种）。
-pub fn parse_schema_tree(tables: &CsvTable, columns: &CsvTable) -> crate::model::schematree::SchemaTree {
+pub fn parse_schema_tree(
+    tables: &CsvTable,
+    columns: &CsvTable,
+) -> crate::model::schematree::SchemaTree {
     use crate::model::schematree::{DbNode, SchemaTree, TableKind, TableNode};
     use std::collections::BTreeMap;
 
@@ -540,7 +545,8 @@ pub fn parse_schema_tree(tables: &CsvTable, columns: &CsvTable) -> crate::model:
 
     // 列按实测的 `ordinal_position` 顺序挂上去（CSV 里已经是那个顺序）
     for row in &columns.rows {
-        let (Some(schema), Some(table), Some(column)) = (row.first(), row.get(1), row.get(2)) else {
+        let (Some(schema), Some(table), Some(column)) = (row.first(), row.get(1), row.get(2))
+        else {
             continue;
         };
         let Some(tables) = map.get_mut(schema) else {
@@ -591,7 +597,16 @@ mod tests {
         assert_eq!(
             strs(&a),
             vec![
-                "-X", "-q", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "shop", "--csv", "-c",
+                "-X",
+                "-q",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-U",
+                "postgres",
+                "-d",
+                "shop",
+                "--csv",
+                "-c",
                 "SELECT 1"
             ]
         );
@@ -617,7 +632,10 @@ mod tests {
     #[test]
     fn parses_real_rows_including_null_and_empty_string() {
         let t = parse_csv(FIX_ROWS);
-        assert_eq!(strs(&t.header), vec!["id", "name", "nick", "active", "tags"]);
+        assert_eq!(
+            strs(&t.header),
+            vec!["id", "name", "nick", "active", "tags"]
+        );
         assert_eq!(t.rows.len(), 3);
         assert_eq!(strs(&t.rows[0]), vec!["1", "alice", "", "t", "{a,b}"]);
         // 中文
@@ -667,10 +685,11 @@ mod tests {
             strs(&t.header),
             vec!["table_schema", "table_name", "table_type"]
         );
-        assert!(t
-            .rows
-            .iter()
-            .any(|r| strs(r) == vec!["public", "t_user", "BASE TABLE"]));
+        assert!(
+            t.rows
+                .iter()
+                .any(|r| strs(r) == vec!["public", "t_user", "BASE TABLE"])
+        );
         // 视图的表类型是 `VIEW`
         assert!(t.rows.iter().any(|r| r[2] == "VIEW"));
         let c = parse_csv(FIX_COLUMNS);

@@ -338,11 +338,7 @@ fn version_at_least(version: &str, min: &str) -> Option<bool> {
             .map(|p| p.trim().parse::<u64>())
             .collect::<std::result::Result<_, _>>()
             .ok()?;
-        if parts.is_empty() {
-            None
-        } else {
-            Some(parts)
-        }
+        if parts.is_empty() { None } else { Some(parts) }
     };
 
     let actual = parse(version)?;
@@ -890,8 +886,7 @@ options = \"metadata,umask=22\"
     fn adds_a_key_into_an_existing_section_at_its_end() {
         // 原文有 [interop]，但没写 enabled —— 补进去时应该落在这一节**末尾**，
         // 而不是插在节头正下方（那样会把用户的键挤到注释前面）
-        let text =
-            "[network]\nhostname = x\n\n[interop]\nappendWindowsPath = false\n\n[user]\ndefault = u\n";
+        let text = "[network]\nhostname = x\n\n[interop]\nappendWindowsPath = false\n\n[user]\ndefault = u\n";
         let mut doc = WslConfDoc::parse(text);
         doc.set("interop", "enabled", "true");
         let out = doc.render();

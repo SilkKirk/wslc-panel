@@ -228,10 +228,7 @@ pub fn copy_sources(
     if members.is_empty() {
         return Err(Error::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            format!(
-                "这个目录是空的，没有东西可以部署：{}",
-                source.display()
-            ),
+            format!("这个目录是空的，没有东西可以部署：{}", source.display()),
         )));
     }
 
@@ -267,12 +264,7 @@ pub fn copy_sources(
 /// 一个只有空子目录的合法来源，文件数本来就是 0，拿它判会误报失败。
 ///
 /// 返回容器里实际的顶层条目数。
-pub fn verify_copy(
-    wslc: &Wslc,
-    container: &str,
-    target: &str,
-    expected: usize,
-) -> Result<u64> {
+pub fn verify_copy(wslc: &Wslc, container: &str, target: &str, expected: usize) -> Result<u64> {
     let script = deploy::count_entries_script(target);
     let output = run_script(wslc, container, &script)?;
     let actual = deploy::parse_file_count(&output);
@@ -435,11 +427,7 @@ pub fn apply_site(
     let warning = match run_script(wslc, container, &deploy::reload_nginx_script()) {
         Ok(output) => {
             let clean = deploy::filter_nginx_noise(&output);
-            if clean.is_empty() {
-                None
-            } else {
-                Some(clean)
-            }
+            if clean.is_empty() { None } else { Some(clean) }
         }
         Err(error) => Some(format!("配置已写入，但重载失败：{error}")),
     };
@@ -596,12 +584,7 @@ pub fn read_site_conf(
 /// 老存档里没有这个字段时传空表：那就只删日志 / pidfile。
 ///
 /// ⚠️ 不可撤销，而且目标是卷挂载点时会删掉卷里的数据 —— 调用方必须先二次确认。
-pub fn remove_target(
-    wslc: &Wslc,
-    container: &str,
-    target: &str,
-    members: &[String],
-) -> Result<()> {
+pub fn remove_target(wslc: &Wslc, container: &str, target: &str, members: &[String]) -> Result<()> {
     run_script(wslc, container, &deploy::remove_script(target, members)).map(|_| ())
 }
 
@@ -624,4 +607,3 @@ fn run_script(wslc: &Wslc, container: &str, script: &str) -> Result<String> {
 // `DeployProbe::publishes` 的测试 —— v0.9.13 把那个方法连同测试一起搬进了
 // `model::deploy::port_is_published`：那个判据**界面真的在调**，
 // 而 `publishes()` 只有测试在调（界面另写了一份内联的）。
-

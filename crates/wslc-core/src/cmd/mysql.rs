@@ -14,7 +14,9 @@
 use crate::cli::Wslc;
 use crate::error::{Error, Result};
 use crate::model::mysql as logic;
-use crate::model::mysql::{ClientProbe, DbEntry, DbUser, MysqlCreds, MysqlFamily, RootCredHint, SqlMode};
+use crate::model::mysql::{
+    ClientProbe, DbEntry, DbUser, MysqlCreds, MysqlFamily, RootCredHint, SqlMode,
+};
 // SQL 控制台的结构化结果：`SqlResult` 是它的类型，
 // `sqlresult` / `sqlstmt` 是纯逻辑（住在 `model/` 里，能脱离 Windows 单测）。
 use crate::model::sqlresult::{self, SqlResult};
@@ -116,9 +118,7 @@ pub fn exec_argv(
         logic::exec_env(creds),
         container_name.to_owned(),
     ];
-    args.extend(logic::client_args(
-        client_bin, creds, sql, database, mode,
-    ));
+    args.extend(logic::client_args(client_bin, creds, sql, database, mode));
     args
 }
 
@@ -625,14 +625,7 @@ mod tests {
 
     #[test]
     fn exec_argv_puts_the_env_option_before_the_container() {
-        let args = exec_argv(
-            "mysql",
-            "mysql",
-            &creds(),
-            "SELECT 1",
-            None,
-            SqlMode::Batch,
-        );
+        let args = exec_argv("mysql", "mysql", &creds(), "SELECT 1", None, SqlMode::Batch);
         assert_eq!(
             args,
             vec![
@@ -826,7 +819,7 @@ mod tests {
         // `container cp` 对这些名字没问题，所以不能再按 ASCII 白名单拒。
         let wslc = Wslc::with_program("definitely-not-a-real-binary");
         for bad in [
-            r"C:\backups\it's.sql",     // 单引号
+            r"C:\backups\it's.sql", // 单引号
             // ⚠️ 别写 `r"C:\backups\"` —— `Path::file_name()` 会**忽略尾部分隔符**
             // 返回 `Some("backups")`（`components()` 的行为），那条会走到
             // 后半段而不是这里。真正"没有文件名"的是盘根 / `..` 这种。

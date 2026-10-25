@@ -60,12 +60,8 @@ impl MySqlSession {
             ));
         }
         // `Opts::from_url` 认我们拼出来的那个 URL（用户名/口令已经百分号编码过）。
-        let opts = mysql::Opts::from_url(&spec.mysql_url()).map_err(|e| {
-            DbError::new(
-                DbErrorKind::Other,
-                format!("连接串解析失败：{e}"),
-            )
-        })?;
+        let opts = mysql::Opts::from_url(&spec.mysql_url())
+            .map_err(|e| DbError::new(DbErrorKind::Other, format!("连接串解析失败：{e}")))?;
         let conn = mysql::Conn::new(opts).map_err(classify)?;
         Ok(Self { conn })
     }
@@ -208,7 +204,6 @@ mod tests {
         assert_eq!(hex_bytes(&[]), "0x");
         assert_eq!(hex_bytes("hi".as_bytes()), "0x6869");
     }
-
 
     #[test]
     fn tls_is_refused_rather_than_silently_downgraded() {

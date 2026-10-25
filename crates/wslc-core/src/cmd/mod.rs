@@ -32,8 +32,8 @@ pub mod install;
 pub mod mysql;
 pub mod network;
 // PostgreSQL 的执行层（v0.14）。形状照 cmd::mysql，但参数和解析不同。
-pub mod postgres;
 pub mod picker;
+pub mod postgres;
 pub mod registry;
 pub mod system;
 // 更新检查：起一次 `curl.exe` 问 GitHub「最新版是哪个」。

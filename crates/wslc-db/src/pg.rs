@@ -35,7 +35,7 @@ pub struct PgSession {
 
 impl PgSession {
     pub fn open(spec: &ConnSpec) -> Result<Self, DbError> {
-debug_assert_eq!(spec.kind, DbKind::Postgres);
+        debug_assert_eq!(spec.kind, DbKind::Postgres);
         // 同 `my.rs`：要求 TLS 就报错，不静默降级成明文。
         if spec.tls {
             return Err(DbError::new(
@@ -183,7 +183,9 @@ fn classify_parts(code: Option<&str>, message: &str) -> DbErrorKind {
             DbErrorKind::Auth
         } else if lower.contains("tls") || lower.contains("ssl") {
             DbErrorKind::Tls
-        } else if lower.contains("connect") || lower.contains("refused") || lower.contains("timed out")
+        } else if lower.contains("connect")
+            || lower.contains("refused")
+            || lower.contains("timed out")
         {
             DbErrorKind::Connect
         } else {
@@ -244,7 +246,10 @@ mod tests {
         // 库不存在：`psql` 把 FATAL 写在连接阶段，但服务端**给了** SQLSTATE
         let missing = include_str!("../../wslc-core/tests/fixtures/postgres_error_missing_db.txt");
         assert!(missing.contains("does not exist"), "{missing}");
-        assert_eq!(classify_parts(Some("3D000"), missing), DbErrorKind::Database);
+        assert_eq!(
+            classify_parts(Some("3D000"), missing),
+            DbErrorKind::Database
+        );
     }
 
     #[test]

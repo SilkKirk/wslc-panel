@@ -47,11 +47,7 @@ const POWERSHELL_LABEL: &str = "powershell.exe";
 /// （`["tar"]`）。返回 `Ok(None)` 表示**用户取消了** —— 那不算错误。
 pub fn pick_file(label: &str, extensions: &[&str]) -> Result<Option<String>> {
     let filter = build_filter(label, extensions);
-    run(
-        &format!("选择{label}"),
-        Some(&filter),
-        DialogKind::OpenFile,
-    )
+    run(&format!("选择{label}"), Some(&filter), DialogKind::OpenFile)
 }
 
 /// 弹一个**保存文件**的对话框（v0.11.3，导出 CSV 用）。
@@ -206,8 +202,9 @@ fn build_script(title: &str, filter: Option<&str>, kind: &DialogKind) -> String 
             script.push_str("$d = New-Object System.Windows.Forms.FolderBrowserDialog\n");
             script.push_str(&format!("$d.Description = '{}'\n", quote(title)));
             script.push_str("$d.ShowNewFolderButton = $true\n");
-            script
-                .push_str("if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {\n");
+            script.push_str(
+                "if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {\n",
+            );
             script.push_str("  [Console]::Out.Write($d.SelectedPath)\n");
             script.push_str("}\n");
         }
@@ -217,8 +214,9 @@ fn build_script(title: &str, filter: Option<&str>, kind: &DialogKind) -> String 
             script.push_str(&format!("$d.Filter = '{}'\n", quote(filter.unwrap_or(""))));
             // 手输一个不存在的路径时挡下来，免得后面 wsl 报一句不好懂的错
             script.push_str("$d.CheckFileExists = $true\n");
-            script
-                .push_str("if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {\n");
+            script.push_str(
+                "if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {\n",
+            );
             script.push_str("  [Console]::Out.Write($d.FileName)\n");
             script.push_str("}\n");
         }
@@ -227,15 +225,13 @@ fn build_script(title: &str, filter: Option<&str>, kind: &DialogKind) -> String 
             script.push_str(&format!("$d.Title = '{}'\n", quote(title)));
             script.push_str(&format!("$d.Filter = '{}'\n", quote(filter.unwrap_or(""))));
             // 预填文件名：没有它用户得从零手打一遍（而名字是我们能算出来的）
-            script.push_str(&format!(
-                "$d.FileName = '{}'\n",
-                quote(suggested_name)
-            ));
+            script.push_str(&format!("$d.FileName = '{}'\n", quote(suggested_name)));
             // 覆盖前确认：导出到已有文件时，WinForms 会弹一次"是否替换"。
             // **必须开** —— 否则一次误点就把用户的旧文件静默覆盖了。
             script.push_str("$d.OverwritePrompt = $true\n");
-            script
-                .push_str("if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {\n");
+            script.push_str(
+                "if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {\n",
+            );
             script.push_str("  [Console]::Out.Write($d.FileName)\n");
             script.push_str("}\n");
         }
@@ -285,7 +281,11 @@ mod tests {
 
     #[test]
     fn script_is_sta_and_writes_the_path_to_stdout() {
-        let script = build_script("选择tar 文件", Some("tar 文件 (*.tar)|*.tar"), &DialogKind::OpenFile);
+        let script = build_script(
+            "选择tar 文件",
+            Some("tar 文件 (*.tar)|*.tar"),
+            &DialogKind::OpenFile,
+        );
 
         // `-STA` 是 WinForms 的硬性要求，漏了对话框会直接抛
         // （这里只能断言我们**传了**这个参数，见 `run`）。

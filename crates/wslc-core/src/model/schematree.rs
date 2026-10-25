@@ -192,7 +192,10 @@ pub fn parse_schema_tree(tsv: &str) -> SchemaTree {
         if db.is_empty() || table.is_empty() {
             continue;
         }
-        let kind = cells.get(2).map(|k| TableKind::parse(k)).unwrap_or(TableKind::Base);
+        let kind = cells
+            .get(2)
+            .map(|k| TableKind::parse(k))
+            .unwrap_or(TableKind::Base);
         map.entry(db.clone())
             .or_default()
             .push(TableNode::new(table.clone(), kind));
@@ -239,7 +242,8 @@ pub fn merge_columns(tree: &mut SchemaTree, tsv: &str) {
             continue;
         }
         let cells = crate::model::mysql::split_tsv_line(line);
-        let (Some(db), Some(table), Some(column)) = (cells.first(), cells.get(1), cells.get(2)) else {
+        let (Some(db), Some(table), Some(column)) = (cells.first(), cells.get(1), cells.get(2))
+        else {
             continue;
         };
         if db.is_empty() || table.is_empty() || column.is_empty() {
@@ -326,7 +330,13 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["act_evt_log", "act_ge_bytearray", "dj_member", "sys_user", "v_user_view"]
+            [
+                "act_evt_log",
+                "act_ge_bytearray",
+                "dj_member",
+                "sys_user",
+                "v_user_view"
+            ]
         );
     }
 
@@ -479,7 +489,10 @@ mod tests {
     fn columns_for_unknown_tables_are_dropped_not_invented() {
         let mut tree = parse_schema_tree("djxm\tsys_user\tBASE TABLE\n");
         // `djxm.ghost` 在树里不存在（两条查询之间被删了，或权限不一致）
-        merge_columns(&mut tree, "djxm\tsys_user\tid\ndjxm\tghost\tx\nnodb\tt\tc\n");
+        merge_columns(
+            &mut tree,
+            "djxm\tsys_user\tid\ndjxm\tghost\tx\nnodb\tt\tc\n",
+        );
         assert_eq!(tree.databases.len(), 1, "不该凭空造库");
         assert_eq!(tree.databases[0].tables.len(), 1, "不该凭空造表");
         assert_eq!(tree.databases[0].tables[0].columns, vec!["id"]);

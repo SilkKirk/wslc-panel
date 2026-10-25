@@ -63,7 +63,9 @@ impl MySqlDriver {
     }
 
     fn bin(&self) -> &str {
-        self.client.as_deref().unwrap_or_else(|| self.kind.client_bin())
+        self.client
+            .as_deref()
+            .unwrap_or_else(|| self.kind.client_bin())
     }
 
     /// 取出容器名。
