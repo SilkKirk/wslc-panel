@@ -225,6 +225,39 @@ pub fn strip_md(text: &str) -> String {
     text.replace("**", "").replace('`', "")
 }
 
+/// 字节 → 人类可读（1024 进制）。
+///
+/// 放在这里而不是 `state`：它是个**纯格式化**函数，和 `human_secs` 同一类，
+/// 既不属于任何一个状态域，又被状态层（确认弹窗的文案"将删除约 18.32 GB"）
+/// 和渲染层同时用到。
+pub fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0usize;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.2} {}", UNITS[unit])
+    }
+}
+
+/// 按**字符**（不是字节）截断，超长时加省略号。
+///
+/// 不能按字节切：`&s[..120]` 落在多字节字符中间会 panic，
+/// 而这里的输入是**外部命令的输出**（什么字符都可能有）。
+pub fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let mut out: String = text.chars().take(max).collect();
+    out.push('…');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     // 这个 crate 里没有 `gpui_kit` —— 所以也不存在"`use super::*` 会把 gpui

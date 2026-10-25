@@ -99,9 +99,9 @@ pub(crate) use crate::state::{
     AppState, DashboardStats, DbFailure, DbState, DbTab, DeployEntry, DeployLogs, DeploySiteConf,
     DeployState, DistroAction, ImmediateAction, InstallOutcome, InstallProgress, InstallSourceKind,
     LogsState, OnlineListSource, Page, PendingAction, PromptKind, PullProgress, SettingsTab,
-    UiSection, WslConfState, format_bytes,
+    UiSection, WslConfState,
 };
 pub(crate) use crate::theme;
 // 基本信息页那排圆环用的纯逻辑：用量分档（≥60% 黄、≥85% 红）。
 // 它在 `wslc-panel-core` 里（带单测），因为这个文件里的断言 CI 不会跑。
-pub(crate) use crate::util::{LoadLevel, load_level};
+pub(crate) use crate::util::{LoadLevel, format_bytes, load_level};
