@@ -190,48 +190,54 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEl
         let entity_toggle = entity.clone();
         let name = section.name;
         let open = state.section_open(name);
-        let toggle = Button::new(SharedString::from(format!("wslconf-section-{name}")))
-            .label(format!(
-                "{} {}",
-                if open { "▾" } else { "▸" },
-                section.label
-            ))
-            .small()
-            .on_click(move |_, _, cx| {
-                entity_toggle.update(cx, |shell, cx| {
-                    if let Some(state) = shell.state.wslconf.as_mut() {
-                        state.toggle_section(name);
-                    }
-                    cx.notify();
-                });
-            });
+        // 标题里塞"节名 + 摘要"；展开箭头由官方 `AccordionItem` 的 trigger 提供
+        // —— 不再用 `▾` / `▸` 这两个**字体字符**（不同字体下基线不一样，
+        // 也不跟"减弱动态效果"的偏好走，见 `common::disclosure` 的注释）。
+        let title = h_flex()
+            .w_full()
+            .gap_2()
+            .items_center()
+            .child(div().text_sm().child(section.label))
+            .child(div().flex_1().min_w_0().child(cell_muted_full(
+                format!("wslconf-summary-{name}"),
+                state.section_summary(name),
+            )));
         sections.push(
-            Collapsible::new()
-                .open(open)
-                .w_full()
-                .child(
-                    h_flex()
-                        .w_full()
-                        .gap_2()
-                        .items_center()
-                        .child(toggle)
-                        .child(div().flex_1().min_w_0().child(cell_muted_full(
-                            format!("wslconf-summary-{name}"),
-                            state.section_summary(name),
-                        ))),
-                )
-                .content(
-                    v_flex()
-                        .w_full()
-                        .gap_2()
-                        .pt_2()
-                        .children(bool_rows)
-                        .children(
-                            other_fields
-                                .iter()
-                                .map(|f| wslconf_row(state, dialog, f, entity)),
-                        ),
-                )
+            Accordion::new(SharedString::from(format!("wslconf-section-{name}")))
+                // 三处覆盖官方默认的理由同 `common::disclosure`：
+                // 折叠区在弹窗卡里，不要官方那圈"整块卡片"的边框；
+                // `Accordion::render` 写死了 `.size_full()`，`h_full` 会撑高；
+                // 底色用卡片色而不是 `tokens.accordion`。
+                .bordered(false)
+                .h_auto()
+                .item(move |item| {
+                    item.title(title)
+                        .open(open)
+                        .bg(theme::bg_card())
+                        .child(
+                            v_flex()
+                                .w_full()
+                                .gap_2()
+                                .children(bool_rows)
+                                .children(other_fields.iter().map(|f| {
+                                    wslconf_row(state, dialog, f, entity)
+                                })),
+                        )
+                })
+                // 幂等判断：容器级回调在"点内容区"时也可能被触发，
+                // 所以只在官方报的状态和我们的**不一致**时才翻（同 `common::disclosure`）。
+                .on_toggle_click(move |open_ix, _, cx| {
+                    let now_open = !open_ix.is_empty();
+                    entity_toggle.update(cx, |shell, cx| {
+                        let Some(state) = shell.state.wslconf.as_mut() else {
+                            return;
+                        };
+                        if state.section_open(name) != now_open {
+                            state.toggle_section(name);
+                            cx.notify();
+                        }
+                    });
+                })
                 .into_any_element(),
         );
     }

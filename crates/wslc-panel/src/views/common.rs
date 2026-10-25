@@ -26,15 +26,34 @@ pub(crate) fn card(title: &'static str, body: impl IntoElement) -> impl IntoElem
 
 /// 展开状态只控制展示，折叠不会清空表单实体里的参数。
 ///
-/// # 折叠头用官方 `Icon`，不用 `▾` / `▸` 字符
+/// # 直接用官方 `Accordion`，不再自己拼折叠头
 ///
-/// 早先标题是 `format!("{} {title}", if open { "▾" } else { "▸" })` —— 那两个
-/// 是**字体里的字符**，不同字体下大小 / 基线不一样（中文界面里常偏上偏下），
-/// 也不会跟着"减弱动态效果"之类的偏好走。
+/// 早先这里是 `Collapsible` + 手画的 trigger（`Button` + `Icon` + `rotate`），
+/// 注释里写着"和 `Accordion` 的 trigger 完全一致（读 `accordion.rs` 确认过）"——
+/// **既然在模仿它，就该直接用它**。官方 `AccordionItem` 自带：
 ///
-/// 现在用 Lucide 的 `ChevronDown` + `rotate(…)`：展开时转 180° ——
-/// **和 `Accordion` 的 trigger 完全一致**（读 `accordion.rs` 确认过它的写法），
-/// 同一类交互在同一个应用里应该有同一个样子。
+/// - `ChevronDown` + `rotate(0.5)`（展开转 180°，和我们手画的一模一样）；
+/// - 面板用**弹簧动画**展开（`spring` + `MotionReveal`），并且**收起时卸载内容**
+///   （"a settled closed panel unmounts, so its content costs no layout or paint"）；
+/// - 触发的键盘可达性与焦点框。
+///
+/// # 三处必须显式盖掉官方默认（都是读源码得出的）
+///
+/// 1. `.bordered(false)`：官方 `Accordion` 默认**有**边框 + 圆角 + 裁切
+///    （把整组画成一张卡片）。我们的折叠区**本来就在卡片里**，再套一圈就是两层；
+/// 2. `.h_auto()`：`Accordion::render` 里写死了 `.size_full()`（`w_full` + `h_full`），
+///    在 `v_flex` 卡片里 `h_full` 会把折叠区撑到整卡高度。
+///    能盖掉是因为 `refine_style(&self.style)` 在 render 末尾；
+/// 3. `.bg(theme::bg_card())`：官方 `AccordionItem` 会铺 `tokens.accordion` 底色，
+///    我们在卡片里，得用卡片底色（`AGENTS.md` §5：颜色归我们，形态归组件）。
+///
+/// # 为什么回调要拿 `&[usize]` 做幂等判断，而不是无脑 toggle
+///
+/// 官方 `Accordion::on_toggle_click` 挂在**容器**上（`BaseAccordion.on_click`），
+/// 而单项的 `on_toggle_click` 会被 `Accordion::render` 覆盖成它内部的记账。
+/// 容器级回调在"点内容区"时也可能被触发 —— 所以这里**不能**无脑 `toggle_section`，
+/// 而是先比对官方报的展开状态和我们的状态，**只在真的不一致时才翻**
+/// （`open.is_empty()` = 收起了）。这样即使回调多触发一次，界面也不会自己乱折叠。
 pub(crate) fn disclosure(
     section: UiSection,
     title: impl Into<String>,
@@ -42,47 +61,27 @@ pub(crate) fn disclosure(
     entity: &Entity<Shell>,
     body: impl IntoElement,
 ) -> AnyElement {
-    use gpui_kit::component::{Icon, IconName};
-
     let open = state.section_open(section);
     let title = title.into();
     let entity = entity.clone();
-    Collapsible::new()
-        .open(open)
-        .w_full()
-        .child(
-            Button::new(SharedString::from(format!("section-{section:?}")))
-                .small()
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |shell, cx| {
-                        shell.state.toggle_section(section);
-                        cx.notify();
-                    });
-                })
-                // 内容自己画：左边标题、右边箭头。`Button::label()` 只能放一段
-                // 文字，放不下"标题 + 图标"这个组合。
-                //
-                // ⚠️ `rotate(percentage(...))` 是照 `accordion.rs` 的 trigger 抄的
-                // —— `rotate` 吃 `impl Into<Radians>`，而 `Percentage` 有那个
-                // `From`（`0.5` = 半圈 = 180°）。本仓库没有别的 `Radians` 用法，
-                // 别自己造一个 `Radians(PI)` 那种写法。
-                .child(
-                    h_flex()
-                        .w_full()
-                        .justify_between()
-                        .items_center()
-                        .gap_2()
-                        .child(div().text_sm().child(title))
-                        .child(
-                            Icon::new(IconName::ChevronDown)
-                                .xsmall()
-                                .flex_none()
-                                .text_color(theme::text_dim())
-                                .rotate(gpui_kit::percentage(if open { 0.5 } else { 0. })),
-                        ),
-                ),
-        )
-        .content(v_flex().w_full().gap_3().pt_2().child(body))
+    Accordion::new(SharedString::from(format!("section-{section:?}")))
+        .bordered(false)
+        .h_auto()
+        .item(move |item| {
+            item.title(title)
+                .open(open)
+                .bg(theme::bg_card())
+                .child(body)
+        })
+        .on_toggle_click(move |open_ix, _, cx| {
+            let now_open = !open_ix.is_empty();
+            entity.update(cx, |shell, cx| {
+                if shell.state.section_open(section) != now_open {
+                    shell.state.toggle_section(section);
+                    cx.notify();
+                }
+            });
+        })
         .into_any_element()
 }
 
