@@ -480,9 +480,12 @@ pub(crate) fn table_card(
             // 空状态横跨整行：只有这一个 cell，`flex_1` 让它吃掉整行宽度，
             // `col_span` 顺便把官方那条 `min_w(100px * col_span)` 抬到整表宽度。
             Some(node) => TableBody::new().child(
-                TableRow::new()
-                    .px_3()
-                    .child(TableCell::new().col_span(columns.len()).flex_1().child(node)),
+                TableRow::new().px_3().child(
+                    TableCell::new()
+                        .col_span(columns.len())
+                        .flex_1()
+                        .child(node),
+                ),
             ),
             None => TableBody::new(),
         }

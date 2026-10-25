@@ -66,15 +66,11 @@ pub fn volumes(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                 ),
         );
 
-    v_flex()
-        .w_full()
-        .gap_3()
-        .child(header)
-        .child(table_card(
-            VOLUME_COLUMNS,
-            rows,
-            Some(empty_state("没有卷（无卷时 wslc 输出为空）").into_any_element()),
-        ))
+    v_flex().w_full().gap_3().child(header).child(table_card(
+        VOLUME_COLUMNS,
+        rows,
+        Some(empty_state("没有卷（无卷时 wslc 输出为空）").into_any_element()),
+    ))
 }
 
 /// 卷「使用中」格。
