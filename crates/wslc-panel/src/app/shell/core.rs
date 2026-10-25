@@ -86,12 +86,6 @@ pub(crate) fn current_version() -> wslc_core::update::Version {
 /// 列表（`wsl --list --verbose`）仍然跟随自动刷新 —— 状态变化要看得到。
 pub(crate) const DISTRO_STATUS_SECS: u64 = 30;
 
-/// 选到路径之后，除了填进输入框还要不要额外做一件事。
-///
-/// 单独一个类型而不是 `bool`：两种意图完全不同，`true` / `false`
-/// 在调用处读不出来是哪个。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-
 /// 数据库动作弹窗「校验通过之后要执行的东西」。
 ///
 /// 形状是 `(SQL, 标题, 要记进本地存档的账号)`：

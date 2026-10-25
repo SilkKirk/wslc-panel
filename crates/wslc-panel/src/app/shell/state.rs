@@ -112,7 +112,6 @@ pub(crate) struct ImageForm {
 /// 镜像源那张清单同理：显示 `Ubuntu 24.04 (12 镜像源)`，取到的是清单里的
 /// `"<name> <version>"`（`Offer::id()`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
-
 pub(crate) struct DropdownItem {
     /// 列表里显示的那一行。
     pub(crate) label: SharedString,
@@ -314,8 +313,8 @@ pub(crate) struct TextPrompt {
 /// 句柄必须留着：它既是"这个发行版为什么还在跑"的凭据，
 /// 也是判断哨兵还活不活着的唯一办法（`try_wait`）。
 pub(crate) struct KeepAlive {
-    name: String,
-    child: std::process::Child,
+    pub(crate) name: String,
+    pub(crate) child: std::process::Child,
 }
 
 /// 「发行版配置（`/etc/wsl.conf`）」弹窗的输入框。
@@ -328,7 +327,7 @@ pub(crate) struct KeepAlive {
 pub(crate) struct WslConfDialog {
     pub(crate) inputs: std::collections::HashMap<(&'static str, &'static str), Entity<InputState>>,
     // 让折叠摘要与预览随草稿更新，退出弹窗后退订。
-    _input_subs: Vec<Subscription>,
+    pub(crate) _input_subs: Vec<Subscription>,
 }
 
 impl KeepAlive {
@@ -393,7 +392,6 @@ pub(crate) struct CreateDialog {
 /// 为什么要有这个状态机而不是一个 `Option`：`Idle`（用户手填的镜像，我们没去读）
 /// 和 `Loading`（正在读）在界面上是两句不同的话，用一个 `None` 表示不了。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-
 pub(crate) enum FactsState {
     /// 还没开始读（例如镜像引用是用户自己敲的）。
     #[default]
@@ -493,11 +491,11 @@ impl CreateDialog {
 /// 和这份"状态"不是一回事。
 pub(crate) struct InstallRun {
     /// 后台线程塞进来的事件（界面每轮取走）。
-    events: Arc<Mutex<Vec<InstallEvent>>>,
+    pub(crate) events: Arc<Mutex<Vec<InstallEvent>>>,
     /// 执行结果；`None` = 还在跑。
-    done: Arc<Mutex<Option<InstallSummary>>>,
+    pub(crate) done: Arc<Mutex<Option<InstallSummary>>>,
     /// 整个安装是什么时候开始的（界面上显示"已用时"）。
-    started: Instant,
+    pub(crate) started: Instant,
 }
 
 /// 「数据库管理」页上那三个输入框（连接卡两个 + SQL 控制台一个）。
@@ -587,12 +585,11 @@ pub(crate) struct DeployForm {
     /// 上游是另一个容器时，自动把两个容器接到同一个用户网络。
     pub(crate) auto_connect: bool,
     // 让折叠摘要随输入更新；表单关闭时自动退订。
-    _input_subs: Vec<Subscription>,
+    pub(crate) _input_subs: Vec<Subscription>,
 }
 
 /// 「数据库管理」页的一次性动作弹窗在做什么。
 #[derive(Debug, Clone, PartialEq, Eq)]
-
 pub(crate) enum DbDialogKind {
     /// 新建数据库。
     NewDatabase,
@@ -714,9 +711,14 @@ pub(crate) struct DbDialog {
     /// 数据"，给一个能改的框只会多一个填错的机会）。
     pub(crate) import_path: Entity<InputState>,
     // 保留订阅，让编码摘要及用户名建议随输入更新。
-    _input_subs: Vec<Subscription>,
+    pub(crate) _input_subs: Vec<Subscription>,
 }
 
+/// 选到路径之后，除了填进输入框还要不要额外做一件事。
+///
+/// 单独一个类型而不是 `bool`：两种意图完全不同，`true` / `false`
+/// 在调用处读不出来是哪个。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AfterPick {
     /// 只填输入框，别的什么都不做。
     Nothing,
@@ -734,7 +736,6 @@ pub(crate) enum AfterPick {
 /// （取消 / 失败 / 拿到路径）在调用处读不出来，而且 `Option<Result<Option<T>>>`
 /// 有四个状态、其中两个无意义。
 #[derive(Debug, Clone, PartialEq, Eq)]
-
 pub(crate) enum SaveDecision {
     /// 拿到路径了，去写文件。
     Write(std::path::PathBuf),
@@ -749,7 +750,6 @@ pub(crate) enum SaveDecision {
 /// 单独一个枚举而不是传字符串：调用点在四处校验失败分支上，
 /// 传错了表现为"焦点跑到别的格子"，那是最难看出来的一类错。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-
 pub(crate) enum DeployField {
     /// 应用名。
     App,
@@ -777,32 +777,32 @@ pub(crate) enum DeployField {
 /// 从「添加部署」弹窗里读出来的值。
 pub(crate) struct DeployFormValues {
     /// 应用名。
-    app: String,
+    pub(crate) app: String,
     /// 本地来源路径。
-    source: String,
+    pub(crate) source: String,
     /// 容器内的目标目录。
-    target: String,
+    pub(crate) target: String,
     /// 启动命令。
-    command: String,
+    pub(crate) command: String,
     /// 端口。空 / 解析不出来时是 `None` —— 调用方**必须**报错：
     /// 多应用下静默回落到运行时默认端口会撞（v0.9.19 改）。
-    port: Option<u16>,
+    pub(crate) port: Option<u16>,
     /// 是否生成 nginx 站点配置（只有 nginx 有意义）。
-    site_enabled: bool,
+    pub(crate) site_enabled: bool,
     /// 单页应用回退。
-    site_spa: bool,
+    pub(crate) site_spa: bool,
     /// `server_name`。
-    server_name: String,
+    pub(crate) server_name: String,
     /// 反代路径前缀。
-    proxy_prefix: String,
+    pub(crate) proxy_prefix: String,
     /// 反代上游。
-    proxy_upstream: String,
+    pub(crate) proxy_upstream: String,
     /// 反代去掉前缀。
-    proxy_strip: bool,
+    pub(crate) proxy_strip: bool,
     /// 更多反代（`;` 分隔）。
-    proxy_more: String,
+    pub(crate) proxy_more: String,
     /// 自动接通两个容器的网络。
-    auto_connect: bool,
+    pub(crate) auto_connect: bool,
 }
 
 /// 一次部署动作要用的素材（从当前页面状态 + 存档里取出来的一份快照）。
@@ -812,21 +812,21 @@ pub(crate) struct DeployFormValues {
 /// 意义"判掉（找不到了就返回 `None`，界面上那些按钮也不会画）。
 pub(crate) struct DeployAction {
     /// 目标容器名。
-    container: String,
+    pub(crate) container: String,
     /// 容器内的目标目录。
-    target: String,
+    pub(crate) target: String,
     /// 应用端口（站点配置重写时 `listen` 要用）。
-    port: u16,
+    pub(crate) port: u16,
     /// 启动命令。
-    command: String,
+    pub(crate) command: String,
     /// 是不是进程形态（决定要不要先停 / 能不能启动）。
-    is_process: bool,
+    pub(crate) is_process: bool,
     /// 上一次真的铺进去的名字 —— 「删除」只删这些（外加 `app.log` / `app.pid`），
     /// **不整目录清空**（见 `model::deploy::removals_script`）。
     /// 老存档里没有这一项时是空表：那就只删日志 / pidfile。
-    members: Vec<String>,
+    pub(crate) members: Vec<String>,
     /// 站点配置（删除部署时要连 conf 一起删）。
-    site: Option<DeploySite>,
+    pub(crate) site: Option<DeploySite>,
 }
 
 /// 「写 / 删站点配置」这一步的结果。
@@ -834,13 +834,13 @@ pub(crate) struct DeployAction {
 /// 和 [`DeployAction`] 一样是**先取出来**的快照：后台闭包不能借 `self`。
 pub(crate) struct SiteStep {
     /// 应该写进存档的 site（失败时是**上一次**的，不能把没生效的写进去）。
-    site: Option<DeploySite>,
+    pub(crate) site: Option<DeploySite>,
     /// 非致命警告（reload 失败 / 有噪音）。
-    warning: Option<String>,
+    pub(crate) warning: Option<String>,
     /// 成功时附带的说明（自动接通了哪个网络）。
-    note: Option<String>,
+    pub(crate) note: Option<String>,
     /// 致命错误（`nginx -t` 没过、conf 删不掉）；`Some` 时 `site` 保留旧值。
-    error: Option<String>,
+    pub(crate) error: Option<String>,
 }
 
 /// 一次「在后台执行一条 DDL、成功后重读列表」的请求。
@@ -861,17 +861,17 @@ pub(crate) struct SiteStep {
 /// 参数顺序错了编译器也不报）。
 pub(crate) struct DbStatement {
     /// 目标容器。
-    container: String,
+    pub(crate) container: String,
     /// 容器里的客户端二进制（探测得来的）。
-    bin: String,
+    pub(crate) bin: String,
     /// 执行用的账号。
-    creds: MysqlCreds,
+    pub(crate) creds: MysqlCreds,
     /// 拼好的 DDL / 多段 SQL。
-    sql: String,
+    pub(crate) sql: String,
     /// 提示条里的动词（"新建数据库" / "改密码"……）。
-    title: &'static str,
+    pub(crate) title: &'static str,
     /// 「建库同时建用户」的账号 —— SQL **成功之后**才写进本地存档
     ///（列表里展示的就是它）。放在执行**前**传进来，是因为弹窗已经关了，
     /// 输入框的值拿不到了。
-    to_record: Option<(String, String, String)>,
+    pub(crate) to_record: Option<(String, String, String)>,
 }

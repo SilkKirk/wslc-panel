@@ -6,8 +6,7 @@
 
 use super::super::prelude::*;
 use super::Shell;
-// `confirm_overlay` 定义在 `core.rs`（它同时被 `core` 的确认流程用）：
-// `Render` 只是把当前待确认的那个动作画出来。
+// `confirm_overlay` 定义在 `core.rs`：`Render` 只是把当前待确认的动作画出来。
 use super::core::confirm_overlay;
 
 impl Render for Shell {
