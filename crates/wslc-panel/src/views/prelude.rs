@@ -75,9 +75,13 @@ pub(crate) use wslc_core::registry;
 pub(crate) use wslc_core::model::wslconf;
 pub(crate) use wslc_core::settings::{SETTING_KEYS, SettingKey, SettingKind};
 
-// 显式导入而不靠 `gpui_kit::*`：勾选框是这一页独有的组件，
+// 显式导入而不靠 `gpui_kit::*`：勾选框与开关都是这一层专用的组件，
 // 写明来源比"碰巧 glob 里有"可靠。
 pub(crate) use gpui_kit::component::checkbox::Checkbox;
+// 布尔选项统一用它 —— `Switch` 是组件库给"开 / 关一个设置"的控件，
+// 自带开关动画、焦点框与键盘可达性（空格 / 回车切换）。
+// 和 `Button` 的差别是**语义**：按钮表示"执行一个动作"，开关表示"某个状态是开还是关"。
+pub(crate) use gpui_kit::component::switch::Switch;
 
 // `FactsState` 是「创建容器」弹窗里那条"从镜像读来的信息"的状态机
 // （`ImageForm` 则是「拉取镜像」弹窗的表单）—— 两者的纯数据部分都在

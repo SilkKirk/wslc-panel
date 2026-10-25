@@ -157,26 +157,33 @@ impl Shell {
         cx.notify();
     }
 
-    /// 切换"装完启动"。
-    pub fn toggle_install_launch(&mut self, cx: &mut Context<Self>) {
+    /// 设置「装完立即启动」。
+    ///
+    /// 收的是**目标值**而不是自己取反：`Switch` 是受控组件，回调里给的就是
+    /// 用户请求的新状态。这里再 `!form.launch` 的话，渲染与点击之间只要有一次
+    /// 时序差（比如连续快速切换），界面就会和状态对不上。
+    pub fn set_install_launch(&mut self, on: bool, cx: &mut Context<Self>) {
         if let Some(form) = self.install_form.as_mut() {
-            form.launch = !form.launch;
+            form.launch = on;
             cx.notify();
         }
     }
 
-    /// 切换"装完设为默认"。
-    pub fn toggle_install_default(&mut self, cx: &mut Context<Self>) {
+    /// 设置「装完设为默认发行版」。理由同上：收目标值，不自己取反。
+    pub fn set_install_default(&mut self, on: bool, cx: &mut Context<Self>) {
         if let Some(form) = self.install_form.as_mut() {
-            form.set_default = !form.set_default;
+            form.set_default = on;
             cx.notify();
         }
     }
 
-    /// 切换在线安装的下载路径（微软商店 / `--web-download`）。
-    pub fn toggle_web_download(&mut self, cx: &mut Context<Self>) {
+    /// 设置在线安装的下载路径（`true` = 走 `--web-download`）。
+    ///
+    /// 同样收目标值：这个开关在界面上是一句话「从 GitHub 下载」，
+    /// 语义是"要不要用 GitHub 那条路"，不是"切换一下"。
+    pub fn set_web_download(&mut self, on: bool, cx: &mut Context<Self>) {
         if let Some(form) = self.install_form.as_mut() {
-            form.web_download = !form.web_download;
+            form.web_download = on;
             cx.notify();
         }
     }

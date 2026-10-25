@@ -683,14 +683,18 @@ pub(crate) fn sql_results_pane(
             .into_any_element()
     };
     // 原始输出开关：排查列宽 / 字符集问题时，mysql 原样打了什么最有用。
+    //
+    // 用官方 `Switch` 而不是按钮：它控制的是"下面这块面板显不显示"，
+    // 是个**状态**；按钮的"看原始输出"读起来像一次性动作，按完不知道还能不能再按。
     let raw_toggle: AnyElement = match db.sql_raw.as_ref() {
         Some(raw) if !raw.trim().is_empty() => {
             let entity = entity.clone();
-            Button::new("db-sql-raw-toggle")
-                .label("看原始输出")
-                .small()
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |shell, cx| shell.toggle_sql_raw(cx));
+            Switch::new("db-sql-raw-toggle")
+                .label("原始输出")
+                .checked(shell.sql_raw_open)
+                .on_change(move |checked: &bool, _, cx| {
+                    let open = *checked;
+                    entity.update(cx, |shell, cx| shell.set_sql_raw_open(open, cx));
                 })
                 .into_any_element()
         }

@@ -1749,9 +1749,11 @@ impl Shell {
         cx.notify();
     }
 
-    /// 切换「看原始输出」的展开状态。
-    pub fn toggle_sql_raw(&mut self, cx: &mut Context<Self>) {
-        self.sql_raw_open = !self.sql_raw_open;
+    /// 设置「原始输出」面板是否展开。
+    ///
+    /// 收目标值：界面上是受控 `Switch`，回调给的就是用户请求的新状态。
+    pub fn set_sql_raw_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.sql_raw_open = open;
         cx.notify();
     }
 

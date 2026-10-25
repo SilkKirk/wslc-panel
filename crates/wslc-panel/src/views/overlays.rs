@@ -185,18 +185,20 @@ pub fn logs_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
         })
         .collect();
 
+    // 「显示时间戳」是**布尔状态**（开着就一直显示），所以用官方 `Switch`。
+    //
+    // 早先它是一颗按钮、打开时变主色 —— 那是把"状态"画成了"动作"：
+    // 用户看到的是一颗可以按的按钮，按下去之后除了颜色变了没有别的反馈。
     let timestamps = {
         let entity = entity.clone();
-        let mut button = Button::new("logs-timestamps")
+        Switch::new("logs-timestamps")
             .label("显示时间戳")
-            .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.toggle_logs_timestamps(cx));
-            });
-        if logs.timestamps {
-            button = button.primary();
-        }
-        button.into_any_element()
+            .checked(logs.timestamps)
+            .on_change(move |checked: &bool, _, cx| {
+                let on = *checked;
+                entity.update(cx, |shell, cx| shell.set_logs_timestamps(on, cx));
+            })
+            .into_any_element()
     };
 
     // 「刷新」在加载期间改文案而不是置灰：置灰需要一个我们没导入的 trait，

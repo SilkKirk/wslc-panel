@@ -806,10 +806,13 @@ impl Shell {
         self.reload_logs(cx);
     }
 
-    /// 开关时间戳并重拉。
-    pub fn toggle_logs_timestamps(&mut self, cx: &mut Context<Self>) {
+    /// 设置是否显示时间戳，并重拉。
+    ///
+    /// 收目标值而不是自己取反：界面上那个是受控 `Switch`，
+    /// 它回调给的就是用户请求的新状态。
+    pub fn set_logs_timestamps(&mut self, on: bool, cx: &mut Context<Self>) {
         if let Some(logs) = self.state.logs.as_mut() {
-            logs.timestamps = !logs.timestamps;
+            logs.timestamps = on;
         }
         cx.notify();
         self.reload_logs(cx);

@@ -274,20 +274,20 @@ pub(crate) fn update_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         }
     }
 
-    // 「启动时自动检查」是个**开关**，用一颗按钮表达（不用 Checkbox：
-    // 全项目只在 wsl.conf 页用过它，这一格不值得为它引一个新组件的用法）。
+    // 「启动时自动检查」是个**布尔设置**，用官方 `Switch`。
+    //
+    // 早先它是一颗按钮、文案写"启动时自动检查：开 / 关"，注释的理由是
+    // "这一格不值得为它引一个新组件的用法"。现在 `Switch` 已经在
+    // 「添加实例」页用起来了，这条理由随之消失；而且按钮的两种文案读起来
+    // 像两个**动作**（"关"是让人点它去关掉吗？），开关没有这个歧义。
     let auto_on = state.prefs.auto_check_update;
-    let auto = Button::new("update-auto-check")
-        .label(if auto_on {
-            "启动时自动检查：开"
-        } else {
-            "启动时自动检查：关"
-        })
-        .small()
-        .on_click({
+    let auto = Switch::new("update-auto-check")
+        .label("启动时自动检查")
+        .checked(auto_on)
+        .on_change({
             let entity = entity.clone();
-            move |_, _, cx| {
-                let next = !auto_on;
+            move |checked: &bool, _, cx| {
+                let next = *checked;
                 entity.update(cx, |shell, cx| shell.set_auto_check_update(next, cx));
             }
         });

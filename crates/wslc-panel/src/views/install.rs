@@ -242,42 +242,42 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
     // 装出来的固定是 WSL 2（`wslc_core::model::install::WSL_VERSION`）。
     // 给一个只有一个选项的下拉框不如不给。
 
-    // 开关用**按钮**而不是复选框：全项目都是这个路子
-    // （复选框样式在深色主题下对比度很差）。
+    // 布尔选项一律用官方 `Switch`（组件库自带开/关动画、焦点框与键盘可达性）。
+    //
+    // 早先这里是**按钮**，注释写着"全项目都是这个路子（复选框样式在深色主题下
+    // 对比度很差）"。前一半已经不成立（`Checkbox` 在部署页长期在用，没再收到
+    // 对比度反馈），后一半也不再是理由 —— `Switch` 是另一套控件，不是复选框。
+    // 更重要的是**一致性**：同一批"要不要做某事"的选项，有的画成按钮、有的画成
+    // 复选框，用户得先分辨"这个按钮是按一下就做、还是按一下切换状态"。
     if source.supports_launch() {
         // ⚠️ 不要用 `let entity = entity.clone()` 这种同名遮蔽：这个块里要用两次，
         // 第二次会因为"已经从第一次的遮蔽变量里移走了"而编译不过（真的踩到了）。
         let launch_entity = entity.clone();
-        let mut button = Button::new("toggle-launch")
-            .label(if form.launch {
-                "装完立即启动：是"
-            } else {
-                "装完立即启动：否"
-            })
-            .small()
-            .on_click(move |_, _, cx| {
-                launch_entity.update(cx, |shell, cx| shell.toggle_install_launch(cx));
-            });
-        if form.launch {
-            button = button.primary();
-        }
-        options.push(button.into_any_element());
+        options.push(
+            Switch::new("toggle-launch")
+                .label("装完立即启动")
+                .checked(form.launch)
+                .on_change(move |checked: &bool, _, cx| {
+                    // `Switch` 是**受控**组件：回调给的就是用户请求的新值，
+                    // 由我们写回状态再 notify（和 `Checkbox` 同一套约定）。
+                    let on = *checked;
+                    launch_entity.update(cx, |shell, cx| shell.set_install_launch(on, cx));
+                })
+                .into_any_element(),
+        );
 
         let web_entity = entity.clone();
-        let mut button = Button::new("toggle-web-download")
-            .label(if form.web_download {
-                "下载源：GitHub（--web-download）"
-            } else {
-                "下载源：微软商店（Microsoft Store）"
-            })
-            .small()
-            .on_click(move |_, _, cx| {
-                web_entity.update(cx, |shell, cx| shell.toggle_web_download(cx));
-            });
-        if form.web_download {
-            button = button.primary();
-        }
-        options.push(button.into_any_element());
+        options.push(
+            Switch::new("toggle-web-download")
+                // 标签说明**打开**代表什么；两个来源的差别在下面那段说明里。
+                .label("从 GitHub 下载（--web-download）")
+                .checked(form.web_download)
+                .on_change(move |checked: &bool, _, cx| {
+                    let on = *checked;
+                    web_entity.update(cx, |shell, cx| shell.set_web_download(on, cx));
+                })
+                .into_any_element(),
+        );
         // 这条对"装不装得上"影响最大，所以把两条通道的差别说清：
         // 微软商店走的是商店/清单那条通道，`--web-download` 是 WSL 自己去
         // GitHub 下整包 —— 实测本机上前者能连上、后者直连不通（要代理）。
@@ -299,20 +299,16 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
 
     {
         let entity = entity.clone();
-        let mut button = Button::new("toggle-default")
-            .label(if form.set_default {
-                "装完设为默认发行版：是"
-            } else {
-                "装完设为默认发行版：否"
-            })
-            .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.toggle_install_default(cx));
-            });
-        if form.set_default {
-            button = button.primary();
-        }
-        options.push(button.into_any_element());
+        options.push(
+            Switch::new("toggle-default")
+                .label("装完设为默认发行版")
+                .checked(form.set_default)
+                .on_change(move |checked: &bool, _, cx| {
+                    let on = *checked;
+                    entity.update(cx, |shell, cx| shell.set_install_default(on, cx));
+                })
+                .into_any_element(),
+        );
     }
 
     // -- 步骤预览（只在参数通过时显示）--
