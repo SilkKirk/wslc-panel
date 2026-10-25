@@ -2,7 +2,7 @@
 
 use super::common::{
     ModalSize, cell_muted, cell_text_full, disclosure, form_field, modal_card, modal_footer,
-    modal_scrim, modal_title, overlay_button, page_empty, table_header, table_row,
+    modal_scrim, modal_title, overlay_button, page_empty, radio_row, table_header, table_row,
 };
 use super::database::db_connection_card;
 use super::prelude::*;
@@ -462,32 +462,29 @@ pub(crate) fn grant_db_field(
         .into_any_element()
 }
 
-/// 授权级别那一排按钮（选中态用 `primary` 配色，和别处一致）。
+/// 授权级别那一组（**互斥** → 官方 `RadioGroup`，见 `common::radio_row`）。
 pub(crate) fn grant_kind_row(current: GrantKind, entity: &Entity<Shell>) -> AnyElement {
-    let buttons: Vec<AnyElement> = GrantKind::ALL
+    let labels: Vec<SharedString> = GrantKind::ALL
         .iter()
-        .map(|kind| {
-            let kind = *kind;
-            let entity = entity.clone();
-            let mut button = Button::new(SharedString::from(format!("db-grant-{kind:?}")))
-                .label(kind.label())
-                .small()
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |shell, cx| shell.set_db_grant(kind, cx));
-                });
-            if current == kind {
-                button = button.primary();
-            }
-            button.into_any_element()
-        })
+        .map(|kind| SharedString::from(kind.label()))
         .collect();
+    let selected = GrantKind::ALL.iter().position(|kind| *kind == current);
+    let picker = radio_row("db-grant-picker", labels, selected, entity, |shell, ix, _, cx| {
+        shell.set_db_grant(GrantKind::ALL[ix], cx);
+    });
 
     h_flex()
         .w_full()
         .gap_2()
         .items_center()
-        .child(div().text_xs().text_color(theme::text_dim()).child("权限"))
-        .children(buttons)
+        .child(
+            div()
+                .flex_none()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child("权限"),
+        )
+        .child(picker)
         .into_any_element()
 }
 

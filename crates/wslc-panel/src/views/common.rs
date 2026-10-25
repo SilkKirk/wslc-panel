@@ -608,6 +608,47 @@ pub(crate) fn name_link(
         .into_any_element()
 }
 
+/// 一组**互斥选项** —— 官方 `RadioGroup`（横向），选中项由 `selected` 指出。
+///
+/// # 为什么不再用"一排按钮 + 选中那颗改成 `.primary()`"
+///
+/// 那是本项目原先的写法（9 处）。问题是**语义错了**：一排按钮对读屏软件来说是
+/// 一堆各自独立的"动作"，而不是"这组里选了哪个"；键盘上也拿不到
+/// "方向键在组内移动、空格选中"那套官方行为。官方 `Radio` 自带这些。
+///
+/// # 从 `Radio` 源码（0.8.0）核出来的两条
+///
+/// 1. `RadioGroup::new` 的默认 style 带 **`.flex_1()`** —— 放进 `v_flex` 会被
+///    竖向拉长（和 `Field` 是同一个坑），所以这里显式 `.flex_none()` 盖掉
+///    （`refine_style` 在 render 末尾，能盖住）；
+/// 2. 横向布局在 render 里是 `h_flex().w_full().flex_wrap()` + **固定 `gap_3()`**，
+///    改不了。所以它适合"独占一行的一组选项"，**不适合塞进紧凑工具栏**
+///    （日志浮层那排"行数 / 时间戳 / 刷新"就只能继续用按钮）。
+///
+/// 每项的 id 由官方按**位置**给（`radio.id = ix.into()`），组 id 是我们传的这个 ——
+/// GPUI 的元素 id 是**路径**，所以同页多组之间不会撞（已按源码确认）。
+///
+/// `pick` 收的是"选中的下标"，由调用页映射回自己的值：
+/// 组件的回调本来就只给 `&usize`，硬要泛型化成一个 `T` 反而要在调用点写更多。
+pub(crate) fn radio_row(
+    id: &'static str,
+    labels: Vec<SharedString>,
+    selected: Option<usize>,
+    entity: &Entity<Shell>,
+    pick: impl Fn(&mut Shell, usize, &mut Window, &mut Context<Shell>) + 'static,
+) -> AnyElement {
+    let entity = entity.clone();
+    RadioGroup::horizontal(id)
+        .flex_none()
+        .children(labels.into_iter().map(Radio::from))
+        .selected_index(selected)
+        .on_change(move |ix, window, cx| {
+            let ix = *ix;
+            entity.update(cx, |shell, cx| pick(shell, ix, window, cx));
+        })
+        .into_any_element()
+}
+
 /// 单元格文字。
 pub(crate) fn cell_text(text: impl Into<SharedString>) -> AnyElement {
     div()

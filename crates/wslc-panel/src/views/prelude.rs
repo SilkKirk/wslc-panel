@@ -68,6 +68,10 @@ pub(crate) use gpui_kit::component::table::{
 // 强行套一个 `Form` 会把每个弹窗的布局重排一遍，收益只在"标签列宽统一"。
 // 将来真要统一标签列宽时，从这里开始。
 pub(crate) use gpui_kit::component::form::Field;
+// 官方单选组：一组互斥选项用它（`common::radio_row`）。
+// 原先那些"一排按钮、选中那颗改 `.primary()`"的写法语义是错的（对读屏软件来说是
+// 一堆独立动作，不是"这组选了哪个"），键盘上也拿不到方向键移动 / 空格选中。
+pub(crate) use gpui_kit::component::radio::{Radio, RadioGroup};
 // 注意：这里**不导入** `Disableable` —— 全项目不再使用 `.disabled()`：
 // gpui-component 的禁用态文字几乎看不清，改用"守卫 + 文案"表达不可用状态。
 pub(crate) use gpui_kit::component::description_list::DescriptionList;

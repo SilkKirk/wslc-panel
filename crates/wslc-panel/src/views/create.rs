@@ -1,6 +1,6 @@
 //! 「创建容器」弹窗，以及它依赖的那几个从镜像读来的提示块。
 
-use super::common::{ModalSize, disclosure, form_field, modal_card, modal_scrim, modal_title};
+use super::common::{ModalSize, disclosure, form_field, modal_card, modal_scrim, modal_title, radio_row};
 use super::prelude::*;
 
 /// 「创建容器」弹窗里那条**从镜像读来的**信息（声明端口 / 启动命令）。
@@ -169,46 +169,38 @@ pub(crate) fn image_env_hint(dialog: &CreateDialog, cx: &App) -> AnyElement {
 }
 
 /// 拉取策略选择器。
+///
+/// 三选一是**互斥选项**，所以用官方 `RadioGroup`（`common::radio_row`）：
+/// 原先那排"选中就变主色"的按钮对读屏软件是一堆独立动作，
+/// 键盘上也拿不到方向键移动 + 空格选中。
 pub(crate) fn pull_policy_row(current: &PullPolicy, entity: &Entity<Shell>) -> AnyElement {
-    let options: [(&str, &str, PullPolicy); 3] = [
-        ("never", "只用本地镜像", PullPolicy::Never),
-        ("missing", "缺了就拉", PullPolicy::Missing),
-        ("always", "总是拉取", PullPolicy::Always),
+    let options: [(&'static str, PullPolicy); 3] = [
+        ("只用本地镜像", PullPolicy::Never),
+        ("缺了就拉", PullPolicy::Missing),
+        ("总是拉取", PullPolicy::Always),
     ];
 
-    let buttons: Vec<AnyElement> = options
-        .into_iter()
-        .map(|(id, label, policy)| {
-            let entity = entity.clone();
-            // `PullPolicy` 是 `Copy`，直接按值捕获即可
-            // （写 `.clone()` 会被 clippy 的 `clone_on_copy` 抓）。
-            let selected = *current == policy;
-
-            let mut button = Button::new(SharedString::from(format!("create-pull-{id}")))
-                .label(label)
-                .small()
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |shell, cx| {
-                        shell.set_create_pull(policy, cx);
-                    });
-                });
-            if selected {
-                button = button.primary();
-            }
-            button.into_any_element()
-        })
+    let labels: Vec<SharedString> = options
+        .iter()
+        .map(|(label, _)| SharedString::from(*label))
         .collect();
+    let selected = options.iter().position(|(_, policy)| policy == current);
+    let picker = radio_row("create-pull-picker", labels, selected, entity, |shell, ix, _, cx| {
+        shell.set_create_pull(options[ix].1, cx);
+    });
 
     h_flex()
         .w_full()
         .gap_2()
+        .items_center()
         .child(
             div()
+                .flex_none()
                 .text_xs()
                 .text_color(theme::text_dim())
                 .child("镜像拉取策略"),
         )
-        .children(buttons)
+        .child(picker)
         .into_any_element()
 }
 

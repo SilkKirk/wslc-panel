@@ -1,6 +1,6 @@
 //! ⑤ 应用设置页：四个 tab 与其中的「界面 / 终端 / 主题 / 更新 / 关于」卡片。
 
-use super::common::{card, cell_link, kv};
+use super::common::{card, cell_link, kv, radio_row};
 use super::config::{config, wsl_config};
 use super::prelude::*;
 
@@ -319,25 +319,18 @@ pub(crate) fn theme_card(state: &AppState, entity: &Entity<Shell>) -> AnyElement
         None => "系统当前：没读到（按深色算）",
     };
 
-    let buttons: Vec<AnyElement> = crate::prefs::ThemePref::ALL
+    // 互斥选项交给官方 `RadioGroup`：它对读屏软件是"一组单选"、自带方向键移动
+    // + 空格选中（原先那排"选中就变主色"的按钮，这两样都没有）。
+    let labels: Vec<SharedString> = crate::prefs::ThemePref::ALL
         .iter()
-        .map(|theme| {
-            let theme = *theme;
-            let entity = entity.clone();
-            // 用 `{:?}` 而不是 `label()` 拼 id：id 要稳定且与显示语言无关。
-            let mut button = Button::new(SharedString::from(format!("theme-{theme:?}")))
-                .label(theme.label())
-                .small()
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |shell, cx| shell.set_theme(theme, cx));
-                });
-            if current == theme {
-                button = button.primary();
-            }
-            button.into_any_element()
-        })
+        .map(|theme| SharedString::from(theme.label()))
         .collect();
-
+    let selected = crate::prefs::ThemePref::ALL
+        .iter()
+        .position(|theme| *theme == current);
+    let picker = radio_row("theme-picker", labels, selected, entity, |shell, ix, _, cx| {
+        shell.set_theme(crate::prefs::ThemePref::ALL[ix], cx);
+    });
     card(
         "界面",
         v_flex()
@@ -345,7 +338,7 @@ pub(crate) fn theme_card(state: &AppState, entity: &Entity<Shell>) -> AnyElement
             .gap_3()
             .child(kv("主题", current.label()))
             .child(kv("当前配色", theme::mode().label()))
-            .child(h_flex().w_full().gap_2().flex_wrap().children(buttons))
+            .child(picker)
             .child(div().text_xs().text_color(theme::text_dim()).child(format!(
                 "主题同时作用于自绘的界面和组件库的控件（输入框、按钮……）。{system_label}。"
             )))
@@ -400,26 +393,17 @@ pub(crate) fn interface_card(state: &AppState, entity: &Entity<Shell>) -> AnyEle
 pub(crate) fn refresh_secs_picker(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
     let current = state.prefs.refresh_secs;
 
-    let buttons: Vec<AnyElement> = crate::prefs::REFRESH_PRESETS
+    // 互斥选项 → 官方 `RadioGroup`（理由同主题卡）。
+    let labels: Vec<SharedString> = crate::prefs::REFRESH_PRESETS
         .iter()
-        .map(|secs| {
-            let secs = *secs;
-            let entity = entity.clone();
-            let mut button = Button::new(SharedString::from(format!("refresh-{secs}")))
-                .label(format!("{secs} 秒"))
-                .small()
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |shell, cx| {
-                        shell.set_refresh_secs(secs, cx);
-                    });
-                });
-            if current == secs {
-                button = button.primary();
-            }
-            button.into_any_element()
-        })
+        .map(|secs| SharedString::from(format!("{secs} 秒")))
         .collect();
-
+    let selected = crate::prefs::REFRESH_PRESETS
+        .iter()
+        .position(|secs| *secs == current);
+    let picker = radio_row("refresh-picker", labels, selected, entity, |shell, ix, _, cx| {
+        shell.set_refresh_secs(crate::prefs::REFRESH_PRESETS[ix], cx);
+    });
     // 手动改过 prefs.json、值不在预设里时，补一个只读提示，
     // 免得用户看到"一个都没选中"而困惑。
     let extra = if crate::prefs::REFRESH_PRESETS.contains(&current) {
@@ -434,12 +418,7 @@ pub(crate) fn refresh_secs_picker(state: &AppState, entity: &Entity<Shell>) -> i
         )
     };
 
-    h_flex()
-        .w_full()
-        .gap_2()
-        .flex_wrap()
-        .children(buttons)
-        .children(extra)
+    h_flex().w_full().gap_2().flex_wrap().child(picker).children(extra)
 }
 
 /// 「终端」卡：新终端的起始目录。
@@ -459,55 +438,35 @@ pub(crate) fn refresh_secs_picker(state: &AppState, entity: &Entity<Shell>) -> i
 pub(crate) fn terminal_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     let current = &shell.state.prefs.terminal_dir;
 
-    let mut buttons: Vec<AnyElement> = crate::prefs::TerminalStartDir::FIXED
+    // 三个档位都是**互斥选项**（`Home` / `Panel` / 自定义），所以整组交给官方
+    // `RadioGroup`；第三项被选中时顺带把输入框显示出来（`edit_terminal_dir`）。
+    //
+    // ⚠️ 「自定义」这一项有**副作用**（建 `InputState`），所以它不能是"只是选中"——
+    // 这也是一处官方组件表达不了的地方：`RadioGroup` 只回报下标，副作用由
+    // `pick` 自己按分支做。
+    let labels: Vec<SharedString> = crate::prefs::TerminalStartDir::FIXED
         .iter()
-        .map(|dir| {
-            let dir = dir.clone();
-            // 闭包是 `Fn`（GPUI 会反复调用它），所以里面必须**再 clone 一次** ——
-            // 直接把捕获的那个 move 进去会编译不过（`borrow of moved value`），
-            // 而且这里 `dir` 后面还要用来判断选中态。
-            let for_click = dir.clone();
-            let entity = entity.clone();
-            // id 用 `{:?}`（ASCII）而不是 label：元素 id 要稳定、
-            // 且不该随显示文案变（和主题卡同一个写法）。
-            let mut button = Button::new(SharedString::from(format!("terminal-dir-{dir:?}")))
-                .label(dir.label())
-                .small()
-                .on_click(move |_, _, cx| {
-                    let dir = for_click.clone();
-                    entity.update(cx, |shell, cx| shell.set_terminal_dir(dir, cx));
-                });
-            if current == &dir {
-                button = button.primary();
-            }
-            button.into_any_element()
-        })
+        .map(|dir| SharedString::from(dir.label()))
+        .chain(std::iter::once(SharedString::from("自定义路径…")))
         .collect();
-
-    // 「自定义路径…」单独一个按钮：它除了选档位还要**把输入框显示出来**
-    // （并在有条件时把焦点给过去）。选中的自定义档位在按钮上高亮 ——
-    // 和上面两个固定档位同一套"选中态"表达。
-    {
-        let entity = entity.clone();
-        let mut button = Button::new("terminal-dir-custom")
-            .label("自定义路径…")
-            .small()
-            .on_click(move |_, window, cx| {
-                // 和「添加实例」那个按钮一样：`window` 是必需的，
-                // 因为要现场创建 `InputState`。
-                entity.update(cx, |shell, cx| shell.edit_terminal_dir(window, cx));
-            });
-        if matches!(current, crate::prefs::TerminalStartDir::Custom(_)) {
-            button = button.primary();
+    let selected = match current {
+        crate::prefs::TerminalStartDir::Custom(_) => Some(crate::prefs::TerminalStartDir::FIXED.len()),
+        other => crate::prefs::TerminalStartDir::FIXED
+            .iter()
+            .position(|dir| dir == other),
+    };
+    let picker = radio_row("terminal-dir-picker", labels, selected, entity, |shell, ix, window, cx| {
+        match crate::prefs::TerminalStartDir::FIXED.get(ix) {
+            Some(dir) => shell.set_terminal_dir(dir.clone(), cx),
+            // 下标越界 = 最后那一项「自定义路径…」
+            None => shell.edit_terminal_dir(window, cx),
         }
-        buttons.push(button.into_any_element());
-    }
-
+    });
     let mut body = v_flex()
         .w_full()
         .gap_3()
         .child(kv("新终端的起始目录", current.describe()))
-        .child(h_flex().w_full().gap_2().flex_wrap().children(buttons))
+        .child(picker)
         .child(div().text_xs().text_color(theme::text_dim()).child(
             // 这一句里有 `wsl --cd` 的反引号 —— 同一张卡下面两段都过了
             // `strip_md`，只有这一段漏了（注释和实现不一致时后来人会照错的那份走）。

@@ -1,6 +1,6 @@
 //! ④b 添加实例页：商店 / 镜像源两条来源、安装日志。
 
-use super::common::{card, empty_state, form_field, form_field_with_error};
+use super::common::{card, empty_state, form_field, form_field_with_error, radio_row};
 use super::prelude::*;
 
 /// 「添加实例」页。
@@ -67,27 +67,22 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
         .map(InstallProgress::is_running)
         .unwrap_or(false);
 
-    // -- 来源五选一 --
-    let source_buttons: Vec<AnyElement> = InstallSourceKind::ALL
+    // -- 来源三选一 --
+    //
+    // **互斥选项** → 官方 `RadioGroup`（`common::radio_row`）：原先那排
+    // "选中就变主色"的按钮对读屏软件是一堆独立动作，键盘上也拿不到
+    // 方向键移动 + 空格选中。顺带不再需要"用 `{:?}` 拼稳定 id"那套讲究 ——
+    // 组里的 id 由组件按**位置**给。
+    let labels: Vec<SharedString> = InstallSourceKind::ALL
         .iter()
-        .map(|kind| {
-            let kind = *kind;
-            let entity = entity.clone();
-            // id 用 `{:?}`（ASCII）而不是 label（中文）：元素 id 要稳定、
-            // 且不该随显示文案变。
-            let mut button = Button::new(SharedString::from(format!("src-{kind:?}")))
-                .label(kind.label())
-                .small()
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |shell, cx| shell.set_install_source(kind, cx));
-                });
-            if source == kind {
-                button = button.primary();
-            }
-            button.into_any_element()
-        })
+        .map(|kind| SharedString::from(kind.label()))
         .collect();
-
+    let selected = InstallSourceKind::ALL
+        .iter()
+        .position(|kind| *kind == source);
+    let source_picker = radio_row("install-source-picker", labels, selected, entity, |shell, ix, _, cx| {
+        shell.set_install_source(InstallSourceKind::ALL[ix], cx);
+    });
     // -- 输入框 --
     let mut fields: Vec<AnyElement> = vec![form_field_with_error(
         "install-name",
@@ -427,13 +422,7 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
             v_flex()
                 .w_full()
                 .gap_3()
-                .child(
-                    h_flex()
-                        .w_full()
-                        .gap_2()
-                        .flex_wrap()
-                        .children(source_buttons),
-                )
+                .child(source_picker)
                 .child(
                     div()
                         .text_xs()
