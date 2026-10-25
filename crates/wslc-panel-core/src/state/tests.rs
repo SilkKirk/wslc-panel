@@ -7,8 +7,10 @@
 //! 这些断言全是**纯逻辑**（页面分组、`--cd` 参数、镜像排序、备份文件名……），
 //! 所以它们跟着 `core` job 跑，不必编译 GPUI（见那个 crate 的顶层说明）。
 
-use super::*;
-
+// `mod.rs` 不再整包转发 prelude（那样会把唯一一个 `pub` 也压成 `pub(crate)`），
+// 所以测试要像其它子模块一样自己拿一遍 —— 否则 `MysqlCreds`、`RootCredHint`
+// 这些 `wslc_core` 里的类型全部「not found」（实测 121 个错误）。
+use super::prelude::*;
 use super::*;
 
 #[test]
