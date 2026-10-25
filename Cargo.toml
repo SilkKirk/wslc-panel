@@ -20,8 +20,8 @@ publish = false
 [workspace.dependencies]
 wslc-core = { path = "crates/wslc-core" }
 wslc-panel-core = { path = "crates/wslc-panel-core" }
-# 原生（进程内）数据库驱动。单独一个 crate 是因为它要求 MSRV 1.85，
-# 而 `wslc-core` 承诺 1.75。见 `docs/PLAN-native-db.md`。
+# 原生（进程内）数据库驱动。单独一个 crate 是因为驱动带 mysql / postgres
+# 两棵依赖树，而 `wslc-core` 是纯数据层。见 `docs/PLAN-native-db.md`。
 wslc-db = { path = "crates/wslc-db" }
 # `tree-sitter-sql`：SQL 编辑器的**语法高亮**（v0.12）。
 #

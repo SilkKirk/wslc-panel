@@ -977,8 +977,10 @@ fn find_vhdx(base: &Path, file_name: Option<&str>) -> Option<PathBuf> {
         }
 
         let len = entry.metadata().map(|m| m.len()).unwrap_or(0);
-        // 不用 `Option::is_none_or` —— 它在 1.82 才稳定，
-        // 而本 crate 声明的 MSRV 是 1.75。
+        // 这里本来可以用 `Option::is_none_or`（1.82 稳定，本 crate 的 MSRV
+        // 已经是 1.85），但 `match` 这两行更好读、也不用记"什么时候稳定的"。
+        // ⚠️ 别把它当 MSRV 限制写进注释 —— 早先这里是"因为 MSRV 1.75"，
+        // 而 v0.17.0 起全 workspace 都是 1.85。
         let better = match &best {
             None => true,
             Some((_, best_len)) => len > *best_len,

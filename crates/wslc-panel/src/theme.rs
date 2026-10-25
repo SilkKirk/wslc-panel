@@ -167,9 +167,7 @@ fn tune_component_theme(cx: &mut gpui_kit::App) {
 #[derive(Debug, Clone, Copy)]
 struct Palette {
     bg: u32,
-    bg_sidebar: u32,
     bg_card: u32,
-    bg_selected: u32,
 
     text: u32,
     text_muted: u32,
@@ -211,12 +209,6 @@ struct Palette {
     button_face_hover: u32,
     button_face_active: u32,
 
-    /// 侧边栏导航项**悬停**时的底色。
-    ///
-    /// 组件库的 `Button` 自带 hover/active，但导航项是我们自己画的 `div`
-    /// （要"选中态 + 分组标题"），所以它的悬停底色得自己给 —— 之前**一点反馈
-    /// 都没有**，鼠标移上去像块死木头。
-    nav_hover: u32,
     /// 蓝色链接（容器名 / 发行版名）**悬停**时的文字色。
     link_hover: u32,
 
@@ -227,9 +219,7 @@ struct Palette {
 /// 深色（v0.2 起的原配色，保持不动）。
 const DARK: Palette = Palette {
     bg: 0x0d_11_17,
-    bg_sidebar: 0x0a_0e_14,
     bg_card: 0x16_1b_23,
-    bg_selected: 0x1d_2c_45,
 
     text: 0xe6_ed_f3,
     text_muted: 0x8b_96_a5,
@@ -259,9 +249,6 @@ const DARK: Palette = Palette {
     button_face_hover: 0x33_3e_4d,
     button_face_active: 0x15_1a_21,
 
-    // 侧边栏底色是 `0x0a0e14`、选中态是 `0x1d2c45` —— 悬停取中间偏暗那一档，
-    // 既看得出"鼠标在这"，又不会和"已选中"混淆。
-    nav_hover: 0x15_1b_24,
     link_hover: 0x7a_ac_ff,
 
     scrim_alpha: 0.55,
@@ -274,9 +261,7 @@ const DARK: Palette = Palette {
 /// 柔和底同理，用非常浅的同色系（不是把前景色加透明度 —— 见文件头的说明）。
 const LIGHT: Palette = Palette {
     bg: 0xf4_f5_f7,
-    bg_sidebar: 0xea_ec_f0,
     bg_card: 0xff_ff_ff,
-    bg_selected: 0xe4_ec_fd,
 
     text: 0x1f_23_28,
     text_muted: 0x54_5d_68,
@@ -306,8 +291,6 @@ const LIGHT: Palette = Palette {
     button_face_hover: 0xdf_e5_ec,
     button_face_active: 0xcb_d3_dd,
 
-    // 浅色下侧边栏是 `0xeaeef0`、选中态是 `0xe4ecfd`（偏蓝）—— 悬停用偏灰的一档。
-    nav_hover: 0xdd_e3_ea,
     // 浅色下链接"悬停变深"更符合直觉（深色主题里则是变亮）。
     link_hover: 0x18_5a_c2,
 
@@ -330,17 +313,9 @@ fn palette() -> &'static Palette {
 pub fn bg() -> Rgba {
     rgb(palette().bg)
 }
-/// 侧边栏底色。
-pub fn bg_sidebar() -> Rgba {
-    rgb(palette().bg_sidebar)
-}
 /// 卡片底色。
 pub fn bg_card() -> Rgba {
     rgb(palette().bg_card)
-}
-/// 选中底色。
-pub fn bg_selected() -> Rgba {
-    rgb(palette().bg_selected)
 }
 /// 主要文字色。
 pub fn text() -> Rgba {
@@ -382,15 +357,6 @@ pub fn neutral() -> Rgba {
 /// 主色柔和底。
 pub fn primary_soft() -> Rgba {
     rgb(palette().primary_soft)
-}
-
-/// 侧边栏导航项**悬停**底色。
-///
-/// 给 `app.rs` 的 `nav_item` 用：那是我们自己画的 `div`（组件库的 `Button`
-/// 自带 hover，但导航项要"选中态 + 分组标题"，用不了），
-/// 之前悬停一点反馈都没有。
-pub fn nav_hover() -> Rgba {
-    rgb(palette().nav_hover)
 }
 
 /// 蓝色链接（容器名 / 发行版名）**悬停**文字色。

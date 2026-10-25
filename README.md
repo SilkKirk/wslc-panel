@@ -197,25 +197,43 @@ crates/
 │  ├─ decode.rs      UTF-8 / UTF-16LE 编码判定（wslc 默认吐 UTF-16LE）
 │  ├─ jsonl.rs       JSON Lines 解析（--format json 是每行一个对象，不是数组）
 │  ├─ model/         Container / Image / Network / Volume / Session / SystemInfo
-│  ├─ cmd/           各子命令的类型化封装
+│  │                 + postgres / schematree / sqlresult / sqlstmt（v0.11 起）
+│  ├─ cmd/           各子命令的类型化封装（含 postgres / picker / win_theme）
+│  ├─ db/            多驱动骨架：DbKind / DbHost / DialectData / SqlDriver（v0.13）
 │  ├─ settings.rs    settings.yaml 读写（**保留注释**的定点改写）
 │  └─ tests/         fixtures 驱动的集成测试 + 真机冒烟测试
 │
+├─ wslc-db/          原生（进程内）数据库驱动：同步 mysql / postgres 客户端（v0.16）
+│  ├─ conn.rs        ConnSpec + 连接串解析 / 脱敏（纯函数，有测试）
+│  ├─ session.rs     Session trait + TextTable（单元格是 Option<String>）
+│  ├─ my.rs / pg.rs  两个引擎的实现
+│  └─ 单独一个 crate 是因为 postgres 0.19 要 MSRV 1.85
+│
 ├─ wslc-panel-core/  同样不依赖 GPUI：面板里"不是界面"的那一半
-│  ├─ state.rs       状态与数据采集
+│  ├─ state.rs       状态与数据采集（最大的一个文件）
 │  ├─ prefs.rs       应用自己的偏好（%LOCALAPPDATA%\wslc-panel\prefs.json）
 │  ├─ columns.rs     各页表格的列定义（表头 + 宽度）
 │  ├─ presets.rs     配置项的常用预设值
-│  └─ util.rs        纯函数助手（切分、刷新按钮文案……）
+│  ├─ dbcreds.rs     数据库账号的本地存档（明文，理由写在模块文档里）
+│  ├─ deploys.rs     部署记录的本地存档
+│  ├─ fileio.rs      存档的原子写 + 崩溃恢复（.tmp → .bak → 主文件）
+│  ├─ listview.rs    容器列表的过滤 / 排序
+│  ├─ sqlcomplete.rs SQL 编辑器的补全判据
+│  ├─ sqlview.rs     SQL 结果的列宽 / 排序 / CSV 导出
+│  ├─ update.rs      更新提示的状态机
+│  └─ util.rs        纯函数助手（切分、strip_md、刷新按钮文案……）
 │
 └─ wslc-panel/       GPUI 应用
    ├─ main.rs        窗口与生命周期、日志（发布版写文件）+ 对 core 的 re-export 垫片
    ├─ app.rs         Shell：导航、异步刷新、所有动作与弹窗（唯一接触 GPUI 异步 API 的文件）
-   ├─ views.rs       各页面渲染 + 全部弹窗浮层（约 180 KB，**很大**）
+   ├─ views.rs       各页面渲染 + 全部弹窗浮层（约 400 KB，**很大**）
+   ├─ native_db.rs   原生连接的门面（把 wslc-db 的结果翻译成面板的类型）
+   ├─ sql_table.rs   SQL 结果表格（把 sqlview 算好的东西画到 DataTable 上）
+   ├─ sql_complete.rs SQL 补全的 GPUI 适配层
    └─ theme.rs       配色
 ```
 
-**分层原则**：`wslc-core` 与 `wslc-panel-core` 都不知道 GPUI 的存在。这意味着
+**分层原则**：`wslc-core`、`wslc-db` 与 `wslc-panel-core` 都不知道 GPUI 的存在。这意味着
 
 - 数据层与纯逻辑可以在没有 GPU / 没有窗口的环境里跑完整测试；
 - 万一 GPUI 在本机有问题，**换渲染层不会造成数据层返工**；
@@ -232,9 +250,9 @@ crates.io 上目前有三条线，本项目用的是第三条：
 | 包 | 最新版 | 说明 |
 |---|---|---|
 | `gpui` | 0.2.2（2025-10-22） | zed-industries 官方发布，**已停更约一年** |
-| `gpui-pre` | 0.3.8（2026-10-05） | Zed 主干快照 `zed@279fe07`，每周跟随更新 |
+| `gpui-pre` | 0.3.9（2026-10-24） | Zed 主干快照，每周跟随更新 |
 | `gpui-ce` | 0.2.2 | 0.3.x 已被 yank、由新所有者重发，**供应链可疑，不采用** |
-| **`gpui-kit`** | **0.7.1（2026-10-05）** | **本项目使用**：伞形 crate，一个依赖即含 `gpui-pre` + `gpui-base` + `gpui-component`（60+ 组件）+ Lucide 图标 |
+| **`gpui-kit`** | **0.8.0（2026-10-24）** | **本项目使用**：伞形 crate，一个依赖即含 `gpui-pre` + `gpui-base` + `gpui-component`（60+ 组件）+ Lucide 图标 |
 
 `gpui-kit` 是 `gpui-pre` 之上的官方推荐入口
 （见其 README：「`gpui-kit` pins the matching GPUI release and re-exports GPUI,
@@ -277,8 +295,10 @@ base, component, and assets, so a Rust application lists a single dependency.」
 - **容器页的批量只有「停止全部」这一档**：`wslc stop` 收多个名字，所以工具栏上
   那一颗能一键停掉所有正在运行的容器；但**行首没有复选框**，不能只挑几个来
   停 / 删（`docs/PLAN.md` §4.3 里那个"批量"形状还没做）。
-- **本机直连 Docker Hub 会超时**：`run` 表单默认 `--pull missing`，
-  并提供"使用本地已有镜像"的输入方式；离线环境请用 `--pull never`。
+- **本机直连 Docker Hub 会超时**：`run` 表单默认 **`--pull never`**
+  （`CreateDialog` 的默认值，和上面「创建容器」那一行一致）——
+  想让它自己拉，就把高级设置里的拉取策略改成 `missing` / `always`。
+  离线环境保持 `never` 即可。
 - **「镜像」页默认只连内置的 `docker.1panel.live`**：实测它是唯一一个 tag 与
   manifest **都免认证**的加速站（`1ms.run` 的 manifest 要它自己域名下的 token，
   `daocloud` 连 tag 列表都要，而 `registry-1.docker.io` / `hub.docker.com`

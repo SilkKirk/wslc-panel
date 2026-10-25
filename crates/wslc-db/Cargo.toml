@@ -2,8 +2,11 @@
 name = "wslc-db"
 version.workspace = true
 edition = "2024"
-# ⚠️ 不能放进 `wslc-core`：那个 crate 的 MSRV 是 **1.75**（既有承诺），
-# 而 `postgres` 0.19 要求 **1.85**。所以原生驱动单独一个 crate。
+# 单独一个 crate 而不是塞进 `wslc-core`：驱动带 `postgres` / `mysql` 两棵树
+# （TLS、加密、协议解析），而 `wslc-core` 是纯数据层 —— 混在一起会让
+# "只想读一个 wslc 的 JSON" 的调用方也背上这两棵树。
+# ⚠️ 早先这里写的是"因为 wslc-core 的 MSRV 是 1.75"—— **那条已经过时**：
+# v0.17.0 起全 workspace 统一到 edition 2024 / MSRV 1.85。
 rust-version = "1.85"
 description = "原生（进程内）数据库驱动：同步的 mysql / postgres 客户端"
 license.workspace = true
