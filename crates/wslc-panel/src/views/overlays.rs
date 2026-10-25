@@ -228,7 +228,6 @@ pub(crate) fn logs_dialog_body(state: &AppState, entity: &Entity<Shell>) -> AnyE
             .into_any_element()
     };
 
-
     // -- 正文 --
     //
     // 失败时**保留**上一次的内容（`log_text` 拿到的还是旧的那份）：

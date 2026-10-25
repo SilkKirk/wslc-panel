@@ -964,54 +964,53 @@ impl Shell {
                         .footer(modal_footer([dismiss.into_any_element()]))
                 });
             }
-        DialogKey::ContainerLogs => {
-            let Some(container) = self.state.logs.as_ref().map(|l| l.container.clone()) else {
-                return;
-            };
-            let title = format!("日志 —— {container}");
-            let entity = cx.entity();
-            let content = {
-                let view_entity = entity.clone();
-                let body_entity = entity.clone();
-                cx.new(move |cx| {
-                    ShellView::new(
-                        view_entity,
-                        move |shell, _cx| {
-                            crate::views::logs_dialog_body(&shell.state, &body_entity)
-                        },
-                        cx,
-                    )
-                })
-            };
-            window.open_dialog(cx, move |dialog, _window, _cx| {
-                let close = {
-                    let entity = entity.clone();
-                    Button::new("logs-close")
-                        .label("关闭")
-                        .small()
-                        .on_click(move |_, window, cx| {
+            DialogKey::ContainerLogs => {
+                let Some(container) = self.state.logs.as_ref().map(|l| l.container.clone()) else {
+                    return;
+                };
+                let title = format!("日志 —— {container}");
+                let entity = cx.entity();
+                let content = {
+                    let view_entity = entity.clone();
+                    let body_entity = entity.clone();
+                    cx.new(move |cx| {
+                        ShellView::new(
+                            view_entity,
+                            move |shell, _cx| {
+                                crate::views::logs_dialog_body(&shell.state, &body_entity)
+                            },
+                            cx,
+                        )
+                    })
+                };
+                window.open_dialog(cx, move |dialog, _window, _cx| {
+                    let close = {
+                        let entity = entity.clone();
+                        Button::new("logs-close").label("关闭").small().on_click(
+                            move |_, window, cx| {
+                                entity.update(cx, |shell, cx| shell.close_logs(cx));
+                                window.close_dialog(cx);
+                            },
+                        )
+                    };
+                    let on_cancel = {
+                        let entity = entity.clone();
+                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
                             entity.update(cx, |shell, cx| shell.close_logs(cx));
-                            window.close_dialog(cx);
-                        })
-                };
-                let on_cancel = {
-                    let entity = entity.clone();
-                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                        entity.update(cx, |shell, cx| shell.close_logs(cx));
-                        true
-                    }
-                };
-                dialog
-                    .title(title.clone())
-                    .w(px(760.))
-                    .overlay(true)
-                    .overlay_closable(true)
-                    .keyboard(true)
-                    .on_cancel(on_cancel.clone())
-                    .child(content.clone())
-                    .footer(modal_footer([close.into_any_element()]))
-            });
+                            true
+                        }
+                    };
+                    dialog
+                        .title(title.clone())
+                        .w(px(760.))
+                        .overlay(true)
+                        .overlay_closable(true)
+                        .keyboard(true)
+                        .on_cancel(on_cancel.clone())
+                        .child(content.clone())
+                        .footer(modal_footer([close.into_any_element()]))
+                });
+            }
         }
     }
-}
 }
