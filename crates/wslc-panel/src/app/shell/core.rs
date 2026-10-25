@@ -222,6 +222,7 @@ impl Shell {
             pull_open: false,
             create_subs: Vec::new(),
             prompt: None,
+            dialog_stack: Vec::new(),
             install_run: None,
             install_cancel: None,
             refresh_again: false,

@@ -38,6 +38,24 @@ mod update;
 
 pub(crate) use state::*;
 
+/// 已经压进**窗口级对话框栈**的浮层标识（官方 `Dialog`）。
+///
+/// # 为什么是一个枚举而不是"直接比状态"
+///
+/// 状态里那几样东西（`exporting` / `db_backup` …）各自独立，而对话框栈是**有序**的。
+/// 用一个 `Vec<DialogKey>` 把"这一帧应该开着哪些、按什么顺序"表达出来，
+/// 才能和实际栈做最长公共前缀的比对（官方 `ActiveDialog` 没有 id，见
+/// `Shell::dialog_stack` 的说明）。
+///
+/// ⚠️ 迁移进度：目前只有「导出进度」走这条路。其余浮层还在
+/// `views::modal_scrim` 的自绘路径上，**不在这个栈里** ——
+/// 所以 `Shell::sync_dialog_stack` 现在只认这一种。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DialogKey {
+    /// 「正在导出」进度对话框。
+    Export,
+}
+
 /// 应用外壳。
 pub struct Shell {
     /// 全部状态。
@@ -150,6 +168,21 @@ pub struct Shell {
     ///
     /// 同样是 `pub(crate)`：浮层在 `views.rs` 里渲染。
     pub(crate) prompt: Option<TextPrompt>,
+    /// 我们已经压进**窗口级对话框栈**的那几层（官方 `Dialog`），按打开顺序。
+    ///
+    /// # 为什么需要自己记一份
+    ///
+    /// 官方 `ActiveDialog` **没有 id 字段**（`root.rs` 里只有 focus_handle /
+    /// builder 等），所以**没法"按 id 关某一层"**。`WindowExt` 只给三个口子：
+    ///
+    /// - `close_dialog(cx)` → `active_dialogs.pop()`，**只关栈顶**；
+    /// - `close_all_dialogs(cx)` → 全关；
+    /// - `has_active_dialog(cx)` → 有没有开着。
+    ///
+    /// 于是"状态要求哪些浮层开着"和"实际开着哪些"之间只能靠**最长公共前缀**
+    /// 来对齐：多出来的从栈顶 pop（安全），缺的依次追加（不动下层）。
+    /// 这份记录就是那个 diff 的左边。见 `Shell::sync_dialog_stack`。
+    pub(crate) dialog_stack: Vec<DialogKey>,
     /// 正在跑的安装（事件队列 + 结果）；空闲时为 `None`。
     ///
     /// 纯数据部分（走到第几步、日志、进度）在 `AppState::installing` 里 ——

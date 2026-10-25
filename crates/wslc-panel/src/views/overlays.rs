@@ -391,35 +391,11 @@ pub(crate) fn exec_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App) 
             )
             .into_any_element()
     });
-
-    v_flex()
-        .w_full()
-        .gap_3()
-        .child(div().text_xs().text_color(theme::text_dim()).child(
-            "使用 /bin/sh 执行，支持管道和重定向，不提供 TTY；交互程序请用容器列表「更多 → 终端」。",
-        ))
-        .child(form_field("exec-command", "命令", input, cx, true))
-        .child(
-            h_flex()
-                .w_full()
-                .gap_2()
-                .flex_wrap()
-                .items_center()
-                .child(run_area),
-        )
-        .children(echo)
-        .child(output)
-        .into_any_element()
-}
-/// 导出进度浮层。
+/// 「正在导出」对话框的**内容**（标题 / 底部按钮由 `Shell::open_dialog_for` 拼）。
 ///
-/// # 为什么它和拉取镜像的浮层长得不一样
-///
-/// 拉取那边显示的是 **docker 的输出行**（每层一行，信息量在行里）。
-/// 导出这边 `wsl --export` 几乎不打进度，但产物是个文件 ——
-/// **文件大小是真实且连续增长的**，直接量它比解析输出有用得多，
-/// 用户看到的也是"还要写多少"。
-pub fn export_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+/// 内容会变（已写入 / 已用时 / 最后一行），所以外面要包 `ShellView`
+/// —— 否则会像 v0.19.0 那个 bug 一样僵在打开那一刻。
+pub(crate) fn export_dialog_body(state: &AppState) -> AnyElement {
     let Some(progress) = state.exporting.as_ref() else {
         return div().into_any_element();
     };
@@ -435,48 +411,34 @@ pub fn export_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
         progress.last_line.trim()
     };
 
-    let cancel = {
-        let entity = entity.clone();
-        Button::new("export-cancel")
-            .label("取消导出")
-            .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.cancel_export(cx));
-            })
-    };
-
-    modal_scrim(
-        "export",
-        modal_card(ModalSize::Medium)
-            .child(modal_title(format!("正在导出 {}", progress.name)))
-            .child(
-                v_flex()
-                    .w_full()
-                    .gap_2()
-                    .child(kv_block("目标文件", progress.path.clone()).into_any_element())
-                    .child(kv("已写入", written).into_any_element())
-                    .child(
-                        kv("已用时", format!("{} 秒", progress.elapsed_secs)).into_any_element(),
-                    ),
-            )
-            .child(div().text_xs().text_color(theme::text_dim()).child(
-                "wsl 不报告导出百分比，所以「已写入」是目标文件当前的大小 —— \
-                     它是连续增长的，可以据此估还要多久。",
-            ))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme::text_muted())
-                    .child(format!(
-                        "导出期间请勿关机。取消会留下一个不完整的 tar，需要你自己删。\
-                             最后一行输出：{last}"
-                    )),
-            )
-            .child(h_flex().w_full().justify_end().child(cancel)),
-    )
-    .into_any_element()
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(
+            v_flex()
+                .w_full()
+                .gap_2()
+                .child(kv_block("目标文件", progress.path.clone()).into_any_element())
+                .child(kv("已写入", written).into_any_element())
+                .child(
+                    kv("已用时", format!("{} 秒", progress.elapsed_secs)).into_any_element(),
+                ),
+        )
+        .child(div().text_xs().text_color(theme::text_dim()).child(
+            "wsl 不报告导出百分比，所以「已写入」是目标文件当前的大小 —— \
+             它是连续增长的，可以据此估还要多久。",
+        ))
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child(format!(
+                    "导出期间请勿关机。取消会留下一个不完整的 tar，需要你自己删。\
+                     最后一行输出：{last}"
+                )),
+        )
+        .into_any_element()
 }
-
 // ---------------------------------------------------------------------------
 // ⑧ 发行版配置（/etc/wsl.conf）
 // ---------------------------------------------------------------------------

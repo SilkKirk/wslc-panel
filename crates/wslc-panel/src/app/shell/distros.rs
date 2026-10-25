@@ -3,6 +3,9 @@
 use super::super::prelude::*;
 use super::Shell;
 use super::state::{AfterPick, KeepAlive, WslConfDialog};
+// 迁到官方 `Dialog` 之后要用的两样：`ShellView`（内容随状态重画）与
+// `modal_footer`（弹窗底部按钮行的唯一实现）。
+use crate::views::{ShellView, modal_footer};
 
 impl Shell {
     /// 取消正在进行的导出（kill 子进程）。
@@ -730,4 +733,124 @@ impl Shell {
     }
 
     // -- 添加实例 ----------------------------------------------------------
+}
+
+/// 把「窗口级对话框栈」对齐到当前状态（官方 `Dialog`）。
+///
+/// # 算法：最长公共前缀
+///
+/// 官方 `ActiveDialog` **没有 id 字段**，`WindowExt` 只给
+/// `close_dialog`（关栈顶）/ `close_all_dialogs` / `has_active_dialog`。
+/// 所以"该开哪些"和"已经开着哪些"只能按**顺序**对齐：
+///
+/// 1. 求 `dialog_stack` 与 `desired` 的最长公共前缀 `L`；
+/// 2. `dialog_stack.len() > L` → 从栈顶 pop 掉多出来的（**删的都是最上面几层，
+///    正是 `close_dialog` 能关的，所以不可能关错窗**）；
+/// 3. `desired.len() > L` → 依次把缺的追加进去（**不动下面已有的层**，
+///    所以下层不会被重建、焦点不会丢）。
+///
+/// 例：详情里点「压缩磁盘」→ `[Detail]` 变成 `[Detail, Confirm]`，
+/// 前缀相同 → **只 open Confirm**；确认框点「取消」→ 反过来 pop 一次。
+///
+/// 只有"非前缀的乱序"（例如 `[A, B]` 变成 `[B]`）才需要 `close_all_dialogs`
+/// 兜底 —— 按现在的状态机走不到（上层挡着下层），但正确性优先。
+///
+/// 每帧都会调一次，但**只在真的要变时才动窗口**（第一行那个 return）。
+fn sync_dialog_stack(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    let mut desired: Vec<DialogKey> = Vec::new();
+    if self.state.exporting.is_some() {
+        desired.push(DialogKey::Export);
+    }
+
+    if desired == self.dialog_stack {
+        return;
+    }
+
+    // 1. 最长公共前缀
+    let common = self
+        .dialog_stack
+        .iter()
+        .zip(desired.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    // 2. 非前缀的乱序 → 兜底全关（正常走不到）
+    let is_prefix = common == self.dialog_stack.len().min(desired.len());
+    if !is_prefix {
+        use gpui_kit::component::WindowExt as _;
+        window.close_all_dialogs(cx);
+        self.dialog_stack.clear();
+        for key in &desired {
+            self.open_dialog_for(*key, window, cx);
+        }
+        self.dialog_stack = desired;
+        return;
+    }
+
+    // 3. 多的从栈顶 pop
+    {
+        use gpui_kit::component::WindowExt as _;
+        for _ in common..self.dialog_stack.len() {
+            window.close_dialog(cx);
+        }
+    }
+    // 4. 缺的依次追加
+    for key in desired[common..].to_vec() {
+        self.open_dialog_for(key, window, cx);
+    }
+    self.dialog_stack = desired;
+}
+
+/// 打开一个我们已经迁到官方 `Dialog` 的浮层。
+fn open_dialog_for(&mut self, key: DialogKey, window: &mut Window, cx: &mut Context<Self>) {
+    use gpui_kit::component::WindowExt as _;
+
+    match key {
+        DialogKey::Export => {
+            let Some(progress) = self.state.exporting.as_ref() else {
+                return;
+            };
+            let title = format!("正在导出 {}", progress.name);
+            let entity = cx.entity();
+            // 内容包 `ShellView`：已写入 / 已用时一直在变（后台任务 notify）。
+            let content = {
+                let view_entity = entity.clone();
+                cx.new(move |cx| {
+                    ShellView::new(
+                        view_entity,
+                        move |shell, _cx| crate::views::export_dialog_body(&shell.state),
+                        cx,
+                    )
+                })
+            };
+            let on_cancel = {
+                let entity = entity.clone();
+                move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
+                    entity.update(cx, |shell, cx| shell.cancel_export(cx));
+                    true
+                }
+            };
+            window.open_dialog(cx, move |dialog, _window, _cx| {
+                let cancel = {
+                    let entity = entity.clone();
+                    Button::new("export-cancel")
+                        .label("取消导出")
+                        .small()
+                        .on_click(move |_, window, cx| {
+                            entity.update(cx, |shell, cx| shell.cancel_export(cx));
+                            window.close_dialog(cx);
+                        })
+                };
+                dialog
+                    .title(title.clone())
+                    .w(px(620.))
+                    .overlay(true)
+                    .overlay_closable(false)
+                    .keyboard(false)
+                    .on_cancel(on_cancel.clone())
+                    .child(content.clone())
+                    .footer(modal_footer([cancel.into_any_element()]))
+            });
+        }
+    }
 }

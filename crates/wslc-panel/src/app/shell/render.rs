@@ -10,7 +10,14 @@ use super::Shell;
 use super::core::confirm_overlay;
 
 impl Render for Shell {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 先把「窗口级对话框栈」对齐到当前状态（官方 `Dialog`）。
+        //
+        // 必须在借用 `&self.state` 之前调：它要 `&mut self`。
+        // 只在状态**真的变了**时才动窗口（函数第一行那个 return），
+        // 所以每帧调是安全的。
+        self.sync_dialog_stack(window, cx);
+
         let entity = cx.entity();
         let state = &self.state;
 
@@ -298,8 +305,7 @@ impl Render for Shell {
         // 迁它的理由不只是"用官方组件"：窗口级层栈让**层序 = 栈序**，
         // 不再依赖这条 `.child()` 链子的先后（见本文件末尾那段长注释）。
 
-        // 导出进度浮层（长任务，可取消）。
-        let export_overlay: AnyElement = views::export_overlay(state, &entity);
+        // NOTE: export progress 走官方 Dialog 栈，见 sync_dialog_stack。
 
         // 发行版配置（/etc/wsl.conf）弹窗。要 `cx` 才能读输入框的值。
         let wslconf_dialog: AnyElement = views::wslconf_overlay(self, &entity, cx);
@@ -578,7 +584,6 @@ impl Render for Shell {
             .child(distro_detail_dialog)
             // ⚠️ 「单输入框提示」不在这条链子上 —— 它走官方 `Dialog` 的窗口级层栈
             // （见上面 `Shell::open_prompt` 那段的说明）。
-            .child(export_overlay)
             .child(wslconf_dialog)
             // 日志和 exec 都可能是从容器详情里打开的，所以排在它之后。
             .child(logs_dialog)

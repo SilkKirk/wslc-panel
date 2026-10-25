@@ -57,7 +57,7 @@ pub(crate) use deploy::{
 };
 pub(crate) use details::{container_detail_overlay, distro_detail_overlay};
 pub(crate) use images::pull_dialog_overlay;
-pub(crate) use overlays::{PromptContent, exec_dialog_body, export_overlay, logs_overlay};
+pub(crate) use overlays::{PromptContent, exec_dialog_body, export_dialog_body, logs_overlay};
 pub(crate) use wslconf::wslconf_overlay;
 
 use prelude::*;
