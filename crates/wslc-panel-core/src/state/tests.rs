@@ -12,6 +12,8 @@
 // 这些 `wslc_core` 里的类型全部「not found」（实测 121 个错误）。
 use super::prelude::*;
 use super::*;
+// `format_bytes` 这一轮挪去了 `util.rs`（它是纯格式化函数，不属于任何状态域）。
+use crate::util::format_bytes;
 
 #[test]
 fn a_users_query_failure_never_becomes_a_page_level_error() {

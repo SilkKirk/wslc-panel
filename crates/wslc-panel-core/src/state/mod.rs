@@ -31,7 +31,7 @@
 //! | [`nav`] | 导航与页面枚举：哪些页、怎么分组、哪些页要有输入框才能进。 |
 //! | [`registry`] | 镜像仓库（Registry V2）查询状态、容器详情巡检结果。 |
 //! | [`snapshot`] | 数据快照：一次采集回来的一切，以及从它派生的总览数字。 |
-//! | [`wslconf`] | `/etc/wsl.conf` 编辑器的状态与字段 id。 |
+//! | [`wslconf_state`] | `/etc/wsl.conf` 编辑器的状态与字段 id。 |
 //!
 //! ⚠️ 拆法是「一个域一个文件」，不是「一个类型一个文件」—— `impl AppState`
 //! 整块 358 行留在 `app.rs` 里不拆，因为它的方法共享同一批字段访问。
@@ -47,7 +47,11 @@ mod logs;
 mod nav;
 mod registry;
 mod snapshot;
-mod wslconf;
+// ⚠️ 文件名叫 `wslconf_state` 而不是 `wslconf`：`prelude` 里
+// `pub(crate) use wslc_core::model::wslconf;` 会引入一个**同名**的
+// 模块路径，两者在 `use super::prelude::*;` 之后就成了 `E0659: ambiguous`
+// （实测踩过，8 处报错）。
+mod wslconf_state;
 // 测试单独一个文件：116 条断言占了原来那份文件的 2711 行。
 #[cfg(test)]
 mod tests;
@@ -65,4 +69,4 @@ pub(crate) use logs::*;
 pub(crate) use nav::*;
 pub(crate) use registry::*;
 pub(crate) use snapshot::*;
-pub(crate) use wslconf::*;
+pub(crate) use wslconf_state::*;
