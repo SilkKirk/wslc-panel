@@ -2,6 +2,7 @@
 
 use super::super::prelude::*;
 use super::Shell;
+use super::DialogKey;
 use super::state::{AfterPick, KeepAlive, WslConfDialog};
 // 迁到官方 `Dialog` 之后要用的两样：`ShellView`（内容随状态重画）与
 // `modal_footer`（弹窗底部按钮行的唯一实现）。
