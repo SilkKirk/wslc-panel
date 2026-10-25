@@ -1,14 +1,16 @@
 //! ③ 卷页。
 
 use super::common::{
-    cell_muted, cell_muted_full, cell_text, danger_button, empty_state, prompt_button,
-    table_header, table_row,
+    cell_muted, cell_muted_full, cell_text, danger_button, empty_state, prompt_button, table_card,
+    table_row,
 };
 use super::prelude::*;
 
 /// 卷页。
 pub fn volumes(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
-    let rows: Vec<AnyElement> = state
+    // 行列表必须是具体的 `TableRow`（官方的 `TableBody::children` 要求
+    // `ChildElement`，而 `AnyElement` 不满足 —— 见 `common::table_row` 的说明）。
+    let rows: Vec<TableRow> = state
         .snapshot
         .volumes
         .iter()
@@ -24,7 +26,6 @@ pub fn volumes(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                     volume_row_actions(ix, &vol.name, entity),
                 ],
             )
-            .into_any_element()
         })
         .collect();
 
@@ -65,21 +66,15 @@ pub fn volumes(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                 ),
         );
 
-    v_flex().w_full().gap_3().child(header).child(
-        v_flex()
-            .w_full()
-            .rounded_lg()
-            .bg(theme::bg_card())
-            .border_1()
-            .border_color(theme::border())
-            .overflow_hidden()
-            .child(table_header(VOLUME_COLUMNS))
-            .child(if rows.is_empty() {
-                empty_state("没有卷（无卷时 wslc 输出为空）").into_any_element()
-            } else {
-                v_flex().w_full().children(rows).into_any_element()
-            }),
-    )
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(header)
+        .child(table_card(
+            VOLUME_COLUMNS,
+            rows,
+            Some(empty_state("没有卷（无卷时 wslc 输出为空）").into_any_element()),
+        ))
 }
 
 /// 卷「使用中」格。

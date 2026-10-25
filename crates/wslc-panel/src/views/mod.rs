@@ -71,7 +71,7 @@ use prelude::*;
 // 是**模块**，两者在同一个命名空间里互不冲突 —— 但少了 `use` 这一行，
 // `dashboard(state)` 就只剩模块名，报 `cannot find function`。
 // （这一条是 CI 抓出来的，不是推的。）
-use common::empty_state;
+use common::{REOPEN_DB_PAGE, empty_state};
 use containers::containers;
 use dashboard::dashboard;
 use database::database;
@@ -118,7 +118,7 @@ pub fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
             // 防御分支（理论上走不到：进这一页时 `ensure_db_form` 已经建好了）。
             // ⚠️ 文案不解释内部状态 —— "编辑器还没建好"是给开发看的，
             // 用户只需要知道**下一步点哪**。
-            None => empty_state("请从「容器」页的「数据库」按钮重新进入").into_any_element(),
+            None => empty_state(REOPEN_DB_PAGE).into_any_element(),
         },
         // 「部署管理」也要 `&Shell` + `cx`：「添加部署」弹窗那五格输入框
         // 住在 `Shell` 里（页面本身没有输入框）。

@@ -1,9 +1,9 @@
 //! ②c 应用部署管理页：表格、行内动作、三个浮层。
 
 use super::common::{
-    ModalSize, cell_link, cell_muted_full, cell_text, disclosure, empty_state, form_field,
-    immediate_button, kv_block, log_text, modal_card, modal_scrim, overlay_button, page_empty,
-    table_header, table_row,
+    ModalSize, NoContainer, cell_link, cell_muted_full, cell_text, disclosure, empty_state,
+    form_field, immediate_button, kv_block, log_text, modal_card, modal_scrim, overlay_button,
+    page_empty, table_card, table_row,
 };
 use super::prelude::*;
 
@@ -35,7 +35,7 @@ pub fn deploy_page(shell: &Shell, _cx: &App, entity: &Entity<Shell>) -> AnyEleme
     let Some(deploy) = shell.state.deploy.as_ref() else {
         // 理论上来不到（只可能从容器行上的按钮进，那里已经建好状态了），
         // 但真到了这里就说一句人话，别画一片空白。
-        return page_empty("还没有选中容器 —— 请到「容器」页点某一行的「部署管理」");
+        return page_empty(NoContainer::Deploy.empty_hint());
     };
 
     let header = deploy_header(deploy, entity);
@@ -340,7 +340,7 @@ pub(crate) fn deploy_loading(busy: bool) -> AnyElement {
 
 /// 已部署列表。
 pub(crate) fn deploy_table(deploy: &DeployState, entity: &Entity<Shell>) -> AnyElement {
-    let rows: Vec<AnyElement> = deploy
+    let rows: Vec<TableRow> = deploy
         .entries
         .iter()
         .map(|entry| {
@@ -363,11 +363,12 @@ pub(crate) fn deploy_table(deploy: &DeployState, entity: &Entity<Shell>) -> AnyE
                     deploy_row_actions(entry, deploy, entity),
                 ],
             )
-            .into_any_element()
         })
         .collect();
 
-    let body: AnyElement = if deploy.entries.is_empty() {
+    // 空状态是两行说明（第二行还带 `strip_md`），所以自己拼一个 `AnyElement`
+    // 交给 `table_card`，而不是传一句文案。
+    let empty: Option<AnyElement> = deploy.entries.is_empty().then(|| {
         v_flex()
             .w_full()
             .gap_2()
@@ -389,9 +390,7 @@ pub(crate) fn deploy_table(deploy: &DeployState, entity: &Entity<Shell>) -> AnyE
                     .child(crate::util::strip_md(deploy.runtime.note())),
             )
             .into_any_element()
-    } else {
-        v_flex().w_full().children(rows).into_any_element()
-    };
+    });
 
     v_flex()
         .w_full()
@@ -406,17 +405,7 @@ pub(crate) fn deploy_table(deploy: &DeployState, entity: &Entity<Shell>) -> AnyE
                     deploy.entries.len()
                 ))),
         )
-        .child(
-            v_flex()
-                .w_full()
-                .rounded_lg()
-                .bg(theme::bg_card())
-                .border_1()
-                .border_color(theme::border())
-                .overflow_hidden()
-                .child(table_header(DEPLOY_COLUMNS))
-                .child(body),
-        )
+        .child(table_card(DEPLOY_COLUMNS, rows, empty))
         .into_any_element()
 }
 

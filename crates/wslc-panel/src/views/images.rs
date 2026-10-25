@@ -2,7 +2,7 @@
 
 use super::common::{
     cell_muted, cell_text, cell_text_full, danger_button, disclosure, empty_state, form_field,
-    modal_scrim, table_header, table_row,
+    modal_scrim, table_card, table_row,
 };
 use super::prelude::*;
 
@@ -30,7 +30,7 @@ use super::prelude::*;
 /// 直接按钮 —— 注释和实现相反，正是 `AGENTS.md` §5 警告过的那种"后来的人
 /// 会照着注释继续加重复"的源头。
 pub fn images(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
-    let rows: Vec<AnyElement> = state
+    let rows: Vec<TableRow> = state
         .snapshot
         .images
         .iter()
@@ -47,7 +47,6 @@ pub fn images(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                     image_row_actions(ix, &reference, entity),
                 ],
             )
-            .into_any_element()
         })
         .collect();
 
@@ -92,6 +91,12 @@ pub fn images(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
         }
     };
 
+    let body = table_card(
+        IMAGE_COLUMNS,
+        rows,
+        Some(empty_state("没有本地镜像").into_any_element()),
+    );
+
     v_flex()
         .w_full()
         .gap_3()
@@ -108,21 +113,7 @@ pub fn images(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                         .child(status),
                 ),
         )
-        .child(
-            v_flex()
-                .w_full()
-                .rounded_lg()
-                .bg(theme::bg_card())
-                .border_1()
-                .border_color(theme::border())
-                .overflow_hidden()
-                .child(table_header(IMAGE_COLUMNS))
-                .child(if rows.is_empty() {
-                    empty_state("没有本地镜像").into_any_element()
-                } else {
-                    v_flex().w_full().children(rows).into_any_element()
-                }),
-        )
+        .child(body)
         .into_any_element()
 }
 

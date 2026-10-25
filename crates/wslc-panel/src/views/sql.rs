@@ -1,6 +1,6 @@
 //! SQL 控制台（整页工作区）：左树 + 编辑器 + 结果表。
 
-use super::common::{log_text, page_empty};
+use super::common::{NoContainer, log_text, page_empty};
 use super::prelude::*;
 
 /// 「SQL 控制台」**整页**（v0.12）：左侧库 / 表树 + 右上编辑器 + 右下结果。
@@ -42,7 +42,7 @@ pub fn sql_console_page(
     entity: &Entity<Shell>,
 ) -> AnyElement {
     let Some(db) = shell.state.db.as_ref() else {
-        return page_empty("还没有选中容器 —— 请到「容器」页点某一行的「数据库」");
+        return page_empty(NoContainer::Database.empty_hint());
     };
     // 页头：返回 + 库名徽标 + 刷新表结构。
     //

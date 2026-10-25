@@ -2,7 +2,7 @@
 
 use super::common::{
     badge, cell_badge, cell_muted, cell_muted_full, cell_text, danger_button, immediate_button,
-    overlay_button, page_empty, table_header, table_row,
+    overlay_button, page_empty, table_card, table_row,
 };
 use super::prelude::*;
 
@@ -326,7 +326,7 @@ pub fn containers(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> impl IntoE
     let visible = crate::listview::visible_containers(items, query.trim(), view);
     let (all_count, running_count, not_running_count) = crate::listview::scope_counts(items);
 
-    let rows: Vec<AnyElement> = visible
+    let rows: Vec<TableRow> = visible
         .iter()
         .copied()
         .map(|summary| {
@@ -346,7 +346,6 @@ pub fn containers(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> impl IntoE
                     container_row_actions(&summary.item, entity),
                 ],
             )
-            .into_any_element()
         })
         .collect();
 
@@ -468,10 +467,10 @@ pub fn containers(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> impl IntoE
     });
 
     // 筛选后为空：不要显示成"没有任何容器"（那是在说"你机器上没容器"）。
-    let empty: AnyElement = if rows.is_empty() {
+    let empty: Option<AnyElement> = if rows.is_empty() {
         if all_count == 0 {
             // 整个列表区就是空的 → 官方 `Empty`（虚线框 + 撑满）
-            page_empty("没有任何容器")
+            Some(page_empty("没有任何容器"))
         } else {
             let entity = entity.clone();
             let input = shell.container_search.clone();
@@ -487,28 +486,30 @@ pub fn containers(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> impl IntoE
                         input.update(cx, |state, cx| state.set_value(String::new(), window, cx));
                     }
                 });
-            v_flex()
-                .w_full()
-                .items_center()
-                .gap_2()
-                .p_5()
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme::text_muted())
-                        .child("没有匹配的容器"),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_dim())
-                        .child("换个关键词，或点「全部」；也可以清空筛选。"),
-                )
-                .child(reset)
-                .into_any_element()
+            Some(
+                v_flex()
+                    .w_full()
+                    .items_center()
+                    .gap_2()
+                    .p_5()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(theme::text_muted())
+                            .child("没有匹配的容器"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_dim())
+                            .child("换个关键词，或点「全部」；也可以清空筛选。"),
+                    )
+                    .child(reset)
+                    .into_any_element(),
+            )
         }
     } else {
-        v_flex().w_full().children(rows).into_any_element()
+        None
     };
 
     v_flex()
@@ -551,17 +552,7 @@ pub fn containers(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> impl IntoE
                         .child(count_text),
                 ),
         )
-        .child(
-            v_flex()
-                .w_full()
-                .rounded_lg()
-                .bg(theme::bg_card())
-                .border_1()
-                .border_color(theme::border())
-                .overflow_hidden()
-                .child(table_header(ALL_COLUMNS))
-                .child(empty),
-        )
+        .child(table_card(ALL_COLUMNS, rows, empty))
 }
 // ---------------------------------------------------------------------------
 // ②b 容器里的数据库管理（MySQL / MariaDB，v0.7.0）

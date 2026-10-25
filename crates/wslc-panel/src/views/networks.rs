@@ -1,13 +1,13 @@
 //! ③ 网络页。
 
 use super::common::{
-    cell_muted, cell_muted_full, cell_text, danger_button, empty_state, table_header, table_row,
+    cell_muted, cell_muted_full, cell_text, danger_button, empty_state, table_card, table_row,
 };
 use super::prelude::*;
 
 /// 网络页。
 pub fn networks(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
-    let rows: Vec<AnyElement> = state
+    let rows: Vec<TableRow> = state
         .snapshot
         .networks
         .iter()
@@ -40,9 +40,14 @@ pub fn networks(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                     op,
                 ],
             )
-            .into_any_element()
         })
         .collect();
+
+    let body = table_card(
+        NETWORK_COLUMNS,
+        rows,
+        Some(empty_state("没有网络").into_any_element()),
+    );
 
     v_flex()
         .w_full()
@@ -53,21 +58,7 @@ pub fn networks(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                 .text_color(theme::text_muted())
                 .child(format!("共 {} 个网络", state.snapshot.networks.len())),
         )
-        .child(
-            v_flex()
-                .w_full()
-                .rounded_lg()
-                .bg(theme::bg_card())
-                .border_1()
-                .border_color(theme::border())
-                .overflow_hidden()
-                .child(table_header(NETWORK_COLUMNS))
-                .child(if rows.is_empty() {
-                    empty_state("没有网络").into_any_element()
-                } else {
-                    v_flex().w_full().children(rows).into_any_element()
-                }),
-        )
+        .child(body)
 }
 
 /// 网络行末：**直接**显示删除；内置网络仍只给一行说明。

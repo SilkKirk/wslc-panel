@@ -746,7 +746,7 @@ pub fn db_backup_dialog_overlay(
             .into_any_element()
     };
 
-    let rows: Vec<AnyElement> = db
+    let rows: Vec<TableRow> = db
         .backups
         .iter()
         .enumerate()
@@ -796,7 +796,6 @@ pub fn db_backup_dialog_overlay(
                         .into_any_element(),
                 ],
             )
-            .into_any_element()
         })
         .collect();
 
@@ -847,15 +846,25 @@ pub fn db_backup_dialog_overlay(
                 // 备份列表整块是空的 → 官方 `Empty`
                 page_empty("还没有备份 —— 点右上角的「立即备份」生成第一份")
             } else {
-                v_flex()
-                    .w_full()
+                // 和 8 个列表页同一套官方组件，只有底色不同：
+                // 这张表画在**弹窗卡**（`bg_card`）里，得用 `theme::bg()` 才有对比，
+                // 所以没有走 `common::table_card`（它的底色写死 `bg_card`）。
+                //
+                // ⚠️ 必须包 `TableBody`：官方 `TableRow` 只在 `ix > 0` 时画**上边框**，
+                // 而 `ix` 是 `TableBody` 在 enumerate 时通过 `with_ix` 喂进去的。
+                // 直接把 `TableRow` 丢进 `v_flex` 的话所有行的 ix 都是 0 →
+                // 行与行之间的分隔线会**整片消失**（不是样式差一点，是线没了）。
+                Table::new()
                     .rounded_lg()
                     .bg(theme::bg())
                     .border_1()
                     .border_color(theme::border())
-                    .overflow_hidden()
-                    .child(table_header(BACKUP_COLUMNS))
-                    .children(rows)
+                    .child(
+                        TableHeader::new()
+                            .bg(theme::bg())
+                            .child(table_header(BACKUP_COLUMNS)),
+                    )
+                    .child(TableBody::new().children(rows))
                     .into_any_element()
             })
             .child(h_flex().w_full().justify_end().child(close)),

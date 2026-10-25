@@ -2,7 +2,7 @@
 
 use super::common::{
     badge, card, cell_muted, cell_muted_full, danger_button_distro, empty_state, immediate_button,
-    table_header, table_row,
+    table_card, table_row,
 };
 use super::prelude::*;
 
@@ -51,7 +51,7 @@ pub fn instances(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     }
 
     let default_name = state.default_distro().map(|name| name.to_owned());
-    let rows: Vec<AnyElement> = distros
+    let rows: Vec<TableRow> = distros
         .iter()
         .map(|distro| {
             // 本面板正在吊着它吗？（决定行内还给不给「启动」按钮 ——
@@ -108,6 +108,10 @@ pub fn instances(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
             .into_any_element()
     };
 
+    // `None`：这一页的空列表在 `instances()` 开头就被 `empty_state` 拦掉了，
+    // 卡片里再写一句空状态文案是永远不会显示的假话（见 `common::table_card`）。
+    let body = table_card(DISTRO_COLUMNS, rows, None);
+
     v_flex()
         .w_full()
         .gap_3()
@@ -126,17 +130,7 @@ pub fn instances(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                 .text_color(theme::text_muted())
                 .child(summary),
         )
-        .child(
-            v_flex()
-                .w_full()
-                .rounded_lg()
-                .bg(theme::bg_card())
-                .border_1()
-                .border_color(theme::border())
-                .overflow_hidden()
-                .child(table_header(DISTRO_COLUMNS))
-                .child(v_flex().w_full().children(rows)),
-        )
+        .child(body)
         .into_any_element()
 }
 
@@ -150,7 +144,7 @@ pub(crate) fn distro_row(
     default_name: Option<&str>,
     kept: bool,
     entity: &Entity<Shell>,
-) -> AnyElement {
+) -> TableRow {
     let is_default = default_name == Some(distro.name.as_str());
 
     let location = distro
@@ -191,7 +185,6 @@ pub(crate) fn distro_row(
             distro_row_actions(distro, is_default, kept, entity),
         ],
     )
-    .into_any_element()
 }
 
 /// 发行版名字 —— 点击打开详情弹窗。

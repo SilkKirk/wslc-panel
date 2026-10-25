@@ -46,6 +46,22 @@ pub(crate) use gpui_kit::component::progress::ProgressCircle;
 // SQL 结果表格（v0.11）：`DataTable` 是 gpui-kit 自带的虚拟滚动表格，
 // 支持列宽拖拽 / 排序 / 单元格选择。delegate 在 `crate::sql_table`。
 pub(crate) use gpui_kit::component::table::DataTable;
+// 官方的**静态**表格组件族：8 个列表页用它替代自己拼的 `div` 表格。
+//
+// 和上面的 `DataTable` 是两个东西（读 `table.rs` 的模块文档确认）：
+// `Table` 是"简单、无状态、可组合"的静态表格，**没有**虚拟滚动和列管理；
+// `DataTable` 才是虚拟滚动 + 列宽拖拽那个。我们的列表只有几十行、行内还带按钮，
+// 要的正是前者；虚拟滚动只留给 SQL 结果表。
+//
+// 为什么"行"必须保持 `TableRow` 这个具体类型，不能 `into_any_element()`：
+// `TableBody::children` 的约束是 `ChildElement`（= `Sizable + IntoElement`），
+// 而 `AnyElement` 不实现 `Sizable`。装箱之后就塞不回表格了。
+//
+// （这一条也解释了为什么 `rows` 到处写成 `Vec<TableRow>` 而不是 `Vec<AnyElement>`。
+// 显式 `use` 会遮蔽 `gpui_kit::*` 里的同名 glob，所以这几个短名字不会打架。）
+pub(crate) use gpui_kit::component::table::{
+    Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+};
 // 注意：这里**不导入** `Disableable` —— 全项目不再使用 `.disabled()`：
 // gpui-component 的禁用态文字几乎看不清，改用"守卫 + 文案"表达不可用状态。
 pub(crate) use gpui_kit::component::description_list::DescriptionList;

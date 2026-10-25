@@ -3,8 +3,8 @@
 //! 弹窗与进度浮层在 [`super::db_dialogs`]。
 
 use super::common::{
-    badge, card, cell_muted, cell_text, danger_button, empty_state, form_field, log_text,
-    overlay_button, page_empty, table_header, table_row,
+    NoContainer, REOPEN_DB_PAGE, badge, card, cell_muted, cell_text, danger_button, empty_state,
+    form_field, log_text, overlay_button, page_empty, table_card, table_row,
 };
 use super::prelude::*;
 
@@ -39,7 +39,7 @@ pub fn database(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
     let Some(db) = shell.state.db.as_ref() else {
         // 理论上来不到（只可能从容器行上的按钮进，那里已经建好状态了），
         // 但真到了这里就说一句人话，别画一片空白。
-        return page_empty("还没有选中容器 —— 请到「容器」页点某一行的「数据库」");
+        return page_empty(NoContainer::Database.empty_hint());
     };
     // 表单没建好就没法渲染（输入框是懒创建的）。
     //
@@ -48,7 +48,7 @@ pub fn database(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
     // 的整页 `sql_console_page`，那儿的编辑器是 `EditorState`，也不在这儿读），
     // 绑了就是一个 unused 警告。
     if shell.db_form.is_none() {
-        return empty_state("请从「容器」页的「数据库」按钮重新进入").into_any_element();
+        return empty_state(REOPEN_DB_PAGE).into_any_element();
     }
 
     // 页头（含「基础信息」按钮）。
@@ -676,7 +676,7 @@ pub(crate) fn db_databases_card(
         db.databases.iter().filter(|e| !e.is_system()).collect();
     let hidden_system = db.databases.len() - visible.len();
 
-    let rows: Vec<AnyElement> = visible
+    let rows: Vec<TableRow> = visible
         .iter()
         // `.copied()` 把 `&&DbEntry` 变回 `&DbEntry`：`iter()` 给的是双重引用，
         // 而 `db_name_cell(entry)` 要的是 `&DbEntry` —— 函数参数不做自动解引用
@@ -771,7 +771,6 @@ pub(crate) fn db_databases_card(
                     actions,
                 ],
             )
-            .into_any_element()
         })
         .collect();
 
@@ -794,6 +793,12 @@ pub(crate) fn db_databases_card(
         Vec::new()
     };
 
+    let body = table_card(
+        DB_COLUMNS,
+        rows,
+        Some(empty_state("没有读到任何数据库").into_any_element()),
+    );
+
     v_flex()
         .w_full()
         .gap_3()
@@ -815,21 +820,7 @@ pub(crate) fn db_databases_card(
                         .child(count_text),
                 ),
         )
-        .child(
-            v_flex()
-                .w_full()
-                .rounded_lg()
-                .bg(theme::bg_card())
-                .border_1()
-                .border_color(theme::border())
-                .overflow_hidden()
-                .child(table_header(DB_COLUMNS))
-                .child(if rows.is_empty() {
-                    empty_state("没有读到任何数据库").into_any_element()
-                } else {
-                    v_flex().w_full().children(rows).into_any_element()
-                }),
-        )
+        .child(body)
         .into_any_element()
 }
 
@@ -884,7 +875,7 @@ pub(crate) fn db_users_card(
     // 判定在 `DbUser::is_hidden_by_default()`，这里只消费。
     let visible: Vec<&DbUser> = db.visible_users().collect();
 
-    let rows: Vec<AnyElement> = visible
+    let rows: Vec<TableRow> = visible
         .iter()
         .map(|user| {
             let user_name = user.user.clone();
@@ -983,7 +974,6 @@ pub(crate) fn db_users_card(
                     },
                 ],
             )
-            .into_any_element()
         })
         .collect();
 
@@ -999,6 +989,19 @@ pub(crate) fn db_users_card(
     } else {
         Vec::new()
     };
+
+    let body = table_card(
+        DB_USER_COLUMNS,
+        rows,
+        Some(
+            empty_state(if db.users.is_empty() {
+                "没有读到任何用户（当前账号可能没有读 mysql.user 的权限）"
+            } else {
+                "没有业务账号（系统 / root 账号不显示）"
+            })
+            .into_any_element(),
+        ),
+    );
 
     v_flex()
         .w_full()
@@ -1019,25 +1022,6 @@ pub(crate) fn db_users_card(
                         .child(count_text),
                 ),
         )
-        .child(
-            v_flex()
-                .w_full()
-                .rounded_lg()
-                .bg(theme::bg_card())
-                .border_1()
-                .border_color(theme::border())
-                .overflow_hidden()
-                .child(table_header(DB_USER_COLUMNS))
-                .child(if rows.is_empty() {
-                    empty_state(if db.users.is_empty() {
-                        "没有读到任何用户（当前账号可能没有读 mysql.user 的权限）"
-                    } else {
-                        "没有业务账号（系统 / root 账号不显示）"
-                    })
-                    .into_any_element()
-                } else {
-                    v_flex().w_full().children(rows).into_any_element()
-                }),
-        )
+        .child(body)
         .into_any_element()
 }
