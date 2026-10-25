@@ -5,7 +5,26 @@ use super::Shell;
 use super::state::{CreateDialog, DropdownItem, FactsState, TextPrompt};
 
 impl Shell {
-    /// 打开提示弹窗，并把焦点交给输入框。
+    /// 打开提示对话框，并把焦点交给输入框。
+    ///
+    /// # 这是**第一个**迁到官方 `Dialog` 的浮层
+    ///
+    /// 其余 17 个浮层还是"状态驱动的纯函数 + `views::modal_scrim`"，作为
+    /// `Shell::render` 的孩子画出来 —— 它们的层序靠 `render.rs` 末尾那条
+    /// `.child()` 链子手工维持（`AGENTS.md` §7.5 记着这条链子踩过两次坑）。
+    ///
+    /// 官方 `Dialog` 走的是**窗口级层栈**（`WindowState::active_dialogs`，由
+    /// `Root` 渲染），所以：层序 = 栈序，遮罩自带 `.occlude()`、Esc 与点遮罩
+    /// 关闭自带（`keyboard` / `overlay_closable`），不用我们维护。
+    ///
+    /// # 两个要注意的地方
+    ///
+    /// 1. builder 闭包**可能被重跑**（gpui-component 的原话："it may run again
+    ///    when the dialog layer is rebuilt. Keep it cheap and create persistent
+    ///    entities before opening, not inside the builder"）—— 所以 `InputState`
+    ///    是在**打开之前**建好、存进 `self.prompt` 的，闭包里只用它的 `Entity`；
+    /// 2. 闭包里要读 `Shell` 的当前状态（输入框的值），用 `entity.read(cx)`。
+    ///    这样打字时预览行跟着变，靠的就是"窗口重绘 → 层被重建 → 闭包重跑"。
     pub fn open_prompt(
         &mut self,
         kind: PromptKind,
@@ -13,6 +32,14 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        use gpui_kit::component::WindowExt as _;
+        use gpui_kit::component::dialog::DialogButtonProps;
+
+        // 已经在开着就别再压一层（连点两下会弹出两个一模一样的对话框）。
+        if self.prompt.is_some() {
+            return;
+        }
+
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(kind.placeholder()));
 
         // 打开就把焦点给输入框，用户可以直接开始打字。
@@ -25,6 +52,53 @@ impl Shell {
             input,
         });
         cx.notify();
+
+        let entity = cx.entity();
+        let on_ok = {
+            let entity = entity.clone();
+            move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
+                entity.update(cx, |shell, cx| shell.submit_prompt(cx));
+                true
+            }
+        };
+        let on_cancel = {
+            let entity = entity.clone();
+            move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
+                entity.update(cx, |shell, cx| shell.close_prompt(cx));
+                true
+            }
+        };
+        let on_close = {
+            let entity = entity.clone();
+            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                entity.update(cx, |shell, cx| shell.close_prompt(cx));
+            }
+        };
+
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            // 内容要现读 `Shell`（输入框的值 + 预览行），所以每帧重建。
+            let body = {
+                let shell = entity.read(cx);
+                crate::views::prompt_dialog_content(&shell, &entity, cx)
+                    .unwrap_or_else(|| div().into_any_element())
+            };
+            dialog
+                .title(kind.title())
+                .w(px(560.))
+                // 遮罩 / Esc / 点遮罩关闭都由官方负责。
+                .overlay(true)
+                .overlay_closable(true)
+                .keyboard(true)
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text(kind.confirm_label())
+                        .cancel_text("取消"),
+                )
+                .on_ok(on_ok.clone())
+                .on_cancel(on_cancel.clone())
+                .on_close(on_close.clone())
+                .child(body)
+        });
     }
 
     /// 关闭提示弹窗。

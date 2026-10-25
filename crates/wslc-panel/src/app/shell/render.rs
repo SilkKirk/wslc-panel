@@ -290,9 +290,13 @@ impl Render for Shell {
             Some(name) => views::distro_detail_overlay(name, state, &entity),
         };
 
-        // 单输入框提示弹窗（移动位置 / 调整大小 / 设置默认用户 / 导出）。
-        // 要 `cx` 才能实时读输入框的值做等效命令预览。
-        let prompt_dialog: AnyElement = views::prompt_overlay(self, &entity, cx);
+        // ⚠️ 「单输入框提示」（移动位置 / 调整大小 / 设置默认用户 / 导出 / 创建卷）
+        // **不在这条链子上**：它已迁到官方 `Dialog`（窗口级层栈），
+        // 由 `Shell::open_prompt` 里的 `window.open_dialog` 打开；
+        // 内容由 `views::prompt_dialog_content` 提供。
+        //
+        // 迁它的理由不只是"用官方组件"：窗口级层栈让**层序 = 栈序**，
+        // 不再依赖这条 `.child()` 链子的先后（见本文件末尾那段长注释）。
 
         // 导出进度浮层（长任务，可取消）。
         let export_overlay: AnyElement = views::export_overlay(state, &entity);
@@ -571,9 +575,8 @@ impl Render for Shell {
             .child(create_dialog)
             .child(detail_dialog)
             .child(distro_detail_dialog)
-            // 提示弹窗放最后：它可能是从发行版详情里打开的，
-            // 后画的压在详情上面。
-            .child(prompt_dialog)
+            // ⚠️ 「单输入框提示」不在这条链子上 —— 它走官方 `Dialog` 的窗口级层栈
+            // （见上面 `Shell::open_prompt` 那段的说明）。
             .child(export_overlay)
             .child(wslconf_dialog)
             // 日志和 exec 都可能是从容器详情里打开的，所以排在它之后。

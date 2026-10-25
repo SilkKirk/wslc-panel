@@ -6,17 +6,25 @@ use super::common::{
 };
 use super::prelude::*;
 
-/// 单输入框提示弹窗（移动位置 / 调整大小 / 设置默认用户）。
+/// 单输入框提示对话框的**内容**（标题 / 底部按钮由官方 `Dialog` 自己给）。
 ///
 /// 弹窗**本身就是确认**：里面带着这个动作的代价说明和**实时**等效命令，
 /// 提交后直接执行 —— 所以没有再叠一层二次确认。
 /// 连续弹两个窗比一个信息充分的窗更烦人。
 ///
+/// # 为什么不再自己画遮罩和卡片
+///
+/// 这个浮层是**第一个**迁到官方 `Dialog` 的（窗口级层栈，见
+/// `Shell::open_prompt`）：遮罩、Esc、点遮罩关闭、层序都由组件负责。
+/// 所以这里只产出"中间那块内容"，外壳在打开处拼。
+///
 /// 要 `cx` 才能从输入框里读数：底部那行命令是随打字变化的。
-pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyElement {
-    let Some(prompt) = shell.prompt.as_ref() else {
-        return div().into_any_element();
-    };
+pub(crate) fn prompt_dialog_content(
+    shell: &Shell,
+    entity: &Entity<Shell>,
+    cx: &App,
+) -> Option<AnyElement> {
+    let prompt = shell.prompt.as_ref()?;
 
     let kind = prompt.kind;
     let typed = prompt.input.read(cx).value().trim().to_owned();
@@ -49,27 +57,6 @@ pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEle
             .into_any_element()
     });
 
-    let cancel = {
-        let entity = entity.clone();
-        Button::new("prompt-cancel")
-            .label("取消")
-            .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.close_prompt(cx));
-            })
-    };
-
-    let confirm = {
-        let entity = entity.clone();
-        Button::new("prompt-confirm")
-            .label(kind.confirm_label())
-            .small()
-            .primary()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.submit_prompt(cx));
-            })
-    };
-
     // 只有"要填路径"的那两种才给「浏览…」——
     // 「调整大小」填的是 `50GB`，「设置默认用户」填的是用户名，
     // 给它们这个按钮只会让人以为该去选一个文件。
@@ -84,15 +71,11 @@ pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEle
             .into_any_element()
     });
 
-    modal_scrim(
-        "prompt",
-        modal_card(ModalSize::Narrow)
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(modal_title(kind.title()))
-                    .children(subject),
-            )
+    Some(
+        v_flex()
+            .w_full()
+            .gap_3()
+            .children(subject)
             .child(
                 h_flex()
                     .w_full()
@@ -133,9 +116,8 @@ pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEle
                             .child(preview),
                     ),
             )
-            .child(modal_footer([cancel, confirm])),
+            .into_any_element(),
     )
-    .into_any_element()
 }
 
 /// 「容器日志」浮层。
