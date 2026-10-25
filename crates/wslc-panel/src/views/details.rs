@@ -2,7 +2,7 @@
 
 use super::common::{
     ModalSize, danger_button, danger_button_distro, immediate_button, kv, kv_block, modal_card,
-    modal_scrim, overlay_button, prompt_button,
+    modal_scrim, modal_title, overlay_button, prompt_button,
 };
 use super::prelude::*;
 
@@ -237,13 +237,7 @@ pub fn container_detail_overlay(
             .id("detail-card")
             .max_h(px(860.))
             .overflow_y_scroll()
-            .child(
-                div()
-                    .text_lg()
-                    .font_bold()
-                    .text_color(theme::text())
-                    .child(name.to_owned()),
-            )
+            .child(modal_title(name.to_owned()))
             .child(v_flex().w_full().gap_2().children(rows))
             .child(
                 v_flex()
@@ -481,13 +475,7 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
             .child(
                 v_flex()
                     .gap_1()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_bold()
-                            .text_color(theme::text())
-                            .child(name.to_owned()),
-                    )
+                    .child(modal_title(name.to_owned()))
                     .child(
                         div()
                             .text_xs()

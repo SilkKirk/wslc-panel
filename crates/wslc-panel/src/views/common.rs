@@ -509,6 +509,105 @@ pub(crate) fn table_card(
         .child(body)
 }
 
+/// 弹窗标题。
+///
+/// # 为什么要收
+///
+/// 18 个浮层原先各写一份 6 行的 `div().text_lg().font_bold().text_color(…)`，
+/// 而且**并不一致**：`deploy.rs` 那 4 处用的是 `font_semibold`、其中 2 处根本没设
+/// `text_color`（靠继承）。同一类控件（"这是哪个弹窗"）在同一屏里粗细不同，
+/// 看起来像两个层级的东西 —— 而这种差异 **CI 完全看不见**（`AGENTS.md` §8）。
+/// 收到一处之后，粗细只剩一种。
+pub(crate) fn modal_title(title: impl Into<SharedString>) -> AnyElement {
+    div()
+        .text_lg()
+        .font_bold()
+        .text_color(theme::text())
+        .child(title.into())
+        .into_any_element()
+}
+
+/// 危险动作的弹窗标题（删除确认那一类）：同样的字号，颜色换成 `danger`。
+///
+/// 单独一个函数而不是给 [`modal_title`] 加个 `danger: bool`：调用点只有一处，
+/// 布尔参数在调用点读起来是 `modal_title(text, true)` —— 不知道 `true` 是什么。
+pub(crate) fn modal_title_danger(title: impl Into<SharedString>) -> AnyElement {
+    div()
+        .text_lg()
+        .font_bold()
+        .text_color(theme::danger())
+        .child(title.into())
+        .into_any_element()
+}
+
+/// 弹窗底部那一行**按钮**：右对齐、按钮之间 `gap_2`。
+///
+/// 收的是 `impl IntoIterator<Item = impl IntoElement>`，所以调用点写
+/// `modal_footer([cancel, confirm])` 就行 —— **不用**先把每个按钮
+/// `into_any_element()`（那样调用点反而比原来更长，抽这层就没意义了）。
+///
+/// ⚠️ 只管"一行纯按钮"。下面两种**刻意不用它**，别硬套：
+///
+/// - 行里混着状态文字的（`db_dialogs` 的"备份中… / 导入中…" + 关闭），
+///   那些还用 `items_center + gap_3`；
+/// - 行里有三四颗按钮、还要 `flex_wrap` 的（`.wslconf` 的预览 / 取消 / 保存 ×2）。
+///
+/// 至于按钮上的**用词**：「取消」只给"有提交动作、点了什么都不保存"的弹窗，
+/// 「关闭」只给"只读浮层、本来就没有提交"的。这是**两件事**，
+/// 不是同一个动作的两种叫法 —— 收进 helper 时不要顺手统一成一个词。
+pub(crate) fn modal_footer(actions: impl IntoIterator<Item = impl IntoElement>) -> AnyElement {
+    h_flex()
+        .w_full()
+        .justify_end()
+        .gap_2()
+        .children(actions)
+        .into_any_element()
+}
+
+/// 表格里的「名字链接」：显示主色的名字，点开详情。
+///
+/// `container_name_link`（容器页）与 `distro_name_link`（实例页）原先各写一份
+/// **逐行相同**的实现（id / 光标 / 主色 / hover / active / on_click），
+/// 只有 id 前缀和"要不要 truncate"不同。合成一处之后，两页的链接**不可能**再漂移。
+///
+/// # 这里有两处必须是手写的
+///
+/// - `hover` / `active`：这是**自己画的** `div`，组件库的 `Button` 自带悬停效果
+///   而 `div` 没有（`AGENTS.md` §7.5：自己画的可点元素必须手写，否则鼠标移上去
+///   毫无反应）；
+/// - `id`：`active` 来自 `StatefulInteractiveElement`，**只对带 id 的元素可用**
+///   （漏了是编译错误，不是运行时 panic）。
+///
+/// `id_prefix` 由调用页给（`detail` / `distro-detail`），保证同一帧里两页的
+/// 元素 id 不撞。名字统一 `truncate()`：外层单元格本来就有 `overflow_hidden`，
+/// 不 truncate 的话长名字是"硬切"（没有省略号），truncate 之后是"…"，严格更好。
+pub(crate) fn name_link(
+    id_prefix: &'static str,
+    name: &str,
+    entity: &Entity<Shell>,
+    open: impl Fn(&mut Shell, String, &mut Context<Shell>) + 'static,
+) -> AnyElement {
+    let entity = entity.clone();
+    // 闭包是 `Fn`（GPUI 会反复调用它），所以里面必须**再 clone 一次** ——
+    // 直接把手里的 `String` move 进去会编译不过（`borrow of moved value`）。
+    let for_click = name.to_owned();
+    div()
+        .id(SharedString::from(format!("{id_prefix}-{name}")))
+        .cursor_pointer()
+        .text_sm()
+        .text_color(theme::primary())
+        .hover(|this| this.text_color(theme::link_hover()))
+        .active(|this| this.text_color(theme::primary()))
+        .overflow_hidden()
+        .truncate()
+        .child(name.to_owned())
+        .on_click(move |_, _, cx| {
+            let target = for_click.clone();
+            entity.update(cx, |shell, cx| open(shell, target, cx));
+        })
+        .into_any_element()
+}
+
 /// 单元格文字。
 pub(crate) fn cell_text(text: impl Into<SharedString>) -> AnyElement {
     div()

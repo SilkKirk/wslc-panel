@@ -1,6 +1,6 @@
 //! ⑧ 发行版配置（`/etc/wsl.conf`）浮层。
 
-use super::common::{ModalSize, badge, cell_muted_full, modal_card, modal_scrim};
+use super::common::{ModalSize, badge, cell_muted_full, modal_card, modal_scrim, modal_title};
 use super::prelude::*;
 
 /// 「这一项显示的是 WSL 的默认值」的小标记。
@@ -346,13 +346,7 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEl
             .child(
                 v_flex()
                     .gap_1()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_bold()
-                            .text_color(theme::text())
-                            .child(format!("{} 配置（/etc/wsl.conf）", state.distro)),
-                    )
+                    .child(modal_title(format!("{} 配置（/etc/wsl.conf）", state.distro)))
                     .child(div().text_xs().text_color(theme::text_dim()).child(format!(
                         "{}　·　保存前会先备份到 /etc/wsl.conf.bak；\
                              注释和本程序不认识的键都会原样保留。",

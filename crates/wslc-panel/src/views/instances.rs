@@ -2,7 +2,7 @@
 
 use super::common::{
     badge, card, cell_muted, cell_muted_full, danger_button_distro, empty_state, immediate_button,
-    table_card, table_row,
+    name_link, table_card, table_row,
 };
 use super::prelude::*;
 
@@ -190,25 +190,11 @@ pub(crate) fn distro_row(
 /// 发行版名字 —— 点击打开详情弹窗。
 ///
 /// 和容器页一样：名字就是入口，低频动作都收在详情里。
-/// 悬停/按下同 [`container_name_link`]。
+/// 实际画法在 [`common::name_link`]（和 `container_name_link` 同一份实现）。
 pub(crate) fn distro_name_link(name: &str, entity: &Entity<Shell>) -> AnyElement {
-    let entity = entity.clone();
-    let for_click = name.to_owned();
-    div()
-        .id(SharedString::from(format!("distro-detail-{name}")))
-        .cursor_pointer()
-        .text_sm()
-        .text_color(theme::primary())
-        .hover(|this| this.text_color(theme::link_hover()))
-        .active(|this| this.text_color(theme::primary()))
-        .overflow_hidden()
-        .truncate()
-        .child(name.to_owned())
-        .on_click(move |_, _, cx| {
-            let target = for_click.clone();
-            entity.update(cx, |shell, cx| shell.open_distro_detail(target, cx));
-        })
-        .into_any_element()
+    name_link("distro-detail", name, entity, |shell, target, cx| {
+        shell.open_distro_detail(target, cx)
+    })
 }
 
 /// 「添加实例」入口按钮 —— 跳到「添加实例」页。

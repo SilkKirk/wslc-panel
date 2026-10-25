@@ -2,8 +2,8 @@
 
 use super::common::{
     ModalSize, NoContainer, cell_link, cell_muted_full, cell_text, disclosure, empty_state,
-    form_field, immediate_button, kv_block, log_text, modal_card, modal_scrim, overlay_button,
-    page_empty, table_card, table_row,
+    form_field, immediate_button, kv_block, log_text, modal_card, modal_footer, modal_scrim,
+    modal_title, modal_title_danger, overlay_button, page_empty, table_card, table_row,
 };
 use super::prelude::*;
 
@@ -698,7 +698,7 @@ pub fn deploy_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) ->
         .child(
             v_flex()
                 .gap_1()
-                .child(div().text_lg().font_semibold().child(if re_deploy {
+                .child(modal_title(if re_deploy {
                     format!("重新部署 {}", form.editing.clone().unwrap_or_default())
                 } else {
                     format!("添加部署 · {}", runtime.label())
@@ -945,30 +945,26 @@ pub fn deploy_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) ->
                         .child("启动命令须监听此端口，面板不会自动修改命令。")
                 }),
             )
-            .child(
-                h_flex()
-                    .w_full()
-                    .justify_end()
-                    .gap_2()
-                    .child({
-                        let entity = entity.clone();
-                        Button::new("deploy-cancel").label("取消").small().on_click(
-                            move |_, _, cx| {
-                                entity.update(cx, |shell, cx| shell.close_deploy_dialog(cx));
-                            },
-                        )
-                    })
-                    .child({
-                        let entity = entity.clone();
-                        Button::new("deploy-submit")
-                            .label(if re_deploy { "重新部署" } else { "部署" })
-                            .small()
-                            .primary()
-                            .on_click(move |_, window, cx| {
-                                entity.update(cx, |shell, cx| shell.submit_deploy(window, cx));
-                            })
-                    }),
-            );
+            .child(modal_footer([
+                {
+                    let entity = entity.clone();
+                    Button::new("deploy-cancel").label("取消").small().on_click(
+                        move |_, _, cx| {
+                            entity.update(cx, |shell, cx| shell.close_deploy_dialog(cx));
+                        },
+                    )
+                },
+                {
+                    let entity = entity.clone();
+                    Button::new("deploy-submit")
+                        .label(if re_deploy { "重新部署" } else { "部署" })
+                        .small()
+                        .primary()
+                        .on_click(move |_, window, cx| {
+                            entity.update(cx, |shell, cx| shell.submit_deploy(window, cx));
+                        })
+                },
+            ]));
 
     modal_scrim("deploy-dialog-scrim", card).into_any_element()
 }
@@ -998,12 +994,7 @@ pub fn deploy_logs_overlay(logs: &DeployLogs, entity: &Entity<Shell>) -> AnyElem
             .child(
                 v_flex()
                     .gap_1()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_semibold()
-                            .child(format!("日志 · {}", logs.app)),
-                    )
+                    .child(modal_title(format!("日志 · {}", logs.app)))
                     .child(div().text_xs().text_color(theme::text_dim()).child(
                         crate::util::strip_md(
                             "是这个应用**自己**的输出（启动时把它重定向到了目标目录的 \
@@ -1084,12 +1075,7 @@ pub fn deploy_site_conf_overlay(conf: &DeploySiteConf, entity: &Entity<Shell>) -
             .child(
                 v_flex()
                     .gap_1()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_semibold()
-                            .child(format!("站点配置 · {}", conf.app)),
-                    )
+                    .child(modal_title(format!("站点配置 · {}", conf.app)))
                     .child(div().text_xs().text_color(theme::text_dim()).child(
                         crate::util::strip_md(
                             "容器里的 `/etc/nginx/conf.d/00-wslc-panel-<应用名>.conf`（只读）。\
@@ -1154,13 +1140,7 @@ pub fn deploy_remove_confirm_overlay(
         .bg(theme::bg_card())
         .border_1()
         .border_color(theme::danger_edge())
-        .child(
-            div()
-                .text_lg()
-                .font_semibold()
-                .text_color(theme::danger())
-                .child(format!("删除部署「{app}」？")),
-        )
+        .child(modal_title_danger(format!("删除部署「{app}」？")))
         .child(
             div()
                 .text_sm()
@@ -1190,11 +1170,8 @@ pub fn deploy_remove_confirm_overlay(
                 )),
         )
         .child(
-            h_flex()
-                .w_full()
-                .justify_end()
-                .gap_2()
-                .child({
+            modal_footer([
+                {
                     let entity = entity.clone();
                     Button::new("deploy-remove-cancel")
                         .label("取消")
@@ -1202,8 +1179,8 @@ pub fn deploy_remove_confirm_overlay(
                         .on_click(move |_, _, cx| {
                             entity.update(cx, |shell, cx| shell.cancel_remove_deployment(cx));
                         })
-                })
-                .child({
+                },
+                {
                     let entity = entity.clone();
                     let app = app.to_owned();
                     Button::new("deploy-remove-confirm")
@@ -1214,7 +1191,8 @@ pub fn deploy_remove_confirm_overlay(
                             let app = app.clone();
                             entity.update(cx, |shell, cx| shell.confirm_remove_deployment(app, cx));
                         })
-                }),
+                },
+            ]),
         );
 
     modal_scrim("deploy-remove-scrim", card).into_any_element()

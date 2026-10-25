@@ -1,8 +1,8 @@
 //! 数据库的弹窗与进度浮层：新建库 / 建用户 / 改密 / 授权 / 备份 / 导入 / 基础信息。
 
 use super::common::{
-    ModalSize, cell_muted, cell_text_full, disclosure, form_field, modal_card, modal_scrim,
-    overlay_button, page_empty, table_header, table_row,
+    ModalSize, cell_muted, cell_text_full, disclosure, form_field, modal_card, modal_footer,
+    modal_scrim, modal_title, overlay_button, page_empty, table_header, table_row,
 };
 use super::database::db_connection_card;
 use super::prelude::*;
@@ -44,13 +44,7 @@ pub fn db_info_overlay(
             .child(
                 v_flex()
                     .gap_1()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_bold()
-                            .text_color(theme::text())
-                            .child("基础信息"),
-                    )
+                    .child(modal_title("基础信息"))
                     .child(div().text_xs().text_color(theme::text_dim()).child(format!(
                         "容器 {} · {} · {} · 客户端 {}",
                         db.container,
@@ -374,13 +368,7 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
             .child(
                 v_flex()
                     .gap_1()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_bold()
-                            .text_color(theme::text())
-                            .child(kind.title()),
-                    )
+                    .child(modal_title(kind.title()))
                     .child(div().text_xs().text_color(theme::text_dim()).child(format!(
                                 "在容器 {} 上执行 —— 用的是数据库页连接卡里那个账号。",
                                 shell
@@ -392,14 +380,7 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
                             ))),
             )
             .children(fields)
-            .child(
-                h_flex()
-                    .w_full()
-                    .justify_end()
-                    .gap_2()
-                    .child(cancel)
-                    .child(confirm),
-            ),
+            .child(modal_footer([cancel, confirm])),
     )
     .into_any_element()
 }
@@ -549,13 +530,7 @@ pub fn db_backup_progress(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
             .child(
                 v_flex()
                     .gap_1()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_bold()
-                            .text_color(theme::text())
-                            .child(format!("正在备份 {}", state.database)),
-                    )
+                    .child(modal_title(format!("正在备份 {}", state.database)))
                     .child(
                         div()
                             .text_xs()
@@ -630,13 +605,7 @@ pub fn db_import_progress(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
             .child(
                 v_flex()
                     .gap_1()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_bold()
-                            .text_color(theme::text())
-                            .child(format!("正在导入 {}", state.file_name)),
-                    )
+                    .child(modal_title(format!("正在导入 {}", state.file_name)))
                     .child(div().text_xs().text_color(theme::text_dim()).child(target)),
             )
             .child(div().text_sm().text_color(theme::text_muted()).child(
@@ -823,13 +792,7 @@ pub fn db_backup_dialog_overlay(
                             .w_full()
                             .justify_between()
                             .items_center()
-                            .child(
-                                div()
-                                    .text_lg()
-                                    .font_bold()
-                                    .text_color(theme::text())
-                                    .child(format!("备份 —— {database}")),
-                            )
+                            .child(modal_title(format!("备份 —— {database}")))
                             .child(start),
                     )
                     .child(account)

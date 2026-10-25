@@ -1,6 +1,6 @@
 //! 「创建容器」弹窗，以及它依赖的那几个从镜像读来的提示块。
 
-use super::common::{ModalSize, disclosure, form_field, modal_card, modal_scrim};
+use super::common::{ModalSize, disclosure, form_field, modal_card, modal_scrim, modal_title};
 use super::prelude::*;
 
 /// 「创建容器」弹窗里那条**从镜像读来的**信息（声明端口 / 启动命令）。
@@ -356,13 +356,7 @@ pub fn create_dialog_overlay(
             .id("create-dialog-card")
             .max_h(px(880.))
             .overflow_y_scroll()
-            .child(
-                div()
-                    .text_lg()
-                    .font_bold()
-                    .text_color(theme::text())
-                    .child("创建容器"),
-            )
+            .child(modal_title("创建容器"))
             .child(
                 // 左边是唯一的事实来源（可以手打、可以粘完整引用），
                 // 右边那个下拉框只是**从本地已有的镜像里挑一个**的快捷方式 ——

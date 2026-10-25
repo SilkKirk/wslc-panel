@@ -2,7 +2,7 @@
 
 use super::common::{
     badge, cell_badge, cell_muted, cell_muted_full, cell_text, danger_button, immediate_button,
-    overlay_button, page_empty, table_card, table_row,
+    name_link, overlay_button, page_empty, table_card, table_row,
 };
 use super::prelude::*;
 
@@ -76,25 +76,12 @@ pub(crate) fn cell_container_status(summary: &ContainerSummary) -> AnyElement {
 /// 照 1Panel 的做法：名字就是入口，表格里不再挤一列操作按钮。
 /// 挂载这类占地方的信息全部放进详情弹窗。
 ///
-/// 悬停变亮、按下回到主色（比悬停暗一档）—— 组件库的 `Button` 自带
-/// hover/active，而我们这种自己画的 `div` 得手写，否则鼠标移上去毫无反应
-/// （v0.6.5 之前就是这样，实机反馈"没有点击的感觉"）。
+/// 实际画法在 [`common::name_link`]（实例页那个链接和它**逐行相同**，
+/// 所以合到一处了；悬停/按下为什么要手写、id 为什么必须给，都写在那儿）。
 pub(crate) fn container_name_link(name: &str, entity: &Entity<Shell>) -> AnyElement {
-    let entity = entity.clone();
-    let for_click = name.to_owned();
-    div()
-        .id(SharedString::from(format!("detail-{name}")))
-        .cursor_pointer()
-        .text_sm()
-        .text_color(theme::primary())
-        .hover(|this| this.text_color(theme::link_hover()))
-        .active(|this| this.text_color(theme::primary()))
-        .child(name.to_owned())
-        .on_click(move |_, _, cx| {
-            let target = for_click.clone();
-            entity.update(cx, |shell, cx| shell.open_detail(target, cx));
-        })
-        .into_any_element()
+    name_link("detail", name, entity, |shell, target, cx| {
+        shell.open_detail(target, cx)
+    })
 }
 
 /// 行内操作：**只留最高频的那几个**，其余收进「更多」下拉菜单。

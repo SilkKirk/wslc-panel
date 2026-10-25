@@ -2,7 +2,7 @@
 
 use super::common::{
     cell_muted, cell_text, cell_text_full, danger_button, disclosure, empty_state, form_field,
-    modal_scrim, table_card, table_row,
+    modal_scrim, modal_title, table_card, table_row,
 };
 use super::prelude::*;
 
@@ -210,13 +210,7 @@ pub fn pull_dialog_overlay(
         .bg(theme::bg_card())
         .border_1()
         .border_color(theme::border())
-        .child(
-            div()
-                .text_lg()
-                .font_bold()
-                .text_color(theme::text())
-                .child("拉取镜像"),
-        )
+        .child(modal_title("拉取镜像"))
         .child(body);
 
     if !pulling {

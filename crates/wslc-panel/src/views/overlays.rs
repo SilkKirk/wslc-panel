@@ -1,6 +1,9 @@
 //! 容器日志 / exec / 导出 / 单输入框提示 —— 四个容器域浮层。
 
-use super::common::{ModalSize, form_field, kv, kv_block, log_text, modal_card, modal_scrim};
+use super::common::{
+    ModalSize, form_field, kv, kv_block, log_text, modal_card, modal_footer, modal_scrim,
+    modal_title,
+};
 use super::prelude::*;
 
 /// 单输入框提示弹窗（移动位置 / 调整大小 / 设置默认用户）。
@@ -87,13 +90,7 @@ pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEle
             .child(
                 v_flex()
                     .gap_1()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_bold()
-                            .text_color(theme::text())
-                            .child(kind.title()),
-                    )
+                    .child(modal_title(kind.title()))
                     .children(subject),
             )
             .child(
@@ -136,14 +133,7 @@ pub fn prompt_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEle
                             .child(preview),
                     ),
             )
-            .child(
-                h_flex()
-                    .w_full()
-                    .justify_end()
-                    .gap_2()
-                    .child(cancel)
-                    .child(confirm),
-            ),
+            .child(modal_footer([cancel, confirm])),
     )
     .into_any_element()
 }
@@ -297,13 +287,7 @@ pub fn logs_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
             .child(
                 v_flex()
                     .gap_1()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_bold()
-                            .text_color(theme::text())
-                            .child(format!("日志 —— {}", logs.container)),
-                    )
+                    .child(modal_title(format!("日志 —— {}", logs.container)))
                     .child(div().text_xs().text_color(theme::text_dim()).child(
                         "这是一份快照，不会自动更新（点「刷新」重新拉）。\
                                  要实时跟着看就点「在终端里跟随」，它会开一个独立窗口。",
@@ -429,13 +413,7 @@ pub fn exec_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEleme
             .child(
                 v_flex()
                     .gap_1()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_bold()
-                            .text_color(theme::text())
-                            .child(format!("执行命令 —— {}", exec.container)),
-                    )
+                    .child(modal_title(format!("执行命令 —— {}", exec.container)))
                     .child(div().text_xs().text_color(theme::text_dim()).child(
                         "使用 /bin/sh 执行，支持管道和重定向，不提供 TTY；交互程序请用容器列表「更多 → 终端」。",
                     )),
@@ -493,13 +471,7 @@ pub fn export_overlay(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     modal_scrim(
         "export",
         modal_card(ModalSize::Medium)
-            .child(
-                div()
-                    .text_lg()
-                    .font_bold()
-                    .text_color(theme::text())
-                    .child(format!("正在导出 {}", progress.name)),
-            )
+            .child(modal_title(format!("正在导出 {}", progress.name)))
             .child(
                 v_flex()
                     .w_full()
