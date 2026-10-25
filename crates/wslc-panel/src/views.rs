@@ -2862,7 +2862,12 @@ fn db_loading(busy: bool) -> AnyElement {
             .justify_center()
             .gap_2()
             .child(Spinner::new())
-            .child(div().text_sm().text_color(theme::text_dim()).child("正在读取…"))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme::text_dim())
+                    .child("正在读取…"),
+            )
             .into_any_element();
     }
     v_flex()
