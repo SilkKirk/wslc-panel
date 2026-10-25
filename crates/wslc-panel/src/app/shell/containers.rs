@@ -79,7 +79,7 @@ impl Shell {
             // 内容要现读 `Shell`（输入框的值 + 预览行），所以每帧重建。
             let body = {
                 let shell = entity.read(cx);
-                crate::views::prompt_dialog_content(&shell, &entity, cx)
+                crate::views::prompt_dialog_content(shell, &entity, cx)
                     .unwrap_or_else(|| div().into_any_element())
             };
             dialog
