@@ -503,7 +503,7 @@ pub(crate) fn grant_kind_row(current: GrantKind, entity: &Entity<Shell>) -> AnyE
 /// 「放到后台」= 只收遮罩，**不**打断备份（这一版本来也打断不了，
 /// 见 `Shell::cancel_db_backup`）。按钮不叫「知道了」：那个名字会让人以为
 /// 它取消的是备份。
-pub fn db_backup_progress(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
+pub(crate) fn db_backup_progress_body(db: &DbState) -> AnyElement {
     let Some(state) = db.backup.as_ref() else {
         return div().into_any_element();
     };
@@ -511,49 +511,26 @@ pub fn db_backup_progress(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
         return div().into_any_element();
     }
 
-    let dismiss = {
-        let entity = entity.clone();
-        Button::new("db-backup-dismiss")
-            .label("放到后台")
-            .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.cancel_db_backup(cx));
-            })
-    };
-
-    modal_scrim(
-        "db-backup-progress",
-        modal_card(ModalSize::Narrow)
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(modal_title(format!("正在备份 {}", state.database)))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::text_dim())
-                            .child(format!("目标文件：{}", state.windows_path.display())),
-                    ),
-            )
-            .child(div().text_sm().text_color(theme::text_muted()).child(
-                "在容器里执行 mysqldump，一般几十秒内结束（大库会久一些）。\
-                     完成后会在 Windows 侧存一份档案，容器内 /tmp 也留一份用于恢复。",
-            ))
-            .child(
-                h_flex()
-                    .w_full()
-                    .justify_end()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme::text_muted())
-                            .child("备份中…"),
-                    )
-                    .child(dismiss),
-            ),
-    )
-    .into_any_element()
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child(format!("目标文件：{}", state.windows_path.display())),
+        )
+        .child(div().text_sm().text_color(theme::text_muted()).child(
+            "在容器里执行 mysqldump，一般几十秒内结束（大库会久一些）。\
+             完成后会在 Windows 侧存一份档案，容器内 /tmp 也留一份用于恢复。",
+        ))
+        .child(
+            div()
+                .text_sm()
+                .text_color(theme::text_muted())
+                .child("备份中…"),
+        )
+        .into_any_element()
 }
 
 /// 导入进度浮层（导入跑着的时候盖在页面上）。
@@ -566,7 +543,7 @@ pub fn db_backup_progress(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
 ///
 /// 见函数体里那段注释：遮罩挡住整页 + 导入是分钟级的，没有关闭途径时用户
 /// 会被锁在屏幕前。收起来不等于取消。
-pub fn db_import_progress(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
+pub(crate) fn db_import_progress_body(db: &DbState) -> AnyElement {
     let Some(state) = db.import.as_ref() else {
         return div().into_any_element();
     };
@@ -581,50 +558,21 @@ pub fn db_import_progress(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
         .map(|d| format!("导入到 {d}"))
         .unwrap_or_else(|| "导入到文件里指定的库".to_owned());
 
-    // ⚠️ 这个按钮是**必需的**：浮层带 `.occlude()`，遮罩挡住整页，而导入是
-    // 分钟级的（几百 MB 的 dump / 容器刚停时 `container cp` 会卡住）。
-    // 没有关闭途径时，那段时间用户既看不到进度、又点不到任何按钮 ——
-    // 连"去容器页看看它是不是挂了"都做不到。
-    // 收起来**不等于取消**：导入继续跑，完成后照样发提示、照样重读列表。
-    let dismiss = {
-        let entity = entity.clone();
-        Button::new("db-import-dismiss")
-            .label("放到后台")
-            .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.dismiss_db_import(cx));
-            })
-    };
-
-    modal_scrim(
-        "db-import-progress",
-        modal_card(ModalSize::Narrow)
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(modal_title(format!("正在导入 {}", state.file_name)))
-                    .child(div().text_xs().text_color(theme::text_dim()).child(target)),
-            )
-            .child(div().text_sm().text_color(theme::text_muted()).child(
-                "先把文件送进容器，再让容器里的 mysql 读它。\
-                     大文件会慢一些 —— 完成后这里会自动关掉，列表也会重读一次。",
-            ))
-            .child(
-                h_flex()
-                    .w_full()
-                    .justify_end()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme::text_muted())
-                            .child("导入中…"),
-                    )
-                    .child(dismiss),
-            ),
-    )
-    .into_any_element()
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(div().text_xs().text_color(theme::text_dim()).child(target))
+        .child(div().text_sm().text_color(theme::text_muted()).child(
+            "先把文件送进容器，再让容器里的 mysql 读它。\
+             大文件会慢一些 —— 完成后这里会自动关掉，列表也会重读一次。",
+        ))
+        .child(
+            div()
+                .text_sm()
+                .text_color(theme::text_muted())
+                .child("导入中…"),
+        )
+        .into_any_element()
 }
 
 /// 某个库的**备份列表**浮层（v0.8）——也是这个库「备份 / 恢复」的唯一入口。

@@ -335,10 +335,7 @@ impl Render for Shell {
         // 它盖住页面、看着像弹窗，而且塞不下"树 + 编辑器 + 表格"三块。
 
         // 备份进度（跑着才有内容）与备份列表（点「备份」打开）。
-        let db_backup_progress: AnyElement = match &state.db {
-            Some(db) => views::db_backup_progress(db, &entity),
-            None => div().into_any_element(),
-        };
+        // NOTE: 备份进度走官方 Dialog 栈（DialogKey::DbBackupProgress）。
         let db_backup_dialog: AnyElement = match &state.db {
             Some(db) => match self.db_form.as_ref() {
                 // `db_form` 只用来判断"页面进得来没有"（浮层自己一个输入框都不读）。
@@ -350,10 +347,7 @@ impl Render for Shell {
             None => div().into_any_element(),
         };
         // 导入进度（跑着才有内容）。
-        let db_import_progress: AnyElement = match &state.db {
-            Some(db) => views::db_import_progress(db, &entity),
-            None => div().into_any_element(),
-        };
+        // NOTE: 导入进度走官方 Dialog 栈（DialogKey::DbImportProgress）。
 
         // 部署页（v0.9）的三个浮层：
         // - 「添加部署 / 重新部署」要 `cx`（读那五格输入框的值）；
@@ -614,8 +608,6 @@ impl Render for Shell {
             // 漏挂不会编译失败、也不会运行时报错，只是"点了没反应"。
             // 备份进度要盖住它打开时所处的一切；备份列表在进度之后
             //（进度跑完自动关，那时列表还在）。
-            .child(db_backup_progress)
-            .child(db_import_progress)
             .child(db_backup_dialog)
             // ⚠️ **通用二次确认必须挂在最后一个。**
             //

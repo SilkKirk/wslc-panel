@@ -162,7 +162,7 @@ pub(crate) fn db_header(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
     // 「备份中 / 导入中」的**常驻**标记。
     //
     // 它和浮层是**两件事**，不是重复：
-    // - 浮层（`db_backup_progress` / `db_import_progress`）带遮罩，会挡住整页；
+    // - 浮层（`db_backup_progress_body` / `db_import_progress_body`，现在跑在官方 `Dialog` 栈里）会挡住整页；
     // - 这一行是**不挡任何东西**的状态说明，浮层开着时它在底下（看不见），
     //   用户点「放到后台」把遮罩收掉之后，它就是唯一的"还在跑"的证据。
     //

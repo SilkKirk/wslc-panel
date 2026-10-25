@@ -761,7 +761,24 @@ impl Shell {
         if self.state.exporting.is_some() {
             desired.push(DialogKey::Export);
         }
-
+        // 备份 / 导入进度：`dismissed` 时不进栈（用户点过「放到后台」），
+        // 但任务照跑 —— 所以它**只影响浮层**，不影响任务本身。
+        if self
+            .state
+            .db
+            .as_ref()
+            .is_some_and(|db| db.backup.as_ref().is_some_and(|b| !b.dismissed))
+        {
+            desired.push(DialogKey::DbBackupProgress);
+        }
+        if self
+            .state
+            .db
+            .as_ref()
+            .is_some_and(|db| db.import.as_ref().is_some_and(|i| !i.dismissed))
+        {
+            desired.push(DialogKey::DbImportProgress);
+        }
         if desired == self.dialog_stack {
             return;
         }
@@ -856,7 +873,93 @@ impl Shell {
                         .child(content.clone())
                         .footer(modal_footer([cancel.into_any_element()]))
                 });
-            }
+        }
+        DialogKey::DbBackupProgress => {
+            let Some(db) = self.state.db.as_ref() else {
+                return;
+            };
+            let Some(b) = db.backup.as_ref() else {
+                return;
+            };
+            let title = format!("正在备份 {}", b.database);
+            let entity = cx.entity();
+            let content = {
+                let view_entity = entity.clone();
+                cx.new(move |cx| {
+                    ShellView::new(
+                        view_entity,
+                        move |shell, _cx| match shell.state.db.as_ref() {
+                            Some(db) => crate::views::db_backup_progress_body(db),
+                            None => div().into_any_element(),
+                        },
+                        cx,
+                    )
+                })
+            };
+            window.open_dialog(cx, move |dialog, _window, _cx| {
+                let dismiss = {
+                    let entity = entity.clone();
+                    Button::new("db-backup-dismiss")
+                        .label("放到后台")
+                        .small()
+                        .on_click(move |_, window, cx| {
+                            entity.update(cx, |shell, cx| shell.cancel_db_backup(cx));
+                            window.close_dialog(cx);
+                        })
+                };
+                dialog
+                    .title(title.clone())
+                    .w(px(560.))
+                    .overlay(true)
+                    .overlay_closable(false)
+                    .keyboard(false)
+                    .child(content.clone())
+                    .footer(modal_footer([dismiss.into_any_element()]))
+            });
+        }
+        DialogKey::DbImportProgress => {
+            let Some(db) = self.state.db.as_ref() else {
+                return;
+            };
+            let Some(i) = db.import.as_ref() else {
+                return;
+            };
+            let title = format!("正在导入 {}", i.file_name);
+            let entity = cx.entity();
+            let content = {
+                let view_entity = entity.clone();
+                cx.new(move |cx| {
+                    ShellView::new(
+                        view_entity,
+                        move |shell, _cx| match shell.state.db.as_ref() {
+                            Some(db) => crate::views::db_import_progress_body(db),
+                            None => div().into_any_element(),
+                        },
+                        cx,
+                    )
+                })
+            };
+            window.open_dialog(cx, move |dialog, _window, _cx| {
+                let dismiss = {
+                    let entity = entity.clone();
+                    Button::new("db-import-dismiss")
+                        .label("放到后台")
+                        .small()
+                        .on_click(move |_, window, cx| {
+                            entity.update(cx, |shell, cx| shell.dismiss_db_import(cx));
+                            window.close_dialog(cx);
+                        })
+                };
+                dialog
+                    .title(title.clone())
+                    .w(px(560.))
+                    .overlay(true)
+                    .overlay_closable(false)
+                    .keyboard(false)
+                    .child(content.clone())
+                    .footer(modal_footer([dismiss.into_any_element()]))
+            });
         }
     }
+}
 }

@@ -54,6 +54,10 @@ pub(crate) use state::*;
 pub(crate) enum DialogKey {
     /// 「正在导出」进度对话框。
     Export,
+    /// 「正在备份数据库」进度对话框。
+    DbBackupProgress,
+    /// 「正在导入 SQL」进度对话框。
+    DbImportProgress,
 }
 
 /// 应用外壳。
