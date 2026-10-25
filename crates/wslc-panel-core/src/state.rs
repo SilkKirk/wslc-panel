@@ -6053,6 +6053,12 @@ mod tests {
     }
 
     #[test]
+    // ⚠️ `field_reassign_with_default`：这个测试要造**四种**不同的
+    // `storage` 组合（无 VHD / 无卷 / 正常 / 卷容量 0），而 `Snapshot` 有
+    // 11 个字段。用 `Snapshot { storage: …, ..Default::default() }` 的话
+    // 每处都得重复一遍结构体名，反而把"这个测试只关心 storage"埋掉了。
+    // 所以这里保留 `let mut snap = Snapshot::default(); snap.storage = …`。
+    #[allow(clippy::field_reassign_with_default)]
     fn dashboard_stats_storage_ring_needs_both_the_vhd_and_the_disk() {
         // 缺哪一半都不出百分比：这是**一个比例**，只有分子或只有分母都是编数字。
         // VHD 还没建出来（新装的会话）

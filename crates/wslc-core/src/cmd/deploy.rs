@@ -243,10 +243,13 @@ pub fn copy_sources(
         wslc.run_with_timeout(&refs, COPY_TIMEOUT)?
             .into_result()
             .map_err(|e| {
-                Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("复制 {} 失败：{e}", member.display()),
-                ))
+                // `io::Error::other`（1.74 稳定）比 `new(ErrorKind::Other, …)`
+                // 短，而且 clippy 的 `io_other_error` 会盯着旧写法。
+                // 本 crate 的 MSRV 是 1.85，用它没有兼容性代价。
+                Error::Io(std::io::Error::other(format!(
+                    "复制 {} 失败：{e}",
+                    member.display()
+                )))
             })?;
     }
     Ok(members)
@@ -276,16 +279,16 @@ pub fn verify_copy(
 
     match actual {
         Some(count) if count >= expected as u64 => Ok(count),
-        Some(count) => Err(Error::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!(
-                "文件没有真的传进去：目标目录 {target} 里只有 {count} 个条目，\
-                 而这次要传 {expected} 个。多半是容器没在运行 —— \
-                 `wslc container cp` 在这种情况下**不报错**（实测 exit 0），\
-                 所以面板只能靠数一遍发现。"
-            ),
-        ))),
-        // 目录不在（`count_entries_script` 给的哨兵）
+        // 同上一处：用 `io::Error::other`（clippy 的 `io_other_error`）。
+        Some(count) => Err(Error::Io(std::io::Error::other(format!(
+            "文件没有真的传进去：目标目录 {target} 里只有 {count} 个条目，\
+             而这次要传 {expected} 个。多半是容器没在运行 —— \
+             `wslc container cp` 在这种情况下**不报错**（实测 exit 0），\
+             所以面板只能靠数一遍发现。"
+        )))),
+        // 目录不在（`count_entries_script` 给的哨兵）。
+        // ⚠️ 这条**不能**用 `io::Error::other`：`NotFound` 是有意义的类别
+        // （调用方靠它区分"目录没建成"和"数量不对"）。
         None => Err(Error::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             format!("目标目录 {target} 没建成 —— 容器可能刚被停掉"),
@@ -330,12 +333,13 @@ pub fn probe_state(
     Ok(deploy::parse_probe_output(kind, &output))
 }
 
-/// 只判活（不带文件数）。
-///
-/// ⚠️ 这里**没有** `is_running()` 那样的"单独判活"入口了（v0.9.13 删掉的）：
-/// 界面上每一行问的都是 [`probe_state`]（一条脚本同时拿到"跑没跑"和"目录里
-/// 有几个文件"），单独再开一个入口只会是"没人用的公共 API"。
-/// 真要单问，把 [`deploy::status_script`] 交给 `run_script` 就是那一段。
+// ⚠️ 这里原本有一段 doc 注释（"只判活（不带文件数）…"），但它底下直接跟着
+// 空行 + `read_log` 的文档 —— 于是 rustdoc 把那段话当成了 `read_log` 的说明，
+// 而它讲的是**另一个不存在的函数**（`is_running`，v0.9.13 删掉的那个）。
+// clippy 的 `empty_line_after_doc_comments` 报的就是这个。
+//
+// 那段话本身是有价值的（它解释了"为什么没有单独判活的入口"），所以改成
+// 普通注释留在这里，而不是删掉。
 
 /// 读应用日志的最后 [`LOG_TAIL_LINES`] 行。
 pub fn read_log(wslc: &Wslc, container: &str, dir: &str) -> Result<String> {

@@ -341,11 +341,12 @@ pub fn explain_failure(exit_code: Option<i32>, text: &str) -> String {
 
 /// 把一段可能很长的输出压成一行、限长，给错误消息用。
 fn brief(text: &str) -> String {
+    // ⚠️ 原来这里是 `.replace('\r', " ").replace('\n', " ")` 再
+    // `split_whitespace()`。那两步是**多余**的：`split_whitespace()`
+    // 按定义就把 `\r` / `\n` / 连续空白全当成 ASCII 空白，行为一模一样
+    // （clippy 的 `collapsible_str_replace` 报的就是它）。
+    // 去掉之后语义不变，还少两次整串扫描 —— 这段输入可能是几十 KB 的 JSON。
     let flat = text
-        .trim()
-        .replace('\r', " ")
-        .replace('\n', " ")
-        // 连续空白压成一个，免得错误消息里出现一大段空格（JSON 正文经常这样）
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
@@ -363,6 +364,28 @@ fn brief(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn brief_flattens_whitespace_and_caps_the_length() {
+        // `brief` 出现在**每一条**更新检查错误消息里（HTTP 错 / curl 退出码 /
+        // 请求失败），所以它的行为值得钉住。这条是改实现时补的：原先那两步
+        // `\r`/`\n` → 空格 被 `split_whitespace()` 覆盖，去掉后必须等价。
+        assert_eq!(brief("  a\r\nb  \tc  "), "a b c");
+        // 多个空行 / 连续空白也压成一个
+        assert_eq!(brief("a\r\n\r\n\r\n  b"), "a b");
+        // 空 / 只有空白 → 一句占位（不要给用户一个空的错误消息）
+        assert_eq!(brief(""), "（没有更多信息）");
+        assert_eq!(brief("  \r\n\t "), "（没有更多信息）");
+        // 超长按**字符**截断（按字节切会在多字节字符中间 panic）
+        let long = "汉".repeat(260);
+        let out = brief(&long);
+        assert_eq!(out.chars().count(), 201, "200 个字符 + 一个省略号");
+        assert!(out.ends_with('…'), "{out}");
+        // 正好 200 个字符：不加省略号
+        assert_eq!(brief(&"汉".repeat(200)).chars().count(), 200);
+        // 多字节边界：200 个字符里最后一个不能是半个
+        assert!(brief(&"汉".repeat(201)).starts_with("汉"));
+    }
 
     /// 本机真实抓下来的 `releases/latest` 响应（2026-10-21，未认证，6635 字节）。
     ///

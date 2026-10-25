@@ -1438,12 +1438,14 @@ pub fn site_conf(
 ///
 /// `$` 也要转义：nginx 在双引号里**仍然**会做变量替换，路径里带 `$` 会被吃掉。
 fn nginx_quote(value: &str) -> String {
+    // ⚠️ **替换顺序有依赖，别合并这几个**：先转义 `\` 再转义 `"`，
+    // 否则 `"` 变成的 `\"` 会被第一步再加一层（`\\"`）。
+    // 只有最后两个可以合并 —— 它们互不影响、都是"删掉"。
     value
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('$', "\\$")
-        .replace('\r', "")
-        .replace('\n', "")
+        .replace(['\r', '\n'], "")
 }
 
 /// 规范化反代上游：接受 `host:port` / `http://host:port` / `https://host:port`。

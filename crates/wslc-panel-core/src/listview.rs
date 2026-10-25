@@ -98,7 +98,10 @@ pub fn visible_containers<'a>(
         // `sort_by` 是稳定排序；但 Default 根本不排序，直接保持原序。
         ContainerSort::Default => {}
         ContainerSort::Name => {
-            visible.sort_by_cached_key(|summary| (*summary).item.display_name().to_lowercase());
+            // ⚠️ 别写 `(*summary)`：闭包参数的类型是 `&&ContainerSummary`，
+            // 字段访问本来就会自动解引用，手写那一下会被 clippy 的
+            // `explicit_auto_deref` 报出来（日志里那 5 条就是它）。
+            visible.sort_by_cached_key(|summary| summary.item.display_name().to_lowercase());
         }
         ContainerSort::State => {
             // `(false, name)` 排在 `(true, name)` 前面 —— false = 运行中。
@@ -106,8 +109,8 @@ pub fn visible_containers<'a>(
             // 可能换一个排列，用户会以为容器在乱跳）。
             visible.sort_by_cached_key(|summary| {
                 (
-                    !(*summary).item.is_running(),
-                    (*summary).item.display_name().to_lowercase(),
+                    !summary.item.is_running(),
+                    summary.item.display_name().to_lowercase(),
                 )
             });
         }

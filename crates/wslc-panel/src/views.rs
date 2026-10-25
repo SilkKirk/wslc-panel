@@ -2054,7 +2054,11 @@ fn sql_editor_pane(
                 // 眼睛从代码往下扫的第一站应该就是执行。
                 .child(run)
                 .child(div().flex_1())
-                .child(sql_target_db(db, entity, &account)),
+                // 这里**不要**写 `&account`：参数类型是 `&str`，而 `String`
+                // 会自动借成 `&str`；写成 `&account` 多一层引用
+                // （clippy 的 `needless_borrow`）。`account` 在这句之后不再用到，
+                // 所以直接传也不会被移动影响。
+                .child(sql_target_db(db, entity, account)),
         )
         // SQL 编辑器本体：行号 / 缩进线 / SQL 语法高亮都来自 `Editor`
         // （`language("sql")` 是在 `ensure_db_form` 里设的）。
@@ -4248,7 +4252,9 @@ pub fn deploy_page(shell: &Shell, _cx: &App, entity: &Entity<Shell>) -> AnyEleme
             deploy
                 .error
                 .as_ref()
-                .map(|failure| deploy_failure_banner(failure)),
+                // 直接传函数本身，不写 `|failure| f(failure)`
+                // （clippy 的 `redundant_closure`）。
+                .map(deploy_failure_banner),
         )
         .child(body)
         .into_any_element()

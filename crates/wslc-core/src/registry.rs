@@ -190,7 +190,9 @@ pub fn split_input(input: &str) -> Result<(String, Option<String>), String> {
     let mut name = text;
     let mut tag: Option<String> = None;
     if let Some(colon) = text.rfind(':') {
-        let after_slash = last_slash.map_or(true, |slash| colon > slash);
+        // `is_none_or`（1.82 稳定，本 crate 的 MSRV 是 1.85）比
+        // `map_or(true, …)` 直白 —— clippy 的 `unnecessary_map_or` 报的就是它。
+        let after_slash = last_slash.is_none_or(|slash| colon > slash);
         if after_slash {
             name = &text[..colon];
             let raw = text[colon + 1..].trim();

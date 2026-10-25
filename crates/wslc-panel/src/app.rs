@@ -649,6 +649,7 @@ pub(crate) struct DbPageForm {
     /// ⚠️ 两者 API 很像但不完全一样：
     /// - 取值：`EditorState::text()`，不是 `InputState::value()`；
     /// - 赋值：两者都有 `set_value(text, window, cx)`。
+    ///
     /// 别猜，看 `gpui-kit` 的 `examples/editor/src/main.rs`，两种用法都在那儿。
     pub(crate) sql: Entity<EditorState>,
 }
@@ -1238,6 +1239,62 @@ struct SiteStep {
     note: Option<String>,
     /// 致命错误（`nginx -t` 没过、conf 删不掉）；`Some` 时 `site` 保留旧值。
     error: Option<String>,
+}
+
+/// 数据库动作弹窗「校验通过之后要执行的东西」。
+///
+/// 形状是 `(SQL, 标题, 要记进本地存档的账号)`：
+///
+/// - 第 1 样是拼好的 SQL（多段用 `; ` 连接，实测能跑）；
+/// - 第 2 样是提示条里的动词（"新建数据库" / "改密码"……）；
+/// - 第 3 样**只在「建库同时建用户」时有值**：`(库, 用户, 密码)`。
+///   它必须等 SQL **执行成功**之后才写进本地存档 —— 列表上不能出现一个
+///   MySQL 里根本不存在的账号。
+///
+/// # 为什么要一个别名
+///
+/// 这个三元组原先直接写在 `submit_db_dialog` 的 `let prepared:` 里，
+/// 那行的类型长这样：
+///
+/// ```text
+/// wslc_core::Result<Option<(String, &'static str, Option<(String, String, String)>)>>
+/// ```
+///
+/// clippy 的 `type_complexity` 会报（它确实很难一眼看懂）。起个名字之后
+/// 那个 `let` 只剩下"这是个 Result"，而**具体形状在这里有文档**。
+type PreparedDbSql = (String, &'static str, Option<(String, String, String)>);
+
+/// 一次「在后台执行一条 DDL、成功后重读列表」的请求。
+///
+/// # 为什么打成结构体
+///
+/// `run_db_statement` 原先有 9 个参数（含 `&mut self` / `&mut Window` /
+/// `&mut Context`），clippy 的 `too_many_arguments` 按 7 个算就超了。
+/// `window` / `cx` 是 GPUI 的既定形状（不能并进业务字段），所以把**业务字段**
+/// 收成一个结构体：签名降到 4 个，而调用点从
+///
+/// ```text
+/// run_db_statement(container, bin, creds, sql, title, to_record, window, cx)
+/// ```
+///
+/// 变成 `run_db_statement(DbStatement { container, bin, … }, window, cx)` ——
+/// **每个值叫什么名字在调用点就能看见**（原来那 6 个同类型的 `String`
+/// 参数顺序错了编译器也不报）。
+struct DbStatement {
+    /// 目标容器。
+    container: String,
+    /// 容器里的客户端二进制（探测得来的）。
+    bin: String,
+    /// 执行用的账号。
+    creds: MysqlCreds,
+    /// 拼好的 DDL / 多段 SQL。
+    sql: String,
+    /// 提示条里的动词（"新建数据库" / "改密码"……）。
+    title: &'static str,
+    /// 「建库同时建用户」的账号 —— SQL **成功之后**才写进本地存档
+    ///（列表里展示的就是它）。放在执行**前**传进来，是因为弹窗已经关了，
+    /// 输入框的值拿不到了。
+    to_record: Option<(String, String, String)>,
 }
 
 impl Shell {
@@ -4810,17 +4867,17 @@ impl Shell {
         cx.notify();
     }
 
-    /// 提交动作弹窗。
-    ///
-    /// 这里最重要的一条：**参数不合法就在本地拦下，不关弹窗** ——
-    /// 用户就在那一格里，改一个字比重打一遍强（`AGENTS.md` §7.5 的
-    /// 「空值等于没填」也是这个思路）。
-    ///
-    /// 「建库同时建用户」（v0.8）返回第三样 `to_record`：账号要等 SQL
-    /// **成功之后**才写进本地存档 —— 列表上不能出现一个 MySQL 里
-    /// 根本不存在的账号。所有段**先都拼出来、都校验过**再合并成一条
-    /// `-e`（`;` 分隔，实测能跑）—— 半途失败时一条都不会发出去，
-    /// 不会留下"建了库没建用户"的半成品。
+/// 提交动作弹窗。
+///
+/// 这里最重要的一条：**参数不合法就在本地拦下，不关弹窗** ——
+/// 用户就在那一格里，改一个字比重打一遍强（`AGENTS.md` §7.5 的
+/// 「空值等于没填」也是这个思路）。
+///
+/// 「建库同时建用户」（v0.8）返回第三样 `to_record`：账号要等 SQL
+/// **成功之后**才写进本地存档 —— 列表上不能出现一个 MySQL 里
+/// 根本不存在的账号。所有段**先都拼出来、都校验过**再合并成一条
+/// `-e`（`;` 分隔，实测能跑）—— 半途失败时一条都不会发出去，
+/// 不会留下"建了库没建用户"的半成品。
     pub fn submit_db_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // 先把要用的东西取成 owned 的（下面要改 `self`，不能再借着它）
         // 闭包**返回 `Result<_, wslc_core::Error>`**：里面的 `?` 全是
@@ -4830,9 +4887,7 @@ impl Shell {
         // ⚠️ 类型要写**全路径** `wslc_core::Result`：app.rs 作用域里的裸
         // `Result` 来自 `gpui_kit::*`，它的默认错误类型是 anyhow —— 两个
         // "Result" 长得一样，是不同的类型（CI 抓的）。
-        let prepared: wslc_core::Result<
-            Option<(String, &'static str, Option<(String, String, String)>)>,
-        > = (|| {
+        let prepared: wslc_core::Result<Option<PreparedDbSql>> = (|| {
             let Some(dialog) = self.db_dialog.as_ref() else {
                 return Ok(None);
             };
@@ -4879,6 +4934,13 @@ impl Shell {
                 DbDialogKind::NewUser => {
                     let grant_db = text(&dialog.grant_db);
                     let host = text(&dialog.host);
+                    // ⚠️ 这里**必须**是 `then(|| …)` 而不是 `then_some(…)`：
+                    // `then_some` 是**急切**求值 —— 它会在 `grant_db` 为空时
+                    // 也构造 `("" , grant)`，而 `grant_db.as_str()` 是对
+                    // `grant_db` 的借用，急着构造会把 `grant_db` 借到
+                    // `create_user_statements` 之后（借用冲突）。
+                    // clippy 的 `unnecessary_lazy_evaluations` 看不到这一层。
+                    #[allow(clippy::unnecessary_lazy_evaluations)]
                     let grant = (!grant_db.is_empty()).then(|| (grant_db.as_str(), dialog.grant));
                     mysql_model::create_user_statements(
                         &text(&dialog.user),
@@ -4951,7 +5013,20 @@ impl Shell {
         let creds = self.db_creds(cx);
 
         self.db_dialog = None;
-        self.run_db_statement(container, bin, creds, sql, title, to_record, window, cx);
+        self.run_db_statement(
+            // 结构体字面量：每个值跟着名字走 —— 原先那 6 个 `String` 参数
+            // 顺序写错了编译器也不会报（类型一样）。
+            DbStatement {
+                container,
+                bin,
+                creds,
+                sql,
+                title,
+                to_record,
+            },
+            window,
+            cx,
+        );
     }
 
     /// SQL 控制台：执行输入框里那段脚本（**切分后逐条执行**）。
@@ -7748,18 +7823,20 @@ impl Shell {
     /// 这个只报一句成功 / 失败（表单提交的路径上没有"结果区"）。
     fn run_db_statement(
         &mut self,
-        container: String,
-        bin: String,
-        creds: MysqlCreds,
-        sql: String,
-        title: &'static str,
-        // 「建库同时建用户」的账号 —— SQL **成功之后**才写进本地存档
-        //（列表里展示的就是它）。放在执行**前**传进来，是因为弹窗已经关了，
-        // 输入框的值拿不到了。
-        to_record: Option<(String, String, String)>,
+        req: DbStatement,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 拆回局部变量：下面那句 `async move` 会逐个把它们搬走，写成
+        // `req.container` / `req.bin` 反而要在每个用的地方跟一遍 `req.`。
+        let DbStatement {
+            container,
+            bin,
+            creds,
+            sql,
+            title,
+            to_record,
+        } = req;
         if let Some(db) = self.state.db.as_mut() {
             db.busy = true;
             db.clear_error();
@@ -8751,6 +8828,12 @@ impl Shell {
         // `delete_db_backup_confirmed`，别让它掉进下面那个通用分支。
         //
         // 确认框已经 `take()` 走了（上面），所以这里 return 不会留下残影。
+        //
+        // ⚠️ clippy 的 `redundant_pattern_matching` 会建议把这段改成
+        // `matches!(…)` —— **不能改**：这里要**绑定四个字段**
+        // （container / database / windows_path / container_path），
+        // `matches!` 只能判真假、拿不到值。这是它的误报。
+        #[allow(clippy::redundant_pattern_matching)]
         if let ConfirmAction::Container(PendingAction::DeleteDatabaseBackup {
             container,
             database,

@@ -269,11 +269,18 @@ fn clamp_to_char_boundary(text: &str, mut cursor: usize) -> usize {
 ///
 /// 这是上下文补全的核心判断：`FROM ` 后面给关键字就是干扰。
 fn expects_table(prefix: &str) -> bool {
-    match last_word(prefix).as_deref() {
-        Some("FROM") | Some("JOIN") | Some("INTO") | Some("UPDATE") | Some("TABLE")
-        | Some("DESCRIBE") | Some("DESC") => true,
-        _ => false,
-    }
+    // `matches!` 比 `match { … => true, _ => false }` 短，语义一模一样
+    // （clippy 的 `match_like_matches_macro`）。
+    matches!(
+        last_word(prefix).as_deref(),
+        Some("FROM")
+            | Some("JOIN")
+            | Some("INTO")
+            | Some("UPDATE")
+            | Some("TABLE")
+            | Some("DESCRIBE")
+            | Some("DESC")
+    )
 }
 
 /// `prefix` 里最后一个词（大写、去掉反引号和标点）。

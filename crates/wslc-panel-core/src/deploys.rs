@@ -182,8 +182,11 @@ impl DeployStore {
         self.for_container(container)
             .into_iter()
             .find(|record| {
+                // ⚠️ 不写 `*record`：`find` / `filter` 的闭包参数是
+                // `&&DeployRecord`，传给 `&DeployRecord` 参数时会自动解一层
+                // （clippy 的 `explicit_auto_deref`）。
                 record.app.as_str() != app.trim()
-                    && record_binds_port(*record)
+                    && record_binds_port(record)
                     && record.port == port
             })
             .map(|record| record.app.as_str())
@@ -194,7 +197,7 @@ impl DeployStore {
         let mut out: Vec<u16> = self
             .for_container(container)
             .into_iter()
-            .filter(|record| record_binds_port(*record) && record.port > 0)
+            .filter(|record| record_binds_port(record) && record.port > 0)
             .map(|record| record.port)
             .collect();
         out.sort_unstable();
