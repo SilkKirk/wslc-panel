@@ -43,6 +43,7 @@ use gpui_kit::component::progress::ProgressCircle;
 use gpui_kit::component::table::DataTable;
 // 注意：这里**不导入** `Disableable` —— 全项目不再使用 `.disabled()`：
 // gpui-component 的禁用态文字几乎看不清，改用"守卫 + 文案"表达不可用状态。
+use gpui_kit::component::description_list::DescriptionList;
 use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 // 弹窗的入场动画要一个时长（`Animation::new(Duration)`）。
@@ -7597,15 +7598,28 @@ pub fn settings_about(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                         .text_color(theme::text())
                         .child("WSL 容器（wslc）和发行版（wsl.exe）的图形管理面板。"),
                 )
-                .child(kv("版本", env!("CARGO_PKG_VERSION")))
-                .child(kv("构建", crate::short_build_sha()))
-                // 会话名从页头挪过来：报问题时它和构建号一样有用，但不该
-                // 每页都占着页头。
-                .child(kv("会话", state.session_label()))
-                // ⚠️ 版本号要跟着 `Cargo.toml` 的 `gpui-kit` 走 —— 忘了改就会
-                // 让「关于」页显示一个**用户会当真**的错版本（报 issue 时会照抄它）。
-                // v0.17.0 起是 0.8.0。
-                .child(kv("界面库", "gpui-kit 0.8.0（GPUI）"))
+                .child(
+                    // 四条键值对 → 官方 `DescriptionList`（`bordered(false)`：
+                    // 它们已经在 `card()` 里了，再加一圈边框就是两层）。
+                    //
+                    // 用它而不是四个 `kv()` 的好处：**标签列宽自动对齐** ——
+                    // `horizontal` 是 `DescriptionList` 的默认布局，它给所有
+                    // label 同一个宽度（默认 120px）；而手写那版每行各自
+                    // `justify_between()`，"版本" / "界面库" 长度不同，
+                    // 值那一列会错开。
+                    DescriptionList::new()
+                        .bordered(false)
+                        .label_width(px(90.))
+                        .item("版本", env!("CARGO_PKG_VERSION"), 1)
+                        .item("构建", crate::short_build_sha(), 1)
+                        // 会话名从页头挪过来：报问题时它和构建号一样有用，但不该
+                        // 每页都占着页头。
+                        .item("会话", state.session_label(), 1)
+                        // ⚠️ 版本号要跟着 `Cargo.toml` 的 `gpui-kit` 走 —— 忘了改
+                        // 就会让「关于」页显示一个**用户会当真**的错版本
+                        // （报 issue 时会照抄它）。v0.17.0 起是 0.8.0。
+                        .item("界面库", "gpui-kit 0.8.0（GPUI）", 1),
+                )
                 .child(div().text_xs().text_color(theme::text_dim()).child(
                     "许可证 Apache-2.0。参考项目 owu/wsl-dashboard 是 GPL-3.0-only，\
                      只用来理解机制，没有代码进入本仓库。",
