@@ -1,8 +1,8 @@
 //! ③ 卷页。
 
 use super::common::{
-    cell_muted, cell_muted_full, cell_text, danger_button, empty_state, prompt_button, table_card,
-    table_row,
+    cell_muted, cell_muted_full, cell_text, danger_button, empty_state, list_count, prompt_button,
+    table_card, table_row,
 };
 use super::prelude::*;
 
@@ -29,7 +29,8 @@ pub fn volumes(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
         })
         .collect();
 
-    // 页头：左边计数，右边两个动作。
+    // 页头：**动作在左、计数在右** —— 和「镜像」「数据库」两页同一个形状
+    // （原先这一页反过来放，切页的人每换一页都要重新找一眼"这页有几个"）。
     //
     // 「创建卷」复用那个共用的单输入框弹窗（`PromptKind::CreateVolume`）——
     // 注意它**不属于任何发行版**，所以主体传空串（弹窗据此不画那一行）。
@@ -37,12 +38,6 @@ pub fn volumes(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
         .w_full()
         .justify_between()
         .items_center()
-        .child(
-            div()
-                .text_sm()
-                .text_color(theme::text_muted())
-                .child(format!("共 {} 个卷", state.snapshot.volumes.len())),
-        )
         .child(
             h_flex()
                 .gap_2()
@@ -64,7 +59,11 @@ pub fn volumes(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
                     )
                     .into_any_element(),
                 ),
-        );
+        )
+        .child(list_count(format!(
+            "共 {} 个卷",
+            state.snapshot.volumes.len()
+        )));
 
     v_flex().w_full().gap_3().child(header).child(table_card(
         VOLUME_COLUMNS,

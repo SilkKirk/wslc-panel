@@ -450,6 +450,21 @@ Button::new(id).label("更多").small()
 **"列太窄"有时候不是列的问题，是按钮太多。** 加第 5 个按钮之前先问一句
 "它该不该进「更多」"。细节见 `docs/PLAN-v0.9.md` §20。
 
+### 组件选型：这几个**评估过、不换**（别再论证一遍）
+
+"官方组件有就用"是默认方向，但下面四个官方组件核过源码之后**决定不用**。
+每一条都有代价，写在这里免得下一轮重新走一遍：
+
+| 官方组件 | 我们现在用什么 | 为什么不换 |
+|---|---|---|
+| `group_box::GroupBox` | `common::card()`（17 处） | `title_style` / `content_style` 收的是 `StyleRefinement`，要构造它得先建个 `div`、链式设完再从 `style()` 取（很别扭）；而且 `GroupBox::render` 在内容外**多套一层**（`gap_2`），17 张卡的间距会整体变。颜色（`bg_card` / `border`）还得逐项覆盖。收益只剩"标题字号跟组件主题走" |
+| `separator::Separator` | `border_b_1()`（4 处） | `horizontal()` 的实现是"容器高度 0 + 绝对定位的 1px 线"，替换掉 `border` 会让布局**少 1px**，且在滚动容器里贴不到正确位置。4 处 border 不值得 |
+| `skeleton::Skeleton` | "正在读取…" / 官方 `Spinner` | 本项目的等待大多**有进度**（安装 / 导出 / 导入）；真正没进度的只有"读表结构、查 registry tag"两处，而它们已经有 `Spinner`（`db_loading`）。铺 Skeleton 要先为每块布局造形状，收益是"感知性能"，代价是每处都要维护假盒子 |
+| `badge::Badge` | `Tag::custom`（`common::badge`） | `Badge` 是**数字 / 红点角标**（`.count()` / `.dot()`），不是文字胶囊。文字胶囊的官方组件就是 `Tag`，而 `common::badge` 用的正是 `Tag::custom` —— 已经是官方用法 |
+
+> 判断标准不是"有没有官方组件"，而是"换过去之后**行为/观感/维护成本**里
+> 至少一项明确变好"。只变"更像官方的写法"不算。
+
 ### 计划文档
 
 `docs/PLAN-*.md` 是分阶段计划，`docs/SPIKE.md` 是前期技术验证，

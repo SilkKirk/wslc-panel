@@ -1,7 +1,8 @@
 //! ③ 网络页。
 
 use super::common::{
-    cell_muted, cell_muted_full, cell_text, danger_button, empty_state, table_card, table_row,
+    cell_muted, cell_muted_full, cell_text, danger_button, empty_state, list_count, table_card,
+    table_row,
 };
 use super::prelude::*;
 
@@ -52,12 +53,10 @@ pub fn networks(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
     v_flex()
         .w_full()
         .gap_3()
-        .child(
-            div()
-                .text_sm()
-                .text_color(theme::text_muted())
-                .child(format!("共 {} 个网络", state.snapshot.networks.len())),
-        )
+        .child(list_count(format!(
+            "共 {} 个网络",
+            state.snapshot.networks.len()
+        )))
         .child(body)
 }
 

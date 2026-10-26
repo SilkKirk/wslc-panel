@@ -2,7 +2,7 @@
 
 use super::common::{
     cell_muted, cell_text, cell_text_full, danger_button, disclosure, empty_state, form_field,
-    table_card, table_row,
+    list_count, table_card, table_row,
 };
 use super::prelude::*;
 
@@ -106,12 +106,7 @@ pub fn images(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                 .justify_between()
                 .items_center()
                 .child(open_pull)
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme::text_muted())
-                        .child(status),
-                ),
+                .child(list_count(status)),
         )
         .child(body)
         .into_any_element()

@@ -4,7 +4,7 @@
 
 use super::common::{
     NoContainer, REOPEN_DB_PAGE, badge, card, cell_muted, cell_text, danger_button, empty_state,
-    form_field, log_text, overlay_button, page_empty, tab_bar, table_card, table_row,
+    form_field, list_count, log_text, overlay_button, page_empty, tab_bar, table_card, table_row,
 };
 use super::prelude::*;
 
@@ -794,12 +794,7 @@ pub(crate) fn db_databases_card(
                 // 页头只剩「新建数据库…」：库级动作（导入备份 / SQL / 备份 /
                 // 删除）全在下面每一行上。
                 .children(head_buttons)
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme::text_muted())
-                        .child(count_text),
-                ),
+                .child(list_count(count_text)),
         )
         .child(body)
         .into_any_element()
@@ -996,12 +991,7 @@ pub(crate) fn db_users_card(
                 .justify_between()
                 .items_center()
                 .children(head_buttons)
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme::text_muted())
-                        .child(count_text),
-                ),
+                .child(list_count(count_text)),
         )
         .child(body)
         .into_any_element()

@@ -607,6 +607,30 @@ impl Render for ShellView {
     }
 }
 
+/// 列表页的**计数行**：「共 N 个 X」这类一句话。
+///
+/// # 为什么要收
+///
+/// 8 个列表页原先各写一份 `div().text_sm().text_color(text_muted()).child(…)`，
+/// 而且排布不一样：`images` / `database` 是"动作在左、计数在右"，
+/// `volumes` 反过来（计数在左），`networks` 只有计数。
+/// 同一类信息在不同页面上字号相同、颜色相同、**位置不同**，用户每换一页都要
+/// 重新找一遍"这页有几个"。
+///
+/// 现在：计数统一走这里，页头统一成**动作在左、计数在右**
+/// （`images` / `volumes` / 数据库两张表都是这个形状）。
+///
+/// ⚠️ 它只管**一句话**。带解释的长句（部署页那句"「部署过什么」来自面板自己的
+/// 存档……"、实例页那行"共 N 个发行版 · M 个在运行 · 磁盘合计 …"）仍留在
+/// 调用点自己拼 —— 收进来只会把 `text_xs` / `text_dim` 那几档也搅乱。
+pub(crate) fn list_count(text: impl Into<SharedString>) -> AnyElement {
+    div()
+        .text_sm()
+        .text_color(theme::text_muted())
+        .child(text.into())
+        .into_any_element()
+}
+
 /// 单元格文字。
 pub(crate) fn cell_text(text: impl Into<SharedString>) -> AnyElement {
     div()
