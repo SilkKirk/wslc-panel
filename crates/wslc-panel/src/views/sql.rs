@@ -35,7 +35,7 @@ use super::prelude::*;
 /// `DefiniteLength`（px / relative / auto），没有 flex 语义。而 `DataTable`
 /// 恰恰相反 —— 它是虚拟滚动的，**必须**知道自己多高，所以那一边用
 /// `flex_1 + min_h_0` 让布局算出一个确定值。
-pub fn sql_console_page(
+pub(crate) fn sql_console_page(
     shell: &Shell,
     form: &DbPageForm,
     cx: &App,

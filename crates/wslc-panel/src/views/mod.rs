@@ -67,23 +67,22 @@ use prelude::*;
 // 这正是「唯一需要认识所有页面的地方」该有的样子（加一个页面就会在这里
 // 编译失败，而不是渲染成一页空白）。
 //
-// ⚠️ 名字与模块同名的那些（`dashboard` / `containers` / `images` …）**也要写**：
-// `use common::dashboard;` 引入的是**函数** `dashboard`，`mod dashboard;` 引入的
-// 是**模块**，两者在同一个命名空间里互不冲突 —— 但少了 `use` 这一行，
-// `dashboard(state)` 就只剩模块名，报 `cannot find function`。
-// （这一条是 CI 抓出来的，不是推的。）
+// 命名统一成 `<模块>::<模块>_page`：入口名**刻意不与模块同名** ——
+// 同名时要靠 `use dashboard::dashboard;` 把函数引进命名空间，而"少了这一行
+// 就只剩模块名、报 cannot find function"是本文件踩过的坑（v0.18 那条注释）。
+// 带 `_page` 后缀之后，`use` 与调用点都不再有这层歧义。
 use common::{REOPEN_DB_PAGE, empty_state};
-use containers::containers;
-use dashboard::dashboard;
-use database::database;
+use containers::containers_page;
+use dashboard::dashboard_page;
+use database::database_page;
 use deploy::deploy_page;
-use images::images;
-use install::add_instance;
-use instances::instances;
-use networks::networks;
-use settings::app_settings;
+use images::images_page;
+use install::add_instance_page;
+use instances::instances_page;
+use networks::networks_page;
+use settings::settings_page;
 use sql::sql_console_page;
-use volumes::volumes;
+use volumes::volumes_page;
 
 /// 渲染当前页面。
 ///
@@ -93,24 +92,24 @@ use volumes::volumes;
 ///
 /// `cx` 只有「添加实例」页用得上（要从输入框里实时读值做命令预览），
 /// 但签名统一收着更省事 —— 免得每加一个需要它的页面就改一次分发。
-pub fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
+pub(crate) fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
     let state = &shell.state;
     match state.page {
         // 基本信息页只读快照（不起进程、不需要输入框），所以不用 entity。
-        Page::Dashboard => dashboard(state).into_any_element(),
+        Page::Dashboard => dashboard_page(state).into_any_element(),
         // 这几个直接返回 `AnyElement`，不再多套一层转换。
-        Page::Instances => instances(state, entity),
-        Page::AddInstance => add_instance(shell, cx, entity),
+        Page::Instances => instances_page(state, entity),
+        Page::AddInstance => add_instance_page(shell, cx, entity),
         // 「容器」页要读搜索框（`InputState`）并触发筛选，所以收 `&Shell` + `&App`。
-        Page::Containers => containers(shell, cx, entity).into_any_element(),
+        Page::Containers => containers_page(shell, cx, entity).into_any_element(),
         // 「镜像」页只要 `&AppState`：v0.6.3 起拉取表单在弹窗里（那个要 `&Shell`，
-        // 见 `pull_dialog_overlay`），页面本身只剩一个按钮和一张表。
-        Page::Images => images(state, entity).into_any_element(),
-        Page::Networks => networks(state, entity).into_any_element(),
-        Page::Volumes => volumes(state, entity).into_any_element(),
+        // 见 `pull_dialog_body`），页面本身只剩一个按钮和一张表。
+        Page::Images => images_page(state, entity).into_any_element(),
+        Page::Networks => networks_page(state, entity).into_any_element(),
+        Page::Volumes => volumes_page(state, entity).into_any_element(),
         // 「数据库管理」要 `&Shell`（连接卡那三个输入框住在 `Shell` 里）
         // **和** `cx`（渲染时要读输入框的值）—— 和「添加实例」同一类页面。
-        Page::Database => database(shell, cx, entity),
+        Page::Database => database_page(shell, cx, entity),
         // 「SQL 控制台」（v0.12）：**整页**工作区（左树 + 右上编辑器 + 右下结果）。
         // 要 `&Shell`（编辑器在 `db_form` 里、树的展开状态在 `Shell` 上）
         // 和 `cx`（读编辑器 / 搜索框的值）。
@@ -124,6 +123,6 @@ pub fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
         // 「部署管理」也要 `&Shell` + `cx`：「添加部署」弹窗那五格输入框
         // 住在 `Shell` 里（页面本身没有输入框）。
         Page::Deploy => deploy_page(shell, cx, entity),
-        Page::AppSettings => app_settings(shell, entity),
+        Page::AppSettings => settings_page(shell, entity),
     }
 }

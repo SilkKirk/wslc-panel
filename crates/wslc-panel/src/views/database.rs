@@ -28,7 +28,7 @@ use super::prelude::*;
 /// 连接卡上的密码是**明文**的（`DbPageForm` 的注释里写了为什么这一版不做掩码），
 /// 而它只存在内存里：不写进 `prefs.json`、不进日志（`MysqlCreds` 的 `Debug`
 /// 是手写脱敏的）、也不进错误消息（出口是 `cmd::mysql::sanitize`）。
-pub fn database(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
+pub(crate) fn database_page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
     // 这一页正文一个输入框都没有（连接卡 → 「基础信息」浮层、控制台 → 每行的
     // 「SQL」），但 `cx` **真的要用**：列表行上的「删库」要把**执行时**的账号
     // 装进 `PendingAction`，而那份账号是按行取的（`Shell::creds_for_row`，

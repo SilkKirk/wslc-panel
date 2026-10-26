@@ -15,7 +15,7 @@ use super::prelude::*;
 /// 后来加了「终端」卡 —— 它不是纯数据：自定义路径那个输入框住在
 /// `Shell` 里（`InputState::new` 要 `&mut Window`），所以这一页现在收
 /// `&Shell` 而不是 `&AppState`（和「添加实例」页同一个理由）。
-pub fn app_settings(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
+pub(crate) fn settings_page(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     let state = &shell.state;
     let content: AnyElement = match state.settings_tab {
         SettingsTab::General => settings_general(shell, entity),

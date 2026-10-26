@@ -190,7 +190,7 @@ pub(crate) fn empty_state(text: &'static str) -> impl IntoElement {
 ///
 /// # 为什么要收成一处
 ///
-/// 同一句话原先在三个文件里各写一份（`database()` / `sql_console_page()` /
+/// 同一句话原先在三个文件里各写一份（`database_page()` / `sql_console_page()` /
 /// `deploy_page()`），只有结尾的入口名不一样。改一处忘一处的后果不是编译错误，
 /// 而是**同一个处境在三个页面上被描述成三句不同的话** —— 用户会以为进了三个功能。
 ///

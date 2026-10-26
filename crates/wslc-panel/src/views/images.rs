@@ -29,7 +29,7 @@ use super::prelude::*;
 /// ⚠️ 这一段原先写的是"行内只留「更多」，两个都进菜单"，而实现一直是两个
 /// 直接按钮 —— 注释和实现相反，正是 `AGENTS.md` §5 警告过的那种"后来的人
 /// 会照着注释继续加重复"的源头。
-pub fn images(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+pub(crate) fn images_page(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     let rows: Vec<TableRow> = state
         .snapshot
         .images

@@ -7,7 +7,7 @@ use super::common::{
 use super::prelude::*;
 
 /// 卷页。
-pub fn volumes(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
+pub(crate) fn volumes_page(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
     // 行列表必须是具体的 `TableRow`（官方的 `TableBody::children` 要求
     // `ChildElement`，而 `AnyElement` 不满足 —— 见 `common::table_row` 的说明）。
     let rows: Vec<TableRow> = state

@@ -288,7 +288,7 @@ pub(crate) fn container_more_menu(item: &ContainerListItem, entity: &Entity<Shel
 /// 搜索框是一个 `InputState`（住在 `Shell`），而查询词要**每帧**从它里面读
 /// （`Input` 的 `InputEvent::Change` 会订阅回 `Shell`，触发重绘）。
 /// 过滤/排序本身是纯逻辑，在 `wslc-panel-core::listview` 里带单测。
-pub fn containers(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> impl IntoElement {
+pub(crate) fn containers_page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> impl IntoElement {
     let state = &shell.state;
     let items = &state.snapshot.all;
     let view = state.container_view;

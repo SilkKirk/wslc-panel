@@ -40,7 +40,7 @@ pub(crate) fn stat_tile(label: &'static str, value: String, color: Rgba) -> impl
 /// 每一环下面那行小字就是口径本身，卡片底部还有一句总说明 ——
 /// 口径写清楚是刻意的：`wslc stats` 的 CPU% 是 **100% ≈ 1 个核**，
 /// 不折算的话 32 核机器上那几个小数会把人看糊涂。
-pub fn dashboard(state: &AppState) -> impl IntoElement {
+pub(crate) fn dashboard_page(state: &AppState) -> impl IntoElement {
     let stats = state.snapshot.dashboard_stats();
 
     v_flex()

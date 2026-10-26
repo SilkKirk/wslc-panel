@@ -33,7 +33,7 @@ use super::prelude::*;
 /// ⚠️ 这一页**不需要 `cx`**（所有动作都交给 `entity` 上的 `Shell` 方法去做），
 /// 但签名和隔壁 `database` / `containers` 保持同一个形状，`views::page()` 那边
 /// 就不用为它单写一个分支。用 `_cx` 把"这里故意不用"写出来。
-pub fn deploy_page(shell: &Shell, _cx: &App, entity: &Entity<Shell>) -> AnyElement {
+pub(crate) fn deploy_page(shell: &Shell, _cx: &App, entity: &Entity<Shell>) -> AnyElement {
     let Some(deploy) = shell.state.deploy.as_ref() else {
         // 理论上来不到（只可能从容器行上的按钮进，那里已经建好状态了），
         // 但真到了这里就说一句人话，别画一片空白。

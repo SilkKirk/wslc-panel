@@ -7,7 +7,7 @@ use super::common::{
 use super::prelude::*;
 
 /// 网络页。
-pub fn networks(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
+pub(crate) fn networks_page(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
     let rows: Vec<TableRow> = state
         .snapshot
         .networks

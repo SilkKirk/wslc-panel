@@ -33,7 +33,7 @@ use gpui_kit::component::stepper::{Stepper, StepperItem};
 ///
 /// ⚠️ 渲染时**不查**"安装目录非空"（那要碰文件系统，每帧查一次会在网络盘上卡住）；
 /// 那条检查在提交那一刻做，见 `Shell::confirm_install`。
-pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
+pub(crate) fn add_instance_page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
     let state = &shell.state;
     let Some(form) = shell.install_form.as_ref() else {
         return card(

@@ -27,7 +27,7 @@ use super::prelude::*;
 ///
 /// 一台机器上没装发行版是完全正常的状态，所以这里给的是引导文案
 /// （怎么让 `wsl.exe` 被找到），而不是一条红色错误。
-pub fn instances(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+pub(crate) fn instances_page(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     let distros = &state.snapshot.distros;
 
     if distros.is_empty() {
@@ -108,7 +108,7 @@ pub fn instances(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
             .into_any_element()
     };
 
-    // `None`：这一页的空列表在 `instances()` 开头就被 `empty_state` 拦掉了，
+    // `None`：这一页的空列表在 `instances_page()` 开头就被 `empty_state` 拦掉了，
     // 卡片里再写一句空状态文案是永远不会显示的假话（见 `common::table_card`）。
     let body = table_card(DISTRO_COLUMNS, rows, None);
 
