@@ -810,7 +810,7 @@ impl Shell {
         // 拉取镜像弹窗（表单/进度两态都在 `pull_dialog_body` 里分流）。
         if self.pull_open && self.image_form.is_some() {
             desired.push(DialogKey::PullImage);
-        }        // 创建容器弹窗（输入框在 `open_create_dialog_prefilled` 里就建好了）。
+        } // 创建容器弹窗（输入框在 `open_create_dialog_prefilled` 里就建好了）。
         if self.create_dialog.is_some() {
             desired.push(DialogKey::CreateContainer);
         } // 数据库动作弹窗（新建库 / 建用户 / 改密 / 授权 / 导入）。
@@ -1614,65 +1614,65 @@ impl Shell {
                         ]))
                 });
             }
-        DialogKey::PullImage => {
-            let title = "拉取镜像".to_owned();
-            // 在闭包**外面**算：self 的借用不能逃进 'static 闭包（E0521）。
-            let pulling = self.state.pulling.is_some();
-            let entity = cx.entity();
-            let content = {
-                let view_entity = entity.clone();
-                let body_entity = entity.clone();
-                cx.new(move |cx| {
-                    ShellView::new(
-                        view_entity,
-                        move |shell, cx| match shell.image_form.as_ref() {
-                            Some(form) => crate::views::pull_dialog_body(
-                                form,
-                                &shell.state,
-                                &body_entity,
-                                cx,
-                            ),
-                            None => div().into_any_element(),
-                        },
-                        cx,
-                    )
-                })
-            };
-            window.open_dialog(cx, move |dialog, _window, _cx| {
-                let close = {
-                    let entity = entity.clone();
-                    Button::new("pull-dialog-close")
-                        .label("关闭")
-                        .small()
-                        .on_click(move |_, window, cx| {
+            DialogKey::PullImage => {
+                let title = "拉取镜像".to_owned();
+                // 在闭包**外面**算：self 的借用不能逃进 'static 闭包（E0521）。
+                let pulling = self.state.pulling.is_some();
+                let entity = cx.entity();
+                let content = {
+                    let view_entity = entity.clone();
+                    let body_entity = entity.clone();
+                    cx.new(move |cx| {
+                        ShellView::new(
+                            view_entity,
+                            move |shell, cx| match shell.image_form.as_ref() {
+                                Some(form) => crate::views::pull_dialog_body(
+                                    form,
+                                    &shell.state,
+                                    &body_entity,
+                                    cx,
+                                ),
+                                None => div().into_any_element(),
+                            },
+                            cx,
+                        )
+                    })
+                };
+                window.open_dialog(cx, move |dialog, _window, _cx| {
+                    let close = {
+                        let entity = entity.clone();
+                        Button::new("pull-dialog-close")
+                            .label("关闭")
+                            .small()
+                            .on_click(move |_, window, cx| {
+                                entity.update(cx, |shell, cx| shell.close_pull_dialog(cx));
+                                window.close_dialog(cx);
+                            })
+                    };
+                    let on_cancel = {
+                        let entity = entity.clone();
+                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
                             entity.update(cx, |shell, cx| shell.close_pull_dialog(cx));
-                            window.close_dialog(cx);
-                        })
-                };
-                let on_cancel = {
-                    let entity = entity.clone();
-                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                        entity.update(cx, |shell, cx| shell.close_pull_dialog(cx));
-                        true
-                    }
-                };
-                // ⚠️ 拉取**进行中**时这个弹窗关不掉（`close_pull_dialog` 会拒绝并给提示），
-                // 所以那时不画「关闭」——一个按下去只弹提示的按钮不如没有。
-                dialog
-                    .title(title.clone())
-                    .w(px(760.))
-                    .overlay(true)
-                    .overlay_closable(false)
-                    .keyboard(!pulling)
-                    .on_cancel(on_cancel.clone())
-                    .child(content.clone())
-                    .footer(modal_footer(if pulling {
-                        Vec::new()
-                    } else {
-                        vec![close.into_any_element()]
-                    }))
-            });
-        }
+                            true
+                        }
+                    };
+                    // ⚠️ 拉取**进行中**时这个弹窗关不掉（`close_pull_dialog` 会拒绝并给提示），
+                    // 所以那时不画「关闭」——一个按下去只弹提示的按钮不如没有。
+                    dialog
+                        .title(title.clone())
+                        .w(px(760.))
+                        .overlay(true)
+                        .overlay_closable(false)
+                        .keyboard(!pulling)
+                        .on_cancel(on_cancel.clone())
+                        .child(content.clone())
+                        .footer(modal_footer(if pulling {
+                            Vec::new()
+                        } else {
+                            vec![close.into_any_element()]
+                        }))
+                });
+            }
         }
     }
 }
