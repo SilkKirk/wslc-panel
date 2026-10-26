@@ -570,6 +570,33 @@ cx.spawn_in(window, async move |this, cx| {
      `DialogButtonProps` 的 `render_ok` / `render_cancel` 只有 `AlertDialog` 调，
      `Dialog::render` 只看 `self.footer`，而 `show_cancel` 默认 `false`。
      底部按钮必须自己 `.footer(modal_footer([...]))`。
+  3. ⚠️ **关闭时"清状态"必须自己写在每一条退出路径上。**
+     `sync_dialog_stack` 是**按状态对齐**的：每次 `Shell::render` 都算一遍
+     "现在应该开哪些对话框"，和 `dialog_stack` 比完补开 / 补关。
+     所以**只把 `Dialog` 关掉、状态不清，下一帧就把它重新打开。**
+
+     `Dialog` 的退出路径有**三条**，`overlay_closable` / `keyboard` 只管
+     "允不允许"，**清状态仍然得自己写在回调里**：
+
+     | 退出方式 | 要写在哪 |
+     |---|---|
+     | 底部按钮 | 按钮的 `.on_click`（`window.close_dialog(cx)` 之后 / 之前都行，但要成对） |
+     | **Esc** | `.on_cancel(…)` —— 漏了就是"Esc 关不掉"，或者"关了又回来" |
+     | **点遮罩** | 也走 `.on_cancel`（`overlay_closable(true)` 时才有这条路径） |
+
+     **实测踩过（v0.20.0 → v0.20.1）**：`WslConf` 设了
+     `overlay_closable(false)` 却**没有** `.on_cancel`（点遮罩、Esc 都关不掉，
+     只剩「取消」一个出口）；`DeployRemoveConfirm` 设了
+     `overlay_closable(true)` 也**没有** `.on_cancel`（点遮罩对话框关了、
+     `confirm_remove` 还留着，下一帧又弹回来）。用户的描述是
+     **"点其他位置也会弹出这个弹窗"** —— 点任何地方都会触发一次重绘，
+     光看现象很难想到是"状态没清"。
+
+     配套的两条经验：
+     - 写新臂时可以拿这一段当清单：`dialog_stack` 里每个 `DialogKey`
+       都要能回答"它被关掉时，是谁把对应状态清成 `None` 的"；
+     - 只读浮层（日志 / 详情 / exec / 备份列表）**也**要 `.on_cancel` ——
+       它们同样要清状态，只是清的那个字段不影响任务本身。
 
   **唯一还在自绘路径上的**是「数据库基础信息」（`db_info_overlay`）：一张只读
   小卡片，`modal_scrim` 的路径已被 18 个兄弟验证过，留着最省。
