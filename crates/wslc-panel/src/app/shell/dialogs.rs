@@ -212,7 +212,7 @@ fn open_shell_dialog<F>(
     let on_cancel = close.map(|close| {
         let entity = entity.clone();
         move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-            entity.update(cx, |shell, cx| close(shell, cx));
+            entity.update(cx, close);
             true
         }
     });
