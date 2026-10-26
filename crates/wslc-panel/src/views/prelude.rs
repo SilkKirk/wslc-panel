@@ -49,6 +49,8 @@ pub(crate) use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 // ⚠️ 它的大小只能用 `Sizable::with_size()` 设，别用 Styled 的 `.size()`
 // —— 见 `views::gauge` 里那段说明。
 pub(crate) use gpui_kit::component::progress::ProgressCircle;
+// SQL 工作区的左树宽度可拖拽（官方 `Resizable`）。
+pub(crate) use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 // SQL 结果表格（v0.11）：`DataTable` 是 gpui-kit 自带的虚拟滚动表格，
 // 支持列宽拖拽 / 排序 / 单元格选择。delegate 在 `crate::sql_table`。
 pub(crate) use gpui_kit::component::table::DataTable;

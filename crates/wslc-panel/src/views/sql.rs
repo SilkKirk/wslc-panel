@@ -140,6 +140,42 @@ pub(crate) fn sql_console_page(
         } else {
             sql_tree_pane(db, shell, entity)
         };
+
+    let right = v_flex()
+        .flex_1()
+        .min_w_0()
+        .h_full()
+        .min_h_0()
+        .child(sql_editor_pane(db, form, entity, &account))
+        .child(sql_results_pane(db, shell, entity));
+
+    // 树展开时用官方 `Resizable`：左栏可拖拽，宽度由 `resizable_panel`
+    // 控制（`sql_tree_pane` 自己不再写死 260px）。收起时保留 32px 窄条，
+    // 不套 Resizable —— 那一条只负责"把树重新打开"。
+    let body: AnyElement = if shell.sql_ui.tree_collapsed {
+        h_flex()
+            .w_full()
+            .flex_1()
+            .min_h_0()
+            .items_start()
+            .child(tree_column)
+            .child(right)
+            .into_any_element()
+    } else {
+        h_resizable("sql-main")
+            .w_full()
+            .flex_1()
+            .min_h_0()
+            .child(
+                resizable_panel()
+                    .size(px(260.))
+                    .size_range(px(200.)..px(420.))
+                    .child(tree_column),
+            )
+            .child(right)
+            .into_any_element()
+    };
+
     v_flex()
         .w_full()
         .h_full()
@@ -161,23 +197,7 @@ pub(crate) fn sql_console_page(
                 .child(db_badge)
                 .child(div().flex_1()),
         )
-        .child(
-            h_flex()
-                .w_full()
-                .flex_1()
-                .min_h_0()
-                .items_start()
-                .child(tree_column)
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .h_full()
-                        .min_h_0()
-                        .child(sql_editor_pane(db, form, entity, &account))
-                        .child(sql_results_pane(db, shell, entity)),
-                ),
-        )
+        .child(body)
         .into_any_element()
 }
 /// 编辑器上方那行"这次执行会落在哪个库"。
@@ -358,7 +378,9 @@ pub(crate) fn sql_editor_pane(
 pub(crate) fn sql_tree_pane(db: &DbState, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     let pane = |inner: AnyElement| -> AnyElement {
         v_flex()
-            .w(px(260.))
+            // 宽度由外层 `h_resizable` 的 `resizable_panel` 决定；这里写死
+            // 260 会让拖拽只动分隔条、树本身不动。
+            .w_full()
             .h_full()
             .flex_none()
             .min_h_0()
