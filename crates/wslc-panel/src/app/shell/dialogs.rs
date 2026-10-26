@@ -358,47 +358,38 @@ impl Shell {
                 let Some(progress) = self.state.exporting.as_ref() else {
                     return;
                 };
-                let title = format!("正在导出 {}", progress.name);
                 let entity = cx.entity();
-                // 内容包 `ShellView`：已写入 / 已用时一直在变（后台任务 notify）。
-                let content = {
-                    let view_entity = entity.clone();
-                    cx.new(move |cx| {
-                        ShellView::new(
-                            view_entity,
-                            move |shell, _cx| crate::views::export_dialog_body(&shell.state),
-                            cx,
-                        )
-                    })
-                };
-                let on_cancel = {
-                    let entity = entity.clone();
-                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                        entity.update(cx, |shell, cx| shell.cancel_export(cx));
-                        true
-                    }
-                };
-                window.open_dialog(cx, move |dialog, _window, _cx| {
-                    let cancel = {
-                        let entity = entity.clone();
-                        Button::new("export-cancel")
-                            .label("取消导出")
-                            .small()
-                            .on_click(move |_, window, cx| {
-                                entity.update(cx, |shell, cx| shell.cancel_export(cx));
-                                window.close_dialog(cx);
-                            })
-                    };
-                    dialog
-                        .title(title.clone())
-                        .w(px(620.))
-                        .overlay(true)
-                        .overlay_closable(false)
-                        .keyboard(false)
-                        .on_cancel(on_cancel.clone())
-                        .child(content.clone())
-                        .footer(modal_footer([cancel.into_any_element()]))
-                });
+                let content = shell_view(
+                    &entity,
+                    move |shell, _cx| crate::views::export_dialog_body(&shell.state),
+                    cx,
+                );
+                let for_button = entity.clone();
+                open_shell_dialog(
+                    window,
+                    cx,
+                    DialogSpec {
+                        title: format!("正在导出 {}", progress.name).into(),
+                        width: 620.,
+                        overlay_closable: false,
+                        keyboard: false,
+                        content,
+                    },
+                    Some(Shell::cancel_export),
+                    move || {
+                        let entity = for_button.clone();
+                        vec![
+                            Button::new("export-cancel")
+                                .label("取消导出")
+                                .small()
+                                .on_click(move |_, window, cx| {
+                                    entity.update(cx, |shell, cx| shell.cancel_export(cx));
+                                    window.close_dialog(cx);
+                                })
+                                .into_any_element(),
+                        ]
+                    },
+                );
             }
             DialogKey::DbBackupProgress => {
                 let Some(db) = self.state.db.as_ref() else {
@@ -407,41 +398,42 @@ impl Shell {
                 let Some(b) = db.backup.as_ref() else {
                     return;
                 };
-                let title = format!("正在备份 {}", b.database);
                 let entity = cx.entity();
-                let content = {
-                    let view_entity = entity.clone();
-                    cx.new(move |cx| {
-                        ShellView::new(
-                            view_entity,
-                            move |shell, _cx| match shell.state.db.as_ref() {
-                                Some(db) => crate::views::db_backup_progress_body(db),
-                                None => div().into_any_element(),
-                            },
-                            cx,
-                        )
-                    })
-                };
-                window.open_dialog(cx, move |dialog, _window, _cx| {
-                    let dismiss = {
-                        let entity = entity.clone();
-                        Button::new("db-backup-dismiss")
-                            .label("放到后台")
-                            .small()
-                            .on_click(move |_, window, cx| {
-                                entity.update(cx, |shell, cx| shell.cancel_db_backup(cx));
-                                window.close_dialog(cx);
-                            })
-                    };
-                    dialog
-                        .title(title.clone())
-                        .w(px(560.))
-                        .overlay(true)
-                        .overlay_closable(false)
-                        .keyboard(false)
-                        .child(content.clone())
-                        .footer(modal_footer([dismiss.into_any_element()]))
-                });
+                let content = shell_view(
+                    &entity,
+                    move |shell, _cx| match shell.state.db.as_ref() {
+                        Some(db) => crate::views::db_backup_progress_body(db),
+                        None => div().into_any_element(),
+                    },
+                    cx,
+                );
+                let for_button = entity.clone();
+                open_shell_dialog(
+                    window,
+                    cx,
+                    DialogSpec {
+                        title: format!("正在备份 {}", b.database).into(),
+                        width: 560.,
+                        overlay_closable: false,
+                        keyboard: false,
+                        content,
+                    },
+                    // 进度类不可关（Esc / 点遮罩都不行），所以没有 on_cancel。
+                    None,
+                    move || {
+                        let entity = for_button.clone();
+                        vec![
+                            Button::new("db-backup-dismiss")
+                                .label("放到后台")
+                                .small()
+                                .on_click(move |_, window, cx| {
+                                    entity.update(cx, |shell, cx| shell.cancel_db_backup(cx));
+                                    window.close_dialog(cx);
+                                })
+                                .into_any_element(),
+                        ]
+                    },
+                );
             }
             DialogKey::DbImportProgress => {
                 let Some(db) = self.state.db.as_ref() else {
@@ -450,41 +442,41 @@ impl Shell {
                 let Some(i) = db.import.as_ref() else {
                     return;
                 };
-                let title = format!("正在导入 {}", i.file_name);
                 let entity = cx.entity();
-                let content = {
-                    let view_entity = entity.clone();
-                    cx.new(move |cx| {
-                        ShellView::new(
-                            view_entity,
-                            move |shell, _cx| match shell.state.db.as_ref() {
-                                Some(db) => crate::views::db_import_progress_body(db),
-                                None => div().into_any_element(),
-                            },
-                            cx,
-                        )
-                    })
-                };
-                window.open_dialog(cx, move |dialog, _window, _cx| {
-                    let dismiss = {
-                        let entity = entity.clone();
-                        Button::new("db-import-dismiss")
-                            .label("放到后台")
-                            .small()
-                            .on_click(move |_, window, cx| {
-                                entity.update(cx, |shell, cx| shell.dismiss_db_import(cx));
-                                window.close_dialog(cx);
-                            })
-                    };
-                    dialog
-                        .title(title.clone())
-                        .w(px(560.))
-                        .overlay(true)
-                        .overlay_closable(false)
-                        .keyboard(false)
-                        .child(content.clone())
-                        .footer(modal_footer([dismiss.into_any_element()]))
-                });
+                let content = shell_view(
+                    &entity,
+                    move |shell, _cx| match shell.state.db.as_ref() {
+                        Some(db) => crate::views::db_import_progress_body(db),
+                        None => div().into_any_element(),
+                    },
+                    cx,
+                );
+                let for_button = entity.clone();
+                open_shell_dialog(
+                    window,
+                    cx,
+                    DialogSpec {
+                        title: format!("正在导入 {}", i.file_name).into(),
+                        width: 560.,
+                        overlay_closable: false,
+                        keyboard: false,
+                        content,
+                    },
+                    None,
+                    move || {
+                        let entity = for_button.clone();
+                        vec![
+                            Button::new("db-import-dismiss")
+                                .label("放到后台")
+                                .small()
+                                .on_click(move |_, window, cx| {
+                                    entity.update(cx, |shell, cx| shell.dismiss_db_import(cx));
+                                    window.close_dialog(cx);
+                                })
+                                .into_any_element(),
+                        ]
+                    },
+                );
             }
             DialogKey::ContainerLogs => {
                 let Some(container) = self.state.logs.as_ref().map(|l| l.container.clone()) else {
@@ -737,72 +729,63 @@ impl Shell {
                 };
                 let title = format!("删除部署「{app}」？");
                 let entity = cx.entity();
-                let content = {
-                    let view_entity = entity.clone();
-                    let body_app = app.clone();
-                    cx.new(move |cx| {
-                        ShellView::new(
-                            view_entity,
-                            move |shell, _cx| {
-                                crate::views::deploy_remove_confirm_body(
-                                    &body_app,
-                                    shell.state.deploy.as_ref(),
-                                )
-                            },
-                            cx,
+                let body_app = app.clone();
+                let content = shell_view(
+                    &entity,
+                    move |shell, _cx| {
+                        crate::views::deploy_remove_confirm_body(
+                            &body_app,
+                            shell.state.deploy.as_ref(),
                         )
-                    })
-                };
-                window.open_dialog(cx, move |dialog, _window, _cx| {
-                    let cancel = {
-                        let entity = entity.clone();
-                        Button::new("deploy-remove-cancel")
-                            .label("取消")
-                            .small()
-                            .on_click(move |_, window, cx| {
-                                entity.update(cx, |shell, cx| shell.cancel_remove_deployment(cx));
-                                window.close_dialog(cx);
-                            })
-                    };
-                    let confirm = {
-                        let entity = entity.clone();
-                        let app = app.clone();
-                        Button::new("deploy-remove-confirm")
-                            .label("确认删除")
-                            .small()
-                            .danger()
-                            .on_click(move |_, window, cx| {
-                                let app = app.clone();
-                                entity.update(cx, |shell, cx| {
-                                    shell.confirm_remove_deployment(app, cx)
-                                });
-                                window.close_dialog(cx);
-                            })
-                    };
-                    // ⚠️ `overlay_closable(true)` 就必须配 `on_cancel` ——
-                    // 点遮罩 Dialog 会被关掉，但**状态不会自动清**。
-                    // `sync_dialog_stack` 是按状态对齐的，状态留着会在下一次
-                    // 重绘把这个确认框重新打开（v0.20.0 报过来的那个 bug）。
-                    let on_cancel = {
-                        let entity = entity.clone();
-                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                            entity.update(cx, |shell, cx| shell.cancel_remove_deployment(cx));
-                            true
-                        }
-                    };
-                    dialog
-                        .title(title.clone())
-                        .w(px(560.))
-                        .overlay(true)
-                        .overlay_closable(true)
-                        .keyboard(true)
-                        .on_cancel(on_cancel.clone())
-                        .child(content.clone())
-                        .footer(modal_footer([
-                            cancel.into_any_element(),
-                            confirm.into_any_element(),
-                        ]))
-                });
+                    },
+                    cx,
+                );
+                let for_cancel = entity.clone();
+                let for_confirm = entity.clone();
+                open_shell_dialog(
+                    window,
+                    cx,
+                    DialogSpec {
+                        title: title.into(),
+                        width: 560.,
+                        overlay_closable: true,
+                        keyboard: true,
+                        content,
+                    },
+                    // `overlay_closable(true)` 就必须配 close —— 否则点遮罩 Dialog
+                    // 关了、`confirm_remove` 还留着，下一帧又把它弹回来
+                    // （v0.20.0 报的那个"点其他位置也会弹出"）。
+                    Some(Shell::cancel_remove_deployment),
+                    move || {
+                        let cancel = {
+                            let entity = for_cancel.clone();
+                            Button::new("deploy-remove-cancel")
+                                .label("取消")
+                                .small()
+                                .on_click(move |_, window, cx| {
+                                    entity
+                                        .update(cx, |shell, cx| shell.cancel_remove_deployment(cx));
+                                    window.close_dialog(cx);
+                                })
+                        };
+                        let confirm = {
+                            let entity = for_confirm.clone();
+                            let app = app.clone();
+                            Button::new("deploy-remove-confirm")
+                                .label("确认删除")
+                                .small()
+                                .danger()
+                                .on_click(move |_, window, cx| {
+                                    let app = app.clone();
+                                    entity.update(cx, |shell, cx| {
+                                        shell.confirm_remove_deployment(app, cx)
+                                    });
+                                    window.close_dialog(cx);
+                                })
+                        };
+                        vec![cancel.into_any_element(), confirm.into_any_element()]
+                    },
+                );
             }
             DialogKey::DbBackupList => {
                 let Some(database) = self
@@ -863,59 +846,51 @@ impl Shell {
                 let title = action.title().to_owned();
                 let ok_label = action.confirm_label().to_owned();
                 let entity = cx.entity();
-                let content = {
-                    let view_entity = entity.clone();
-                    let body_action = action.clone();
-                    cx.new(move |cx| {
-                        ShellView::new(
-                            view_entity,
-                            move |_shell, _cx| super::core::confirm_body(&body_action),
-                            cx,
-                        )
-                    })
-                };
-                window.open_dialog(cx, move |dialog, _window, _cx| {
-                    let cancel = {
-                        let entity = entity.clone();
-                        Button::new("confirm-cancel")
-                            .label("取消")
-                            .small()
-                            .on_click(move |_, window, cx| {
-                                entity.update(cx, |shell, cx| shell.cancel_pending(cx));
-                                window.close_dialog(cx);
-                            })
-                    };
-                    let confirm = {
-                        let entity = entity.clone();
-                        Button::new("confirm-ok")
-                            .label(ok_label.clone())
-                            .small()
-                            .primary()
-                            .on_click(move |_, window, cx| {
-                                entity.update(cx, |shell, cx| shell.confirm_pending(cx));
-                                window.close_dialog(cx);
-                            })
-                    };
-                    let on_cancel = {
-                        let entity = entity.clone();
-                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                            entity.update(cx, |shell, cx| shell.cancel_pending(cx));
-                            true
-                        }
-                    };
-                    dialog
-                        .title(title.clone())
-                        .w(px(460.))
-                        .overlay(true)
-                        .overlay_closable(false)
-                        .keyboard(true)
-                        .on_cancel(on_cancel.clone())
-                        .child(content.clone())
-                        .footer(modal_footer([
-                            cancel.into_any_element(),
-                            confirm.into_any_element(),
-                        ]))
-                });
+                let body_action = action.clone();
+                let content = shell_view(
+                    &entity,
+                    move |_shell, _cx| super::core::confirm_body(&body_action),
+                    cx,
+                );
+                let for_cancel = entity.clone();
+                let for_confirm = entity.clone();
+                open_shell_dialog(
+                    window,
+                    cx,
+                    DialogSpec {
+                        title: title.into(),
+                        width: 460.,
+                        overlay_closable: false,
+                        keyboard: true,
+                        content,
+                    },
+                    Some(Shell::cancel_pending),
+                    move || {
+                        let cancel = {
+                            let entity = for_cancel.clone();
+                            Button::new("confirm-cancel")
+                                .label("取消")
+                                .small()
+                                .on_click(move |_, window, cx| {
+                                    entity.update(cx, |shell, cx| shell.cancel_pending(cx));
+                                    window.close_dialog(cx);
+                                })
+                        };
+                        let confirm = {
+                            let entity = for_confirm.clone();
+                            let ok_label = ok_label.clone();
+                            Button::new("confirm-ok")
+                                .label(ok_label)
+                                .small()
+                                .primary()
+                                .on_click(move |_, window, cx| {
+                                    entity.update(cx, |shell, cx| shell.confirm_pending(cx));
+                                    window.close_dialog(cx);
+                                })
+                        };
+                        vec![cancel.into_any_element(), confirm.into_any_element()]
+                    },
+                );
             }
             DialogKey::DbAction => {
                 let Some(kind) = self.db_dialog.as_ref().map(|d| d.kind.clone()) else {
@@ -925,190 +900,161 @@ impl Shell {
                 let ok_label = kind.confirm_label().to_owned();
                 let is_import = kind.is_import();
                 let entity = cx.entity();
-                let content = {
-                    let view_entity = entity.clone();
-                    let body_entity = entity.clone();
-                    cx.new(move |cx| {
-                        ShellView::new(
-                            view_entity,
-                            move |shell, cx| crate::views::db_dialog_body(shell, &body_entity, cx),
-                            cx,
-                        )
-                    })
-                };
-                window.open_dialog(cx, move |dialog, _window, _cx| {
-                    let cancel = {
-                        let entity = entity.clone();
-                        Button::new("db-dialog-cancel")
-                            .label("取消")
-                            .small()
-                            .on_click(move |_, window, cx| {
-                                entity.update(cx, |shell, cx| shell.close_db_dialog(cx));
-                                window.close_dialog(cx);
-                            })
-                    };
-                    let confirm = {
-                        let entity = entity.clone();
-                        Button::new("db-dialog-confirm")
-                            .label(ok_label.clone())
-                            .small()
-                            .primary()
-                            .on_click(move |_, window, cx| {
-                                // 导入不是一条 SQL（送文件进去让 mysql 读），走自己的提交路径。
-                                entity.update(cx, |shell, cx| {
-                                    if is_import {
-                                        shell.start_db_import(window, cx);
-                                    } else {
-                                        shell.submit_db_dialog(window, cx);
-                                    }
-                                });
-                                window.close_dialog(cx);
-                            })
-                    };
-                    let on_cancel = {
-                        let entity = entity.clone();
-                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                            entity.update(cx, |shell, cx| shell.close_db_dialog(cx));
-                            true
-                        }
-                    };
-                    dialog
-                        .title(title.clone())
-                        .w(px(700.))
-                        .overlay(true)
-                        .overlay_closable(false)
-                        .keyboard(true)
-                        .on_cancel(on_cancel.clone())
-                        .child(content.clone())
-                        .footer(modal_footer([
-                            cancel.into_any_element(),
-                            confirm.into_any_element(),
-                        ]))
-                });
+                let body_entity = entity.clone();
+                let content = shell_view(
+                    &entity,
+                    move |shell, cx| crate::views::db_dialog_body(shell, &body_entity, cx),
+                    cx,
+                );
+                let for_cancel = entity.clone();
+                let for_confirm = entity.clone();
+                open_shell_dialog(
+                    window,
+                    cx,
+                    DialogSpec {
+                        title: title.into(),
+                        width: 700.,
+                        overlay_closable: false,
+                        keyboard: true,
+                        content,
+                    },
+                    Some(Shell::close_db_dialog),
+                    move || {
+                        let cancel = {
+                            let entity = for_cancel.clone();
+                            Button::new("db-dialog-cancel")
+                                .label("取消")
+                                .small()
+                                .on_click(move |_, window, cx| {
+                                    entity.update(cx, |shell, cx| shell.close_db_dialog(cx));
+                                    window.close_dialog(cx);
+                                })
+                        };
+                        let confirm = {
+                            let entity = for_confirm.clone();
+                            let ok_label = ok_label.clone();
+                            Button::new("db-dialog-confirm")
+                                .label(ok_label)
+                                .small()
+                                .primary()
+                                .on_click(move |_, window, cx| {
+                                    // 导入不是一条 SQL（送文件进去让 mysql 读），
+                                    // 走自己的提交路径。
+                                    entity.update(cx, |shell, cx| {
+                                        if is_import {
+                                            shell.start_db_import(window, cx);
+                                        } else {
+                                            shell.submit_db_dialog(window, cx);
+                                        }
+                                    });
+                                    window.close_dialog(cx);
+                                })
+                        };
+                        vec![cancel.into_any_element(), confirm.into_any_element()]
+                    },
+                );
             }
             DialogKey::CreateContainer => {
                 let entity = cx.entity();
-                let content = {
-                    let view_entity = entity.clone();
-                    let body_entity = entity.clone();
-                    cx.new(move |cx| {
-                        ShellView::new(
-                            view_entity,
-                            move |shell, cx| match shell.create_dialog.as_ref() {
-                                Some(dialog) => crate::views::create_dialog_body(
-                                    dialog,
-                                    &shell.state,
-                                    &body_entity,
-                                    cx,
-                                ),
-                                None => div().into_any_element(),
-                            },
-                            cx,
-                        )
-                    })
-                };
-                window.open_dialog(cx, move |dialog, _window, _cx| {
-                    let cancel = {
-                        let entity = entity.clone();
-                        Button::new("create-cancel").label("取消").small().on_click(
-                            move |_, window, cx| {
-                                entity.update(cx, |shell, cx| shell.close_create_dialog(cx));
-                                window.close_dialog(cx);
-                            },
-                        )
-                    };
-                    let confirm = {
-                        let entity = entity.clone();
-                        Button::new("create-ok")
-                            .label("创建并启动")
-                            .small()
-                            .primary()
-                            .on_click(move |_, window, cx| {
-                                // `window` 是必需的：提交时要检查"预填了但没填值"的必需变量，
-                                // 并把焦点送到那一格（`confirm_create` 里有说明）。
-                                entity.update(cx, |shell, cx| shell.confirm_create(window, cx));
-                                window.close_dialog(cx);
-                            })
-                    };
-                    let on_cancel = {
-                        let entity = entity.clone();
-                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                            entity.update(cx, |shell, cx| shell.close_create_dialog(cx));
-                            true
+                let body_entity = entity.clone();
+                let content = shell_view(
+                    &entity,
+                    move |shell, cx| match shell.create_dialog.as_ref() {
+                        Some(dialog) => {
+                            crate::views::create_dialog_body(dialog, &shell.state, &body_entity, cx)
                         }
-                    };
-                    dialog
-                        .title("创建容器")
-                        .w(px(800.))
-                        .overlay(true)
-                        .overlay_closable(false)
-                        .keyboard(true)
-                        .on_cancel(on_cancel.clone())
-                        .child(content.clone())
-                        .footer(modal_footer([
-                            cancel.into_any_element(),
-                            confirm.into_any_element(),
-                        ]))
-                });
+                        None => div().into_any_element(),
+                    },
+                    cx,
+                );
+                let for_cancel = entity.clone();
+                let for_confirm = entity.clone();
+                open_shell_dialog(
+                    window,
+                    cx,
+                    DialogSpec {
+                        title: "创建容器".into(),
+                        width: 800.,
+                        overlay_closable: false,
+                        keyboard: true,
+                        content,
+                    },
+                    Some(Shell::close_create_dialog),
+                    move || {
+                        let cancel = {
+                            let entity = for_cancel.clone();
+                            Button::new("create-cancel").label("取消").small().on_click(
+                                move |_, window, cx| {
+                                    entity.update(cx, |shell, cx| shell.close_create_dialog(cx));
+                                    window.close_dialog(cx);
+                                },
+                            )
+                        };
+                        let confirm = {
+                            let entity = for_confirm.clone();
+                            Button::new("create-ok")
+                                .label("创建并启动")
+                                .small()
+                                .primary()
+                                .on_click(move |_, window, cx| {
+                                    // `window` 是必需的：提交时要检查"预填了但没填值"
+                                    // 的必需变量，并把焦点送到那一格。
+                                    entity.update(cx, |shell, cx| shell.confirm_create(window, cx));
+                                    window.close_dialog(cx);
+                                })
+                        };
+                        vec![cancel.into_any_element(), confirm.into_any_element()]
+                    },
+                );
             }
             DialogKey::PullImage => {
-                let title = "拉取镜像".to_owned();
                 // 在闭包**外面**算：self 的借用不能逃进 'static 闭包（E0521）。
                 let pulling = self.state.pulling.is_some();
                 let entity = cx.entity();
-                let content = {
-                    let view_entity = entity.clone();
-                    let body_entity = entity.clone();
-                    cx.new(move |cx| {
-                        ShellView::new(
-                            view_entity,
-                            move |shell, cx| match shell.image_form.as_ref() {
-                                Some(form) => crate::views::pull_dialog_body(
-                                    form,
-                                    &shell.state,
-                                    &body_entity,
-                                    cx,
-                                ),
-                                None => div().into_any_element(),
-                            },
-                            cx,
-                        )
-                    })
-                };
-                window.open_dialog(cx, move |dialog, _window, _cx| {
-                    let close = {
-                        let entity = entity.clone();
-                        Button::new("pull-dialog-close")
-                            .label("关闭")
-                            .small()
-                            .on_click(move |_, window, cx| {
-                                entity.update(cx, |shell, cx| shell.close_pull_dialog(cx));
-                                window.close_dialog(cx);
-                            })
-                    };
-                    let on_cancel = {
-                        let entity = entity.clone();
-                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                            entity.update(cx, |shell, cx| shell.close_pull_dialog(cx));
-                            true
+                let body_entity = entity.clone();
+                let content = shell_view(
+                    &entity,
+                    move |shell, cx| match shell.image_form.as_ref() {
+                        Some(form) => {
+                            crate::views::pull_dialog_body(form, &shell.state, &body_entity, cx)
                         }
-                    };
-                    // ⚠️ 拉取**进行中**时这个弹窗关不掉（`close_pull_dialog` 会拒绝并给提示），
-                    // 所以那时不画「关闭」——一个按下去只弹提示的按钮不如没有。
-                    dialog
-                        .title(title.clone())
-                        .w(px(760.))
-                        .overlay(true)
-                        .overlay_closable(false)
-                        .keyboard(!pulling)
-                        .on_cancel(on_cancel.clone())
-                        .child(content.clone())
-                        .footer(modal_footer(if pulling {
-                            Vec::new()
-                        } else {
-                            vec![close.into_any_element()]
-                        }))
-                });
+                        None => div().into_any_element(),
+                    },
+                    cx,
+                );
+                let for_button = entity.clone();
+                open_shell_dialog(
+                    window,
+                    cx,
+                    DialogSpec {
+                        title: "拉取镜像".into(),
+                        width: 760.,
+                        overlay_closable: false,
+                        // 拉取进行中不许用 Esc 关，避免"关了任务还在跑"。
+                        keyboard: !pulling,
+                        content,
+                    },
+                    Some(Shell::close_pull_dialog),
+                    move || {
+                        // ⚠️ 拉取**进行中**时这个弹窗关不掉（`close_pull_dialog` 会拒绝
+                        // 并给提示），所以那时不画「关闭」——一个按下去只弹提示的
+                        // 按钮不如没有。
+                        if pulling {
+                            return Vec::new();
+                        }
+                        let entity = for_button.clone();
+                        vec![
+                            Button::new("pull-dialog-close")
+                                .label("关闭")
+                                .small()
+                                .on_click(move |_, window, cx| {
+                                    entity.update(cx, |shell, cx| shell.close_pull_dialog(cx));
+                                    window.close_dialog(cx);
+                                })
+                                .into_any_element(),
+                        ]
+                    },
+                );
             }
             DialogKey::WslConf => {
                 let title = match self.wslconf_dialog.as_ref() {
@@ -1119,41 +1065,29 @@ impl Shell {
                     None => return,
                 };
                 let entity = cx.entity();
-                let content = {
-                    let view_entity = entity.clone();
-                    let body_entity = entity.clone();
-                    cx.new(move |cx| {
-                        ShellView::new(
-                            view_entity,
-                            move |shell, cx| {
-                                crate::views::wslconf_dialog_body(shell, &body_entity, cx)
-                            },
-                            cx,
-                        )
-                    })
-                };
-                // ⚠️ `overlay_closable(false)` 是刻意的（配置表单填一半不该被误点丢掉），
-                // 但**必须**有 `on_cancel`：否则 Esc 也关不掉，这个弹窗就没有任何
-                // "不用按钮"的退出路径了。而且关掉时**必须把状态清掉** ——
-                // `sync_dialog_stack` 是按状态对齐的，状态留着会在下一次重绘
-                // 把弹窗重新打开（v0.20.0 报过来的"点其他位置也会弹出"就是这个）。
-                let on_cancel = {
-                    let entity = entity.clone();
-                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                        entity.update(cx, |shell, cx| shell.close_wslconf(cx));
-                        true
-                    }
-                };
-                window.open_dialog(cx, move |dialog, _window, _cx| {
-                    dialog
-                        .title(title.clone())
-                        .w(px(820.))
-                        .overlay(true)
-                        .overlay_closable(false)
-                        .keyboard(true)
-                        .on_cancel(on_cancel.clone())
-                        .child(content.clone())
-                });
+                let body_entity = entity.clone();
+                let content = shell_view(
+                    &entity,
+                    move |shell, cx| crate::views::wslconf_dialog_body(shell, &body_entity, cx),
+                    cx,
+                );
+                open_shell_dialog(
+                    window,
+                    cx,
+                    DialogSpec {
+                        title: title.into(),
+                        width: 820.,
+                        // 配置表单填一半不该被误点丢掉。
+                        overlay_closable: false,
+                        keyboard: true,
+                        content,
+                    },
+                    // ⚠️ 必须给 close：否则 Esc 也关不掉，这个弹窗就没有任何
+                    // "不用按钮"的退出路径；而且不清状态的话下一帧会重开。
+                    Some(Shell::close_wslconf),
+                    // 底部按钮在内容里（预览 / 取消 / 保存 ×2），不走 footer。
+                    || Vec::new(),
+                );
             }
             DialogKey::DeployForm => {
                 let Some(form) = self.deploy_form.as_ref() else {
@@ -1171,60 +1105,49 @@ impl Shell {
                     .as_ref()
                     .is_some_and(|f| f.editing.is_some());
                 let entity = cx.entity();
-                let content = {
-                    let view_entity = entity.clone();
-                    let body_entity = entity.clone();
-                    cx.new(move |cx| {
-                        ShellView::new(
-                            view_entity,
-                            move |shell, cx| {
-                                crate::views::deploy_dialog_body(shell, &body_entity, cx)
-                            },
-                            cx,
-                        )
-                    })
-                };
-                window.open_dialog(cx, move |dialog, _window, _cx| {
-                    let cancel = {
-                        let entity = entity.clone();
-                        Button::new("deploy-cancel").label("取消").small().on_click(
-                            move |_, window, cx| {
-                                entity.update(cx, |shell, cx| shell.close_deploy_dialog(cx));
-                                window.close_dialog(cx);
-                            },
-                        )
-                    };
-                    let submit = {
-                        let entity = entity.clone();
-                        Button::new("deploy-submit")
-                            .label(if re_deploy { "重新部署" } else { "部署" })
-                            .small()
-                            .primary()
-                            .on_click(move |_, window, cx| {
-                                entity.update(cx, |shell, cx| shell.submit_deploy(window, cx));
-                                window.close_dialog(cx);
-                            })
-                    };
-                    let on_cancel = {
-                        let entity = entity.clone();
-                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                            entity.update(cx, |shell, cx| shell.close_deploy_dialog(cx));
-                            true
-                        }
-                    };
-                    dialog
-                        .title(title.clone())
-                        .w(px(800.))
-                        .overlay(true)
-                        .overlay_closable(false)
-                        .keyboard(true)
-                        .on_cancel(on_cancel.clone())
-                        .child(content.clone())
-                        .footer(modal_footer([
-                            cancel.into_any_element(),
-                            submit.into_any_element(),
-                        ]))
-                });
+                let body_entity = entity.clone();
+                let content = shell_view(
+                    &entity,
+                    move |shell, cx| crate::views::deploy_dialog_body(shell, &body_entity, cx),
+                    cx,
+                );
+                let for_cancel = entity.clone();
+                let for_submit = entity.clone();
+                open_shell_dialog(
+                    window,
+                    cx,
+                    DialogSpec {
+                        title: title.into(),
+                        width: 800.,
+                        overlay_closable: false,
+                        keyboard: true,
+                        content,
+                    },
+                    Some(Shell::close_deploy_dialog),
+                    move || {
+                        let cancel = {
+                            let entity = for_cancel.clone();
+                            Button::new("deploy-cancel").label("取消").small().on_click(
+                                move |_, window, cx| {
+                                    entity.update(cx, |shell, cx| shell.close_deploy_dialog(cx));
+                                    window.close_dialog(cx);
+                                },
+                            )
+                        };
+                        let submit = {
+                            let entity = for_submit.clone();
+                            Button::new("deploy-submit")
+                                .label(if re_deploy { "重新部署" } else { "部署" })
+                                .small()
+                                .primary()
+                                .on_click(move |_, window, cx| {
+                                    entity.update(cx, |shell, cx| shell.submit_deploy(window, cx));
+                                    window.close_dialog(cx);
+                                })
+                        };
+                        vec![cancel.into_any_element(), submit.into_any_element()]
+                    },
+                );
             }
         }
     }
