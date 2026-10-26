@@ -1,6 +1,10 @@
-//! 「重定位」那一步：把刚装好的发行版弄成用户要的**名字 + 位置**。
+//! 「重定位」与「等注册」：把刚装好的发行版弄成用户要的**名字 + 位置**，
+//! 并确认它真的出现在 `wsl -l -q` 里。
 //!
-//! 单独一个文件，因为它是安装流程里唯一**不可取消**的一段（`--unregister`
+//! 这两件事都发生在「装完、还没交还给用户」这一段，而且都是**反复问 WSL**：
+//! 一个问"能不能搬、搬成功了没"，一个问"注册上了没"。所以收在同一个文件里。
+//!
+//! 更重要的理由：重定位是安装流程里唯一**不可取消**的一段（`--unregister`
 //! 之后数据只在那个中转 tar 里），逻辑和三段式的说明都集中在这里，
 //! 主流程（`install.rs` 的 `run_plan`）读起来就不会被它淹没。
 //!
@@ -266,6 +270,74 @@ fn move_with_retries(wsl: &Wsl, name: &str, dir: &str, opts: &RunOptions) -> Res
 pub(super) fn is_busy(error: &Error) -> bool {
     let text = error.to_string();
     text.contains("ERROR_SHARING_VIOLATION") || text.contains("正在使用")
+}
+
+/// 等发行版注册：最多轮询几次。
+const REGISTER_TRIES: usize = 15;
+/// 等发行版注册：每次之间等多久。
+///
+/// 15 × 2 s = 30 s。`wsl --install -d <id>` 正常返回时其实已经注册好了，
+/// 这一等是给"返回了但还没落进列表"留的余量（参考实现也是 15 次）。
+const REGISTER_WAIT: Duration = Duration::from_secs(2);
+
+/// 短命令（`wsl -l -q`）的超时。
+const QUICK_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 等发行版出现在 `wsl -l -q` 里。
+pub(super) fn wait_registered(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions) -> Result<()> {
+    let name = arg(step, 0)?;
+
+    for attempt in 0..REGISTER_TRIES {
+        if opts.cancel.is_cancelled() {
+            return Err(Error::Cancelled {
+                program: "wsl",
+                args: format!("--list --quiet（等 {name} 注册）"),
+            });
+        }
+
+        if installed_names(wsl)
+            .iter()
+            .any(|item| crate::model::distro::same_name(item, name))
+        {
+            emit(opts, InstallEvent::Line(format!("{name} 已经出现在列表里")));
+            return Ok(());
+        }
+
+        emit(
+            opts,
+            InstallEvent::Line(format!(
+                "还在等 {name} 注册（第 {} / {REGISTER_TRIES} 次）",
+                attempt + 1
+            )),
+        );
+        sleep_cancellable(REGISTER_WAIT, opts);
+    }
+
+    Err(Error::Install(format!(
+        "{name} 装完了却一直没出现在 `wsl -l -q` 里（等了 {} 秒）。\
+         去实例列表看一眼：如果它其实装好了，这条报错可以忽略；如果没装好，重试一次。",
+        REGISTER_TRIES as u64 * REGISTER_WAIT.as_secs()
+    )))
+}
+
+/// 读 `wsl -l -q`（只要名字）。
+fn installed_names(wsl: &Wsl) -> Vec<String> {
+    match wsl.run_with_timeout(&["--list", "--quiet"], QUICK_TIMEOUT) {
+        Ok(out) if out.success() => out
+            .stdout
+            .lines()
+            .map(|line| line.trim().trim_start_matches('*').trim().to_owned())
+            .filter(|line| !line.is_empty())
+            .collect(),
+        Ok(out) => {
+            tracing::warn!("wsl -l -q 退出码 {:?}", out.code);
+            Vec::new()
+        }
+        Err(e) => {
+            tracing::warn!("wsl -l -q 失败：{e}");
+            Vec::new()
+        }
+    }
 }
 
 /// 跑一条 `wsl.exe` 命令（内部用，参数是拼好的）。
