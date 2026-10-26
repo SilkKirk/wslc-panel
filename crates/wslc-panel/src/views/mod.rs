@@ -45,7 +45,10 @@ mod wslconf;
 //
 // 列在这里的每一项都是 `app.rs` 真的调用过、或需要跨子模块使用的。
 // （`page` 是页面分发，见文件末尾。）
-pub(crate) use common::{ShellView, modal_footer, modal_scrim};
+// `modal_scrim` **不再从 views 根 re-export**：`common` 里的定义还在（剩下的
+// 自绘浮层直接 `use super::common::modal_scrim`），但 `app::shell` 那边已经
+// 不用它了 —— 迁到官方 `Dialog` 之后外壳不再由我们画。
+pub(crate) use common::{ShellView, modal_footer};
 pub(crate) use create::create_dialog_overlay;
 pub(crate) use db_dialogs::{
     db_backup_dialog_body, db_backup_progress_body, db_dialog_overlay, db_import_progress_body,
