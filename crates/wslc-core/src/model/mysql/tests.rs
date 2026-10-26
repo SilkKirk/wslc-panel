@@ -613,7 +613,7 @@ fn create_user_statements_joins_create_and_grant() {
 
 #[test]
 fn generated_passwords_are_stable_in_shape_and_unique() {
-    let first = generate_password();
+    let first = generate_password().expect("测试机应能取到系统随机数");
     assert_eq!(first.len(), 16, "{first}");
     // 字符集里没有需要转义的东西 —— 这是 quote_literal 永不触发的保证
     assert!(
@@ -623,7 +623,7 @@ fn generated_passwords_are_stable_in_shape_and_unique() {
     // 连续生成不相同（同一次点击链路里至少要保证这个）
     let mut seen = std::collections::HashSet::new();
     for _ in 0..32 {
-        seen.insert(generate_password());
+        seen.insert(generate_password().expect("测试机应能取到系统随机数"));
     }
     assert_eq!(seen.len(), 32, "32 次里出了重复密码：{seen:?}");
 }

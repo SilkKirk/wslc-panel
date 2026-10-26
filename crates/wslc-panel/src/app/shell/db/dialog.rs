@@ -73,10 +73,18 @@ impl Shell {
         // 后续修改库名也不覆盖已经填写的用户名。
         let mut create_user = false;
         if kind == DbDialogKind::NewDatabase {
+            let generated = match mysql_model::generate_password() {
+                Ok(password) => password,
+                Err(e) => {
+                    // 不退回弱随机：宁可让用户重试，也不生成一个可预测的账号口令。
+                    self.state
+                        .notify(Toast::error(format!("生成随机密码失败：{e}")));
+                    cx.notify();
+                    return;
+                }
+            };
             create_user = true;
-            password.update(cx, |state, cx| {
-                state.set_value(mysql_model::generate_password(), window, cx)
-            });
+            password.update(cx, |state, cx| state.set_value(generated, window, cx));
         }
         // 焦点给"最该填的那一格"
         let first = match &kind {

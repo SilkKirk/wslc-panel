@@ -16,48 +16,36 @@ use super::*;
 ///
 /// # 随机源
 ///
-/// 没有 rand 依赖（不为本期引入新 crate），用 `std` 自带的来源拼熵：
-/// 纳秒时间 + 进程内逐次递增的计数器 + 栈地址（ASLR 给的盐），过
-/// `DefaultHasher` 后用 LCG 摊开。单机场景下"同一个面板进程里两次点击
-/// 生成的密码不同"就够了。⚠️ **不是密码学安全的随机** —— 威胁模型是
-/// "别让两个库同密码"，不是"对抗能读你内存的攻击者"。这条写明了，是推的边界。
-pub fn generate_password() -> String {
-    // 只要 `Hasher` trait（`write_u64` / `finish`），`DefaultHasher::new()` 是
-    // 固有方法 —— 不需要 `BuildHasher`（多导入它会被 `unused_imports` 抓到）。
-    use std::hash::Hasher;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    // 24 个**无歧义**字符（没有 0/O、1/l/I）—— 密码是要抄到别的机器上用的
+/// 用 `getrandom` 直接取操作系统的 CSPRNG。早先用的是
+/// `DefaultHasher` + LCG + 纳秒 / 计数器 / 栈地址，注释里也写明"不是密码学
+/// 安全的随机" —— 生成的是数据库账号口令，不该继续这样。
+///
+/// 字节落到 `228..=255` 时丢弃再取：`256 / 57 = 4` 余 28，直接 `% 57`
+/// 会让前 28 个字符多出约 1/4 的偏置。16 位密码只多几次系统调用。
+///
+/// 系统熵源不可用时返回 `Err`（由界面提示），**不**退回弱随机：一个
+/// "看起来生成了密码、实际可预测"的账号比明确失败更糟。
+pub fn generate_password() -> std::result::Result<String, String> {
+    // 无歧义字符（没有 0/O、1/l/I）—— 密码是要抄到别的机器上用的。
     const ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    hasher.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
-    hasher.write_u64(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0),
-    );
-    hasher.write_u64(process_salt());
-    let mut state = hasher.finish();
+    // 256 / 57 = 4，4 * 57 = 228；>= 228 的字节丢弃，避免 modulo bias。
+    const LIMIT: u8 = 228;
 
     let mut out = String::with_capacity(16);
-    for _ in 0..16 {
-        // LCG 只是把 64 位熵摊开；安全性来自熵源，不来自它
-        state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        out.push(ALPHABET[(state >> 33) as usize % ALPHABET.len()] as char);
+    let mut buf = [0u8; 16];
+    while out.len() < 16 {
+        getrandom::fill(&mut buf).map_err(|e| format!("取系统随机数失败：{e}"))?;
+        for &byte in &buf {
+            if byte >= LIMIT {
+                continue;
+            }
+            out.push(ALPHABET[(byte % ALPHABET.len() as u8) as usize] as char);
+            if out.len() == 16 {
+                break;
+            }
+        }
     }
-    out
-}
-
-/// 进程启动时的一个盐（栈地址，ASLR 让它每次运行都不同）。
-fn process_salt() -> u64 {
-    let marker = 0u8;
-    &marker as *const u8 as u64
+    Ok(out)
 }
 
 /// **建议**的用户名规则：`<库名>_user`（`djxm` → `djxm_user`）。

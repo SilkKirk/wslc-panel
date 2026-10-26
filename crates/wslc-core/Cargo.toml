@@ -13,6 +13,11 @@ serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2"
 tracing = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# 数据库账号口令的随机源：直接取操作系统 CSPRNG。
+# 早先用的是 DefaultHasher + LCG（注释里自己写着"不是密码学安全"）——
+# 生成账号口令不该这样。这个 crate 本来就在依赖树里（rustls/ring 那条路径），
+# 只是多一条直接依赖边，不引入新的编译成本。
+getrandom = "0.3"
 
 # 只有 Windows 需要：`GetDiskFreeSpaceExW` 拿卷的总容量/可用空间。
 #
