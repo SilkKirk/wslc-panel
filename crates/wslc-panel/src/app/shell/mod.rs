@@ -80,6 +80,8 @@ pub(crate) enum DialogKey {
     CreateContainer,
     /// 「拉取镜像」弹窗。
     PullImage,
+    /// 「发行版配置」（/etc/wsl.conf）弹窗。
+    WslConf,
 }
 
 /// 应用外壳。

@@ -284,8 +284,7 @@ impl Render for Shell {
 
         // NOTE: export progress 走官方 Dialog 栈，见 sync_dialog_stack。
 
-        // 发行版配置（/etc/wsl.conf）弹窗。要 `cx` 才能读输入框的值。
-        let wslconf_dialog: AnyElement = views::wslconf_overlay(self, &entity, cx);
+        // NOTE: 发行版配置弹窗走官方 Dialog 栈（DialogKey::WslConf）。
 
         // NOTE: 容器日志走官方 Dialog 栈（DialogKey::ContainerLogs）。
 
@@ -525,7 +524,6 @@ impl Render for Shell {
             // 后画的创建表单应该压在上面 —— 用户刚点的是它。
             // ⚠️ 「单输入框提示」不在这条链子上 —— 它走官方 `Dialog` 的窗口级层栈
             // （见上面 `Shell::open_prompt` 那段的说明）。
-            .child(wslconf_dialog)
             // 日志和 exec 都可能是从容器详情里打开的，所以排在它之后。
             // 部署页的三个浮层：它们只在「部署管理」页上出现，
             // 不需要盖住数据库 / 备份那几层（那两组不会同时开着），

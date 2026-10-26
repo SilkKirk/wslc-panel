@@ -807,7 +807,10 @@ impl Shell {
         // 没进数据库页时也会弹出一个空的备份列表。
         // 通用二次确认（可以从**任何**浮层里弹出来 —— 这正是它必须走
         // 窗口级栈的原因：层序 = 栈序，不会像以前那样被下面的浮层盖住）。
-        // 拉取镜像弹窗（表单/进度两态都在 `pull_dialog_body` 里分流）。
+        // 发行版配置弹窗（输入框在 `open_wslconf` 里建好并存进 dialog）。
+        if self.wslconf_dialog.is_some() {
+            desired.push(DialogKey::WslConf);
+        }        // 拉取镜像弹窗（表单/进度两态都在 `pull_dialog_body` 里分流）。
         if self.pull_open && self.image_form.is_some() {
             desired.push(DialogKey::PullImage);
         } // 创建容器弹窗（输入框在 `open_create_dialog_prefilled` 里就建好了）。
@@ -1673,6 +1676,35 @@ impl Shell {
                         }))
                 });
             }
+        DialogKey::WslConf => {
+            let title = match self.wslconf_dialog.as_ref() {
+                Some(d) => format!("{} 配置（/etc/wsl.conf）", d.state.distro),
+                None => return,
+            };
+            let entity = cx.entity();
+            let content = {
+                let view_entity = entity.clone();
+                let body_entity = entity.clone();
+                cx.new(move |cx| {
+                    ShellView::new(
+                        view_entity,
+                        move |shell, cx| {
+                            crate::views::wslconf_dialog_body(shell, &body_entity, cx)
+                        },
+                        cx,
+                    )
+                })
+            };
+            window.open_dialog(cx, move |dialog, _window, _cx| {
+                dialog
+                    .title(title.clone())
+                    .w(px(820.))
+                    .overlay(true)
+                    .overlay_closable(false)
+                    .keyboard(true)
+                    .child(content.clone())
+            });
+        }
         }
     }
 }

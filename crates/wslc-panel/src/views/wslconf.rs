@@ -123,7 +123,7 @@ pub(crate) fn wslconf_row(
 ///
 /// 表单是**表驱动**的：遍历 [`wslconf::SECTIONS`] / [`wslconf::FIELDS`] 画出来，
 /// 所以加字段不用改这里 —— 改 `wslc-core` 的那两张表就够了。
-pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyElement {
+pub(crate) fn wslconf_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyElement {
     let (Some(saved_state), Some(dialog)) =
         (shell.state.wslconf.as_ref(), shell.wslconf_dialog.as_ref())
     else {
@@ -338,15 +338,12 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEl
         vec![save.into_any_element(), save_restart.into_any_element()]
     };
 
-    modal_scrim(
-        "wslconf",
-        modal_card(ModalSize::Wide)
-            .id("wslconf-card")
-            // 只有正文滚动，保存区固定在卡片底部，展开配置也不把按钮挤走。
-            .max_h(px(620.))
-            .child(
-                v_flex()
-                    .gap_1()
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(
+            v_flex()
+                .gap_1()
                     .child(modal_title(format!(
                         "{} 配置（/etc/wsl.conf）",
                         state.distro
@@ -373,28 +370,5 @@ pub fn wslconf_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyEl
                     .children(sections)
                     .children(preview),
             )
-            .child(
-                v_flex()
-                    .w_full()
-                    .flex_none()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::text_dim())
-                            .child("仅保存需下次启动才生效；重启会中断此发行版中正在运行的任务。"),
-                    )
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .gap_2()
-                            .flex_wrap()
-                            .justify_end()
-                            .child(preview_btn)
-                            .child(cancel)
-                            .children(save_actions),
-                    ),
-            ),
-    )
-    .into_any_element()
+        .into_any_element()
 }
