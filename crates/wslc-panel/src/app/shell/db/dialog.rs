@@ -138,7 +138,7 @@ impl Shell {
         // （`views::grant_db_field` 把输入框标成最终生效的那一格），
         // 而不是让两格去追一个会崩的双向同步。
 
-        self.db_dialog = Some(DbDialog {
+        self.forms.db_dialog = Some(DbDialog {
             _input_subs: input_subs,
             kind,
             database,
@@ -170,7 +170,7 @@ impl Shell {
     /// `set_items` 会把下拉框的选中项清掉，所以填完要把输入框里**已经写着**的
     /// 那个库重新选上（用户可能是"先手打了库名，再想用下拉框换一个"）。
     pub(crate) fn fill_grant_db_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(dialog) = self.db_dialog.as_ref() else {
+        let Some(dialog) = self.forms.db_dialog.as_ref() else {
             return;
         };
         // 只有这两个动作画那一格（`views::db_dialog_overlay` 里两处
@@ -223,7 +223,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(input) = self.db_dialog.as_ref().map(|d| d.grant_db.clone()) else {
+        let Some(input) = self.forms.db_dialog.as_ref().map(|d| d.grant_db.clone()) else {
             return;
         };
         input.update(cx, |state, cx| state.set_value(database, window, cx));
@@ -236,7 +236,7 @@ impl Shell {
     /// 理由见 `AGENTS.md` §7.4）：`sql` 作为扩展名过滤，`AfterPick::Nothing`
     /// —— 选完只填输入框，导入要等用户点「开始导入」。
     pub fn pick_import_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(input) = self.db_dialog.as_ref().map(|d| d.import_path.clone()) else {
+        let Some(input) = self.forms.db_dialog.as_ref().map(|d| d.import_path.clone()) else {
             return;
         };
         self.spawn_picker(
@@ -264,7 +264,7 @@ impl Shell {
     pub fn start_db_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // 先把要用的取成 owned（下面要改 self，不能再借着 db_dialog）
         let (path_text, database) = {
-            let Some(dialog) = self.db_dialog.as_ref() else {
+            let Some(dialog) = self.forms.db_dialog.as_ref() else {
                 return;
             };
             let DbDialogKind::ImportSql { database } = &dialog.kind else {
@@ -343,7 +343,7 @@ impl Shell {
                 dismissed: false,
             });
         }
-        self.db_dialog = None;
+        self.forms.db_dialog = None;
         self.state.notify(Toast::info(format!(
             "正在导入 {file_name}{}…",
             database
@@ -420,7 +420,7 @@ impl Shell {
 
     /// 「新建数据库」弹窗里开关「同时创建用户」。
     pub fn set_db_create_user(&mut self, create_user: bool, cx: &mut Context<Self>) {
-        if let Some(dialog) = self.db_dialog.as_mut() {
+        if let Some(dialog) = self.forms.db_dialog.as_mut() {
             dialog.create_user = create_user;
         }
         cx.notify();
@@ -435,7 +435,7 @@ impl Shell {
     /// 建议值取自**当前**库名，所以先填库名再点，值才符合直觉；库名还空着时
     /// 算出来是 `_user`（没有意义），这时只给一句提示。
     pub fn fill_db_username(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(dialog) = self.db_dialog.as_ref() else {
+        let Some(dialog) = self.forms.db_dialog.as_ref() else {
             return;
         };
         let database = dialog.database.read(cx).value().trim().to_owned();
@@ -454,7 +454,7 @@ impl Shell {
 
     /// 关掉动作弹窗（不提交）。
     pub fn close_db_dialog(&mut self, cx: &mut Context<Self>) {
-        self.db_dialog = None;
+        self.forms.db_dialog = None;
         cx.notify();
     }
 
@@ -480,7 +480,7 @@ impl Shell {
 
     /// 选授权级别。
     pub fn set_db_grant(&mut self, grant: GrantKind, cx: &mut Context<Self>) {
-        if let Some(dialog) = self.db_dialog.as_mut() {
+        if let Some(dialog) = self.forms.db_dialog.as_mut() {
             dialog.grant = grant;
         }
         cx.notify();
@@ -507,7 +507,7 @@ impl Shell {
         // `Result` 来自 `gpui_kit::*`，它的默认错误类型是 anyhow —— 两个
         // "Result" 长得一样，是不同的类型（CI 抓的）。
         let prepared: wslc_core::Result<Option<PreparedDbSql>> = (|| {
-            let Some(dialog) = self.db_dialog.as_ref() else {
+            let Some(dialog) = self.forms.db_dialog.as_ref() else {
                 return Ok(None);
             };
             let text = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
@@ -598,7 +598,7 @@ impl Shell {
             Err(e) => {
                 // 编码字段折叠后，校验错误仍应把用户带到可见的输入框。
                 let message = e.to_string();
-                let encoding_input = self.db_dialog.as_ref().and_then(|dialog| {
+                let encoding_input = self.forms.db_dialog.as_ref().and_then(|dialog| {
                     if message.contains("字符集") {
                         Some(dialog.charset.clone())
                     } else if message.contains("排序规则") {
@@ -631,7 +631,7 @@ impl Shell {
         // 走 [`Shell::db_creds`] 而不是自己拼：那是全页唯一的取账号入口。
         let creds = self.db_creds(cx);
 
-        self.db_dialog = None;
+        self.forms.db_dialog = None;
         self.run_db_statement(
             // 结构体字面量：每个值跟着名字走 —— 原先那 6 个 `String` 参数
             // 顺序写错了编译器也不会报（类型一样）。

@@ -41,7 +41,7 @@ use blocks::{mirror_block, online_block};
 /// 那条检查在提交那一刻做，见 `Shell::confirm_install`。
 pub(crate) fn add_instance_page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
     let state = &shell.state;
-    let Some(form) = shell.install_form.as_ref() else {
+    let Some(form) = shell.forms.install_form.as_ref() else {
         return card(
             "添加实例",
             v_flex()

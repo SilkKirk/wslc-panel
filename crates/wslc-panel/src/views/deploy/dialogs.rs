@@ -22,7 +22,7 @@ use super::super::prelude::*;
 /// - 「启动命令会原样交给 /bin/sh -c」：它**不做**引号转义（刻意的，
 ///   见 `model::deploy::start_script`），不说清楚用户会以为它是参数。
 pub(crate) fn deploy_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyElement {
-    let Some(form) = shell.deploy_form.as_ref() else {
+    let Some(form) = shell.forms.deploy_form.as_ref() else {
         return div().into_any_element();
     };
     let Some(deploy) = shell.state.deploy.as_ref() else {

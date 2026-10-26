@@ -48,7 +48,7 @@ pub(crate) fn database_page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> 
     // 都不用（`form` 在「基础信息」对话框里用；v0.12 起 SQL 控制台有自己
     // 的整页 `sql_console_page`，那儿的编辑器是 `EditorState`，也不在这儿读），
     // 绑了就是一个 unused 警告。
-    if shell.db_form.is_none() {
+    if shell.forms.db_form.is_none() {
         return page_empty(REOPEN_DB_PAGE);
     }
 

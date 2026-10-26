@@ -108,7 +108,7 @@ impl DialogKey {
     pub(crate) fn is_open(self, shell: &Shell) -> bool {
         match self {
             DialogKey::DbInfo => {
-                shell.db_info_open && shell.db_form.is_some() && shell.state.db.is_some()
+                shell.db_info_open && shell.forms.db_form.is_some() && shell.state.db.is_some()
             }
             DialogKey::Export => shell.state.exporting.is_some(),
             // 备份 / 导入进度：`dismissed` 时不进栈（用户点过「放到后台」），
@@ -142,18 +142,18 @@ impl DialogKey {
                 .as_ref()
                 .is_some_and(|d| d.confirm_remove.is_some()),
             DialogKey::DbBackupList => {
-                shell.db_form.is_some()
+                shell.forms.db_form.is_some()
                     && shell
                         .state
                         .db
                         .as_ref()
                         .is_some_and(|db| db.backup_dialog.is_some())
             }
-            DialogKey::DeployForm => shell.deploy_form.is_some(),
-            DialogKey::WslConf => shell.wslconf_dialog.is_some(),
-            DialogKey::PullImage => shell.pull_open && shell.image_form.is_some(),
-            DialogKey::CreateContainer => shell.create_dialog.is_some(),
-            DialogKey::DbAction => shell.db_form.is_some() && shell.db_dialog.is_some(),
+            DialogKey::DeployForm => shell.forms.deploy_form.is_some(),
+            DialogKey::WslConf => shell.forms.wslconf_dialog.is_some(),
+            DialogKey::PullImage => shell.pull_open && shell.forms.image_form.is_some(),
+            DialogKey::CreateContainer => shell.forms.create_dialog.is_some(),
+            DialogKey::DbAction => shell.forms.db_form.is_some() && shell.forms.db_dialog.is_some(),
             DialogKey::Confirm => shell.state.confirm.is_some(),
         }
     }
@@ -893,7 +893,7 @@ impl Shell {
                 );
             }
             DialogKey::DbAction => {
-                let Some(kind) = self.db_dialog.as_ref().map(|d| d.kind.clone()) else {
+                let Some(kind) = self.forms.db_dialog.as_ref().map(|d| d.kind.clone()) else {
                     return;
                 };
                 let title = kind.title().to_owned();
@@ -959,7 +959,7 @@ impl Shell {
                 let body_entity = entity.clone();
                 let content = shell_view(
                     &entity,
-                    move |shell, cx| match shell.create_dialog.as_ref() {
+                    move |shell, cx| match shell.forms.create_dialog.as_ref() {
                         Some(dialog) => {
                             crate::views::create_dialog_body(dialog, &shell.state, &body_entity, cx)
                         }
@@ -1014,7 +1014,7 @@ impl Shell {
                 let body_entity = entity.clone();
                 let content = shell_view(
                     &entity,
-                    move |shell, cx| match shell.image_form.as_ref() {
+                    move |shell, cx| match shell.forms.image_form.as_ref() {
                         Some(form) => {
                             crate::views::pull_dialog_body(form, &shell.state, &body_entity, cx)
                         }
@@ -1057,7 +1057,7 @@ impl Shell {
                 );
             }
             DialogKey::WslConf => {
-                let title = match self.wslconf_dialog.as_ref() {
+                let title = match self.forms.wslconf_dialog.as_ref() {
                     Some(_) => match self.state.wslconf.as_ref() {
                         Some(w) => format!("{} 配置（/etc/wsl.conf）", w.distro),
                         None => "配置（/etc/wsl.conf）".to_owned(),
@@ -1092,7 +1092,7 @@ impl Shell {
                 );
             }
             DialogKey::DeployForm => {
-                let Some(form) = self.deploy_form.as_ref() else {
+                let Some(form) = self.forms.deploy_form.as_ref() else {
                     return;
                 };
                 let title = match form.editing.clone() {

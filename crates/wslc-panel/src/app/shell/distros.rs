@@ -445,7 +445,7 @@ impl Shell {
                                 // 联动"，之后只能自己手敲路径。
                                 // （选择器还可能因为 `picking` 已经在跑而直接返回，
                                 // 那种情况下更不该动。）
-                                if let Some(form) = shell.install_form.as_mut() {
+                                if let Some(form) = shell.forms.install_form.as_mut() {
                                     form.last_derived_dir = None;
                                 }
                             }
@@ -550,7 +550,7 @@ impl Shell {
                                 })
                             })
                             .collect();
-                        shell.wslconf_dialog = Some(WslConfDialog {
+                        shell.forms.wslconf_dialog = Some(WslConfDialog {
                             inputs,
                             _input_subs: input_subs,
                         });
@@ -568,7 +568,7 @@ impl Shell {
 
     /// 关闭弹窗（不保存）。
     pub fn close_wslconf(&mut self, cx: &mut Context<Self>) {
-        self.wslconf_dialog = None;
+        self.forms.wslconf_dialog = None;
         self.state.wslconf = None;
         cx.notify();
     }
@@ -606,7 +606,7 @@ impl Shell {
         // 1) 把输入框的值读回文档。
         //    先收集成拥有所有权的数据，**结束对 `self` 的借用** ——
         //    下面要 `&mut self.state`。
-        let Some(dialog) = self.wslconf_dialog.as_ref() else {
+        let Some(dialog) = self.forms.wslconf_dialog.as_ref() else {
             return;
         };
         let updates: Vec<(&'static str, &'static str, String)> = wslc_core::model::wslconf::FIELDS
@@ -709,7 +709,7 @@ impl Shell {
                 };
 
                 if saved {
-                    shell.wslconf_dialog = None;
+                    shell.forms.wslconf_dialog = None;
                     shell.state.wslconf = None;
                     shell.state.notify(Toast::success(format!(
                         "{target} 的 /etc/wsl.conf 已保存{}",

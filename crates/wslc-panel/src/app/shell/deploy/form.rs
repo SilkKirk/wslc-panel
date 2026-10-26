@@ -200,7 +200,7 @@ impl Shell {
                 })
             })
             .collect();
-        self.deploy_form = Some(DeployForm {
+        self.forms.deploy_form = Some(DeployForm {
             _input_subs: input_subs,
             editing,
             app,
@@ -222,13 +222,13 @@ impl Shell {
 
     /// 关掉「添加部署」弹窗（取消 / 提交完都走它）。
     pub fn close_deploy_dialog(&mut self, cx: &mut Context<Self>) {
-        self.deploy_form = None;
+        self.forms.deploy_form = None;
         cx.notify();
     }
 
     /// 「生成站点配置」勾选变化。
     pub fn set_deploy_site_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        if let Some(form) = self.deploy_form.as_mut() {
+        if let Some(form) = self.forms.deploy_form.as_mut() {
             form.site_enabled = enabled;
         }
         cx.notify();
@@ -236,7 +236,7 @@ impl Shell {
 
     /// 「单页应用回退」勾选变化。
     pub fn set_deploy_site_spa(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        if let Some(form) = self.deploy_form.as_mut() {
+        if let Some(form) = self.forms.deploy_form.as_mut() {
             form.site_spa = enabled;
         }
         cx.notify();
@@ -244,7 +244,7 @@ impl Shell {
 
     /// 「去掉前缀」勾选变化。
     pub fn set_deploy_proxy_strip(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        if let Some(form) = self.deploy_form.as_mut() {
+        if let Some(form) = self.forms.deploy_form.as_mut() {
             form.proxy_strip = enabled;
         }
         cx.notify();
@@ -252,7 +252,7 @@ impl Shell {
 
     /// 「自动接通网络」勾选变化。
     pub fn set_deploy_auto_connect(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        if let Some(form) = self.deploy_form.as_mut() {
+        if let Some(form) = self.forms.deploy_form.as_mut() {
             form.auto_connect = enabled;
         }
         cx.notify();
@@ -268,8 +268,12 @@ impl Shell {
     /// [`Shell::resync_deploy_command`]（Java / Go 的启动命令里嵌的是**源文件的
     /// 名字**，来源一换那格就不对了）。
     pub fn browse_deploy_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(form), Some(deploy)) = (self.deploy_form.as_ref(), self.state.deploy.as_ref())
-        else {
+        // 分成两段而不是一个元组：`self.forms.deploy_form` 比原来的名字长了 6 个字符，
+        // 写成 `let (Some(..), Some(..)) = (.., ..)` 就超过 100 列了（rustfmt 会拒绝）。
+        let Some(form) = self.forms.deploy_form.as_ref() else {
+            return;
+        };
+        let Some(deploy) = self.state.deploy.as_ref() else {
             return;
         };
         let runtime = deploy.runtime;
@@ -301,8 +305,12 @@ impl Shell {
     ///
     /// nginx / Node 不动这一格：它们的命令（`npm start`）与来源文件名无关。
     pub(crate) fn resync_deploy_command(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(form), Some(deploy)) = (self.deploy_form.as_ref(), self.state.deploy.as_ref())
-        else {
+        // 分成两段而不是一个元组：`self.forms.deploy_form` 比原来的名字长了 6 个字符，
+        // 写成 `let (Some(..), Some(..)) = (.., ..)` 就超过 100 列了（rustfmt 会拒绝）。
+        let Some(form) = self.forms.deploy_form.as_ref() else {
+            return;
+        };
+        let Some(deploy) = self.state.deploy.as_ref() else {
             return;
         };
         let runtime = deploy.runtime;
@@ -353,7 +361,7 @@ impl Shell {
                 .set_section_open(UiSection::DeployProxyMore, true);
         }
         cx.notify();
-        let Some(form) = self.deploy_form.as_ref() else {
+        let Some(form) = self.forms.deploy_form.as_ref() else {
             return;
         };
         let input = match which {
@@ -376,7 +384,7 @@ impl Shell {
     /// 和 `read_db_form` 同一条理由：执行时用的就是用户眼睛看到的那个，
     /// 不存在"界面显示 A、实际用 B"的可能。
     pub(crate) fn read_deploy_form(&self, cx: &App) -> Option<DeployFormValues> {
-        let form = self.deploy_form.as_ref()?;
+        let form = self.forms.deploy_form.as_ref()?;
         Some(DeployFormValues {
             app: form.app.read(cx).value().trim().to_owned(),
             source: form.source.read(cx).value().trim().to_owned(),

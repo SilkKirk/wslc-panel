@@ -14,14 +14,23 @@
 //! # 为什么结构体必须留在这一层
 //!
 //! 下面那些是**子模块**，于是它们是 `Shell` 的后代模块，按 Rust 的私有可见性
-//! 规则（「定义模块 + 其后代」）可以直接读写 `Shell` 的 20 个**私有**字段
-//! （订阅句柄、取消令牌、进行中的任务……）。
+//! 规则（「定义模块 + 其后代」）可以直接读写 `Shell` 的**私有**字段
+//! （订阅句柄、取消令牌、刷新节奏、详情弹窗那个名字……）。
+//! 只有 `forms` 那一组是 `pub(crate)`：`views/` 画输入框要读它们。
 //!
 //! ⚠️ 反过来说：如果把这个结构体挪进 `core.rs`，那 `db.rs` 就只是它的**兄弟**
 //! 模块，连 `self.state` 都碰不到 —— 除非把每个字段都放开成 `pub(crate)`，
 //! 而那等于把内部状态暴露给 `views`。**别再挪回去。**
 //!
 //! （这一条是踩出来的：第一版把结构体放在 `core.rs`，`cargo check` 全线报错。）
+//!
+//! # 顶层字段为什么要分组
+//!
+//! 曾经是 42 个**平铺**字段，于是"这个动作会碰哪些状态"得读完整页。现在按
+//! **能力**收成几组（`tasks` / `refresh` / `forms` …，每个组的结构体定义在
+//! `state.rs`）。搬的时候**一次只搬一组、一组一轮 CI** —— 一次动 42 个字段的
+//! 编译面，和"错了不知道错在哪"的代价都不值（见
+//! `docs/AUDIT-2026-10-26.md` §4.1 与 §11 的进度表）。
 
 use super::prelude::*;
 
@@ -56,38 +65,18 @@ pub struct Shell {
     ///
     /// 同样是界面状态（不进快照）：快照每轮整体重建，放进去反而要每轮重新赋值。
     refresh: Refresh,
+    /// 全部输入框 / 表单（12 个，见 [`Forms`]）。
+    ///
+    /// 这一组**必须** `pub(crate)`：`views/` 画输入框要读它们（`Input::new` 收
+    /// `&Entity<InputState>`，而页面渲染只拿得到 `&Shell`）。
+    pub(crate) forms: Forms,
     /// 错误横幅是不是展开着（多条错误时才用得上）。
     errors_expanded: bool,
-    /// 「容器」页的搜索框；进过那一页之后一直是 `Some`。
-    ///
-    /// `InputState::new` 要 `&mut Window`，所以只能在进入页面时建一次
-    /// （见 [`Shell::ensure_container_search`]）。`pub(crate)` 是因为
-    /// `views/` 要读它来画 `Input`。
-    pub(crate) container_search: Option<Entity<InputState>>,
     /// 搜索框内容变化的订阅。
     ///
     /// ⚠️ **必须存着**：`Subscription` 一 drop 就退订，表现是"打字时列表
     /// 不跟着变"，不会报错 —— 这是本仓库踩过的坑（见 `select_subs`）。
     container_search_sub: Option<Subscription>,
-    /// 「发行版配置（`/etc/wsl.conf`）」弹窗的输入框；关闭时为 `None`。
-    ///
-    /// `views::wslconf_overlay` 要读它来画 `Input`，所以是 `pub(crate)`。
-    pub(crate) wslconf_dialog: Option<WslConfDialog>,
-    /// 「新终端的起始目录」那个自定义路径输入框。
-    ///
-    /// 点过设置页的「自定义路径…」之后才是 `Some`，建完就**一直留着**
-    /// （和 `install_form` 同一个理由：`InputState::new` 要 `&mut Window`，
-    /// 而渲染时每帧重建输入框会让用户**一个字都打不进去**）。
-    ///
-    /// `pub(crate)`：`views/` 要读它来画 `Input`。
-    pub(crate) terminal_dir_input: Option<Entity<InputState>>,
-    /// 「创建容器」弹窗；关闭时为 `None`。
-    create_dialog: Option<CreateDialog>,
-    /// 「容器 exec」浮层的命令输入框；浮层关闭时为 `None`。
-    ///
-    /// 和 `create_dialog` 一样懒创建（`InputState::new` 要 `&mut Window`）。
-    /// 纯数据部分（跑过什么、输出是什么）在 `AppState::exec` 里。
-    pub(crate) exec_input: Option<Entity<InputState>>,
     /// 正在查看详情的容器名；关闭时为 None。
     detail: Option<String>,
     /// 正在查看详情的**发行版名**；关闭时为 None。
@@ -96,25 +85,12 @@ pub struct Shell {
     /// 两者的详情弹窗内容完全不同，共用一个字符串还得额外判断
     /// "这个名字是容器还是发行版"。
     distro_detail: Option<String>,
-    /// 「添加实例」页的表单。
-    ///
-    /// 和 `create_dialog` 一样**懒创建**（`InputState::new` 要 `&mut Window`），
-    /// 但**不随页面离开而销毁** —— 见 [`InstallForm`]。
-    ///
-    /// `pub(crate)`：`views/` 要读它来渲染页面（`Shell` 的其余字段
-    /// 只有 `app/` 自己用，所以是私有的）。
-    pub(crate) install_form: Option<InstallForm>,
     /// 两个下拉框（商店清单 / 镜像源清单）的**订阅**。
     ///
     /// ⚠️ 必须存着：`Context::subscribe_in` 返回的 `Subscription`
     /// **一 drop 就退订**（组件库自己也是 `vec![cx.subscribe_in(..)]` 存起来的）。
     /// 丢了它不会报错，只是"选了下拉框什么都不会发生" —— 那种 bug 很难查。
     select_subs: Vec<Subscription>,
-    /// 「镜像」页的表单（registry / 仓库名两个输入框 + tag 下拉框）；
-    /// 进过那一页之后一直是 `Some`。
-    ///
-    /// `pub(crate)`：`views/` 要读它来渲染页面。
-    pub(crate) image_form: Option<ImageForm>,
     /// 「镜像」页 tag 下拉框的**订阅**。
     ///
     /// ⚠️ 和 `select_subs` 同一个坑：`Subscription` **一 drop 就退订**，
@@ -122,7 +98,7 @@ pub struct Shell {
     image_subs: Vec<Subscription>,
     /// 「拉取镜像」弹窗开着吗。
     ///
-    /// 和 `image_form` 分开记：**表单建好之后一直留着**（用户第二次打开时
+    /// 和 `forms.image_form` 分开记：**表单建好之后一直留着**（用户第二次打开时
     /// registry / 仓库名 / 上一批 tag 都还在），而这个布尔只管可见性。
     /// 拉取进行中**不许关**（见 [`Shell::close_pull_dialog`]）。
     pull_open: bool,
@@ -134,10 +110,6 @@ pub struct Shell {
     /// 它跟着弹窗的**创建**走（每次开弹窗重建一份），所以这里不用
     /// `Option` —— 弹窗关掉时订阅也跟着丢，正好。
     create_subs: Vec<Subscription>,
-    /// 单输入框提示弹窗（移动位置 / 调整大小 / 设置默认用户）；关闭时为 `None`。
-    ///
-    /// 同样是 `pub(crate)`：浮层在 `views/` 里渲染。
-    pub(crate) prompt: Option<TextPrompt>,
     /// 我们已经压进**窗口级对话框栈**的那几层（官方 `Dialog`），按打开顺序。
     ///
     /// # 为什么需要自己记一份
@@ -153,16 +125,12 @@ pub struct Shell {
     /// 来对齐：多出来的从栈顶 pop（安全），缺的依次追加（不动下层）。
     /// 这份记录就是那个 diff 的左边。见 `Shell::sync_dialog_stack`。
     pub(crate) dialog_stack: Vec<DialogKey>,
-    /// 「数据库管理」页的连接卡 / SQL 输入框；没进过那一页时为 `None`。
-    ///
-    /// `pub(crate)`：页面在 `views/` 里渲染。
-    pub(crate) db_form: Option<DbPageForm>,
     /// SQL 结果表格的 `TableState`（v0.11）。
     ///
     /// # 为什么在 `Shell` 而不是 `AppState`
     ///
     /// `TableState` 是 GPUI 的实体（`Entity<TableState<D>>`），`wslc-panel-core`
-    /// 不依赖 GPUI，装不下它。这和 `container_search` 的处境一样：
+    /// 不依赖 GPUI，装不下它。这和 `forms.container_search` 的处境一样：
     /// **界面状态**留在 `Shell`，纯数据（`DbState::sql_results`）在 `AppState`。
     ///
     /// # 什么时候重建
@@ -215,27 +183,15 @@ pub struct Shell {
     /// 存 `(搜索关键字, 表总数)`：两者都没变就不重建 —— `TreeState` 重建会
     /// 丢掉用户已经展开的层级，所以这件事必须**只在真的变了**时做。
     pub(crate) schema_tree_built_for: Option<(String, usize)>,
-    /// 库 / 表树的搜索框（`InputState::new` 要 `&mut Window`，所以懒创建）。
-    pub(crate) schema_search: Option<Entity<InputState>>,
     /// 搜索框内容变化的订阅。
     ///
     /// ⚠️ **必须存着**：`Subscription` 一 drop 就退订，表现是"打字时树不跟着过滤"，
     /// 不会报错 —— 这是本仓库踩过的坑（见 `container_search_sub`）。
     pub(crate) schema_search_sub: Option<Subscription>,
-    /// 「数据库管理」页的一次性动作弹窗；关闭时为 `None`。
-    ///
-    /// 和 `create_dialog` 一样懒创建（`InputState::new` 要 `&mut Window`）。
-    pub(crate) db_dialog: Option<DbDialog>,
     /// 「数据库管理」页的「基础信息」浮层开着没有。
     ///
     /// 连接卡（用户名 / 密码 + 那两段说明）原来**常驻页面顶部**，实机反馈
     /// "不用进来就在上面占用空间" —— 现在收进这个浮层，页面顶上是页头 +
     /// 一个「基础信息」按钮。
     pub(crate) db_info_open: bool,
-    /// 「部署管理」页的「添加部署 / 重新部署」弹窗；关闭时为 `None`。
-    ///
-    /// 只有这一个要 window（里面全是输入框）。这一页另外两个浮层
-    /// （**日志**、**删除确认**）都是纯数据，住在 `AppState::deploy` 里 ——
-    /// 它们只有按钮和文字，没有 `InputState`。
-    pub(crate) deploy_form: Option<DeployForm>,
 }

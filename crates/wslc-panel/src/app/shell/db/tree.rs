@@ -7,7 +7,7 @@ use super::super::core::{folder_id, leaf_id};
 impl Shell {
     /// 确保搜索框存在（`InputState::new` 要 `&mut Window`，所以懒创建）。
     pub(crate) fn ensure_schema_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.schema_search.is_some() {
+        if self.forms.schema_search.is_some() {
             return;
         }
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("过滤库 / 表名"));
@@ -25,7 +25,7 @@ impl Shell {
                 cx.notify();
             }
         });
-        self.schema_search = Some(input);
+        self.forms.schema_search = Some(input);
         self.schema_search_sub = Some(sub);
     }
 
@@ -249,7 +249,7 @@ impl Shell {
         if let Some(db) = self.state.db.as_mut() {
             db.sql_database = Some(database);
         }
-        if let Some(form) = self.db_form.as_ref() {
+        if let Some(form) = self.forms.db_form.as_ref() {
             form.sql
                 .update(cx, |state, cx| state.set_value(sql, window, cx));
         }

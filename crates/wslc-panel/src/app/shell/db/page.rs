@@ -49,7 +49,7 @@ impl Shell {
             // 留着它，切过去的那个容器页会静默地去连**上一台机器**，
             // 而页面上还写着"这一页是 <新容器>"。
             // 同一个理由（clear on switch）在这一段已经写过一次，这里漏了一处。
-            if let Some(form) = self.db_form.as_ref() {
+            if let Some(form) = self.forms.db_form.as_ref() {
                 form.password
                     .update(cx, |state, cx| state.set_value(String::new(), window, cx));
                 // 状态里的 `dsn` 已经随新 `DbState` 一起变成 `None` 了（上面刚重建），
@@ -210,7 +210,7 @@ impl Shell {
             let _ = this.update_in(cx, |shell, window, cx| {
                 // 把这次实际用的账号同步到连接卡上：用户看得见"用的是哪个密码"
                 // （从环境变量读出来的那个也要显示出来，否则他会以为没生效）
-                if let Some(form) = shell.db_form.as_ref() {
+                if let Some(form) = shell.forms.db_form.as_ref() {
                     form.user
                         .update(cx, |state, cx| state.set_value(user.clone(), window, cx));
                     form.password.update(cx, |state, cx| {

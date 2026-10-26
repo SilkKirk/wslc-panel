@@ -960,3 +960,85 @@ pub(crate) struct Refresh {
     /// 一条一次 `exec` —— 跟着 3 秒一次太快（见 [`Shell::deploy_status_every_n_ticks`]）。
     pub(super) deploy_tick: u32,
 }
+
+/// 全部**输入框 / 表单**（12 个），按"用户在哪里填"排列。
+///
+/// # 为什么收成一组
+///
+/// 这 12 个字段的类型各不相同（`CreateDialog` / `InstallForm` / `ImageForm` /
+/// `DbPageForm` / `DbDialog` / `DeployForm` / `WslConfDialog` / `TextPrompt`，
+/// 外加三个裸 `Entity<InputState>`），但**处境完全一样**：
+///
+/// - 里面都有 `InputState`，而 `InputState::new` 要 `&mut Window` ——
+///   所以只能**懒创建**，建好之后一直留着（渲染时重建会让用户一个字都打不进去，
+///   见 `AGENTS.md` §7.5）；
+/// - 关闭时置 `None`。页面级的几个是例外：进过那一页之后一直 `Some`。
+///
+/// 平铺在 `Shell` 顶层时，这 12 个和"订阅句柄""取消令牌""刷新节奏"混在一起，
+/// 想看"这个动作碰了哪些状态"得读完整页。收进 `forms` 之后，`self.forms.xxx`
+/// 一眼就是"在改某个输入框"。
+///
+/// # ⚠️ 这里的字段是 `pub(crate)`，和 [`Tasks`] / [`Refresh`] 的 `pub(super)` 不同
+///
+/// 那两组是**能力**（能 kill 子进程、能阻止重复弹窗），`views/` 不该看见。
+/// 这一组反过来：**必须**让 `views/` 读得到 —— 画一个输入框要
+/// `Input::new(&Entity<InputState>)`，而页面渲染只拿得到 `&Shell`。
+///
+/// 放 `pub(super)` 是不行的：本结构体定义在 `app::shell::state`，
+/// `pub(super)` 只到 `app::shell` 那一层，`views` 在它外面。
+pub(crate) struct Forms {
+    /// 「容器」页的搜索框；进过那一页之后一直是 `Some`。
+    ///
+    /// 见 [`Shell::ensure_container_search`]。
+    pub(crate) container_search: Option<Entity<InputState>>,
+
+    /// 「发行版配置（`/etc/wsl.conf`）」弹窗的输入框；关闭时为 `None`。
+    pub(crate) wslconf_dialog: Option<WslConfDialog>,
+
+    /// 「新终端的起始目录」那个自定义路径输入框。
+    ///
+    /// 点过设置页的「自定义路径…」之后才是 `Some`，建完就**一直留着**
+    /// （和 `install_form` 同一个理由：`InputState::new` 要 `&mut Window`，
+    /// 而渲染时每帧重建输入框会让用户**一个字都打不进去**）。
+    pub(crate) terminal_dir_input: Option<Entity<InputState>>,
+
+    /// 「创建容器」弹窗；关闭时为 `None`。
+    pub(crate) create_dialog: Option<CreateDialog>,
+
+    /// 「容器 exec」浮层的命令输入框；浮层关闭时为 `None`。
+    ///
+    /// 和 `create_dialog` 一样懒创建（`InputState::new` 要 `&mut Window`）。
+    /// 纯数据部分（跑过什么、输出是什么）在 `AppState::exec` 里。
+    pub(crate) exec_input: Option<Entity<InputState>>,
+
+    /// 「添加实例」页的表单。
+    ///
+    /// 和 `create_dialog` 一样**懒创建**，但**不随页面离开而销毁** ——
+    /// 用户很可能点错了又点回来，重建会把已经打进去的字清掉（见 [`InstallForm`]）。
+    pub(crate) install_form: Option<InstallForm>,
+
+    /// 「镜像」页的表单（registry / 仓库名两个输入框 + tag 下拉框）；
+    /// 进过那一页之后一直是 `Some`。
+    pub(crate) image_form: Option<ImageForm>,
+
+    /// 单输入框提示弹窗（移动位置 / 调整大小 / 设置默认用户）；关闭时为 `None`。
+    pub(crate) prompt: Option<TextPrompt>,
+
+    /// 「数据库管理」页的连接卡 / SQL 输入框；没进过那一页时为 `None`。
+    pub(crate) db_form: Option<DbPageForm>,
+
+    /// 库 / 表树的搜索框（`InputState::new` 要 `&mut Window`，所以懒创建）。
+    pub(crate) schema_search: Option<Entity<InputState>>,
+
+    /// 「数据库管理」页的一次性动作弹窗；关闭时为 `None`。
+    ///
+    /// 和 `create_dialog` 一样懒创建（`InputState::new` 要 `&mut Window`）。
+    pub(crate) db_dialog: Option<DbDialog>,
+
+    /// 「部署管理」页的「添加部署 / 重新部署」弹窗；关闭时为 `None`。
+    ///
+    /// 只有这一个要 window（里面全是输入框）。这一页另外两个浮层
+    /// （**日志**、**删除确认**）都是纯数据，住在 `AppState::deploy` 里 ——
+    /// 它们只有按钮和文字，没有 `InputState`。
+    pub(crate) deploy_form: Option<DeployForm>,
+}

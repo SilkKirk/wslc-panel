@@ -28,7 +28,7 @@ use super::prelude::*;
 /// （`modal_scrim` / `modal_card` / `ModalSize`）就整块删掉了：
 /// 同一类东西只保留一种实现（`AGENTS.md` §7.5：层序 = 栈序）。
 pub(crate) fn db_info_body(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyElement {
-    let (Some(db), Some(form)) = (shell.state.db.as_ref(), shell.db_form.as_ref()) else {
+    let (Some(db), Some(form)) = (shell.state.db.as_ref(), shell.forms.db_form.as_ref()) else {
         return div().into_any_element();
     };
 
@@ -60,7 +60,7 @@ pub(crate) fn db_info_body(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> A
 /// ⚠️ 提交前的校验（标识符白名单）在 `submit_db_dialog` 里：不合法就**不关弹窗**，
 /// 只给一条提示 —— 用户就在那一格上，改一个字比重打一遍强。
 pub(crate) fn db_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyElement {
-    let Some(dialog) = shell.db_dialog.as_ref() else {
+    let Some(dialog) = shell.forms.db_dialog.as_ref() else {
         return div().into_any_element();
     };
 

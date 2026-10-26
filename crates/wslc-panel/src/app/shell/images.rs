@@ -10,7 +10,7 @@ impl Shell {
     /// **必须**在有 `&mut Window` 的地方调用 —— `InputState::new` 与
     /// `SelectState::new` 都要它。
     pub fn ensure_image_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.image_form.is_some() {
+        if self.forms.image_form.is_some() {
             return;
         }
 
@@ -55,7 +55,7 @@ impl Shell {
         });
         self.image_subs = vec![tags_sub, host_sub, repository_sub];
 
-        self.image_form = Some(ImageForm {
+        self.forms.image_form = Some(ImageForm {
             host,
             repository,
             tags_select,
@@ -81,7 +81,7 @@ impl Shell {
         self.fill_tag_select(window, cx);
         self.pull_open = true;
         // 焦点给仓库名框：打开就能直接打字（registry 一般不用改）。
-        if let Some(form) = self.image_form.as_ref() {
+        if let Some(form) = self.forms.image_form.as_ref() {
             let handle = form.repository.read(cx).focus_handle(cx);
             window.focus(&handle, cx);
         }
@@ -121,7 +121,7 @@ impl Shell {
     ///
     /// ⚠️ 要 `&mut Window`，所以只能在 `update_in` 里调（见 [`Shell::query_registry`]）。
     pub(crate) fn fill_tag_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(form) = self.image_form.as_ref() else {
+        let Some(form) = self.forms.image_form.as_ref() else {
             return;
         };
         let select = form.tags_select.clone();
@@ -164,7 +164,7 @@ impl Shell {
         // 先把两个控件句柄取出来（`Entity` 克隆很便宜）：后面要 `&mut self`
         // 调别的方法，别让 `form` 的不可变借用一直挂着。
         let (host_input, repo_input) = {
-            let Some(form) = self.image_form.as_ref() else {
+            let Some(form) = self.forms.image_form.as_ref() else {
                 return;
             };
             (form.host.clone(), form.repository.clone())
@@ -323,7 +323,7 @@ impl Shell {
             cx.notify();
             return;
         }
-        let Some(form) = self.image_form.as_ref() else {
+        let Some(form) = self.forms.image_form.as_ref() else {
             return;
         };
         form.repository
@@ -344,7 +344,7 @@ impl Shell {
             return;
         }
         // 输入可能刚在这一帧改变；提交时再次核对，不能拉取上次查询的旧目标。
-        let inputs_match = self.image_form.as_ref().is_some_and(|form| {
+        let inputs_match = self.forms.image_form.as_ref().is_some_and(|form| {
             self.state.registry.matches_inputs(
                 form.host.read(cx).value().trim(),
                 form.repository.read(cx).value().trim(),

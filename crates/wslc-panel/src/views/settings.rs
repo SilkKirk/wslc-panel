@@ -497,7 +497,7 @@ pub(crate) fn terminal_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement
 
     // 输入框只在点过「自定义路径…」之后存在。它一直留着（不随页面离开销毁），
     // 所以这里只要 `Some` 就画。
-    if let Some(input) = shell.terminal_dir_input.as_ref() {
+    if let Some(input) = shell.forms.terminal_dir_input.as_ref() {
         let apply = {
             let entity = entity.clone();
             Button::new("terminal-dir-apply")

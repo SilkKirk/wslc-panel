@@ -113,7 +113,7 @@ pub(crate) fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElemen
         // 「SQL 控制台」（v0.12）：**整页**工作区（左树 + 右上编辑器 + 右下结果）。
         // 要 `&Shell`（编辑器在 `db_form` 里、树的展开状态在 `Shell` 上）
         // 和 `cx`（读编辑器 / 搜索框的值）。
-        Page::Sql => match shell.db_form.as_ref() {
+        Page::Sql => match shell.forms.db_form.as_ref() {
             Some(form) => sql_console_page(shell, form, cx, entity),
             // 防御分支（理论上走不到：进这一页时 `ensure_db_form` 已经建好了）。
             // ⚠️ 文案不解释内部状态 —— "编辑器还没建好"是给开发看的，

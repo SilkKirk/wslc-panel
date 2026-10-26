@@ -19,7 +19,7 @@ impl Shell {
     /// 1. builder 闭包**可能被重跑**（gpui-component 的原话："it may run again
     ///    when the dialog layer is rebuilt. Keep it cheap and create persistent
     ///    entities before opening, not inside the builder"）—— 所以 `InputState`
-    ///    是在**打开之前**建好、存进 `self.prompt` 的，闭包里只用它的 `Entity`；
+    ///    是在**打开之前**建好、存进 `self.forms.prompt` 的，闭包里只用它的 `Entity`；
     /// 2. ⚠️ **别在闭包里现算"随打字变化"的内容**：闭包只在层被重建时重跑，
     ///    **打字不触发它**。v0.19.0 实机就是这个 bug —— 输入框里已经填了
     ///    `D:\wsl\MyDistro`，下面那行等效命令还停在 `--move <待填>`。
@@ -40,7 +40,7 @@ impl Shell {
         use gpui_kit::component::WindowExt as _;
 
         // 已经在开着就别再压一层（连点两下会弹出两个一模一样的对话框）。
-        if self.prompt.is_some() {
+        if self.forms.prompt.is_some() {
             return;
         }
 
@@ -59,7 +59,7 @@ impl Shell {
             move |cx| crate::views::PromptContent::new(kind, distro, input, entity, cx)
         });
 
-        self.prompt = Some(TextPrompt {
+        self.forms.prompt = Some(TextPrompt {
             kind,
             distro,
             input,
@@ -140,7 +140,7 @@ impl Shell {
 
     /// 关闭提示弹窗。
     pub fn close_prompt(&mut self, cx: &mut Context<Self>) {
-        self.prompt = None;
+        self.forms.prompt = None;
         cx.notify();
     }
 
@@ -150,7 +150,7 @@ impl Shell {
     pub fn submit_prompt(&mut self, cx: &mut Context<Self>) {
         // 一次把需要的值全取出来，**结束对 `self` 的借用** ——
         // 下面要 `&mut self` 去发提示条。
-        let (kind, distro, value) = match self.prompt.as_ref() {
+        let (kind, distro, value) = match self.forms.prompt.as_ref() {
             Some(prompt) => (
                 prompt.kind,
                 prompt.distro.clone(),
@@ -193,7 +193,7 @@ impl Shell {
         // 导出是**长任务**（要进度条、要能取消），走的是完全不同的一条路 ——
         // 它和上面三个只是共用了"让用户填一个文本参数"这个外形。
         if kind == PromptKind::ExportDistro {
-            self.prompt = None;
+            self.forms.prompt = None;
             self.start_export(distro, value, cx);
             return;
         }
@@ -202,13 +202,13 @@ impl Shell {
         // 任何发行版**（`distro` 是空串）。放进下面那个 match 的话，
         // 那一整块都得同时拿着两个调用器。
         if kind == PromptKind::CreateVolume {
-            self.prompt = None;
+            self.forms.prompt = None;
             self.create_volume(value, cx);
             return;
         }
 
         let title = kind.title();
-        self.prompt = None;
+        self.forms.prompt = None;
         self.state
             .notify(Toast::info(format!("正在{title}…（大磁盘可能要几分钟）")));
         cx.notify();
@@ -486,7 +486,7 @@ impl Shell {
                     }
                 }));
         }
-        self.create_dialog = Some(dialog);
+        self.forms.create_dialog = Some(dialog);
         // 本地镜像候选：直接来自快照（每 3 秒采一次），**不起新进程**。
         self.fill_image_select(window, cx);
         // 带着镜像进来时顺手读一次"它声明了哪些端口、会跑什么"——
@@ -506,7 +506,7 @@ impl Shell {
     /// 标签写 `引用（体积）`（体积帮用户认人），**取到的值只有引用** ——
     /// 那才是 `wslc run` 要的东西。
     pub(crate) fn fill_image_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(dialog) = self.create_dialog.as_ref() else {
+        let Some(dialog) = self.forms.create_dialog.as_ref() else {
             return;
         };
         let select = dialog.image_select.clone();
@@ -545,7 +545,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(dialog) = self.create_dialog.as_ref() else {
+        let Some(dialog) = self.forms.create_dialog.as_ref() else {
             return;
         };
         let input = dialog.image.clone();
@@ -573,7 +573,7 @@ impl Shell {
         // 而且用户一看到表单就该已经填好（见 `prefill_from_image_preset`）。
         self.prefill_from_image_preset(&image, window, cx);
 
-        if let Some(dialog) = self.create_dialog.as_mut() {
+        if let Some(dialog) = self.forms.create_dialog.as_mut() {
             dialog.facts = FactsState::Loading;
         }
         let wslc = self.state.wslc.clone();
@@ -584,7 +584,7 @@ impl Shell {
                 .await;
             let _ = this.update_in(cx, |shell, window, cx| {
                 // 用户可能已经把弹窗关了（或者又开了一个）—— 那就丢掉这次结果。
-                let Some(dialog) = shell.create_dialog.as_mut() else {
+                let Some(dialog) = shell.forms.create_dialog.as_mut() else {
                     return;
                 };
                 match result {
@@ -633,7 +633,7 @@ impl Shell {
         let Some(preset) = wslc_core::model::image_preset(image) else {
             return;
         };
-        let Some(dialog) = self.create_dialog.as_ref() else {
+        let Some(dialog) = self.forms.create_dialog.as_ref() else {
             return;
         };
 
@@ -658,7 +658,7 @@ impl Shell {
 
     /// 关闭「创建容器」弹窗。
     pub fn close_create_dialog(&mut self, cx: &mut Context<Self>) {
-        self.create_dialog = None;
+        self.forms.create_dialog = None;
         // 订阅跟着弹窗一起丢：下拉框已经没了，留着它只是白占一个 `Subscription`
         // （下次开弹窗会重新建一份）。
         self.create_subs.clear();
@@ -667,7 +667,7 @@ impl Shell {
 
     /// 切换拉取策略。
     pub fn set_create_pull(&mut self, pull: PullPolicy, cx: &mut Context<Self>) {
-        if let Some(dialog) = self.create_dialog.as_mut() {
+        if let Some(dialog) = self.forms.create_dialog.as_mut() {
             dialog.pull = pull;
             cx.notify();
         }
@@ -681,7 +681,7 @@ impl Shell {
     /// 需要 `window`：表单里那几个"预填了但没填值"的必需变量要**拦住**
     /// 并把焦点送到那一格（见下面的检查）。
     pub fn confirm_create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(dialog) = self.create_dialog.as_ref() else {
+        let Some(dialog) = self.forms.create_dialog.as_ref() else {
             return;
         };
         // 查重名要用现有容器名 —— 和预览读的是同一个函数，所以
@@ -724,7 +724,7 @@ impl Shell {
             )));
 
             // 焦点直接送到环境变量那格，省得用户自己找
-            if let Some(dialog) = self.create_dialog.as_ref() {
+            if let Some(dialog) = self.forms.create_dialog.as_ref() {
                 let handle = dialog.env.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
             }
@@ -754,7 +754,7 @@ impl Shell {
         // ⚠️ `spec.command` 是**拼好的 argv**（`state::create_command`）：留空时是
         // 空表（那正是"不给命令、用镜像自己的"），所以判空用 `is_empty()`。
         if spec.command.is_empty() {
-            let has_cmd = match self.create_dialog.as_ref().map(|dialog| &dialog.facts) {
+            let has_cmd = match self.forms.create_dialog.as_ref().map(|dialog| &dialog.facts) {
                 Some(FactsState::Ready(facts)) => Some(facts.has_cmd),
                 _ => None,
             };
@@ -765,7 +765,7 @@ impl Shell {
                      `tail -f /dev/null`；想直接跑应用，填你的启动命令。",
                 ));
                 // 焦点送到那一格，省得用户自己找
-                if let Some(dialog) = self.create_dialog.as_ref() {
+                if let Some(dialog) = self.forms.create_dialog.as_ref() {
                     let handle = dialog.command.read(cx).focus_handle(cx);
                     window.focus(&handle, cx);
                 }
@@ -777,7 +777,7 @@ impl Shell {
         let command = format!("wslc {}", spec.to_args().join(" "));
         tracing::info!("创建容器：{command}");
 
-        self.create_dialog = None;
+        self.forms.create_dialog = None;
         self.state
             .notify(Toast::info("正在创建容器…（若需拉取镜像可能要几分钟）"));
         cx.notify();
@@ -989,7 +989,7 @@ impl Shell {
 
         let title = format!("执行命令 —— {name}");
         self.state.exec = Some(ExecState::new(name));
-        self.exec_input = Some(input);
+        self.forms.exec_input = Some(input);
         cx.notify();
 
         let entity = cx.entity();
@@ -1051,7 +1051,7 @@ impl Shell {
     /// 留着上一条会让下次打开时手一抖又跑一遍。
     pub fn close_exec(&mut self, cx: &mut Context<Self>) {
         self.state.exec = None;
-        self.exec_input = None;
+        self.forms.exec_input = None;
         cx.notify();
     }
 
@@ -1071,7 +1071,7 @@ impl Shell {
         if exec.running {
             return;
         }
-        let Some(input) = self.exec_input.as_ref() else {
+        let Some(input) = self.forms.exec_input.as_ref() else {
             return;
         };
 

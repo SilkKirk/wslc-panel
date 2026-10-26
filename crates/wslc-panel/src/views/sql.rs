@@ -448,7 +448,7 @@ pub(crate) fn sql_tree_pane(db: &DbState, shell: &Shell, entity: &Entity<Shell>)
     //
     // 过滤**不是**在这里做的 —— 关键字一变就由 `ensure_schema_search` 的
     // 订阅去 `rebuild_schema_tree` 重灌 items（见那里的注释）。
-    let search: AnyElement = match shell.schema_search.as_ref() {
+    let search: AnyElement = match shell.forms.schema_search.as_ref() {
         Some(input) => div()
             .w_full()
             .child(Input::new(input).id("db-schema-search").w_full())

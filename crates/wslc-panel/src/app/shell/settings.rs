@@ -215,7 +215,7 @@ impl Shell {
     ///
     /// 建完之后**一直留着**，再把焦点给过去：用户点完按钮就能直接敲。
     pub fn edit_terminal_dir(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.terminal_dir_input.is_none() {
+        if self.forms.terminal_dir_input.is_none() {
             // 预填当前的自定义路径（不是自定义档位时留空，走占位符提示格式）。
             let current = match &self.state.prefs.terminal_dir {
                 wslc_panel_core::prefs::TerminalStartDir::Custom(dir) => dir.clone(),
@@ -225,11 +225,11 @@ impl Shell {
                 cx.new(|cx| InputState::new(window, cx).placeholder("/home/wt/project 或 ~"));
             // `set_value` 也要 `&mut Window`，所以只能在这儿做。
             input.update(cx, |state, cx| state.set_value(current, window, cx));
-            self.terminal_dir_input = Some(input);
+            self.forms.terminal_dir_input = Some(input);
         }
 
         // `InputState::focus` 是 `pub(crate)`，外部只能走 `focus_handle`。
-        if let Some(input) = self.terminal_dir_input.clone() {
+        if let Some(input) = self.forms.terminal_dir_input.clone() {
             let handle = input.read(cx).focus_handle(cx);
             window.focus(&handle, cx);
         }
@@ -243,7 +243,7 @@ impl Shell {
     /// 把非法值存进去，用户下次点「打开终端」会得到一个落点随机的窗口
     /// （`wsl.exe` 对不存在的 `--cd` 不报错，只落在 `/`）。
     pub fn apply_terminal_dir(&mut self, cx: &mut Context<Self>) {
-        let Some(input) = self.terminal_dir_input.clone() else {
+        let Some(input) = self.forms.terminal_dir_input.clone() else {
             return;
         };
         let typed = input.read(cx).value().trim().to_owned();

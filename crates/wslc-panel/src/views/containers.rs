@@ -350,7 +350,7 @@ pub(crate) fn containers_page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -
             })
     };
 
-    let search: Option<AnyElement> = shell.container_search.as_ref().map(|input| {
+    let search: Option<AnyElement> = shell.forms.container_search.as_ref().map(|input| {
         Input::new(input)
             .id("container-search")
             .w(px(240.))
@@ -359,7 +359,7 @@ pub(crate) fn containers_page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -
 
     let clear = (!query.trim().is_empty()).then(|| {
         let entity = entity.clone();
-        let input = shell.container_search.clone();
+        let input = shell.forms.container_search.clone();
         Button::new("container-search-clear")
             .label("清空")
             .small()
@@ -461,7 +461,7 @@ pub(crate) fn containers_page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -
             Some(page_empty("没有任何容器"))
         } else {
             let entity = entity.clone();
-            let input = shell.container_search.clone();
+            let input = shell.forms.container_search.clone();
             let reset = Button::new("container-filter-clear")
                 .label("清空筛选")
                 .small()

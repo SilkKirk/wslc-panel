@@ -5,7 +5,7 @@
 
 use super::super::prelude::*;
 use super::Shell;
-use super::state::{DropdownItem, InstallForm, Refresh, Tasks};
+use super::state::{DropdownItem, Forms, InstallForm, Refresh, Tasks};
 
 /// 取锁；中毒（别的线程 panic 过）时照常用里面的值。
 ///
@@ -161,8 +161,21 @@ impl Shell {
                 status_tick: 0,
                 deploy_tick: 0,
             },
+            forms: Forms {
+                container_search: None,
+                wslconf_dialog: None,
+                terminal_dir_input: None,
+                create_dialog: None,
+                exec_input: None,
+                install_form: None,
+                image_form: None,
+                prompt: None,
+                db_form: None,
+                schema_search: None,
+                db_dialog: None,
+                deploy_form: None,
+            },
             errors_expanded: false,
-            container_search: None,
             container_search_sub: None,
             tasks: Tasks {
                 pull_cancel: None,
@@ -172,21 +185,13 @@ impl Shell {
                 keep_alive: Vec::new(),
                 picking: false,
             },
-            wslconf_dialog: None,
-            terminal_dir_input: None,
-            create_dialog: None,
-            exec_input: None,
             detail: None,
             distro_detail: None,
-            install_form: None,
             select_subs: Vec::new(),
-            image_form: None,
             image_subs: Vec::new(),
             pull_open: false,
             create_subs: Vec::new(),
-            prompt: None,
             dialog_stack: Vec::new(),
-            db_form: None,
             sql_table: None,
             sql_result_tab: 0,
             sql_raw_open: false,
@@ -194,11 +199,8 @@ impl Shell {
             tree_collapsed: false,
             schema_tree_state: None,
             schema_tree_built_for: None,
-            schema_search: None,
             schema_search_sub: None,
-            db_dialog: None,
             db_info_open: false,
-            deploy_form: None,
         };
         shell.refresh(cx);
         shell.start_auto_refresh(cx);
@@ -217,7 +219,7 @@ impl Shell {
     /// 要等到下一次自动刷新才变，打字时看起来就像"搜索框坏了"。
     /// （v0.6 的 tag 过滤框就是这套写法，见 `InputEvent` 的导入注释。）
     pub(crate) fn ensure_container_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.container_search.is_some() {
+        if self.forms.container_search.is_some() {
             return;
         }
 
@@ -229,7 +231,7 @@ impl Shell {
             }
         });
 
-        self.container_search = Some(input);
+        self.forms.container_search = Some(input);
         self.container_search_sub = Some(sub);
         cx.notify();
     }
@@ -241,7 +243,7 @@ impl Shell {
     /// 安装目录预填「默认安装目录」偏好（见 `prefs.rs`）：它同时是"由名字推路径"
     /// 的基准，用户不用每装一个都重新敲一遍盘符。
     pub(crate) fn ensure_install_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.install_form.is_some() {
+        if self.forms.install_form.is_some() {
             return;
         }
 
@@ -288,7 +290,7 @@ impl Shell {
         );
         self.select_subs = vec![store_sub, mirror_sub];
 
-        self.install_form = Some(InstallForm {
+        self.forms.install_form = Some(InstallForm {
             name: cx.new(|cx| {
                 InputState::new(window, cx).placeholder(default_source.name_placeholder())
             }),
@@ -320,7 +322,7 @@ impl Shell {
 
         // 预填默认安装目录本身（"名字还没填"时它就是基准）
         if !default_dir.is_empty() {
-            if let Some(form) = self.install_form.as_ref() {
+            if let Some(form) = self.forms.install_form.as_ref() {
                 form.install_dir
                     .update(cx, |state, cx| state.set_value(default_dir, window, cx));
             }
@@ -334,7 +336,7 @@ impl Shell {
     /// 否则一律不动 —— 用户手输了路径却被我们改掉，是最恼人的一类 bug。
     pub(crate) fn resync_install_dir(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let default_dir = self.state.prefs.install_dir.clone();
-        let Some(form) = self.install_form.as_mut() else {
+        let Some(form) = self.forms.install_form.as_mut() else {
             return;
         };
 

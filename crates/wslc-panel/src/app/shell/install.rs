@@ -17,7 +17,7 @@ impl Shell {
     ///
     /// 后缀表按来源给：选"从 VHDX 导入"时不该看见一堆 `.tar`。
     pub fn browse_install_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((label, extensions)) = self.install_form.as_ref().and_then(|form| {
+        let Some((label, extensions)) = self.forms.install_form.as_ref().and_then(|form| {
             let (label, extensions) = form.source.file_filter()?;
             Some((label, extensions))
         }) else {
@@ -47,7 +47,7 @@ impl Shell {
                         // 先只做"填输入框"这类需要 `&mut Window` 的事，
                         // 借用在下面那个块结束时自然放开，才能再 `&mut shell`。
                         let suggested = {
-                            let Some(form) = shell.install_form.as_ref() else {
+                            let Some(form) = shell.forms.install_form.as_ref() else {
                                 cx.notify();
                                 return;
                             };
@@ -87,7 +87,7 @@ impl Shell {
     /// "装完启动"，再切到"从 tar 导入"，那个勾还留着但界面上看不见，
     /// 一旦切回去又冒出来，很像 bug。
     pub fn set_install_source(&mut self, source: InstallSourceKind, cx: &mut Context<Self>) {
-        let Some(form) = self.install_form.as_mut() else {
+        let Some(form) = self.forms.install_form.as_mut() else {
             return;
         };
         if form.source == source {
@@ -163,7 +163,7 @@ impl Shell {
     /// 用户请求的新状态。这里再 `!form.launch` 的话，渲染与点击之间只要有一次
     /// 时序差（比如连续快速切换），界面就会和状态对不上。
     pub fn set_install_launch(&mut self, on: bool, cx: &mut Context<Self>) {
-        if let Some(form) = self.install_form.as_mut() {
+        if let Some(form) = self.forms.install_form.as_mut() {
             form.launch = on;
             cx.notify();
         }
@@ -171,7 +171,7 @@ impl Shell {
 
     /// 设置「装完设为默认发行版」。理由同上：收目标值，不自己取反。
     pub fn set_install_default(&mut self, on: bool, cx: &mut Context<Self>) {
-        if let Some(form) = self.install_form.as_mut() {
+        if let Some(form) = self.forms.install_form.as_mut() {
             form.set_default = on;
             cx.notify();
         }
@@ -182,7 +182,7 @@ impl Shell {
     /// 同样收目标值：这个开关在界面上是一句话「从 GitHub 下载」，
     /// 语义是"要不要用 GitHub 那条路"，不是"切换一下"。
     pub fn set_web_download(&mut self, on: bool, cx: &mut Context<Self>) {
-        if let Some(form) = self.install_form.as_mut() {
+        if let Some(form) = self.forms.install_form.as_mut() {
             form.web_download = on;
             cx.notify();
         }
@@ -194,7 +194,7 @@ impl Shell {
     /// 那一套机制（见 [`InstallForm`] 的说明）。用户在安装页填好一个路径、
     /// 顺手点一下"存为默认"，是更短的路径。
     pub fn remember_install_dir(&mut self, cx: &mut Context<Self>) {
-        let Some(form) = self.install_form.as_ref() else {
+        let Some(form) = self.forms.install_form.as_ref() else {
             return;
         };
         let dir = form.install_dir.read(cx).value().trim().to_owned();
@@ -319,7 +319,7 @@ impl Shell {
     /// `Ubuntu-24.04`（那才是 `wsl --install -d` 认的名字），
     /// 提前写在选项里比事后解释强。
     pub(crate) fn fill_store_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(form) = self.install_form.as_ref() else {
+        let Some(form) = self.forms.install_form.as_ref() else {
             return;
         };
         let select = form.store_select.clone();
@@ -362,7 +362,7 @@ impl Shell {
     /// （在线安装**永远不带 `--location`**，理由见 `model::install::plan` 里那张表）。
     /// 用户想改名随时能改，界面上也会提示那会多一次全量拷贝。
     pub fn pick_online_distro(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(form) = self.install_form.as_mut() {
+        if let Some(form) = self.forms.install_form.as_mut() {
             // 只在"名字还是我们填的"时候动它：空着、或者还是上一次选中的那个 id。
             // 用户自己敲过名字就不该被覆盖（和 `last_derived_dir` 是同一条原则）。
             let current = form.name.read(cx).value().trim().to_owned();
@@ -433,7 +433,7 @@ impl Shell {
     /// 显示的是参考实现的写法：`Ubuntu 24.04 (12 镜像源)` —— **只给数量**，
     /// 不列镜像站名（装的时候会自动测速挑最快的，用户不需要先看一遍）。
     pub(crate) fn fill_mirror_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(form) = self.install_form.as_ref() else {
+        let Some(form) = self.forms.install_form.as_ref() else {
             return;
         };
         let select = form.mirror_select.clone();
@@ -605,7 +605,7 @@ impl Shell {
         }
 
         // 先把 spec 取出来（借用在这一句结束），下面才好 `&mut self` 发提示条。
-        let spec = self.install_form.as_ref().map(|form| {
+        let spec = self.forms.install_form.as_ref().map(|form| {
             form.to_spec(
                 cx,
                 &self.state.mirrors,
@@ -628,7 +628,7 @@ impl Shell {
             // 让 `add_instance` 把对应的输入框标红；焦点送到第一块，
             // 长表单里用户不用自己找。
             let fields = check.field_errors();
-            let focus = self.install_form.as_ref().and_then(|form| {
+            let focus = self.forms.install_form.as_ref().and_then(|form| {
                 if fields.name {
                     Some(form.name.clone())
                 } else if fields.source {
@@ -645,7 +645,7 @@ impl Shell {
                     None
                 }
             });
-            if let Some(form) = self.install_form.as_mut() {
+            if let Some(form) = self.forms.install_form.as_mut() {
                 form.show_errors = true;
                 form.field_errors = fields;
             }
@@ -660,7 +660,7 @@ impl Shell {
             cx.notify();
             return;
         }
-        if let Some(form) = self.install_form.as_mut() {
+        if let Some(form) = self.forms.install_form.as_mut() {
             form.show_errors = false;
             form.field_errors = InstallFieldErrors::default();
         }

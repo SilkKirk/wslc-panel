@@ -10,7 +10,7 @@ impl Shell {
     /// 幂等很要紧：`open_database_page` 每次进来都会调它，而重建输入框会让
     /// 用户刚打的字和刚填的密码全丢。
     pub(crate) fn ensure_db_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.db_form.is_some() {
+        if self.forms.db_form.is_some() {
             return;
         }
         let user = cx.new(|cx| InputState::new(window, cx).placeholder("root"));
@@ -50,7 +50,7 @@ impl Shell {
         let handle = password.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
 
-        self.db_form = Some(DbPageForm {
+        self.forms.db_form = Some(DbPageForm {
             user,
             password,
             dsn,
@@ -72,7 +72,7 @@ impl Shell {
     /// 表结构却按 MySQL 的元数据去查" —— 那种半对半错的状态比直接拒绝难查得多。
     /// 所以引擎不匹配就明确报错，让用户去对应的页面。
     pub(crate) fn apply_db_dsn(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(form) = self.db_form.as_ref() else {
+        let Some(form) = self.forms.db_form.as_ref() else {
             return;
         };
         let text = form.dsn.read(cx).value().to_string().trim().to_owned();
@@ -146,7 +146,7 @@ impl Shell {
     /// 成本：把 `SchemaTree` 克隆一份（110 表 + 800 列，几十 KB），
     /// 只在读表结构/进页面时发生，不在按键路径上。
     pub(crate) fn install_sql_completion(&mut self, cx: &mut Context<Self>) {
-        let Some(form) = self.db_form.as_ref() else {
+        let Some(form) = self.forms.db_form.as_ref() else {
             return;
         };
         let editor = form.sql.clone();
@@ -174,7 +174,7 @@ impl Shell {
     /// 「执行时用连接卡上的值」是刻意的：那份值就是用户眼睛看到的那个，
     /// 不存在"界面显示 A、实际用 B"的可能（`DbState::creds` 只是它的镜像）。
     pub(crate) fn read_db_form(&self, cx: &App) -> (String, String) {
-        let Some(form) = self.db_form.as_ref() else {
+        let Some(form) = self.forms.db_form.as_ref() else {
             return ("root".to_owned(), String::new());
         };
         let user = form.user.read(cx).value().trim().to_owned();

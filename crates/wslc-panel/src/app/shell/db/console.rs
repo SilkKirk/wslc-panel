@@ -55,7 +55,7 @@ impl Shell {
         // **首次**创建时会把焦点抢到「密码」那格（见 `ensure_db_form` 末尾）。
         // 所以焦点必须在这之后给，否则用户一进来敲字会打到密码框里去。
         self.set_page(Page::Sql, window, cx);
-        if let Some(form) = self.db_form.as_ref() {
+        if let Some(form) = self.forms.db_form.as_ref() {
             let handle = form.sql.read(cx).focus_handle(cx);
             window.focus(&handle, cx);
         }
@@ -91,7 +91,7 @@ impl Shell {
     /// - 每条一个 `SqlResult`，界面上画成真正的表格（`views::db_console_card`）；
     /// - 同时留一份 `--table` 的原文进 `sql_raw`，作"看原始输出"的兜底。
     pub fn run_db_console(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(form) = self.db_form.as_ref() else {
+        let Some(form) = self.forms.db_form.as_ref() else {
             return;
         };
         // ⚠️ `EditorState` 用 `text()`，不是 `InputState::value()`

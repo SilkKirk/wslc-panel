@@ -131,7 +131,7 @@ pub(crate) fn wslconf_row(
 /// 所以加字段不用改这里 —— 改 `wslc-core` 的那两张表就够了。
 pub(crate) fn wslconf_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyElement {
     let (Some(saved_state), Some(dialog)) =
-        (shell.state.wslconf.as_ref(), shell.wslconf_dialog.as_ref())
+        (shell.state.wslconf.as_ref(), shell.forms.wslconf_dialog.as_ref())
     else {
         return div().into_any_element();
     };

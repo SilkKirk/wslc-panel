@@ -28,8 +28,12 @@ impl Shell {
     /// 5. **补可执行位**（只有 Go 这类要执行的文件需要；`cp` 给的是 `666`）；
     /// 6. **启动**（进程形态）。
     pub fn submit_deploy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(form), Some(deploy)) = (self.deploy_form.as_ref(), self.state.deploy.as_ref())
-        else {
+        // 分成两段而不是一个元组：`self.forms.deploy_form` 比原来的名字长了 6 个字符，
+        // 写成 `let (Some(..), Some(..)) = (.., ..)` 就超过 100 列了（rustfmt 会拒绝）。
+        let Some(form) = self.forms.deploy_form.as_ref() else {
+            return;
+        };
+        let Some(deploy) = self.state.deploy.as_ref() else {
             return;
         };
         // ⚠️ 先把旗标取出来：下面要 `&mut self` 发一条提示，
@@ -414,7 +418,7 @@ impl Shell {
                 .as_ref()
                 .is_some_and(|d| d.entries.iter().any(|e| e.record.target == target));
 
-        self.deploy_form = None;
+        self.forms.deploy_form = None;
         self.set_deploy_progress(
             Some(DeployProgress {
                 app: app.clone(),

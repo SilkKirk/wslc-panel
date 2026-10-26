@@ -305,7 +305,7 @@ pub(crate) fn exec_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App) 
         return div().into_any_element();
     };
     // 输入框是懒创建的：两个都在才算浮层是"开着的"。
-    let Some(input) = shell.exec_input.as_ref() else {
+    let Some(input) = shell.forms.exec_input.as_ref() else {
         return div().into_any_element();
     };
 

@@ -30,7 +30,7 @@ impl Shell {
             self.state.deploy = Some(DeployState::provisional(name, image, runtime, signal));
             // 弹窗一定关掉：它的预填值（运行时的来源类型、默认目标目录、启动命令）
             // 全是**上一个容器**的，留着会让用户在一张属于 A 的表单上部署到 B。
-            self.deploy_form = None;
+            self.forms.deploy_form = None;
         }
         self.goto_page(Page::Deploy, cx);
         // 每次进来都重读：容器可能刚被启动、目录可能刚被改过 ——
