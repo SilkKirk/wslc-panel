@@ -6,7 +6,17 @@
 
 use super::super::prelude::*;
 use super::Shell;
-// 通用二次确认已迁到官方 `Dialog`（`DialogKey::Confirm`），内容在 `core::confirm_body`。
+// 提示条交给官方 `Notification`（`Root` 之上的 toast 层，见 `sync_dialog_stack` 旁边
+// 那段交接）。`WindowExt` 提供 `push_notification` / `remove_notification`。
+use gpui_kit::component::WindowExt as _;
+use gpui_kit::component::notification::{Notification, NotificationType};
+
+/// 提示条的 `Notification` id 标记。
+///
+/// 所有提示条共用一个 id —— `remove_notification::<ToastNote>` 于是能精确
+/// 删掉"上一条提示"，把 `AppState::toast` 那个单槽语义原样保住
+/// （`deploy/submit.rs` 依赖"后弹的盖掉先弹的"）。
+struct ToastNote;
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -16,6 +26,39 @@ impl Render for Shell {
         // 只在状态**真的变了**时才动窗口（函数第一行那个 return），
         // 所以每帧调是安全的。
         self.sync_dialog_stack(window, cx);
+
+        // 提示条：交给官方 `Notification`（窗口右上角的 toast 层，由 `Root` 渲染）。
+        //
+        // # 为什么不再自绘
+        //
+        // v0.20.1 及以前这里是一条**布局项**（主内容列最后一条 `.child(toast)`），
+        // 理由是"浮层无论放哪儿都会压住某个控件"（v0.5.10 实机踩过提示条盖住
+        // 「开始安装」）。官方 `Notification` 默认在右上角、可配 8 个 `Anchor`、
+        // 悬停会暂停倒计时、自带关闭按钮 —— 这些收益值得换；位置偏好见
+        // `docs/AUDIT-2026-10-26.md` §5.2（要在实机上挑一个不挡控件的 `Anchor`）。
+        //
+        // # 为什么先 remove 再 push
+        //
+        // 原来 `AppState::toast` 是**单槽**：后弹的盖掉先弹的。官方通知默认是
+        // **堆叠**的，不 remove 就会同时看到"正在部署…"和"部署成功"两条。
+        // `deploy/submit.rs` 里有一条注释明确依赖"后弹的盖掉先弹的"，所以
+        // 这里用固定 id + `remove_notification` 把这个语义原样保住。
+        if let Some(t) = self.state.take_toast() {
+            window.remove_notification::<ToastNote>(cx);
+            window.push_notification(
+                Notification::new()
+                    .id::<ToastNote>()
+                    // 文案是 Markdown 风格写的，而通知画的是纯文本
+                    // （AGENTS.md §5：渲染处清标记）。
+                    .message(wslc_panel_core::util::strip_md(&t.text))
+                    .with_type(match t.kind {
+                        ToastKind::Info => NotificationType::Info,
+                        ToastKind::Success => NotificationType::Success,
+                        ToastKind::Error => NotificationType::Error,
+                    }),
+                cx,
+            );
+        }
 
         let entity = cx.entity();
         let state = &self.state;
@@ -205,62 +248,6 @@ impl Render for Shell {
                 .border_color(theme::danger_edge())
                 .child(body)
                 .into_any_element()
-        };
-
-        // 提示条：主内容列里的一个**布局项**，不是浮层。
-        //
-        // 原先它是挂在根元素上的 `.absolute().bottom(20).left(0).right(0)`，
-        // 横跨整个窗口宽度。v0.5.10 把它从右下角挪到底部居中，理由是右下角
-        // 正好压着「开始安装」；但居中之后它变成压住**底部中间**的东西了 ——
-        // 本机实测过，底部那一带的按钮会被它盖住。
-        //
-        // 浮层方案无论放哪儿都必然压住**某个**控件（这正是 v0.5.10 那次
-        // 修复的成因），所以这里改成布局项：提示条出现时主内容区让出一条
-        // 高度，谁都不会被盖住，也不需要再挑位置。
-        // 代价是它出现 / 消失时内容会上下动一下 —— 比"有按钮点不到"好。
-        let toast: AnyElement = match &state.toast {
-            None => div().into_any_element(),
-            Some(t) => {
-                let entity = entity.clone();
-                let color = match t.kind {
-                    ToastKind::Info => theme::primary(),
-                    ToastKind::Success => theme::success(),
-                    ToastKind::Error => theme::danger(),
-                };
-                h_flex()
-                    .w_full()
-                    // `flex_none`：别让它被上面那个 `flex_1` 的滚动区挤扁。
-                    .flex_none()
-                    .justify_center()
-                    .px_5()
-                    .pb_4()
-                    .child(
-                        h_flex()
-                            .max_w(px(560.))
-                            .gap_3()
-                            .px_4()
-                            .py_3()
-                            .rounded_md()
-                            .bg(theme::bg_card())
-                            .border_1()
-                            .border_color(color)
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(color)
-                                    .overflow_hidden()
-                                    // 见 `util::strip_md`：提示条里也有写
-                                    // `**不完整**` 这类标记的文案。
-                                    .child(wslc_panel_core::util::strip_md(&t.text)),
-                            )
-                            .child(Button::new("toast-dismiss").label("关闭").small().on_click(
-                                move |_, _, cx| {
-                                    entity.update(cx, |shell, cx| shell.dismiss_toast(cx));
-                                },
-                            )),
-                    )
-                    .into_any_element()
-            }
         };
 
         // 浮层全部在**官方 `Dialog` 的窗口级栈**里（`app::shell::dialogs` 的
@@ -468,7 +455,6 @@ impl Render for Shell {
                             // 提示条放在主内容列**最后**：它是一条贴底的布局项，
                             // 出现时把上面那个 `flex_1` 的滚动区挤矮一点，
                             // 而不是盖在它上面（见 `toast` 的说明）。
-                            .child(toast),
                     ),
             )
     }

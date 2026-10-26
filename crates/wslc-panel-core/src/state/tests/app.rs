@@ -181,47 +181,20 @@ fn session_label_uses_the_first_active_session() {
 }
 
 #[test]
-fn toasts_expire_on_their_own() {
-    // 报错给双倍时间（文本更长、用户往往要照着它做事）
-    assert_eq!(
-        Toast::error("boom").lifetime(),
-        std::time::Duration::from_secs(8)
-    );
-    assert_eq!(
-        Toast::info("hi").lifetime(),
-        std::time::Duration::from_secs(4)
-    );
-    assert_eq!(
-        Toast::success("ok").lifetime(),
-        std::time::Duration::from_secs(4)
-    );
-    // 刚弹出来的**不能**被收掉（否则提示会一闪而过）
-    assert!(!Toast::success("ok").lifetime().is_zero(), "4 秒不能是 0");
-}
-
-#[test]
-fn expired_toasts_get_cleared_and_the_rest_survive() {
-    // 和这个模块里其它 AppState 测试同一个造法（`AppState::new` 会读一次
-    // 偏好 / 存档，那几条测试早就这么干了）
+fn notify_keeps_a_single_slot_and_the_ui_takes_it_once() {
     let mut state = AppState::new(wslc_core::Wslc::new(), wslc_core::Wsl::new());
-    // 没有提示时什么都不做（也不该报"清掉了"）
-    assert!(!state.clear_expired_toast());
 
-    // 刚弹的：留着重绘信号应该是 **false**（每半秒无脑重绘会把界面拖住）
-    state.notify(Toast::info("hi"));
-    assert!(!state.clear_expired_toast());
-    assert!(state.toast.is_some(), "刚弹的提示不该被收掉");
+    // 没弹过：取不到东西（界面层每帧都会问一次）
+    assert!(state.take_toast().is_none());
 
-    // 把它"变老"到超过自己的寿命，就该被收掉、并且报告 true
-    if let Some(t) = state.toast.as_mut() {
-        t.shown_at =
-            std::time::Instant::now() - (t.lifetime() + std::time::Duration::from_millis(1));
-    }
-    assert!(
-        state.clear_expired_toast(),
-        "过期的提示应当被收掉并报告 true"
-    );
-    assert!(state.toast.is_none());
-    // 已经空了：再来一次不该报 true
-    assert!(!state.clear_expired_toast());
+    // 后弹的盖掉先弹的 —— 单槽语义。界面层用固定 id 的 `remove_notification`
+    // 把它复现出来（见 `Shell::render` 顶部那段交接）。
+    state.notify(Toast::info("第一条"));
+    state.notify(Toast::error("第二条"));
+    let taken = state.take_toast().expect("应当有一条待展示的提示");
+    assert_eq!(taken.text, "第二条");
+    assert_eq!(taken.kind, crate::state::ToastKind::Error);
+
+    // 取走之后槽就空了：否则渲染每帧都会重复 push 一次
+    assert!(state.take_toast().is_none());
 }

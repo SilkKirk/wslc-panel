@@ -637,18 +637,23 @@ pub enum ToastKind {
 }
 
 /// 一次性提示条。
+///
+/// # 它现在是「一次性槽」，不再是「会自己消失的状态」
+///
+/// v0.20.2 起展示交给官方 `Notification`（`Root` 管的 toast 层），
+/// `AppState` 这边只负责**把消息交给界面**：`notify()` 覆盖式写入，
+/// `Shell::render` 取走并 `push_notification`。
+///
+/// 所以这里**没有** `shown_at` / `lifetime()` 了：什么时候消失由组件决定
+/// （它的倒计时在鼠标悬停时还会暂停，见官方文档）。原先自绘那套
+/// "错误 8 秒、其余 4 秒"的差异化随之取消 —— 官方只给了 `autohide(bool)`、
+/// 没有"每条多少秒"，强行模拟要么改组件、要么自己起定时器（那正是被删掉的东西）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Toast {
     /// 展示文本。
     pub text: String,
-    /// 类型（决定颜色）。
+    /// 类型（决定图标 / 颜色）。
     pub kind: ToastKind,
-    /// 什么时候弹出来的 —— 用来算"该不该自己消失"（见 [`Toast::lifetime`]）。
-    ///
-    /// 时间戳放在这里（而不是 `AppState` 上另开一个字段）是因为提示条是
-    /// **单条**的（`toast: Option<Toast>`）：换了新的，时间戳自然跟着新的走，
-    /// 不需要额外的簿记，也不会出现"新提示被旧计时器收掉"。
-    pub shown_at: std::time::Instant,
 }
 
 impl Toast {
@@ -669,26 +674,6 @@ impl Toast {
         Self {
             text: text.into(),
             kind,
-            shown_at: std::time::Instant::now(),
-        }
-    }
-
-    /// 这条提示**自己收掉**要等多久。
-    ///
-    /// 分两档：
-    /// - 成功 / 一般信息 **4 秒** —— 一眼扫完就行；
-    /// - **报错 8 秒** —— 报错文本更长，而且用户往往要照着它去做点别的
-    ///   （去改个密码、去看日志），给双倍时间。
-    ///
-    /// # 为什么要自动收
-    ///
-    /// 实机反馈："这个下面弹出的提示信息过几秒自动关闭不要手动点，很多这种
-    /// 提示信息都需要手动点很麻烦"。手动「关闭」按钮**留着**（想立刻清掉时
-    /// 仍然有用），但它不再是一条必经操作。
-    pub fn lifetime(&self) -> std::time::Duration {
-        match self.kind {
-            ToastKind::Error => std::time::Duration::from_secs(8),
-            ToastKind::Info | ToastKind::Success => std::time::Duration::from_secs(4),
         }
     }
 }

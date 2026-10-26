@@ -524,26 +524,20 @@ impl AppState {
     }
 
     /// 弹出提示。
+    ///
+    /// 覆盖式（单槽）：后弹的盖掉先弹的 —— 这个语义由界面层用官方的
+    /// `remove_notification` + 固定 id 保住（见 `Shell::render`），
+    /// 所以调用点看到的还是"最后一条提示"。
     pub fn notify(&mut self, toast: Toast) {
         self.toast = Some(toast);
     }
 
-    /// 提示条到点了吗？到点就收掉，返回"这次真的收掉了没有"。
+    /// 取走待展示的提示（界面层每帧调一次）。
     ///
-    /// 由界面层那个 500ms 的小循环调（`panel-core` 里没有执行器、起不了定时器
-    /// —— 见 `Shell::start_toast_reaper` 的注释）。
-    ///
-    /// 返回值的用处：**只有真收掉了才需要重绘**。每半秒无脑 notify 一次
-    /// 会让界面一直重绘（GPUI 下这不只是浪费 —— 每一帧都要跑布局 + 光栅化）。
-    pub fn clear_expired_toast(&mut self) -> bool {
-        let expired = self
-            .toast
-            .as_ref()
-            .is_some_and(|t| t.shown_at.elapsed() >= t.lifetime());
-        if expired {
-            self.toast = None;
-        }
-        expired
+    /// 取走而不是 `clone`：展示交给官方 `Notification` 之后，
+    /// 这个槽只负责"交接一次"，留着会被下一帧重复 push 一遍。
+    pub fn take_toast(&mut self) -> Option<Toast> {
+        self.toast.take()
     }
 
     /// 记录一次**容器域**危险操作的确认请求。

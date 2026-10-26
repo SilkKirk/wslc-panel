@@ -198,7 +198,6 @@ impl Shell {
         };
         shell.refresh(cx);
         shell.start_auto_refresh(cx);
-        shell.start_toast_reaper(cx);
         // 更新检查单独排一条时间线：延迟 8 秒，只查一次（见那个方法）。
         shell.start_auto_check(cx);
         shell
@@ -884,51 +883,14 @@ impl Shell {
     }
 
     // -- 提示条 ------------------------------------------------------------
-
-    /// 让提示条**自己消失**的小循环（每 500ms 看一眼）。
-    ///
-    /// # 为什么是一个常驻循环，而不是"弹提示时起一个定时器"
-    ///
-    /// `AppState::notify` 住在 `wslc-panel-core` 里，那一层**没有执行器**、
-    /// 起不了定时器。换成"在每个 notify 的调用点各起一个"的话：全仓库 60 多处
-    /// 都得改，而且旧定时器还得有办法认出"现在这条提示已经不是我那条了"
-    /// （提示条是单条的 `Option<Toast>`，后弹的会覆盖先弹的）。
-    ///
-    /// 一个循环只在一个地方，而且天然覆盖"以后新加的 notify"。
-    ///
-    /// # 代价
-    ///
-    /// 每 500ms 醒一次、读一个 `Option<Toast>`（外加一次 `Instant::elapsed`）。
-    /// **只有真的收掉时才 `cx.notify()`** —— 否则界面会每半秒重绘一遍，
-    /// 而 GPUI 每一帧都要跑布局 + 光栅化（`Cargo.toml` 里那段
-    /// `profile.dev` 的注释说的就是这件事）。
-    ///
-    /// 500ms 这个粒度：提示条本来就活 4~8 秒，晚半秒收掉没人看得出来；
-    /// 反过来做成一帧一查没有意义。
-    pub(crate) fn start_toast_reaper(&self, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(500))
-                    .await;
-                let alive = this.update(cx, |shell, cx| {
-                    if shell.state.clear_expired_toast() {
-                        cx.notify();
-                    }
-                });
-                if alive.is_err() {
-                    // 实体已销毁 → 退出循环，避免泄漏（和 `start_auto_refresh`
-                    // 同一个写法）。
-                    break;
-                }
-            }
-        })
-        .detach();
-    }
-
-    /// 关闭提示条。
-    pub fn dismiss_toast(&mut self, cx: &mut Context<Self>) {
-        self.state.toast = None;
-        cx.notify();
-    }
+    //
+    // v0.20.2 起提示条的**展示**归官方 `Notification`（见 `render` 顶部那段交接）：
+    // `AppState::take_toast` 把消息交给 `window.push_notification`，什么时候消失
+    // 由组件管（鼠标悬停还会暂停倒计时，自带关闭按钮）。
+    //
+    // 随之删掉的三样（都不需要了）：
+    // - `start_toast_reaper`：原来每 500ms 轮询 `Option<Toast>` 判断过期 ——
+    //   那是个常驻循环，而组件自己管生命周期；
+    // - `clear_expired_toast`：同上的判据；
+    // - `dismiss_toast`：关闭按钮由 `Notification` 自带，不用我们转发。
 }

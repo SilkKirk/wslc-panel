@@ -433,8 +433,8 @@ impl Shell {
             // 回调只负责把 `picking` 复位、把决定带出来；
             // 真正的写盘在**外面**（还在这个 async 块里）做。
             //
-            // 项目里另一个 `background_executor` 也只出现在 `cx.spawn` 的
-            // 顶层（见 `start_toast_reaper`），没有"在 update 回调里 await"的先例。
+            // 项目里其它 `background_executor` 也都只在 `cx.spawn` 的
+            // 顶层（例如 `refresh_inner`），没有"在 update 回调里 await"的先例。
             //
             // 返回值：`Ok(决定)` = 回调跑过了；`Err(_)` = 实体已销毁（窗口关了）。
             let decision = this.update_in(cx, |shell, _window, _cx| {
