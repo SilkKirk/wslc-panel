@@ -993,12 +993,15 @@ pub(crate) fn deploy_logs_body(logs: &DeployLogs) -> AnyElement {
     v_flex()
         .w_full()
         .gap_3()
-        .child(div().text_xs().text_color(theme::text_dim()).child(
-            crate::util::strip_md(
-                "是这个应用**自己**的输出（启动时把它重定向到了目标目录的 \
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child(crate::util::strip_md(
+                    "是这个应用**自己**的输出（启动时把它重定向到了目标目录的 \
                  app.log）—— 不是容器主进程的日志，那个在「日志」按钮里。",
-            ),
-        ))
+                )),
+        )
         .child(body)
         .into_any_element()
 }
@@ -1044,18 +1047,24 @@ pub(crate) fn deploy_site_conf_body(conf: &DeploySiteConf) -> AnyElement {
     v_flex()
         .w_full()
         .gap_3()
-        .child(div().text_xs().text_color(theme::text_dim()).child(
-            crate::util::strip_md(
-                "容器里的 `/etc/nginx/conf.d/00-wslc-panel-<应用名>.conf`（只读）。\
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child(crate::util::strip_md(
+                    "容器里的 `/etc/nginx/conf.d/00-wslc-panel-<应用名>.conf`（只读）。\
                  重新部署会整份覆盖；要改就改部署弹窗里的站点区，别直接改这个文件。",
-            ),
-        ))
-        .child(div().text_xs().text_color(theme::text_dim()).child(
-            crate::util::strip_md(
-                "容器重建后这份 conf 会丢 —— 可以点「重写配置」补回来\
+                )),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child(crate::util::strip_md(
+                    "容器重建后这份 conf 会丢 —— 可以点「重写配置」补回来\
                  （只写 conf，不重新铺文件 / 不重新接网络）。",
-            ),
-        ))
+                )),
+        )
         .child(body)
         .into_any_element()
 }
@@ -1065,10 +1074,7 @@ pub(crate) fn deploy_site_conf_body(conf: &DeploySiteConf) -> AnyElement {
 /// ⚠️ 必须把**完整路径**摆出来：删的虽然只有面板自己铺过的那几个名字，
 /// 但目标可能是**卷挂载点**（本机那个 nginx 容器的 Web 根就挂在 `/dev/sdc` 上）
 /// —— 那意味着删掉的是卷里的数据，而且不可撤销。
-pub(crate) fn deploy_remove_confirm_body(
-    app: &str,
-    deploy: Option<&DeployState>,
-) -> AnyElement {
+pub(crate) fn deploy_remove_confirm_body(app: &str, deploy: Option<&DeployState>) -> AnyElement {
     let container = deploy.map(|d| d.container.clone()).unwrap_or_default();
     let target = deploy
         .and_then(|d| d.index_of(app).map(|i| d.entries[i].record.target.clone()))
