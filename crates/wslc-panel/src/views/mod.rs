@@ -49,7 +49,7 @@ mod wslconf;
 // 自绘浮层直接 `use super::common::modal_scrim`），但 `app::shell` 那边已经
 // 不用它了 —— 迁到官方 `Dialog` 之后外壳不再由我们画。
 pub(crate) use common::{ShellView, modal_footer};
-pub(crate) use create::create_dialog_overlay;
+pub(crate) use create::create_dialog_body;
 pub(crate) use db_dialogs::{
     db_backup_dialog_body, db_backup_progress_body, db_dialog_body, db_import_progress_body,
     db_info_overlay,

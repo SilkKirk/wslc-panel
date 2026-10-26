@@ -251,7 +251,7 @@ pub(crate) fn command_preview(spec: &RunSpec) -> AnyElement {
 /// **强制后台运行**（`-d`）：不带 `-d` 时 `wslc run` 会前台阻塞，
 /// 而我们的子进程有超时，超时后会把刚建好的容器连带杀掉。
 /// 需要前台交互的场景请用 `wslc` 自己的命令。
-pub fn create_dialog_overlay(
+pub(crate) fn create_dialog_body(
     dialog: &CreateDialog,
     state: &AppState,
     entity: &Entity<Shell>,
@@ -329,36 +329,9 @@ pub fn create_dialog_overlay(
     }
     advanced_summary.push(pull_label.to_owned());
 
-    let cancel = {
-        let entity = entity.clone();
-        Button::new("create-cancel")
-            .label("取消")
-            .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.close_create_dialog(cx));
-            })
-    };
-
-    let confirm = {
-        let entity = entity.clone();
-        Button::new("create-ok")
-            .label("创建并启动")
-            .primary()
-            .on_click(move |_, window, cx| {
-                // `window` 是必需的：提交时要检查"预填了但没填值"的必需变量，
-                // 并把焦点送到那一格（`confirm_create` 里有说明）。
-                entity.update(cx, |shell, cx| shell.confirm_create(window, cx));
-            })
-    };
-
-    modal_scrim(
-        "create-dialog",
-        modal_card(ModalSize::Wide)
-            // 字段多，窗口矮时允许滚动，别把底部按钮挤没
-            .id("create-dialog-card")
-            .max_h(px(880.))
-            .overflow_y_scroll()
-            .child(modal_title("创建容器"))
+    v_flex()
+        .w_full()
+        .gap_4()
             .child(
                 // 左边是唯一的事实来源（可以手打、可以粘完整引用），
                 // 右边那个下拉框只是**从本地已有的镜像里挑一个**的快捷方式 ——
@@ -492,8 +465,5 @@ pub fn create_dialog_overlay(
                                 ""
                             }),
                     )
-                    .child(h_flex().gap_2().child(cancel).child(confirm)),
-            ),
-    )
-    .into_any_element()
+        .into_any_element()
 }

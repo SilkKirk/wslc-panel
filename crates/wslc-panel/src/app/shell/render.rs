@@ -275,12 +275,7 @@ impl Render for Shell {
             _ => div().into_any_element(),
         };
 
-        // 创建容器弹窗。要读 8 个 InputState 的值来做等效命令预览，
-        // 所以得把 `cx` 传下去。
-        let create_dialog: AnyElement = match &self.create_dialog {
-            None => div().into_any_element(),
-            Some(dialog) => views::create_dialog_overlay(dialog, &self.state, &entity, cx),
-        };
+        // NOTE: 创建容器弹窗走官方 Dialog 栈（DialogKey::CreateContainer）。
 
         // NOTE: 容器详情 / 发行版详情都走官方 Dialog 栈
         // （`DialogKey::ContainerDetail` / `DistroDetail`，由 `sync_dialog_stack` 对齐）。
@@ -536,7 +531,6 @@ impl Render for Shell {
             // （`use_pulled_image` 会先关掉拉取弹窗），但万一同时开着，
             // 后画的创建表单应该压在上面 —— 用户刚点的是它。
             .child(pull_dialog)
-            .child(create_dialog)
             // ⚠️ 「单输入框提示」不在这条链子上 —— 它走官方 `Dialog` 的窗口级层栈
             // （见上面 `Shell::open_prompt` 那段的说明）。
             .child(wslconf_dialog)

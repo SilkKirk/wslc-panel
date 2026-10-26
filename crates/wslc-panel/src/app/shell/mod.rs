@@ -76,6 +76,8 @@ pub(crate) enum DialogKey {
     Confirm,
     /// 「数据库动作」弹窗（新建库 / 建用户 / 改密 / 授权 / 导入）。
     DbAction,
+    /// 「创建容器」弹窗。
+    CreateContainer,
 }
 
 /// 应用外壳。
