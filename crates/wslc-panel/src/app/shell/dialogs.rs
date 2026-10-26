@@ -214,10 +214,23 @@ fn open_shell_dialog<F>(
     let on_cancel = close.map(|close| {
         let entity = entity.clone();
         move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-            entity.update(cx, close);
+            entity.update(cx, |shell, cx| {
+                close(shell, cx);
+                // 记账：返回 `true` 之后**官方自己**会关掉这一层
+                // （`gpui-base` 的 `Cancel` 分支：`if cancel(..) { … request_close .. }`，
+                // 而 `request_close` 就是我们传的 `window.close_dialog`）。
+                // 不记账的话下一帧 `sync_dialog_stack` 会以为它还开着，**再关一层**。
+                shell.forget_top_dialog();
+            });
             true
         }
     });
+
+    // `close: None` = 这个浮层**根本不该能关**（两个进度类）。官方那三条关闭路径
+    // （✕ / Esc / 点遮罩）都绕过我们的状态：关了不记账、也不清状态，于是下一帧
+    // 被状态重新打开 —— 看起来就是"关了又回来"。所以连 ✕ 和 Esc 一起关掉，
+    // 只留页脚那颗「放到后台」。
+    let closable = on_cancel.is_some();
 
     window.open_dialog(cx, move |dialog, _window, _cx| {
         let mut dialog = dialog
@@ -225,7 +238,8 @@ fn open_shell_dialog<F>(
             .w(px(spec.width))
             .overlay(true)
             .overlay_closable(spec.overlay_closable)
-            .keyboard(spec.keyboard)
+            .keyboard(spec.keyboard && closable)
+            .close_button(closable)
             .child(spec.content.clone());
         if let Some(on_cancel) = on_cancel.clone() {
             dialog = dialog.on_cancel(on_cancel);
@@ -238,7 +252,38 @@ fn open_shell_dialog<F>(
     });
 }
 
+/// 页脚按钮的收尾：**关掉栈顶那一层，并把账一起记掉**。
+///
+/// ⚠️ 两件事必须成对。`window.close_dialog()` 只动窗口的 `active_dialogs`，
+/// 而 `dialog_stack` 是我们自己的账 —— 少了记账，下一帧 `sync_dialog_stack`
+/// 会认为那一层还开着，于是**再关一层**。
+///
+/// 实机症状（v0.21.0）：实例详情里点「压缩磁盘」→ 看到确认框 → 点「取消」→
+/// **详情跟着一起消失**；更糟的是账里留了一条幽灵记录，
+/// `desired == dialog_stack` 让 sync 永远早退，详情**再也点不出来**。
+fn close_top_dialog(entity: &Entity<Shell>, window: &mut Window, cx: &mut App) {
+    use gpui_kit::component::WindowExt as _;
+    window.close_dialog(cx);
+    entity.update(cx, |shell, _cx| shell.forget_top_dialog());
+}
+
 impl Shell {
+    /// 记账：窗口里那一层已经关了，把 `dialog_stack` 里的记录也去掉。
+    ///
+    /// 三个关闭入口里**有两个不是我们关的**：
+    ///
+    /// | 入口 | 谁关的 | 谁记账 |
+    /// |---|---|---|
+    /// | 页脚按钮 | 我们（`close_top_dialog`） | 同一个函数 |
+    /// | Esc / 点遮罩 / 标题栏 ✕ | **官方 `Dialog`** | `open_shell_dialog` 的 `on_cancel` |
+    /// | `sync_dialog_stack` 自己的 pop | 我们 | 它末尾那句 `dialog_stack = desired` |
+    ///
+    /// 漏了就会"多关一层"：窗口少一层、账没少，下一帧 sync 按账去 pop，
+    /// 把**下面那层**也关掉。v0.21.0 实机：详情 → 压缩磁盘 → 取消 → 详情也没了。
+    pub(crate) fn forget_top_dialog(&mut self) {
+        self.dialog_ui.dialog_stack.pop();
+    }
+
     /// 把「窗口级对话框栈」对齐到当前状态（官方 `Dialog`）。
     ///
     /// # 算法：最长公共前缀
@@ -271,6 +316,22 @@ impl Shell {
             .copied()
             .filter(|key| key.is_open(self))
             .collect();
+
+        // ⚠️ **自愈**：窗口里一层都没有、账上却还留着 —— 说明有谁绕过了记账把浮层
+        // 关掉了。不清掉的话，下面那个 `return` 会让"重新打开"永远进不去：
+        // 表现就是**详情再也点不出来**，而账里那条幽灵记录还在，
+        // 后面再开别的浮层还会走"非前缀 → 全关重建"把它顶回最上面。
+        //
+        // 官方只给了 `has_active_dialog`（bool），**没给层数**，所以这一条
+        // 只兜得住"全关光了"那一档；其余靠每条关闭路径自己记账
+        // （[`Shell::forget_top_dialog`] / [`close_top_dialog`]）。
+        if !self.dialog_ui.dialog_stack.is_empty() {
+            use gpui_kit::component::WindowExt as _;
+            if !window.has_active_dialog(cx) {
+                self.dialog_ui.dialog_stack.clear();
+            }
+        }
+
         if desired == self.dialog_ui.dialog_stack {
             return;
         }
@@ -350,7 +411,7 @@ impl Shell {
                                 .small()
                                 .on_click(move |_, window, cx| {
                                     entity.update(cx, |shell, cx| shell.close_db_info(cx));
-                                    window.close_dialog(cx);
+                                    close_top_dialog(&entity, window, cx);
                                 })
                                 .into_any_element(),
                         ]
@@ -387,7 +448,7 @@ impl Shell {
                                 .small()
                                 .on_click(move |_, window, cx| {
                                     entity.update(cx, |shell, cx| shell.cancel_export(cx));
-                                    window.close_dialog(cx);
+                                    close_top_dialog(&entity, window, cx);
                                 })
                                 .into_any_element(),
                         ]
@@ -431,7 +492,7 @@ impl Shell {
                                 .small()
                                 .on_click(move |_, window, cx| {
                                     entity.update(cx, |shell, cx| shell.dismiss_db_backup(cx));
-                                    window.close_dialog(cx);
+                                    close_top_dialog(&entity, window, cx);
                                 })
                                 .into_any_element(),
                         ]
@@ -474,7 +535,7 @@ impl Shell {
                                 .small()
                                 .on_click(move |_, window, cx| {
                                     entity.update(cx, |shell, cx| shell.dismiss_db_import(cx));
-                                    window.close_dialog(cx);
+                                    close_top_dialog(&entity, window, cx);
                                 })
                                 .into_any_element(),
                         ]
@@ -512,7 +573,7 @@ impl Shell {
                                 .small()
                                 .on_click(move |_, window, cx| {
                                     entity.update(cx, |shell, cx| shell.close_logs(cx));
-                                    window.close_dialog(cx);
+                                    close_top_dialog(&entity, window, cx);
                                 })
                                 .into_any_element(),
                         ]
@@ -553,7 +614,7 @@ impl Shell {
                                 .small()
                                 .on_click(move |_, window, cx| {
                                     entity.update(cx, |shell, cx| shell.close_detail(cx));
-                                    window.close_dialog(cx);
+                                    close_top_dialog(&entity, window, cx);
                                 })
                                 .into_any_element(),
                         ]
@@ -594,7 +655,7 @@ impl Shell {
                                 .small()
                                 .on_click(move |_, window, cx| {
                                     entity.update(cx, |shell, cx| shell.close_distro_detail(cx));
-                                    window.close_dialog(cx);
+                                    close_top_dialog(&entity, window, cx);
                                 })
                                 .into_any_element(),
                         ]
@@ -643,7 +704,7 @@ impl Shell {
                                 .small()
                                 .on_click(move |_, window, cx| {
                                     entity.update(cx, |shell, cx| shell.close_deploy_logs(cx));
-                                    window.close_dialog(cx);
+                                    close_top_dialog(&entity, window, cx);
                                 })
                                 .into_any_element(),
                         ]
@@ -714,7 +775,7 @@ impl Shell {
                                 .small()
                                 .on_click(move |_, window, cx| {
                                     entity.update(cx, |shell, cx| shell.close_deploy_site_conf(cx));
-                                    window.close_dialog(cx);
+                                    close_top_dialog(&entity, window, cx);
                                 })
                         };
                         vec![reapply.into_any_element(), close.into_any_element()]
@@ -768,7 +829,7 @@ impl Shell {
                                 .on_click(move |_, window, cx| {
                                     entity
                                         .update(cx, |shell, cx| shell.cancel_remove_deployment(cx));
-                                    window.close_dialog(cx);
+                                    close_top_dialog(&entity, window, cx);
                                 })
                         };
                         let confirm = {
@@ -783,7 +844,7 @@ impl Shell {
                                     entity.update(cx, |shell, cx| {
                                         shell.confirm_remove_deployment(app, cx)
                                     });
-                                    window.close_dialog(cx);
+                                    close_top_dialog(&entity, window, cx);
                                 })
                         };
                         vec![cancel.into_any_element(), confirm.into_any_element()]
@@ -835,7 +896,7 @@ impl Shell {
                                 .small()
                                 .on_click(move |_, window, cx| {
                                     entity.update(cx, |shell, cx| shell.close_db_backup_dialog(cx));
-                                    window.close_dialog(cx);
+                                    close_top_dialog(&entity, window, cx);
                                 })
                                 .into_any_element(),
                         ]
@@ -876,7 +937,7 @@ impl Shell {
                                 .small()
                                 .on_click(move |_, window, cx| {
                                     entity.update(cx, |shell, cx| shell.cancel_pending(cx));
-                                    window.close_dialog(cx);
+                                    close_top_dialog(&entity, window, cx);
                                 })
                         };
                         let confirm = {
@@ -888,7 +949,7 @@ impl Shell {
                                 .primary()
                                 .on_click(move |_, window, cx| {
                                     entity.update(cx, |shell, cx| shell.confirm_pending(cx));
-                                    window.close_dialog(cx);
+                                    close_top_dialog(&entity, window, cx);
                                 })
                         };
                         vec![cancel.into_any_element(), confirm.into_any_element()]
@@ -930,7 +991,7 @@ impl Shell {
                                 .small()
                                 .on_click(move |_, window, cx| {
                                     entity.update(cx, |shell, cx| shell.close_db_dialog(cx));
-                                    window.close_dialog(cx);
+                                    close_top_dialog(&entity, window, cx);
                                 })
                         };
                         let confirm = {
@@ -950,7 +1011,7 @@ impl Shell {
                                             shell.submit_db_dialog(window, cx);
                                         }
                                     });
-                                    window.close_dialog(cx);
+                                    close_top_dialog(&entity, window, cx);
                                 })
                         };
                         vec![cancel.into_any_element(), confirm.into_any_element()]
@@ -989,7 +1050,7 @@ impl Shell {
                             Button::new("create-cancel").label("取消").small().on_click(
                                 move |_, window, cx| {
                                     entity.update(cx, |shell, cx| shell.close_create_dialog(cx));
-                                    window.close_dialog(cx);
+                                    close_top_dialog(&entity, window, cx);
                                 },
                             )
                         };
@@ -1003,7 +1064,7 @@ impl Shell {
                                     // `window` 是必需的：提交时要检查"预填了但没填值"
                                     // 的必需变量，并把焦点送到那一格。
                                     entity.update(cx, |shell, cx| shell.confirm_create(window, cx));
-                                    window.close_dialog(cx);
+                                    close_top_dialog(&entity, window, cx);
                                 })
                         };
                         vec![cancel.into_any_element(), confirm.into_any_element()]
@@ -1052,7 +1113,7 @@ impl Shell {
                                 .small()
                                 .on_click(move |_, window, cx| {
                                     entity.update(cx, |shell, cx| shell.close_pull_dialog(cx));
-                                    window.close_dialog(cx);
+                                    close_top_dialog(&entity, window, cx);
                                 })
                                 .into_any_element(),
                         ]
@@ -1136,7 +1197,7 @@ impl Shell {
                             Button::new("deploy-cancel").label("取消").small().on_click(
                                 move |_, window, cx| {
                                     entity.update(cx, |shell, cx| shell.close_deploy_dialog(cx));
-                                    window.close_dialog(cx);
+                                    close_top_dialog(&entity, window, cx);
                                 },
                             )
                         };
@@ -1148,7 +1209,7 @@ impl Shell {
                                 .primary()
                                 .on_click(move |_, window, cx| {
                                     entity.update(cx, |shell, cx| shell.submit_deploy(window, cx));
-                                    window.close_dialog(cx);
+                                    close_top_dialog(&entity, window, cx);
                                 })
                         };
                         vec![cancel.into_any_element(), submit.into_any_element()]

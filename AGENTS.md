@@ -674,6 +674,25 @@ cx.spawn_in(window, async move |this, cx| {
      | **Esc** | `.on_cancel(…)` —— 漏了就是"Esc 关不掉"，或者"关了又回来" |
      | **点遮罩** | 也走 `.on_cancel`（`overlay_closable(true)` 时才有这条路径） |
 
+     ⚠️ **还有第四条（2026-10-26 补）：关掉窗口那一层，必须同时把
+     `dialog_stack` 的记账去掉。**
+
+     `window.close_dialog()` 只动窗口的 `active_dialogs`，而 `dialog_stack` 是我们
+     自己的账 —— `sync_dialog_stack` 正是靠它对齐"该开哪些"。少了记账，下一帧
+     sync 会认为那一层还开着，于是**再关一层**。
+
+     三个关闭入口里**有两个不是我们关的**（读 `gpui-base` 0.8.0 的 `Cancel` 分支
+     确认：`on_cancel` 返回 `true` 之后，由组件自己 `request_close` →
+     `window.close_dialog`）：页脚按钮走 `close_top_dialog`、Esc / 点遮罩 /
+     标题栏那个 ✕ 走 `on_cancel` 里的 `forget_top_dialog`。
+
+     **v0.21.0 实机**（用户报的）：实例详情里点「压缩磁盘」→ 点「取消」→
+     **详情跟着一起消失**；更糟的是账里留下一条幽灵记录，
+     `desired == dialog_stack` 让 sync **永远早退** —— 详情再也点不出来，
+     再开别的浮层还会走"非前缀 → 全关重建"把它顶回最上面。
+     `sync_dialog_stack` 开头那条 `has_active_dialog` 自愈只兜得住
+     "全关光了"那一档（官方没给层数，只能查有没有）。
+
      **实测踩过（v0.20.0 → v0.20.1）**：`WslConf` 设了
      `overlay_closable(false)` 却**没有** `.on_cancel`（点遮罩、Esc 都关不掉，
      只剩「取消」一个出口）；`DeployRemoveConfirm` 设了
