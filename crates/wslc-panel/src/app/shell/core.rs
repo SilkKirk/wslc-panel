@@ -5,7 +5,7 @@
 
 use super::super::prelude::*;
 use super::Shell;
-use super::state::{DropdownItem, InstallForm, Tasks};
+use super::state::{DropdownItem, InstallForm, Refresh, Tasks};
 
 /// 取锁；中毒（别的线程 panic 过）时照常用里面的值。
 ///
@@ -154,7 +154,13 @@ impl Shell {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let mut shell = Self {
             state: AppState::new(Wslc::new(), Wsl::new()),
-            last_refresh: None,
+            refresh: Refresh {
+                last_refresh: None,
+                refresh_again: false,
+                refresh_visible: false,
+                status_tick: 0,
+                deploy_tick: 0,
+            },
             errors_expanded: false,
             container_search: None,
             container_search_sub: None,
@@ -180,10 +186,6 @@ impl Shell {
             create_subs: Vec::new(),
             prompt: None,
             dialog_stack: Vec::new(),
-            refresh_again: false,
-            refresh_visible: false,
-            status_tick: 0,
-            deploy_tick: 0,
             db_form: None,
             sql_table: None,
             sql_result_tab: 0,
@@ -441,23 +443,23 @@ impl Shell {
             // **不能丢**：正在跑的那轮采到的是操作**之前**的数据。
             // 丢掉这次请求，界面就要等下一个周期才变 ——
             // 用户看到的就是"点了停止，状态还是运行中"。
-            self.refresh_again = true;
+            self.refresh.refresh_again = true;
             // 用户点的按钮正好撞上后台那轮：立刻点亮按钮，免得"点了没反应"。
             // 补跑的那轮会一直亮到采完（见下面处理 `refresh_again` 的顺序）。
-            if visible && !self.refresh_visible {
-                self.refresh_visible = true;
+            if visible && !self.refresh.refresh_visible {
+                self.refresh.refresh_visible = true;
                 cx.notify();
             }
             return;
         }
-        self.refresh_again = false;
+        self.refresh.refresh_again = false;
         self.state.busy = true;
-        self.refresh_visible = visible;
+        self.refresh.refresh_visible = visible;
         cx.notify();
 
         // `wsl --status` 降频到 30 秒一次；其余（含发行版列表）跟随本轮刷新。
-        let with_status = self.status_tick % self.status_every_n_ticks() == 0;
-        self.status_tick = self.status_tick.wrapping_add(1);
+        let with_status = self.refresh.status_tick % self.status_every_n_ticks() == 0;
+        self.refresh.status_tick = self.refresh.status_tick.wrapping_add(1);
 
         let wslc = self.state.wslc.clone();
         let wsl = self.state.wsl.clone();
@@ -474,7 +476,7 @@ impl Shell {
 
             let _ = this.update(cx, |shell, cx| {
                 shell.state.busy = false;
-                shell.refresh_visible = false;
+                shell.refresh.refresh_visible = false;
                 // 耗时只写日志，不在界面上显示。
                 tracing::debug!(
                     "采集完成：{} ms，{} 个容器，{} 个发行版，{} 处错误",
@@ -485,7 +487,7 @@ impl Shell {
                 );
                 shell.state.snapshot = snapshot;
                 // 页头「最后刷新」用：自动 / 手动刷新都算一次。
-                shell.last_refresh = Some(Instant::now());
+                shell.refresh.last_refresh = Some(Instant::now());
                 // 没有错误了就收起横幅；否则上一次点开的「查看」会让下一次
                 // 新错误**自动展开**，看起来像突然弹了一屏红字。
                 if shell.state.snapshot.errors.is_empty() {
@@ -517,7 +519,7 @@ impl Shell {
                 //
                 // 放在 `cx.notify()` **之前**：补跑会把 `busy` 重新置起来，
                 // 先通知的话会闪一帧「刷新」再变回「刷新中…」。
-                if std::mem::take(&mut shell.refresh_again) {
+                if std::mem::take(&mut shell.refresh.refresh_again) {
                     shell.refresh(cx);
                 }
                 cx.notify();
@@ -574,8 +576,8 @@ impl Shell {
         if action_running || busy || !loaded {
             return;
         }
-        self.deploy_tick = self.deploy_tick.wrapping_add(1);
-        if self.deploy_tick % Self::deploy_status_every_n_ticks() != 0 {
+        self.refresh.deploy_tick = self.refresh.deploy_tick.wrapping_add(1);
+        if self.refresh.deploy_tick % Self::deploy_status_every_n_ticks() != 0 {
             return;
         }
         self.refresh_deploy_status_quiet(cx);

@@ -97,7 +97,7 @@ impl Render for Shell {
 
         // 副标题回答「数据有多新」，不再放会话 / 构建号 —— 那两样是低频
         // 诊断信息，已经挪到「应用设置 → 关于」。
-        let refreshed = match self.last_refresh {
+        let refreshed = match self.refresh.last_refresh {
             Some(at) => wslc_panel_core::util::refresh_age_label(at.elapsed().as_secs()),
             None => "还没刷新".to_owned(),
         };
@@ -109,7 +109,7 @@ impl Render for Shell {
         // 按钮只在**用户发起**的采集期间显示「刷新中…」。
         // 3 秒一次的自动刷新是后台行为：它照样跑，但按钮一直是「刷新」，
         // 用户随时可以点它手动刷新（见 `refresh_quiet` / `refresh_inner`）。
-        let user_refreshing = state.busy && self.refresh_visible;
+        let user_refreshing = state.busy && self.refresh.refresh_visible;
 
         // 侧边栏折叠按钮（v0.12.2）。
         //
@@ -130,7 +130,7 @@ impl Render for Shell {
 
         let refresh_button = {
             let entity = entity.clone();
-            let label = refresh_label(state.busy, self.refresh_visible);
+            let label = refresh_label(state.busy, self.refresh.refresh_visible);
             // 刻意**不**用 `.disabled(...)`：禁用态的文字几乎看不清
             // （实机截图确认过）。`refresh()` 内部本来就有 `busy` 守卫，
             // 重复点击是无害的，文案也会变成"刷新中…"。
