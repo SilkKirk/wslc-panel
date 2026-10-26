@@ -810,10 +810,10 @@ impl Shell {
         // 添加部署 / 重新部署弹窗（输入框在 `open_deploy_dialog` 里建好）。
         if self.deploy_form.is_some() {
             desired.push(DialogKey::DeployForm);
-        }        // 发行版配置弹窗（输入框在 `open_wslconf` 里建好并存进 dialog）。
+        } // 发行版配置弹窗（输入框在 `open_wslconf` 里建好并存进 dialog）。
         if self.wslconf_dialog.is_some() {
             desired.push(DialogKey::WslConf);
-        }        // 拉取镜像弹窗（表单/进度两态都在 `pull_dialog_body` 里分流）。
+        } // 拉取镜像弹窗（表单/进度两态都在 `pull_dialog_body` 里分流）。
         if self.pull_open && self.image_form.is_some() {
             desired.push(DialogKey::PullImage);
         } // 创建容器弹窗（输入框在 `open_create_dialog_prefilled` 里就建好了）。
@@ -1679,110 +1679,109 @@ impl Shell {
                         }))
                 });
             }
-        DialogKey::WslConf => {
-            let title = match self.wslconf_dialog.as_ref() {
-                Some(_) => match self.state.wslconf.as_ref() {
-                    Some(w) => format!("{} 配置（/etc/wsl.conf）", w.distro),
-                    None => "配置（/etc/wsl.conf）".to_owned(),
-                },
-                None => return,
-            };
-            let entity = cx.entity();
-            let content = {
-                let view_entity = entity.clone();
-                let body_entity = entity.clone();
-                cx.new(move |cx| {
-                    ShellView::new(
-                        view_entity,
-                        move |shell, cx| {
-                            crate::views::wslconf_dialog_body(shell, &body_entity, cx)
-                        },
-                        cx,
-                    )
-                })
-            };
-            window.open_dialog(cx, move |dialog, _window, _cx| {
-                dialog
-                    .title(title.clone())
-                    .w(px(820.))
-                    .overlay(true)
-                    .overlay_closable(false)
-                    .keyboard(true)
-                    .child(content.clone())
-            });
-        }
-        DialogKey::DeployForm => {
-            let Some(form) = self.deploy_form.as_ref() else {
-                return;
-            };
-            let title = match form.editing.clone() {
-                Some(app) => format!("重新部署 {app}"),
-                None => match self.state.deploy.as_ref() {
-                    Some(d) => format!("添加部署 · {}", d.runtime.label()),
-                    None => "添加部署".to_owned(),
-                },
-            };
-            let re_deploy = self
-                .deploy_form
-                .as_ref()
-                .is_some_and(|f| f.editing.is_some());
-            let entity = cx.entity();
-            let content = {
-                let view_entity = entity.clone();
-                let body_entity = entity.clone();
-                cx.new(move |cx| {
-                    ShellView::new(
-                        view_entity,
-                        move |shell, cx| {
-                            crate::views::deploy_dialog_body(shell, &body_entity, cx)
-                        },
-                        cx,
-                    )
-                })
-            };
-            window.open_dialog(cx, move |dialog, _window, _cx| {
-                let cancel = {
-                    let entity = entity.clone();
-                    Button::new("deploy-cancel")
-                        .label("取消")
-                        .small()
-                        .on_click(move |_, window, cx| {
+            DialogKey::WslConf => {
+                let title = match self.wslconf_dialog.as_ref() {
+                    Some(_) => match self.state.wslconf.as_ref() {
+                        Some(w) => format!("{} 配置（/etc/wsl.conf）", w.distro),
+                        None => "配置（/etc/wsl.conf）".to_owned(),
+                    },
+                    None => return,
+                };
+                let entity = cx.entity();
+                let content = {
+                    let view_entity = entity.clone();
+                    let body_entity = entity.clone();
+                    cx.new(move |cx| {
+                        ShellView::new(
+                            view_entity,
+                            move |shell, cx| {
+                                crate::views::wslconf_dialog_body(shell, &body_entity, cx)
+                            },
+                            cx,
+                        )
+                    })
+                };
+                window.open_dialog(cx, move |dialog, _window, _cx| {
+                    dialog
+                        .title(title.clone())
+                        .w(px(820.))
+                        .overlay(true)
+                        .overlay_closable(false)
+                        .keyboard(true)
+                        .child(content.clone())
+                });
+            }
+            DialogKey::DeployForm => {
+                let Some(form) = self.deploy_form.as_ref() else {
+                    return;
+                };
+                let title = match form.editing.clone() {
+                    Some(app) => format!("重新部署 {app}"),
+                    None => match self.state.deploy.as_ref() {
+                        Some(d) => format!("添加部署 · {}", d.runtime.label()),
+                        None => "添加部署".to_owned(),
+                    },
+                };
+                let re_deploy = self
+                    .deploy_form
+                    .as_ref()
+                    .is_some_and(|f| f.editing.is_some());
+                let entity = cx.entity();
+                let content = {
+                    let view_entity = entity.clone();
+                    let body_entity = entity.clone();
+                    cx.new(move |cx| {
+                        ShellView::new(
+                            view_entity,
+                            move |shell, cx| {
+                                crate::views::deploy_dialog_body(shell, &body_entity, cx)
+                            },
+                            cx,
+                        )
+                    })
+                };
+                window.open_dialog(cx, move |dialog, _window, _cx| {
+                    let cancel = {
+                        let entity = entity.clone();
+                        Button::new("deploy-cancel").label("取消").small().on_click(
+                            move |_, window, cx| {
+                                entity.update(cx, |shell, cx| shell.close_deploy_dialog(cx));
+                                window.close_dialog(cx);
+                            },
+                        )
+                    };
+                    let submit = {
+                        let entity = entity.clone();
+                        Button::new("deploy-submit")
+                            .label(if re_deploy { "重新部署" } else { "部署" })
+                            .small()
+                            .primary()
+                            .on_click(move |_, window, cx| {
+                                entity.update(cx, |shell, cx| shell.submit_deploy(window, cx));
+                                window.close_dialog(cx);
+                            })
+                    };
+                    let on_cancel = {
+                        let entity = entity.clone();
+                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
                             entity.update(cx, |shell, cx| shell.close_deploy_dialog(cx));
-                            window.close_dialog(cx);
-                        })
-                };
-                let submit = {
-                    let entity = entity.clone();
-                    Button::new("deploy-submit")
-                        .label(if re_deploy { "重新部署" } else { "部署" })
-                        .small()
-                        .primary()
-                        .on_click(move |_, window, cx| {
-                            entity.update(cx, |shell, cx| shell.submit_deploy(window, cx));
-                            window.close_dialog(cx);
-                        })
-                };
-                let on_cancel = {
-                    let entity = entity.clone();
-                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                        entity.update(cx, |shell, cx| shell.close_deploy_dialog(cx));
-                        true
-                    }
-                };
-                dialog
-                    .title(title.clone())
-                    .w(px(800.))
-                    .overlay(true)
-                    .overlay_closable(false)
-                    .keyboard(true)
-                    .on_cancel(on_cancel.clone())
-                    .child(content.clone())
-                    .footer(modal_footer([
-                        cancel.into_any_element(),
-                        submit.into_any_element(),
-                    ]))
-            });
-        }
+                            true
+                        }
+                    };
+                    dialog
+                        .title(title.clone())
+                        .w(px(800.))
+                        .overlay(true)
+                        .overlay_closable(false)
+                        .keyboard(true)
+                        .on_cancel(on_cancel.clone())
+                        .child(content.clone())
+                        .footer(modal_footer([
+                            cancel.into_any_element(),
+                            submit.into_any_element(),
+                        ]))
+                });
+            }
         }
     }
 }

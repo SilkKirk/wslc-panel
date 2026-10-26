@@ -344,32 +344,32 @@ pub(crate) fn wslconf_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &Ap
         .child(
             v_flex()
                 .gap_1()
-                    .child(modal_title(format!(
-                        "{} 配置（/etc/wsl.conf）",
-                        state.distro
-                    )))
-                    .child(div().text_xs().text_color(theme::text_dim()).child(format!(
-                        "{}　·　保存前会先备份到 /etc/wsl.conf.bak；\
+                .child(modal_title(format!(
+                    "{} 配置（/etc/wsl.conf）",
+                    state.distro
+                )))
+                .child(div().text_xs().text_color(theme::text_dim()).child(format!(
+                    "{}　·　保存前会先备份到 /etc/wsl.conf.bak；\
                              注释和本程序不认识的键都会原样保留。",
-                        if state.wsl_version.is_empty() {
-                            "WSL 版本未知".to_owned()
-                        } else {
-                            format!("WSL {}", state.wsl_version)
-                        }
-                    ))),
-            )
-            .child(
-                v_flex()
-                    .id("wslconf-body")
-                    .w_full()
-                    .min_h_0()
-                    .max_h(px(420.))
-                    .overflow_y_scroll()
-                    .gap_3()
-                    .children(errors)
-                    .children(sections)
-                    .children(preview),
-            )
+                    if state.wsl_version.is_empty() {
+                        "WSL 版本未知".to_owned()
+                    } else {
+                        format!("WSL {}", state.wsl_version)
+                    }
+                ))),
+        )
+        .child(
+            v_flex()
+                .id("wslconf-body")
+                .w_full()
+                .min_h_0()
+                .max_h(px(420.))
+                .overflow_y_scroll()
+                .gap_3()
+                .children(errors)
+                .children(sections)
+                .children(preview),
+        )
         .child(
             v_flex()
                 .w_full()

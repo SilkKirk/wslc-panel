@@ -695,7 +695,9 @@ pub(crate) fn deploy_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App
     // 站点块出现后弹窗会高出一截；带 id 的滚动容器（AGENTS §7.5）。
     // 宽度从 560 提到 `ModalSize::Wide`（800）：这个弹窗里有「目标目录」
     // 「启动命令」这类长路径，560 宽时输入框里的路径几乎全是省略号。
-    let card = v_flex().w_full().gap_3()
+    let card = v_flex()
+        .w_full()
+        .gap_3()
         .id("deploy-dialog-scroll")
         .max_h(px(760.))
         .overflow_y_scroll()
