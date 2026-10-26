@@ -255,7 +255,11 @@ pub(crate) fn container_detail_body(
 /// 另外这里**替列表行承担了一件事**：如果这个发行版正被本面板吊着
 /// （`state.kept_alive`），在「状态」下面加一句说明 —— 那个标记原先画在
 /// 列表行的状态列里，会溢到隔壁「版本」列上（见 [`distro_row`]）。
-pub(crate) fn distro_detail_body(name: &str, state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+pub(crate) fn distro_detail_body(
+    name: &str,
+    state: &AppState,
+    entity: &Entity<Shell>,
+) -> AnyElement {
     let Some(distro) = state.snapshot.distros.iter().find(|d| d.name == name) else {
         // 发行版刚被删掉 —— 弹窗自己消失，别留一个空壳
         return div().into_any_element();
@@ -371,7 +375,6 @@ pub(crate) fn distro_detail_body(name: &str, state: &AppState, entity: &Entity<S
                 entity.update(cx, |shell, cx| shell.open_wslconf(target, window, cx));
             })
     };
-
 
     // -- 信息 --------------------------------------------------------------
 
