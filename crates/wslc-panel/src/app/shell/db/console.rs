@@ -179,7 +179,8 @@ impl Shell {
                             // 没有 → 退回 exec 那条路（在容器里跑 psql）。
                             let structured = match dsn.as_deref() {
                                 Some(text) => crate::native_db::parse(text)
-                                    .and_then(|spec| crate::native_db::run_sql(&spec, &sql)),
+                                    .and_then(|spec| crate::native_db::run_sql(&spec, &sql))
+                                    .map_err(|e| e.to_string()),
                                 None => driver
                                     .run_script(&wslc, &conn, &cred, &sql)
                                     .map_err(|e| e.to_string()),
@@ -193,7 +194,8 @@ impl Shell {
                         if matches!(conn.kind, DbKind::MySql | DbKind::MariaDb) {
                             if let Some(text) = dsn.as_deref() {
                                 let structured = crate::native_db::parse(text)
-                                    .and_then(|spec| crate::native_db::run_sql(&spec, &sql));
+                                    .and_then(|spec| crate::native_db::run_sql(&spec, &sql))
+                                    .map_err(|e| e.to_string());
                                 let elapsed = started.elapsed().as_millis() as u64;
                                 return (structured, None, elapsed);
                             }

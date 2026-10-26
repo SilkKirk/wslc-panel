@@ -170,7 +170,8 @@ impl Shell {
                     if matches!(conn.kind, DbKind::Postgres) {
                         match dsn.as_deref() {
                             Some(text) => crate::native_db::parse(text)
-                                .and_then(|spec| crate::native_db::schema(&spec)),
+                                .and_then(|spec| crate::native_db::schema(&spec))
+                                .map_err(|e| e.to_string()),
                             None => driver
                                 .schema(&wslc, &conn, &cred)
                                 .map_err(|e| e.to_string()),
@@ -179,6 +180,7 @@ impl Shell {
                         // 有连接串 → 原生（能读远程库的对象树）。
                         crate::native_db::parse(text)
                             .and_then(|spec| crate::native_db::schema(&spec))
+                            .map_err(|e| e.to_string())
                     } else {
                         wslc_core::cmd::mysql::list_schema_tree(
                             &wslc,

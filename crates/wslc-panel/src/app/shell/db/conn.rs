@@ -105,7 +105,7 @@ impl Shell {
                     }
                     _ => Ok(Some(text)),
                 },
-                Err(message) => Err(message),
+                Err(error) => Err(error.to_string()),
             }
         };
 

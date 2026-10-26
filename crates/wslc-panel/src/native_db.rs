@@ -19,19 +19,62 @@
 use wslc_core::db::DbKind;
 use wslc_core::model::schematree::SchemaTree;
 use wslc_core::model::sqlresult::SqlResult;
-use wslc_db::{ConnSpec, TextTable};
+use wslc_db::{ConnSpec, DbError, DbErrorKind, TextTable};
+
+/// 原生连接路径的错误：保留 `wslc-db` 的分类 + 一句可显示的话。
+///
+/// 早先这里所有函数都返回 `Result<_, String>`，`DbErrorKind` 在边界上就被
+/// 拍平了，UI 只能拿文本再猜一次。分类本身是有用的（认证 / 连不上 / SQL），
+/// 所以在这一层保留；`Display` 仍是原来的 `原文`，调用方零改动也能继续用。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeDbError {
+    /// 引擎 / 网络 / SQL 的分类。
+    pub kind: DbErrorKind,
+    /// 可显示的原文（已经脱敏过；口令不在里面）。
+    pub message: String,
+}
+
+impl NativeDbError {
+    pub fn new(kind: DbErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for NativeDbError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for NativeDbError {}
+
+impl From<DbError> for NativeDbError {
+    fn from(error: DbError) -> Self {
+        Self {
+            kind: error.kind,
+            message: error.message,
+        }
+    }
+}
 
 /// 解析连接串；错误消息直接可显示。
-pub fn parse(text: &str) -> Result<ConnSpec, String> {
-    wslc_db::parse_dsn(text).map_err(|e| e.to_string())
+pub fn parse(text: &str) -> Result<ConnSpec, NativeDbError> {
+    wslc_db::parse_dsn(text).map_err(|e| {
+        // `DsnError` 没有 kind；归到 `Other`，消息前缀让 UI / 日志能看出
+        // 是"连接串本身不合法"，而不是服务端拒绝。
+        NativeDbError::new(DbErrorKind::Other, format!("连接串不合法：{e}"))
+    })
 }
 
 /// 跑一段脚本。
 ///
 /// 每条语句一个结果集；没有结果集的语句（DDL / INSERT）不出现。
-pub fn run_sql(spec: &ConnSpec, script: &str) -> Result<Vec<SqlResult>, String> {
-    let mut session = wslc_db::open(spec).map_err(|e| e.to_string())?;
-    let tables = session.query(script).map_err(|e| e.to_string())?;
+pub fn run_sql(spec: &ConnSpec, script: &str) -> Result<Vec<SqlResult>, NativeDbError> {
+    let mut session = wslc_db::open(spec)?;
+    let tables = session.query(script)?;
     Ok(tables.iter().map(to_sql_result).collect())
 }
 
@@ -45,14 +88,12 @@ pub use wslc_db::redact_dsn;
 ///
 /// 两个引擎的库列表语义不同，所以各走各的元数据查询 —— 但**解析只有一份**
 /// （MySQL 侧用 `to_batch_tsv` 把单元格还原成 `-B -N` 文本，见那个函数的注释）。
-pub fn databases(spec: &ConnSpec) -> Result<Vec<String>, String> {
-    let mut session = wslc_db::open(spec).map_err(|e| e.to_string())?;
+pub fn databases(spec: &ConnSpec) -> Result<Vec<String>, NativeDbError> {
+    let mut session = wslc_db::open(spec)?;
     match spec.kind {
         DbKind::Postgres => {
             // v0.15 对着真容器抓的（`datallowconn AND NOT datistemplate`）
-            let tables = session
-                .query(wslc_core::model::postgres::databases_sql())
-                .map_err(|e| e.to_string())?;
+            let tables = session.query(wslc_core::model::postgres::databases_sql())?;
             Ok(tables
                 .first()
                 .map(|t| {
@@ -65,9 +106,7 @@ pub fn databases(spec: &ConnSpec) -> Result<Vec<String>, String> {
                 .unwrap_or_default())
         }
         DbKind::MySql | DbKind::MariaDb => {
-            let tables = session
-                .query(wslc_core::model::mysql::list_databases_sql())
-                .map_err(|e| e.to_string())?;
+            let tables = session.query(wslc_core::model::mysql::list_databases_sql())?;
             let tsv = tables.first().map(to_tsv).unwrap_or_default();
             Ok(wslc_core::model::mysql::parse_databases(&tsv)
                 .into_iter()
@@ -78,24 +117,22 @@ pub fn databases(spec: &ConnSpec) -> Result<Vec<String>, String> {
 }
 
 /// 服务端版本（原生连接）。
-pub fn server_version(spec: &ConnSpec) -> Result<String, String> {
-    let mut session = wslc_db::open(spec).map_err(|e| e.to_string())?;
-    session.server_version().map_err(|e| e.to_string())
+pub fn server_version(spec: &ConnSpec) -> Result<String, NativeDbError> {
+    let mut session = wslc_db::open(spec)?;
+    Ok(session.server_version()?)
 }
 
 /// 读对象树（库 → 表 → 列）。
 ///
 /// 复用 `wslc_core::model::{postgres,schematree}` 的元数据 SQL 与解析：
 /// 那两套都是对着真容器抓出来的，**和连接方式无关**。
-pub fn schema(spec: &ConnSpec) -> Result<SchemaTree, String> {
-    let mut session = wslc_db::open(spec).map_err(|e| e.to_string())?;
+pub fn schema(spec: &ConnSpec) -> Result<SchemaTree, NativeDbError> {
+    let mut session = wslc_db::open(spec)?;
     // 列读失败不算整体失败（和 exec 那条路同一个取舍）：
     // 树本身有用，补全少一档候选而已。
     match spec.kind {
         DbKind::Postgres => {
-            let tables = session
-                .query(wslc_core::model::postgres::schema_tables_sql())
-                .map_err(|e| e.to_string())?;
+            let tables = session.query(wslc_core::model::postgres::schema_tables_sql())?;
             let columns = session
                 .query(wslc_core::model::postgres::schema_columns_sql())
                 .unwrap_or_default();
@@ -105,9 +142,7 @@ pub fn schema(spec: &ConnSpec) -> Result<SchemaTree, String> {
             ))
         }
         DbKind::MySql | DbKind::MariaDb => {
-            let tables = session
-                .query(wslc_core::model::schematree::schema_tree_sql())
-                .map_err(|e| e.to_string())?;
+            let tables = session.query(wslc_core::model::schematree::schema_tree_sql())?;
             let columns = session
                 .query(wslc_core::model::schematree::schema_columns_sql())
                 .unwrap_or_default();
@@ -134,13 +169,13 @@ pub fn schema(spec: &ConnSpec) -> Result<SchemaTree, String> {
 ///
 /// 这样 `load_db` 的后半段（`apply_probe` + 填库/用户 + 备份扫描）**一行都不用改**。
 ///
-/// ⚠️ 错误类型用 `String` 而不是 `anyhow::Error`：`wslc-panel` **没有** anyhow 依赖
-/// （它只在 `wslc-core` / `wslc-panel-core` 里）。加一个依赖要走 `gen-lock`，
-/// 而这里唯一需要的就是"一句能显示给用户的话"。
+/// 错误用 [`NativeDbError`]（带 `wslc-db` 的分类）而不是 `anyhow::Error`：
+/// `wslc-panel` 没有 anyhow 依赖，而这里需要的"分类 + 一句可显示的话"
+/// 用一个本地类型就够，不必为它加依赖。
 pub fn mysql_probe(
     text: &str,
     container: &str,
-) -> Result<wslc_core::cmd::mysql::MysqlProbe, String> {
+) -> Result<wslc_core::cmd::mysql::MysqlProbe, NativeDbError> {
     use wslc_core::cmd::mysql::MysqlProbe;
     use wslc_core::model::mysql::{ClientProbe, MysqlFamily, RootCredHint};
 
@@ -167,12 +202,12 @@ pub fn mysql_probe(
 }
 
 /// MySQL 的库列表（原生连接）。复用 `-B -N` 的解析（见 `to_batch_tsv`）。
-pub fn mysql_databases(text: &str) -> Result<Vec<wslc_core::model::mysql::DbEntry>, String> {
+pub fn mysql_databases(
+    text: &str,
+) -> Result<Vec<wslc_core::model::mysql::DbEntry>, NativeDbError> {
     let spec = parse(text)?;
-    let mut session = wslc_db::open(&spec).map_err(|e| e.to_string())?;
-    let tables = session
-        .query(wslc_core::model::mysql::list_databases_sql())
-        .map_err(|e| e.to_string())?;
+    let mut session = wslc_db::open(&spec)?;
+    let tables = session.query(wslc_core::model::mysql::list_databases_sql())?;
     let tsv = tables.first().map(to_tsv).unwrap_or_default();
     Ok(wslc_core::model::mysql::parse_databases(&tsv))
 }
@@ -181,12 +216,10 @@ pub fn mysql_databases(text: &str) -> Result<Vec<wslc_core::model::mysql::DbEntr
 ///
 /// ⚠️ 普通账号读不到 `mysql.user`（`ERROR 1142`）—— 调用方必须把它的失败
 /// **单独**处理，不能连带把库列表一起判成失败（`load_db` 里就是这么做的）。
-pub fn mysql_users(text: &str) -> Result<Vec<wslc_core::model::mysql::DbUser>, String> {
+pub fn mysql_users(text: &str) -> Result<Vec<wslc_core::model::mysql::DbUser>, NativeDbError> {
     let spec = parse(text)?;
-    let mut session = wslc_db::open(&spec).map_err(|e| e.to_string())?;
-    let tables = session
-        .query(wslc_core::model::mysql::list_users_sql())
-        .map_err(|e| e.to_string())?;
+    let mut session = wslc_db::open(&spec)?;
+    let tables = session.query(wslc_core::model::mysql::list_users_sql())?;
     let tsv = tables.first().map(to_tsv).unwrap_or_default();
     Ok(wslc_core::model::mysql::parse_users(&tsv))
 }
