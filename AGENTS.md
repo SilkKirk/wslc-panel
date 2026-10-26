@@ -255,6 +255,20 @@ Invoke-RestMethod -Headers $H -Uri "$api/commits/<sha>/check-runs"
 **别把它当成"格式提交需要再验一次"** —— 同一个提交重跑（close + reopen PR，
 或者手动 `workflow_dispatch`）就是绿的。
 
+⚠️ **机器人推的提交不会触发 CI，所以拿到 fmt 提交之后要自己补一次"空提交"。**
+2026-10-26 实测：本机没有 rustfmt，一批改动推上去 `lint` 红在格式上，于是
+`workflow_dispatch` 跑 `.github/workflows/fmt.yml`（`commit=true`），它推回
+`style: cargo fmt` —— 那个提交的 `push` **不产生任何 job**，等于 **fmt 之后的代码
+没有经过任何编译验证**。正确收尾：
+
+```powershell
+git fetch origin main && git merge --ff-only origin/main
+git commit --allow-empty -m "chore: 触发 CI 确认（fmt 提交由机器人推送，其 push 不会跑 job）"
+git push origin main
+```
+
+（仓库历史里的 `chore: 触发 CI 确认` 都是这么来的。）
+
 ### 用 PowerShell 调 REST API 的三个坑（都踩过）
 
 1. **`/git/commits/{sha}` 只吃完整 SHA** —— 短 SHA 返回 404，而且重试六次
