@@ -202,9 +202,7 @@ pub fn mysql_probe(
 }
 
 /// MySQL 的库列表（原生连接）。复用 `-B -N` 的解析（见 `to_batch_tsv`）。
-pub fn mysql_databases(
-    text: &str,
-) -> Result<Vec<wslc_core::model::mysql::DbEntry>, NativeDbError> {
+pub fn mysql_databases(text: &str) -> Result<Vec<wslc_core::model::mysql::DbEntry>, NativeDbError> {
     let spec = parse(text)?;
     let mut session = wslc_db::open(&spec)?;
     let tables = session.query(wslc_core::model::mysql::list_databases_sql())?;

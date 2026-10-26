@@ -185,8 +185,7 @@ impl Shell {
                             // 原生：两条独立查询（用户列表读不到 `mysql.user`
                             // 是常态 —— 那时库列表不能跟着一起失败）。
                             Some(text) => (
-                                crate::native_db::mysql_databases(text)
-                                    .map_err(|e| e.to_string()),
+                                crate::native_db::mysql_databases(text).map_err(|e| e.to_string()),
                                 crate::native_db::mysql_users(text).map_err(|e| e.to_string()),
                             ),
                             None => (
@@ -339,8 +338,7 @@ impl Shell {
                         // 有连接串 → 原生 TCP（能连远程库，容器里有没有 psql 都不影响）；
                         // 没有 → exec 那条路（在容器里跑 psql）。
                         if let Some(text) = dsn.as_deref() {
-                            let spec =
-                                crate::native_db::parse(text).map_err(|e| e.to_string())?;
+                            let spec = crate::native_db::parse(text).map_err(|e| e.to_string())?;
                             let version = crate::native_db::server_version(&spec)
                                 .map_err(|e| e.to_string())?;
                             let names =
@@ -462,8 +460,7 @@ impl Shell {
                             // 有连接串 → 原生（否则"建完库刷新"会去读容器，
                             // 和页面正在显示的远程库对不上）。
                             Some(text) => (
-                                crate::native_db::mysql_databases(text)
-                                    .map_err(|e| e.to_string()),
+                                crate::native_db::mysql_databases(text).map_err(|e| e.to_string()),
                                 crate::native_db::mysql_users(text).map_err(|e| e.to_string()),
                             ),
                             None => (
