@@ -1,8 +1,8 @@
 //! 「创建容器」弹窗，以及它依赖的那几个从镜像读来的提示块。
 
-use super::common::{
-    ModalSize, disclosure, form_field, modal_card, modal_scrim, modal_title, radio_row,
-};
+// 这个弹窗已迁到官方 `Dialog`，所以 `modal_card` / `modal_scrim` / `modal_title` /
+// `ModalSize` 都不再需要 —— 外壳由 `Dialog` 负责，本文件只出字段。
+use super::common::{disclosure, form_field, radio_row};
 use super::prelude::*;
 
 /// 「创建容器」弹窗里那条**从镜像读来的**信息（声明端口 / 启动命令）。
