@@ -4,10 +4,12 @@
 // （日志 / 站点配置 / 删除确认）把标题和底部交给 `Dialog` + 调用处的
 // `modal_footer`，本文件只产出内容。剩下的「添加部署」弹窗仍用
 // `modal_card` / `modal_scrim` / `modal_title`。
+// ⚠️ `modal_title_danger` 不再需要（删除确认的标题交给 `Dialog`），
+// 但 `modal_footer` **仍要留着**：「添加部署」弹窗（未迁）还在用它。
 use super::common::{
     ModalSize, NoContainer, cell_link, cell_muted_full, cell_text, disclosure, empty_state,
-    form_field, immediate_button, kv_block, log_text, modal_card, modal_scrim, modal_title,
-    overlay_button, page_empty, table_card, table_row,
+    form_field, immediate_button, kv_block, log_text, modal_card, modal_footer, modal_scrim,
+    modal_title, overlay_button, page_empty, table_card, table_row,
 };
 use super::prelude::*;
 
