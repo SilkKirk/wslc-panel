@@ -162,16 +162,22 @@ pub(crate) fn sql_console_page(
             .child(right)
             .into_any_element()
     } else {
-        h_resizable("sql-main")
+        // `ResizablePanelGroup` 没有 `Styled` 的 `w_full` / `flex_1`，
+        // 外面套一层 div 负责占满剩余高度。
+        div()
+            .w_full()
             .flex_1()
             .min_h_0()
             .child(
-                resizable_panel()
-                    .size(px(260.))
-                    .size_range(px(200.)..px(420.))
-                    .child(tree_column),
+                h_resizable("sql-main")
+                    .child(
+                        resizable_panel()
+                            .size(px(260.))
+                            .size_range(px(200.)..px(420.))
+                            .child(tree_column),
+                    )
+                    .child(right),
             )
-            .child(right)
             .into_any_element()
     };
 
