@@ -97,7 +97,7 @@ pub fn sql_console_page(
             .bg(theme::primary_soft())
             .text_xs()
             .text_color(theme::primary())
-            .child(crate::util::strip_md(name)),
+            .child(wslc_panel_core::util::strip_md(name)),
         None => div()
             .text_xs()
             .text_color(theme::text_muted())
@@ -221,7 +221,7 @@ pub(crate) fn sql_target_db(db: &DbState, entity: &Entity<Shell>, account: &str)
                     div()
                         .text_xs()
                         .text_color(theme::text())
-                        .child(crate::util::strip_md(name)),
+                        .child(wslc_panel_core::util::strip_md(name)),
                 )
                 .child(clear)
                 // 账号和库同样是"这次执行落在哪儿"的一部分 —— 而且它**不等于**
@@ -231,7 +231,7 @@ pub(crate) fn sql_target_db(db: &DbState, entity: &Entity<Shell>, account: &str)
                     div()
                         .text_xs()
                         .text_color(theme::text_muted())
-                        .child(crate::util::strip_md(account)),
+                        .child(wslc_panel_core::util::strip_md(account)),
                 )
                 .into_any_element()
         }
@@ -627,7 +627,7 @@ pub(crate) fn sql_results_pane(
             .sql_results
             .iter()
             .enumerate()
-            .map(|(ix, r)| SharedString::from(crate::sqlview::result_tab_label(ix, r)))
+            .map(|(ix, r)| SharedString::from(wslc_panel_core::sqlview::result_tab_label(ix, r)))
             .collect();
         tab_bar(
             "db-sql-tabs",
@@ -658,7 +658,7 @@ pub(crate) fn sql_results_pane(
     let footer = div()
         .text_xs()
         .text_color(theme::text_muted())
-        .child(crate::sqlview::footer_text(result, db.sql_elapsed_ms));
+        .child(wslc_panel_core::sqlview::footer_text(result, db.sql_elapsed_ms));
     // 导出 CSV：只有真的有表格时才给按钮 —— 空结果导出一个只有表头的 CSV
     // 没有意义，只会让用户以为导出坏了。
     let export: AnyElement = if result.columns.is_empty() {

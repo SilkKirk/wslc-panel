@@ -55,7 +55,7 @@ impl Render for Shell {
         // 副标题回答「数据有多新」，不再放会话 / 构建号 —— 那两样是低频
         // 诊断信息，已经挪到「应用设置 → 关于」。
         let refreshed = match self.last_refresh {
-            Some(at) => crate::util::refresh_age_label(at.elapsed().as_secs()),
+            Some(at) => wslc_panel_core::util::refresh_age_label(at.elapsed().as_secs()),
             None => "还没刷新".to_owned(),
         };
         let subtitle = format!(
@@ -251,7 +251,7 @@ impl Render for Shell {
                                     .overflow_hidden()
                                     // 见 `util::strip_md`：提示条里也有写
                                     // `**不完整**` 这类标记的文案。
-                                    .child(crate::util::strip_md(&t.text)),
+                                    .child(wslc_panel_core::util::strip_md(&t.text)),
                             )
                             .child(Button::new("toast-dismiss").label("关闭").small().on_click(
                                 move |_, _, cx| {

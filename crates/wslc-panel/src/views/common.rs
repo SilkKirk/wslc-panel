@@ -251,7 +251,7 @@ pub(crate) fn page_empty(text: &'static str) -> AnyElement {
 
 /// 表格表头 —— 官方 `TableHeader` 里那一行 `TableHead`。
 ///
-/// 列宽走 [`crate::columns::column_fractions`] 换成比例、再由 `flex_grow` 分配 ——
+/// 列宽走 [`wslc_panel_core::columns::column_fractions`] 换成比例、再由 `flex_grow` 分配 ——
 /// 于是表格**永远占满整行**并随窗口伸缩。以前是固定像素：宽度之和小于窗口时，
 /// 右边留一大片空白，在宽窗口上看起来就是"前几列挤着、最后一列拖出去一截"。
 ///
@@ -274,7 +274,7 @@ pub(crate) fn page_empty(text: &'static str) -> AnyElement {
 /// 而 `theme.rs` 已经把 `colors.border` 设成了我们的 `line` —— 所以颜色仍然是我们那一套，
 /// 只是**这件事不是我们控制的**，改配色时要记住它走的是组件主题。
 pub(crate) fn table_header(columns: &'static [(&'static str, f32)]) -> TableRow {
-    let fractions = crate::columns::column_fractions(columns);
+    let fractions = wslc_panel_core::columns::column_fractions(columns);
     // 列之间的间隔用**单元格内边距**（`px_2`）而不是 `gap_2`：比例之和正好 100%，
     // 不留缝隙给 flex 去收缩。
     TableRow::new()
@@ -301,7 +301,7 @@ pub(crate) fn table_row(
     columns: &'static [(&'static str, f32)],
     cells: Vec<AnyElement>,
 ) -> TableRow {
-    let fractions = crate::columns::column_fractions(columns);
+    let fractions = wslc_panel_core::columns::column_fractions(columns);
     // 行里多出来的 cell（列定义没写）按平均宽度兜底，别让它挤成一条线
     let fallback = 1.0 / columns.len().max(1) as f32;
     // ⚠️ 行的上下内边距挂在**单元格**上（`py_2`），不是挂在行上：

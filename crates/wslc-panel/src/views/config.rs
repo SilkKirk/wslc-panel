@@ -215,7 +215,7 @@ pub fn wsl_config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
                             .text_color(theme::text_muted())
                             // `m.why` 来自 `wslc_core::wslconfig::check`，带 `**…**`
                             // （见那里 `KNOWN_MISPLACED` 的注释）。`m.text` 是原文不动。
-                            .child(crate::util::strip_md(&format!(
+                            .child(wslc_panel_core::util::strip_md(&format!(
                                 "应该放到 {} —— {}",
                                 m.belongs_to, m.why
                             ))),
@@ -289,7 +289,7 @@ pub(crate) fn setting_row(
             .label("修改")
             .tooltip(format!(
                 "{}（{}）",
-                crate::util::strip_md(key.help),
+                wslc_panel_core::util::strip_md(key.help),
                 key.key
             ))
             .small()

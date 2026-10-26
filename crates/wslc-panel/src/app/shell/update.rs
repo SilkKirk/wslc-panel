@@ -22,10 +22,10 @@ impl Shell {
 
     /// 按偏好与 24 小时节流决定要不要查。
     pub(crate) fn maybe_auto_check(&mut self, cx: &mut Context<Self>) {
-        let now = crate::util::now_secs();
+        let now = wslc_panel_core::util::now_secs();
         // 本地构建的版本号和发布版一样，提示更新只会干扰开发。
         let dev_build = crate::build_sha() == "dev";
-        if !crate::update::should_auto_check(&self.state.prefs, now, dev_build) {
+        if !wslc_panel_core::update::should_auto_check(&self.state.prefs, now, dev_build) {
             tracing::debug!("跳过自动检查更新（开关、开发构建或不到 24 小时）");
             return;
         }
@@ -39,7 +39,7 @@ impl Shell {
     /// 而这个工具本身根本不依赖网络。
     pub fn check_update(&mut self, manual: bool, cx: &mut Context<Self>) {
         // 正在查就不要再发一条（用户可能连点）。
-        if matches!(self.state.update, crate::update::Phase::Checking) {
+        if matches!(self.state.update, wslc_panel_core::update::Phase::Checking) {
             // ⚠️ 别静默返回：`AGENTS.md` §7.1 那条"点了没反应会被当成按钮坏了"
             // 对这里同样成立。界面上那颗按钮虽然已经换成「正在检查…」、点不到，
             // 但自动检查（启动 8 秒后）和手动点用的是同一条路，将来多一个入口
@@ -51,7 +51,7 @@ impl Shell {
             return;
         }
 
-        self.state.update = crate::update::Phase::Checking;
+        self.state.update = wslc_panel_core::update::Phase::Checking;
         if manual {
             self.state.notify(Toast::info("正在检查更新…"));
         }
@@ -64,7 +64,7 @@ impl Shell {
                 .background_executor()
                 .spawn(async { wslc_core::cmd::update::check() })
                 .await;
-            let now = crate::util::now_secs();
+            let now = wslc_panel_core::util::now_secs();
             let _ = this.update(cx, |shell, cx| {
                 shell.apply_update_check(outcome, now, manual, cx);
             });
@@ -100,7 +100,7 @@ impl Shell {
         match outcome {
             Ok(release) => {
                 let newer = wslc_core::update::is_newer(&release.version, &current);
-                let skipped = crate::update::is_skipped(
+                let skipped = wslc_panel_core::update::is_skipped(
                     &release,
                     self.state.prefs.skipped_version.as_deref(),
                 );
@@ -119,14 +119,14 @@ impl Shell {
 
                 if newer {
                     let version = release.raw_version.clone();
-                    self.state.update = crate::update::Phase::Available { release, skipped };
+                    self.state.update = wslc_panel_core::update::Phase::Available { release, skipped };
                     if !skipped {
                         self.state.notify(Toast::info(format!(
                             "有新版本 {version} —— 在「设置 → 关于」里打开发布页"
                         )));
                     }
                 } else {
-                    self.state.update = crate::update::Phase::UpToDate { checked_at: now };
+                    self.state.update = wslc_panel_core::update::Phase::UpToDate { checked_at: now };
                     if manual {
                         self.state
                             .notify(Toast::info(format!("已是最新（{}）", release.raw_version)));
@@ -138,10 +138,10 @@ impl Shell {
                 if manual {
                     self.state
                         .notify(Toast::error(format!("检查更新失败：{message}")));
-                    self.state.update = crate::update::Phase::Failed { message };
+                    self.state.update = wslc_panel_core::update::Phase::Failed { message };
                 } else {
                     // 自动检查失败：界面**一点变化都不该有**，回到空闲。
-                    self.state.update = crate::update::Phase::Idle;
+                    self.state.update = wslc_panel_core::update::Phase::Idle;
                 }
             }
         }
@@ -155,7 +155,7 @@ impl Shell {
     /// 永远是"我要去下载"，不该因为还没查过就什么都不做。
     pub fn open_release_page(&mut self, cx: &mut Context<Self>) {
         let url = match &self.state.update {
-            crate::update::Phase::Available { release, .. } => release.page_url.clone(),
+            wslc_panel_core::update::Phase::Available { release, .. } => release.page_url.clone(),
             _ => format!("https://github.com/{}/releases", wslc_core::update::REPO),
         };
         self.open_url(url, cx);
@@ -164,7 +164,7 @@ impl Shell {
     /// 「跳过这个版本」：记住它，不再提示。
     pub fn skip_update_version(&mut self, cx: &mut Context<Self>) {
         let Some(version) = (match &self.state.update {
-            crate::update::Phase::Available { release, .. } => Some(release.raw_version.clone()),
+            wslc_panel_core::update::Phase::Available { release, .. } => Some(release.raw_version.clone()),
             _ => None,
         }) else {
             return;
@@ -174,7 +174,7 @@ impl Shell {
         if let Err(e) = self.state.prefs.save() {
             tracing::warn!("保存「跳过版本」失败：{e}");
         }
-        if let crate::update::Phase::Available { skipped, .. } = &mut self.state.update {
+        if let wslc_panel_core::update::Phase::Available { skipped, .. } = &mut self.state.update {
             *skipped = true;
         }
 

@@ -79,9 +79,13 @@ crates/
 >    `use wslc_core::model::wslconf;` 撞成 `E0659: ambiguous`（`registry` /
 >    `db` / `install` 同理，所以它们叫 `*_state.rs`）。
 >
-> 还有一条：`wslc-panel/src/main.rs` 顶部有一层 `pub use wslc_panel_core::state::*;`
-> 的**跨 crate 垫片**。所以 `state/mod.rs` 里的子模块再导出必须是 `pub` 而不是
-> `pub(crate)` —— 后者在别的 crate 里完全看不见（实测报了 29 个 `E0432`）。
+> ~~还有一条：`wslc-panel/src/main.rs` 顶部有一层跨 crate 垫片……~~
+> **2026-10-26 起垫片已全部删掉**（`state` / `prefs` / `util` / `columns` /
+> `listview` / `presets` / `sqlview` / `update` / `deploys` 九个）。
+> 现在引用一律写全路径 `wslc_panel_core::state::…` —— "这个类型属于哪个 crate"
+> 在调用点就看得见。删掉的原因：垫片必须 `pub use`，于是 core 里那些再导出
+> 被迫写成 `pub`（`pub(crate)` 跨 crate 看不见，实测报 29 个 `E0432`）。
+> ⚠️ 新代码**不要**再加垫片。
 >
 > 往里加东西之前仍先问一句"这能不能放 `wslc-panel-core`"，判断标准就是下面
 > 那节（"这个文件 `use gpui` 吗"）。

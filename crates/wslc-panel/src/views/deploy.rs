@@ -220,7 +220,7 @@ pub(crate) fn deploy_header(deploy: &DeployState, entity: &Entity<Shell>) -> Any
 /// 探测就失败时的说明卡（不是这几类容器 / 容器没运行）。
 pub(crate) fn deploy_blocked_card(
     deploy: &DeployState,
-    failure: &crate::state::DeployFailure,
+    failure: &wslc_panel_core::state::DeployFailure,
 ) -> AnyElement {
     let note = if failure.kind == wslc_core::model::DeployErrorKind::ContainerNotRunning {
         "这一页的每一个动作都要进容器里执行（准备目录 → 传文件 → 起进程），\
@@ -253,7 +253,7 @@ pub(crate) fn deploy_blocked_card(
             div()
                 .text_sm()
                 .text_color(theme::text())
-                .child(crate::util::strip_md(&failure.summary())),
+                .child(wslc_panel_core::util::strip_md(&failure.summary())),
         )
         .child(div().text_xs().text_color(theme::text_muted()).child(note))
         .child(log_text(Some(&failure.detail), "deploy-blocked-detail"))
@@ -265,7 +265,7 @@ pub(crate) fn deploy_blocked_card(
 }
 
 /// 上一次失败：一句"该怎么办" +（可滚动的）原文。
-pub(crate) fn deploy_failure_banner(failure: &crate::state::DeployFailure) -> AnyElement {
+pub(crate) fn deploy_failure_banner(failure: &wslc_panel_core::state::DeployFailure) -> AnyElement {
     v_flex()
         .w_full()
         .gap_2()
@@ -279,7 +279,7 @@ pub(crate) fn deploy_failure_banner(failure: &crate::state::DeployFailure) -> An
                 .text_sm()
                 .font_semibold()
                 .text_color(theme::danger())
-                .child(crate::util::strip_md(&failure.summary())),
+                .child(wslc_panel_core::util::strip_md(&failure.summary())),
         )
         .child(log_text(Some(&failure.detail), "deploy-error-detail"))
         .into_any_element()
@@ -389,7 +389,7 @@ pub(crate) fn deploy_table(deploy: &DeployState, entity: &Entity<Shell>) -> AnyE
                     // `note()` 的文案里写着 Markdown（`**静态文件**` / 反引号），
                     // 而这里是纯文本 → 必须过 `strip_md`（见 `util::strip_md`：
                     // "与其在每条文案里手工删标记，不如在渲染处统一清掉"）。
-                    .child(crate::util::strip_md(deploy.runtime.note())),
+                    .child(wslc_panel_core::util::strip_md(deploy.runtime.note())),
             )
             .into_any_element()
     });
@@ -401,7 +401,7 @@ pub(crate) fn deploy_table(deploy: &DeployState, entity: &Entity<Shell>) -> AnyE
             div()
                 .text_xs()
                 .text_color(theme::text_dim())
-                .child(crate::util::strip_md(&format!(
+                .child(wslc_panel_core::util::strip_md(&format!(
                     "共 {} 条部署。「部署过什么」来自面板自己的存档（容器停着也看得到）；\
                      「现在跑没跑」是**问容器**得来的。",
                     deploy.entries.len()
@@ -422,7 +422,7 @@ pub(crate) fn deploy_status_cell(entry: &DeployEntry, deploy: &DeployState) -> A
         // 所以截断的文字能悬停看全文（`AGENTS.md` §7.5）。
         return cell_muted_full(
             format!("deploy-status-{}-{}", deploy.container, entry.record.app),
-            format!("读不到状态（{}）", crate::util::strip_md(error)),
+            format!("读不到状态（{}）", wslc_panel_core::util::strip_md(error)),
         );
     }
     let mut extra = String::new();
@@ -755,7 +755,7 @@ pub(crate) fn deploy_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App
             div()
                 .text_xs()
                 .text_color(theme::danger())
-                .child(crate::util::strip_md(
+                .child(wslc_panel_core::util::strip_md(
                     "部署会替换面板上次写入的文件，保留其他文件。请使用独立应用目录；\
                      仅允许 /opt、/srv、/app、/var/www、/usr/share/nginx 下的路径。",
                 )),
@@ -774,7 +774,7 @@ pub(crate) fn deploy_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App
             div()
                 .text_xs()
                 .text_color(theme::text_dim())
-                .child(crate::util::strip_md(
+                .child(wslc_panel_core::util::strip_md(
                     "命令原样交给 /bin/sh -c，支持管道与 &&；日志位于目标目录的 app.log。",
                 )),
         )
@@ -988,7 +988,7 @@ pub(crate) fn deploy_logs_body(logs: &DeployLogs) -> AnyElement {
             div()
                 .text_xs()
                 .text_color(theme::text_dim())
-                .child(crate::util::strip_md(
+                .child(wslc_panel_core::util::strip_md(
                     "是这个应用**自己**的输出（启动时把它重定向到了目标目录的 \
                  app.log）—— 不是容器主进程的日志，那个在「日志」按钮里。",
                 )),
@@ -1042,7 +1042,7 @@ pub(crate) fn deploy_site_conf_body(conf: &DeploySiteConf) -> AnyElement {
             div()
                 .text_xs()
                 .text_color(theme::text_dim())
-                .child(crate::util::strip_md(
+                .child(wslc_panel_core::util::strip_md(
                     "容器里的 `/etc/nginx/conf.d/00-wslc-panel-<应用名>.conf`（只读）。\
                  重新部署会整份覆盖；要改就改部署弹窗里的站点区，别直接改这个文件。",
                 )),
@@ -1051,7 +1051,7 @@ pub(crate) fn deploy_site_conf_body(conf: &DeploySiteConf) -> AnyElement {
             div()
                 .text_xs()
                 .text_color(theme::text_dim())
-                .child(crate::util::strip_md(
+                .child(wslc_panel_core::util::strip_md(
                     "容器重建后这份 conf 会丢 —— 可以点「重写配置」补回来\
                  （只写 conf，不重新铺文件 / 不重新接网络）。",
                 )),
@@ -1085,7 +1085,7 @@ pub(crate) fn deploy_remove_confirm_body(app: &str, deploy: Option<&DeployState>
             div()
                 .text_sm()
                 .text_color(theme::text())
-                .child(crate::util::strip_md(if is_process {
+                .child(wslc_panel_core::util::strip_md(if is_process {
                     "面板会：① 停掉这个应用的进程；② 删掉面板铺进目标目录的那几个文件\
                      （`app.log` / `app.pid` 与上次部署的文件，**别人的东西不动**）；\
                      ③ 删掉本地的那条记录。"
@@ -1100,7 +1100,7 @@ pub(crate) fn deploy_remove_confirm_body(app: &str, deploy: Option<&DeployState>
             div()
                 .text_xs()
                 .text_color(theme::danger())
-                .child(crate::util::strip_md(
+                .child(wslc_panel_core::util::strip_md(
                     // ⚠️ 别写成"被清掉的是卷里的数据"：v0.9.10 之前那句是对的
                     //（那时确实是整目录 `find -delete`）。现在删的**只有面板自己
                     // 铺过的那几个名字**，别人的文件一个都不碰 —— 这句要说的是

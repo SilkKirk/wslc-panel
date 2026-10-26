@@ -143,7 +143,7 @@ impl Shell {
         // （以前是手抄 refresh_secs/theme/install_dir —— 加第 4 个字段
         // 「终端起始目录」时那三行就会漏掉它，用户设过的终端起点被一次
         // 刷新间隔改动悄悄抹掉）。
-        let prefs = crate::prefs::Prefs {
+        let prefs = wslc_panel_core::prefs::Prefs {
             refresh_secs: secs,
             ..self.state.prefs.clone()
         }
@@ -178,10 +178,10 @@ impl Shell {
     /// 这里改不了（界面上也是这么写的）。
     pub fn set_terminal_dir(
         &mut self,
-        dir: crate::prefs::TerminalStartDir,
+        dir: wslc_panel_core::prefs::TerminalStartDir,
         cx: &mut Context<Self>,
     ) {
-        let prefs = crate::prefs::Prefs {
+        let prefs = wslc_panel_core::prefs::Prefs {
             terminal_dir: dir,
             ..self.state.prefs.clone()
         };
@@ -218,7 +218,7 @@ impl Shell {
         if self.terminal_dir_input.is_none() {
             // 预填当前的自定义路径（不是自定义档位时留空，走占位符提示格式）。
             let current = match &self.state.prefs.terminal_dir {
-                crate::prefs::TerminalStartDir::Custom(dir) => dir.clone(),
+                wslc_panel_core::prefs::TerminalStartDir::Custom(dir) => dir.clone(),
                 _ => String::new(),
             };
             let input =
@@ -238,7 +238,7 @@ impl Shell {
 
     /// 把输入框里的路径应用成「自定义起始目录」。
     ///
-    /// 校验是纯函数（[`crate::prefs::parse_custom_dir`]），所以"报错的红字"
+    /// 校验是纯函数（[`wslc_panel_core::prefs::parse_custom_dir`]），所以"报错的红字"
     /// 和"真的存下去的值"用的是同一套规则。校验不过就**只提示、不改偏好** ——
     /// 把非法值存进去，用户下次点「打开终端」会得到一个落点随机的窗口
     /// （`wsl.exe` 对不存在的 `--cd` 不报错，只落在 `/`）。
@@ -247,8 +247,8 @@ impl Shell {
             return;
         };
         let typed = input.read(cx).value().trim().to_owned();
-        match crate::prefs::parse_custom_dir(&typed) {
-            Ok(dir) => self.set_terminal_dir(crate::prefs::TerminalStartDir::Custom(dir), cx),
+        match wslc_panel_core::prefs::parse_custom_dir(&typed) {
+            Ok(dir) => self.set_terminal_dir(wslc_panel_core::prefs::TerminalStartDir::Custom(dir), cx),
             Err(e) => {
                 self.state.notify(Toast::error(e));
                 cx.notify();
@@ -268,7 +268,7 @@ impl Shell {
     /// 同时在后台再读一次：用户很可能刚在系统设置里改过主题才来点这个按钮。
     /// **不在点击回调里同步读**（起 `reg.exe`，几十毫秒，但那是界面线程 ——
     /// `AGENTS.md` §7.1）。
-    pub fn set_theme(&mut self, theme: crate::prefs::ThemePref, cx: &mut Context<Self>) {
+    pub fn set_theme(&mut self, theme: wslc_panel_core::prefs::ThemePref, cx: &mut Context<Self>) {
         let changed = self.state.prefs.theme != theme;
         self.state.prefs.theme = theme;
 
@@ -315,7 +315,7 @@ impl Shell {
     }
 
     /// 写回偏好文件（+ 提示）。
-    pub(crate) fn persist_theme(&mut self, theme: crate::prefs::ThemePref, cx: &mut Context<Self>) {
+    pub(crate) fn persist_theme(&mut self, theme: wslc_panel_core::prefs::ThemePref, cx: &mut Context<Self>) {
         match self.state.prefs.save() {
             Ok(()) => {
                 tracing::info!("主题已改为{}", theme.label());

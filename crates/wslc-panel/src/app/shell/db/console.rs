@@ -402,7 +402,7 @@ impl Shell {
                     Some((
                         format!("{base}-{stamp}.csv"),
                         r.row_count(),
-                        crate::sqlview::to_csv(r),
+                        wslc_panel_core::sqlview::to_csv(r),
                     ))
                 }
                 _ => None,

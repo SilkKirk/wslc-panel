@@ -79,7 +79,7 @@ pub(crate) fn image_facts_hint(dialog: &CreateDialog) -> AnyElement {
                         .text_color(theme::text_dim())
                         // 这两句里都有 Markdown（`**没有默认命令**` /
                         // `**必须自己填**` / 反引号）→ 渲染处统一清掉
-                        .child(crate::util::strip_md(&text)),
+                        .child(wslc_panel_core::util::strip_md(&text)),
                 );
             }
             body.into_any_element()
@@ -166,7 +166,7 @@ pub(crate) fn image_env_hint(dialog: &CreateDialog, cx: &App) -> AnyElement {
         .text_color(theme::text_dim())
         // 第二支文案里有 `{prefill}=你的值` 的反引号 —— 第一支没有，所以
         // 别只在其中一支加。统一在出口过一遍（`AGENTS.md` §5）。
-        .child(crate::util::strip_md(&text))
+        .child(wslc_panel_core::util::strip_md(&text))
         .into_any_element()
 }
 

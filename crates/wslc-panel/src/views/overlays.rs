@@ -121,7 +121,7 @@ impl Render for PromptContent {
                 div()
                     .text_xs()
                     .text_color(theme::text_muted())
-                    .child(crate::util::strip_md(kind.note())),
+                    .child(wslc_panel_core::util::strip_md(kind.note())),
             )
             .child(
                 v_flex()
@@ -260,7 +260,7 @@ pub(crate) fn logs_dialog_body(state: &AppState, entity: &Entity<Shell>) -> AnyE
                 .w_full()
                 .text_sm()
                 .text_color(theme::text_dim())
-                .child(crate::util::strip_md(
+                .child(wslc_panel_core::util::strip_md(
                     // 文案里带 `` `tail -f /dev/null` `` —— 不过 `strip_md` 就
                     // 把反引号一起画出来（这条是守卫，不是当下需要）。
                     "容器主进程没有往 stdout / stderr 写东西时就是这个样子 —— 比如面板为了\

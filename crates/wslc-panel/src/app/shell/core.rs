@@ -145,7 +145,7 @@ pub(crate) fn confirm_body(action: &ConfirmAction) -> AnyElement {
     div()
         .text_sm()
         .text_color(theme::text_muted())
-        .child(crate::util::strip_md(&action.body()))
+        .child(wslc_panel_core::util::strip_md(&action.body()))
         .into_any_element()
 }
 

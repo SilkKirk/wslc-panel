@@ -162,8 +162,8 @@ impl InstallForm {
     pub(crate) fn to_spec(
         &self,
         cx: &App,
-        mirrors: &crate::state::MirrorState,
-        online: &crate::state::OnlineDistroState,
+        mirrors: &wslc_panel_core::state::MirrorState,
+        online: &wslc_panel_core::state::OnlineDistroState,
         taken: &[String],
         default_dir: Option<&str>,
     ) -> InstallSpec {

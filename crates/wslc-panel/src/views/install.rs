@@ -159,7 +159,7 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
             div()
                 .text_xs()
                 .text_color(color)
-                .child(crate::util::strip_md(&hint))
+                .child(wslc_panel_core::util::strip_md(&hint))
                 .into_any_element(),
         );
     }
@@ -344,7 +344,7 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
                             // / `--import`），而 `div` 画的是纯文本 —— 不过
                             // `strip_md` 屏幕上就是字面星号和反引号。
                             // 这一处是 v0.9.13 那轮补 15 处时**唯一漏下的**。
-                            .child(crate::util::strip_md(note))
+                            .child(wslc_panel_core::util::strip_md(note))
                     }));
                 // 提醒不是错误、也不挡提交；只在参数已经能跑时附在步骤下面，
                 // 避免和"点开始安装才校验"的红框混在一起。
@@ -353,7 +353,7 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
                         div()
                             .text_xs()
                             .text_color(theme::text_dim())
-                            .child(format!("! {}", crate::util::strip_md(warning)))
+                            .child(format!("! {}", wslc_panel_core::util::strip_md(warning)))
                     }));
                 }
                 Some(body.into_any_element())
@@ -431,7 +431,7 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
                 div()
                     .text_xs()
                     .text_color(theme::text_dim())
-                    .child(crate::util::strip_md(source.hint())),
+                    .child(wslc_panel_core::util::strip_md(source.hint())),
             ),
         ))
         .child(card(
@@ -754,7 +754,7 @@ pub(crate) fn elapsed_label(state: &AppState) -> AnyElement {
         .map(|progress| {
             let mut parts = vec![format!(
                 "已用 {}",
-                crate::util::human_secs(progress.elapsed_secs)
+                wslc_panel_core::util::human_secs(progress.elapsed_secs)
             )];
             if let Some(percent) = progress.percent() {
                 parts.push(format!("{percent:.1}%"));

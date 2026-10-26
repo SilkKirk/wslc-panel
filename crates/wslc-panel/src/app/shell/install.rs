@@ -216,7 +216,7 @@ impl Shell {
         // ⚠️ `Prefs` 是**整体**写回磁盘的：这里必须带上其余字段，
         // 只填 install_dir 会把它们重置掉。用 `..` 而不是手抄字段 ——
         // 手抄的那份在加第 4 个字段时一定会漏（终端起始目录就是第 4 个）。
-        let prefs = crate::prefs::Prefs {
+        let prefs = wslc_panel_core::prefs::Prefs {
             install_dir: Some(dir.clone()),
             ..self.state.prefs.clone()
         };

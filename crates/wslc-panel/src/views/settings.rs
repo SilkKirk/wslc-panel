@@ -173,12 +173,12 @@ pub fn settings_about(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
 /// 而且实测本机到 release 资产只有 11–15 KB/s，30 MB 要 40 分钟 ——
 /// 应用内下载只会更糟。
 pub(crate) fn update_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
-    use crate::update::Phase;
+    use wslc_panel_core::update::Phase;
 
     let state = &shell.state;
     let phase = &state.update;
-    let now = crate::util::now_secs();
-    let status = crate::update::status_line(phase, now);
+    let now = wslc_panel_core::util::now_secs();
+    let status = wslc_panel_core::update::status_line(phase, now);
     let checking = matches!(phase, Phase::Checking);
 
     let mut body = v_flex().w_full().gap_3();
@@ -197,7 +197,7 @@ pub(crate) fn update_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             })
             // 文案里没有 Markdown 标记，但这条规矩是守卫而不是一次修补：
             // 以后改文案的人可能顺手写上 `**…**`（见 `AGENTS.md` §5）。
-            .child(crate::util::strip_md(&status)),
+            .child(wslc_panel_core::util::strip_md(&status)),
     );
 
     // 有新版时把发布说明的开头一小段露出来 —— 用户要据此决定"值不值得更新"。
@@ -207,7 +207,7 @@ pub(crate) fn update_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                 div()
                     .text_xs()
                     .text_color(theme::text_dim())
-                    .child(crate::util::strip_md(&release.notes_head)),
+                    .child(wslc_panel_core::util::strip_md(&release.notes_head)),
             );
         }
     }
@@ -315,11 +315,11 @@ pub(crate) fn theme_card(state: &AppState, entity: &Entity<Shell>) -> AnyElement
 
     // 互斥选项交给官方 `RadioGroup`：它对读屏软件是"一组单选"、自带方向键移动
     // + 空格选中（原先那排"选中就变主色"的按钮，这两样都没有）。
-    let labels: Vec<SharedString> = crate::prefs::ThemePref::ALL
+    let labels: Vec<SharedString> = wslc_panel_core::prefs::ThemePref::ALL
         .iter()
         .map(|theme| SharedString::from(theme.label()))
         .collect();
-    let selected = crate::prefs::ThemePref::ALL
+    let selected = wslc_panel_core::prefs::ThemePref::ALL
         .iter()
         .position(|theme| *theme == current);
     let picker = radio_row(
@@ -328,7 +328,7 @@ pub(crate) fn theme_card(state: &AppState, entity: &Entity<Shell>) -> AnyElement
         selected,
         entity,
         |shell, ix, _, cx| {
-            shell.set_theme(crate::prefs::ThemePref::ALL[ix], cx);
+            shell.set_theme(wslc_panel_core::prefs::ThemePref::ALL[ix], cx);
         },
     );
     card(
@@ -362,7 +362,7 @@ pub(crate) fn theme_card(state: &AppState, entity: &Entity<Shell>) -> AnyElement
 /// 卡片标题刻意叫「刷新」而不是「界面」：主题卡也叫「界面」，
 /// 两张同名卡片挨在一起会让人分不清哪个是哪个。
 pub(crate) fn interface_card(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
-    let path_text = crate::prefs::Prefs::path()
+    let path_text = wslc_panel_core::prefs::Prefs::path()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "（无法确定偏好文件位置）".to_owned());
 
@@ -394,11 +394,11 @@ pub(crate) fn refresh_secs_picker(state: &AppState, entity: &Entity<Shell>) -> i
     let current = state.prefs.refresh_secs;
 
     // 互斥选项 → 官方 `RadioGroup`（理由同主题卡）。
-    let labels: Vec<SharedString> = crate::prefs::REFRESH_PRESETS
+    let labels: Vec<SharedString> = wslc_panel_core::prefs::REFRESH_PRESETS
         .iter()
         .map(|secs| SharedString::from(format!("{secs} 秒")))
         .collect();
-    let selected = crate::prefs::REFRESH_PRESETS
+    let selected = wslc_panel_core::prefs::REFRESH_PRESETS
         .iter()
         .position(|secs| *secs == current);
     let picker = radio_row(
@@ -407,12 +407,12 @@ pub(crate) fn refresh_secs_picker(state: &AppState, entity: &Entity<Shell>) -> i
         selected,
         entity,
         |shell, ix, _, cx| {
-            shell.set_refresh_secs(crate::prefs::REFRESH_PRESETS[ix], cx);
+            shell.set_refresh_secs(wslc_panel_core::prefs::REFRESH_PRESETS[ix], cx);
         },
     );
     // 手动改过 prefs.json、值不在预设里时，补一个只读提示，
     // 免得用户看到"一个都没选中"而困惑。
-    let extra = if crate::prefs::REFRESH_PRESETS.contains(&current) {
+    let extra = if wslc_panel_core::prefs::REFRESH_PRESETS.contains(&current) {
         None
     } else {
         Some(
@@ -455,16 +455,16 @@ pub(crate) fn terminal_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement
     // ⚠️ 「自定义」这一项有**副作用**（建 `InputState`），所以它不能是"只是选中"——
     // 这也是一处官方组件表达不了的地方：`RadioGroup` 只回报下标，副作用由
     // `pick` 自己按分支做。
-    let labels: Vec<SharedString> = crate::prefs::TerminalStartDir::FIXED
+    let labels: Vec<SharedString> = wslc_panel_core::prefs::TerminalStartDir::FIXED
         .iter()
         .map(|dir| SharedString::from(dir.label()))
         .chain(std::iter::once(SharedString::from("自定义路径…")))
         .collect();
     let selected = match current {
-        crate::prefs::TerminalStartDir::Custom(_) => {
-            Some(crate::prefs::TerminalStartDir::FIXED.len())
+        wslc_panel_core::prefs::TerminalStartDir::Custom(_) => {
+            Some(wslc_panel_core::prefs::TerminalStartDir::FIXED.len())
         }
-        other => crate::prefs::TerminalStartDir::FIXED
+        other => wslc_panel_core::prefs::TerminalStartDir::FIXED
             .iter()
             .position(|dir| dir == other),
     };
@@ -474,7 +474,7 @@ pub(crate) fn terminal_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement
         selected,
         entity,
         |shell, ix, window, cx| {
-            match crate::prefs::TerminalStartDir::FIXED.get(ix) {
+            match wslc_panel_core::prefs::TerminalStartDir::FIXED.get(ix) {
                 Some(dir) => shell.set_terminal_dir(dir.clone(), cx),
                 // 下标越界 = 最后那一项「自定义路径…」
                 None => shell.edit_terminal_dir(window, cx),
@@ -489,7 +489,7 @@ pub(crate) fn terminal_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement
         .child(div().text_xs().text_color(theme::text_dim()).child(
             // 这一句里有 `wsl --cd` 的反引号 —— 同一张卡下面两段都过了
             // `strip_md`，只有这一段漏了（注释和实现不一致时后来人会照错的那份走）。
-            crate::util::strip_md(
+            wslc_panel_core::util::strip_md(
                 "「打开终端」（实例列表）用 `wsl --cd` 指定起点；不给就是继承面板自己的工作目录，\
                  也就是从哪个文件夹启动的面板，终端就从哪儿开始。",
             ),
@@ -522,7 +522,7 @@ pub(crate) fn terminal_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement
                 div()
                     .text_xs()
                     .text_color(theme::text_dim())
-                    .child(crate::util::strip_md(
+                    .child(wslc_panel_core::util::strip_md(
                         "填发行版里的路径（`/home/wt/project` 或 `~`）—— Windows 路径不认，\
                      那是「面板所在目录」那一档的事。写错的路径 `wsl.exe` 不报错，只会落在 `/`。",
                     )),
@@ -533,7 +533,7 @@ pub(crate) fn terminal_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement
         div()
             .text_xs()
             .text_color(theme::text_dim())
-            .child(crate::util::strip_md(
+            .child(wslc_panel_core::util::strip_md(
                 "容器的「打开终端」走 `wslc exec -w`，只对**绝对路径**生效：容器里没有\
              「Linux home」这个概念，`~` 交给镜像自己的工作目录决定。改动只影响之后新开的终端。",
             )),

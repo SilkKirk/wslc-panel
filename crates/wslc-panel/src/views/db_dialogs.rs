@@ -419,7 +419,7 @@ pub(crate) fn grant_db_field(
             div()
                 .text_xs()
                 .text_color(theme::text_dim())
-                .child(crate::util::strip_md(&format!(
+                .child(wslc_panel_core::util::strip_md(&format!(
                     "以输入框里的库名为准；下拉框只是帮你填入。{suffix}"
                 )))
         })
@@ -624,7 +624,7 @@ pub(crate) fn db_backup_dialog_body(
         div()
             .text_xs()
             .text_color(theme::text_dim())
-            .child(crate::util::strip_md(&text))
+            .child(wslc_panel_core::util::strip_md(&text))
             .into_any_element()
     };
 
@@ -695,7 +695,7 @@ pub(crate) fn db_backup_dialog_body(
                     div()
                         .text_xs()
                         .text_color(theme::text_dim())
-                        .child(crate::util::strip_md(
+                        .child(wslc_panel_core::util::strip_md(
                             "列表是 Windows 侧的存档（容器删了它们还在），\
                                      也是**恢复的输入**：恢复时会把这份文件送进容器再导入，\
                                      所以容器重建过也照样能恢复。\

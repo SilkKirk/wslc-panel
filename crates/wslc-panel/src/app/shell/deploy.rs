@@ -55,7 +55,7 @@ impl Shell {
 
         // 本地存档先读进来（纯本地、几毫秒）—— 这样"读取中"的时候列表里
         // **已经有行**了：用户看得到自己部署过什么，只是现状还没回来。
-        // 这比先显示一张空表诚实得多（`crate::deploys` 的模块注释讲了为什么
+        // 这比先显示一张空表诚实得多（`wslc_panel_core::deploys` 的模块注释讲了为什么
         // 记录放本地）。
         self.state.refresh_deploy_entries(&container);
 
@@ -1004,7 +1004,7 @@ impl Shell {
         };
 
         // **删除列表** = 这一次要铺的 ∪ 存档里**上一次铺过的**
-        //（`crate::deploys::merge_members`，纯函数、有单测）。
+        //（`wslc_panel_core::deploys::merge_members`，纯函数、有单测）。
         //
         // ⚠️ "上一次"这一半是 v0.9.13 补上的，它只能来自**存档里那条记录**
         //（`DeployRecord::members`）—— `model::deploy::removals_script` 的文档
@@ -1017,14 +1017,14 @@ impl Shell {
             .and_then(|app| self.state.deploy_store.get(&container, app.as_str()))
             .map(|record| record.members.clone())
             .unwrap_or_default();
-        let removals = crate::deploys::merge_members(&previous_members, &member_names);
+        let removals = wslc_panel_core::deploys::merge_members(&previous_members, &member_names);
 
         // 记下要写进存档的东西（弹窗马上要关，那之后就读不到了）。
         //
         // ⚠️ 存档里的 `members` 记的是**这一次真的铺了什么**，不是删除列表 ——
         // 下次重新部署时"上一次"取的就是它。存删除列表的话，那些"上一次有、
         // 这一次没有"的名字会一代代累积下去，记录越读越假。
-        let record = crate::deploys::DeployRecord {
+        let record = wslc_panel_core::deploys::DeployRecord {
             app: values.app.clone(),
             runtime: runtime.key().to_owned(),
             source: values.source.clone(),
@@ -1354,7 +1354,7 @@ impl Shell {
                 if let Some(message) = site_step.error.clone() {
                     shell.state.deploy_store.put(
                         &container,
-                        crate::deploys::DeployRecord {
+                        wslc_panel_core::deploys::DeployRecord {
                             app: app.clone(),
                             runtime: runtime.key().to_owned(),
                             source: record.source.clone(),
@@ -1387,7 +1387,7 @@ impl Shell {
                         // 部署确实发生了，跟"用户现在在看哪一页"无关。
                         shell.state.deploy_store.put(
                             &container,
-                            crate::deploys::DeployRecord {
+                            wslc_panel_core::deploys::DeployRecord {
                                 app: app.clone(),
                                 runtime: runtime.key().to_owned(),
                                 source: record.source.clone(),
@@ -1433,7 +1433,7 @@ impl Shell {
                         // 存并集才能让之后的「删除」把这些名字都收拾干净。
                         shell.state.deploy_store.put(
                             &container,
-                            crate::deploys::DeployRecord {
+                            wslc_panel_core::deploys::DeployRecord {
                                 app: app.clone(),
                                 runtime: runtime.key().to_owned(),
                                 source: record.source.clone(),

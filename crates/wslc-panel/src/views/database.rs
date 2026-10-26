@@ -280,12 +280,12 @@ pub(crate) fn db_connection_card(
             // 当前生效的是哪条路要说出来 —— 否则用户不知道"到底按哪份配置在跑"。
             .child(div().text_xs().text_color(theme::text_dim()).child(
                 match db.dsn.as_ref().map(|d| d.as_str()) {
-                    Some(dsn) => crate::util::strip_md(&format!(
+                    Some(dsn) => wslc_panel_core::util::strip_md(&format!(
                         "当前：**原生连接** {}",
                         // 连接串里有口令，界面上只显示协议+主机+库，不显示口令段
                         crate::native_db::redact_dsn(dsn)
                     )),
-                    None => crate::util::strip_md("当前：在容器里执行（未使用连接串）"),
+                    None => wslc_panel_core::util::strip_md("当前：在容器里执行（未使用连接串）"),
                 },
             )),
     );
@@ -295,13 +295,13 @@ pub(crate) fn db_connection_card(
             div()
                 .text_xs()
                 .text_color(theme::text_dim())
-                .child(crate::util::strip_md(&note)),
+                .child(wslc_panel_core::util::strip_md(&note)),
         );
     }
 
     body = body.child(div().text_xs().text_color(theme::text_muted()).child(
         // Markdown 文案 → 渲染处统一清标记（`util::strip_md`）
-        crate::util::strip_md(
+        wslc_panel_core::util::strip_md(
             "不填连接串时：面板靠**容器自带的** mysql / mariadb 客户端执行 SQL —— 所以容器要在运行、\
                      镜像里得有客户端（不要求把端口发布到主机）。密码走 MYSQL_PWD 环境变量，\
                      不进命令行。填了连接串则改为**由面板自己连**（TCP），可以不经过容器、\
@@ -333,7 +333,7 @@ pub(crate) fn db_blocked_card(failure: &DbFailure) -> AnyElement {
             div()
                 .text_sm()
                 .text_color(theme::text())
-                .child(crate::util::strip_md(&failure.summary())),
+                .child(wslc_panel_core::util::strip_md(&failure.summary())),
         )
         .child(div().text_xs().text_color(theme::text_muted()).child(
             "面板不自己连 3306，而是驱动容器里的客户端 —— 所以它不依赖端口有没有\
@@ -368,7 +368,7 @@ pub(crate) fn db_error_banner(failure: &DbFailure) -> AnyElement {
             div()
                 .text_sm()
                 .text_color(theme::danger())
-                .child(crate::util::strip_md(&failure.summary())),
+                .child(wslc_panel_core::util::strip_md(&failure.summary())),
         )
         .child(log_text(Some(&failure.detail), "db-error-detail"))
         .into_any_element()
@@ -412,7 +412,7 @@ pub(crate) fn db_native_write_notice(reason: &'static str) -> AnyElement {
         .w_full()
         .text_xs()
         .text_color(theme::text_dim())
-        .child(crate::util::strip_md(reason))
+        .child(wslc_panel_core::util::strip_md(reason))
         .into_any_element()
 }
 
@@ -546,7 +546,7 @@ pub(crate) fn db_postgres_card(db: &DbState, entity: &Entity<Shell>) -> AnyEleme
             div()
                 .text_sm()
                 .text_color(theme::text())
-                .child(crate::util::strip_md(&d.name))
+                .child(wslc_panel_core::util::strip_md(&d.name))
                 .into_any_element()
         })
         .collect();
@@ -827,7 +827,7 @@ pub(crate) fn db_users_card(
                 div()
                     .text_xs()
                     .text_color(theme::text_muted())
-                    .child(crate::util::strip_md(
+                    .child(wslc_panel_core::util::strip_md(
                         "想管用户的话：去「基础信息」换成高权限账号（比如 root），再点「重新读取」。数据库列表不受影响。",
                     )),
             )

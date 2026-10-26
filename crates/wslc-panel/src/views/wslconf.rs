@@ -63,7 +63,7 @@ pub(crate) fn wslconf_row(
                 div()
                     .text_xs()
                     .text_color(theme::text_dim())
-                    .child(crate::util::strip_md(field.hint)),
+                    .child(wslc_panel_core::util::strip_md(field.hint)),
             )
             .into_any_element();
     }
@@ -71,7 +71,7 @@ pub(crate) fn wslconf_row(
     match field.kind {
         wslconf::FieldKind::Bool => {
             let entity = entity.clone();
-            Checkbox::new(crate::state::wslconf_field_id(field.section, field.key))
+            Checkbox::new(wslc_panel_core::state::wslconf_field_id(field.section, field.key))
                 .label(field.label)
                 .checked(state.doc.effective_bool(field.section, field.key))
                 // `Checkbox` 是**受控**组件：`on_change` 给的是"请求的新值"，
@@ -101,7 +101,7 @@ pub(crate) fn wslconf_row(
             if let Some(input) = dialog.inputs.get(&(field.section, field.key)) {
                 row = row.child(
                     Input::new(input)
-                        .id(crate::state::wslconf_field_id(field.section, field.key))
+                        .id(wslc_panel_core::state::wslconf_field_id(field.section, field.key))
                         .w_full(),
                 );
             }
@@ -111,7 +111,7 @@ pub(crate) fn wslconf_row(
                     div()
                         .text_xs()
                         .text_color(theme::text_dim())
-                        .child(crate::util::strip_md(field.hint)),
+                        .child(wslc_panel_core::util::strip_md(field.hint)),
                 );
             }
             row.into_any_element()

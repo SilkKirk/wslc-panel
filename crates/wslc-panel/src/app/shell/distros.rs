@@ -140,7 +140,7 @@ impl Shell {
                 } else if code == 0 {
                     let size = std::fs::metadata(&target)
                         .ok()
-                        .map(|m| crate::util::format_bytes(m.len()))
+                        .map(|m| wslc_panel_core::util::format_bytes(m.len()))
                         .unwrap_or_else(|| "大小未知".to_owned());
                     shell.state.notify(Toast::success(format!(
                         "{name} 已导出到 {target}（{size}）"
@@ -289,7 +289,7 @@ impl Shell {
     /// 这是**同步**的：`spawn_in_new_console` 只负责把窗口拉起来就返回，
     /// 不会等终端关闭（也不该等 —— 用户可能在里面待几个小时）。
     ///
-    /// 起始目录来自偏好（[`TerminalStartDir`](crate::prefs::TerminalStartDir)）：
+    /// 起始目录来自偏好（[`TerminalStartDir`](wslc_panel_core::prefs::TerminalStartDir)）：
     /// **不是**面板自己的 cwd —— 那取决于用户从哪个文件夹启动的面板，
     /// 见 `wslc_core::cmd::distro::open_terminal`。
     pub fn open_distro_terminal(&mut self, name: String, cx: &mut Context<Self>) {

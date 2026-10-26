@@ -7,16 +7,20 @@
 //!
 //! ```text
 //! main.rs   窗口与生命周期
-//! app.rs    Shell：导航、异步刷新、确认弹窗（唯一接触 GPUI 异步 API 的文件）
-//! views.rs  各页面渲染（纯函数）
+//! app/      Shell：导航、异步刷新、确认弹窗（唯一接触 GPUI 异步 API 的地方）
+//! views/    各页面渲染（纯函数）
 //! theme.rs  配色
 //! ```
 //!
 //! 不依赖 GPUI 的那一半在 **`wslc-panel-core`** 里：状态与数据采集、应用偏好、
 //! 表格列宽、配置预设值、几个纯函数。拆出去纯粹是为了 CI ——
 //! 那些东西的单测不该为了跑起来去编译并链接整棵 GPUI 依赖树
-//! （见那个 crate 的顶层说明）。下面有一层 re-export 垫片，
-//! 所以 `app.rs` / `views.rs` 里的 `crate::state::…` 这些路径照旧能用。
+//! （见那个 crate 的顶层说明）。
+//!
+//! ⚠️ 引用它们时写**全路径** `wslc_panel_core::state::…`。原先这里有一层
+//! `mod state { pub use wslc_panel_core::state::*; }` 的垫片，2026-10-26 全部删掉：
+//! ① 垫片必须 `pub use`，于是 core 里的再导出被迫写成 `pub`（`pub(crate)` 跨 crate
+//! 看不见）；② "这个类型属于哪个 crate"要跳一层才看得出来。
 
 // 发布版不给它配控制台窗口 —— 这是个 GUI 程序，双击运行时多弹一个黑框很突兀
 // （第一次实机运行就暴露了这个问题）。
@@ -47,49 +51,6 @@ mod sql_complete;
 mod sql_table;
 mod theme;
 mod views;
-
-// 纯逻辑层（偏好 / 状态 / 列宽 / 预设 / 纯函数）搬去了 `wslc-panel-core` ——
-// 那一半不依赖 GPUI，单测因此不必再编译并**链接**整棵 GPUI 依赖树
-// （实测那一步要 763 秒，见那个 crate 的顶层说明）。
-//
-// 这里放一层 re-export 垫片，而不是把 `app.rs` / `views.rs` 里那 50 多处
-// `crate::state::…` / `crate::prefs::…` 全改成 `wslc_panel_core::…`：
-// 那种改动只有噪音，垫片让调用点原样能用。
-mod columns {
-    pub use wslc_panel_core::columns::*;
-}
-// 部署记录的本地存档（v0.9）—— 和 `dbcreds` 并列，但那个是直接在
-// `state.rs` 里按 `crate::dbcreds::…` 用的（它没有垫片）。
-// 这里给 `deploys` 一个垫片，是因为 `app.rs` 要拿 `DeployRecord` 建记录。
-mod deploys {
-    pub use wslc_panel_core::deploys::*;
-}
-// 容器列表的过滤 / 排序：纯逻辑在 `wslc-panel-core`，这里只做旧路径垫片。
-mod listview {
-    pub use wslc_panel_core::listview::*;
-}
-mod prefs {
-    pub use wslc_panel_core::prefs::*;
-}
-mod presets {
-    pub use wslc_panel_core::presets::*;
-}
-mod state {
-    pub use wslc_panel_core::state::*;
-}
-// SQL 结果表格的显示逻辑（列宽 / 单元格分类 / 页脚 / CSV）。
-// 和 `state` 一样只是路径垫片 —— 实现在 `wslc-panel-core`，那里能单测。
-mod sqlview {
-    pub use wslc_panel_core::sqlview::*;
-}
-mod util {
-    pub use wslc_panel_core::util::*;
-}
-// 更新提示的状态机与判据（纯逻辑，在 `wslc-panel-core` 里，单测由 CI 的
-// `core` job 跑）。起 `curl.exe` 的那一半在 `wslc_core::cmd::update`。
-mod update {
-    pub use wslc_panel_core::update::*;
-}
 
 // 具名导入（而不是 `as _`）：下面 `impl Write for LogWriter` 直接用这个名字，
 // 顺便让 `file.write_all(...)` 的 trait 方法解析有据可依。
@@ -167,7 +128,7 @@ fn main() {
             //
             // 用**上次保存的偏好**：没有偏好文件时 `Prefs::default()` 是深色，
             // 和 v0.2 的行为一致。
-            let prefs = crate::prefs::Prefs::load();
+            let prefs = wslc_panel_core::prefs::Prefs::load();
             // 「跟随系统」要读一次系统主题（起 `reg.exe`，实测 7~27 ms）。
             // 这里是启动路径、窗口还没开，同步读一次最省事 —— 之后都读缓存。
             let system_is_dark = if prefs.theme.fixed_is_dark().is_none() {
@@ -260,7 +221,7 @@ fn fit_to_display(usable: f32, desired: f32, min: f32) -> f32 {
 /// 发布版没有控制台，这个文件是**唯一**能看到日志的地方，
 /// 所以出问题时要让用户先看这里。
 fn log_file_path() -> Option<PathBuf> {
-    Some(crate::prefs::app_dir()?.join("logs").join("wslc-panel.log"))
+    Some(wslc_panel_core::prefs::app_dir()?.join("logs").join("wslc-panel.log"))
 }
 
 /// 日志出口：追加写日志文件，debug 构建下**同时**镜像到 stderr。
