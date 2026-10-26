@@ -3,7 +3,9 @@
 //! 外壳一律由官方 `Dialog` 负责（构造在 `app::shell::dialogs`）—— 本文件只产出
 //! 内容，不碰遮罩、宽度、标题与退出路径。
 
-use super::super::common::{busy_text, disclosure, empty_state, form_field, kv_block, log_text};
+use super::super::common::{
+    busy_text, disclosure, empty_state, form_field, kv_block, log_text, textarea_field,
+};
 use super::super::prelude::*;
 
 /// 「添加部署 / 重新部署」弹窗。
@@ -178,7 +180,7 @@ pub(crate) fn deploy_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App
                 v_flex()
                     .w_full()
                     .gap_1()
-                    .child(form_field(
+                    .child(textarea_field(
                         "deploy-proxy-more",
                         "更多反代规则",
                         &form.proxy_more,

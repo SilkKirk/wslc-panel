@@ -2,7 +2,7 @@
 
 // 本文件只出字段：外壳（遮罩 / 卡片 / 标题 / 底部按钮）由官方 `Dialog` 负责
 // （构造在 `app::shell::dialogs` 的 `DialogKey::CreateContainer`）。
-use super::common::{disclosure, form_field, radio_row};
+use super::common::{disclosure, form_field, radio_row, textarea_field};
 use super::prelude::*;
 
 /// 「创建容器」弹窗里那条**从镜像读来的**信息（声明端口 / 启动命令）。
@@ -425,7 +425,7 @@ pub(crate) fn create_dialog_body(
                     cx,
                     false,
                 ))
-                .child(form_field(
+                .child(textarea_field(
                     "create-env",
                     "环境变量 KEY=VALUE（每行一个；值里可以有逗号）",
                     &dialog.env,
@@ -440,9 +440,9 @@ pub(crate) fn create_dialog_body(
                 .child("端口映射需在创建时设置，创建后不能直接修改。"),
         )
         .child(image_env_hint(dialog, cx))
-        .child(form_field(
+        .child(textarea_field(
             "create-volumes",
-            "卷挂载（卷名:/容器内路径）",
+            "卷挂载（卷名:/容器内路径，一行一个）",
             &dialog.volumes,
             cx,
             true,

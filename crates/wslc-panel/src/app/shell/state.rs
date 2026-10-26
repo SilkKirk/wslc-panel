@@ -376,8 +376,11 @@ pub(crate) struct CreateDialog {
     /// 不带参数时就等于什么都不做）—— 界面上只看到"点了启动还是已退出"。
     pub(crate) command: Entity<InputState>,
     pub(crate) ports: Entity<InputState>,
-    pub(crate) env: Entity<InputState>,
-    pub(crate) volumes: Entity<InputState>,
+    /// 环境变量：**多行**（官方 `Textarea`）。值里可以有逗号，
+    /// 一行一个是最不容易切错的写法。
+    pub(crate) env: Entity<TextareaState>,
+    /// 卷挂载：多行（一行一个）。
+    pub(crate) volumes: Entity<TextareaState>,
     pub(crate) network: Entity<InputState>,
     pub(crate) memory: Entity<InputState>,
     pub(crate) cpus: Entity<InputState>,
@@ -420,6 +423,8 @@ impl CreateDialog {
     /// 撞名要能看出来，所以得知道已经有哪些名字。
     pub(crate) fn to_spec(&self, existing_names: &[String], cx: &App) -> RunSpec {
         let text = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
+        let textarea =
+            |input: &Entity<TextareaState>| input.read(cx).value().trim().to_owned();
 
         let mut spec = RunSpec::new(text(&self.image));
         // 强制后台运行，理由见 `Shell::confirm_create` 的文档注释。
@@ -449,7 +454,7 @@ impl CreateDialog {
         spec.command = create_command(&text(&self.command));
 
         spec.ports = split_list(&text(&self.ports));
-        spec.volumes = split_list(&text(&self.volumes));
+        spec.volumes = split_list(&textarea(&self.volumes));
 
         // 环境变量按 `KEY=VALUE` 解析；没有等号的**直接丢掉**，
         // 不去猜用户想表达什么（猜错了反而更难查）。
@@ -457,7 +462,7 @@ impl CreateDialog {
         // ⚠️ 用 `split_env_list` 而不是 `split_list`：值里的逗号是合法的
         // （`SPRING_PROFILES_ACTIVE=dev,local`），按逗号一刀切会把后半段
         // 变成没有 `=` 的段然后静默丢掉。见 `util::split_env_list`。
-        spec.env = split_env_list(&text(&self.env))
+        spec.env = split_env_list(&textarea(&self.env))
             .iter()
             .filter_map(|pair| pair.split_once('='))
             .map(|(key, value)| (key.trim().to_owned(), value.trim().to_owned()))
@@ -583,8 +588,8 @@ pub(crate) struct DeployForm {
     pub(crate) proxy_upstream: Entity<InputState>,
     /// 反代时去掉前缀。
     pub(crate) proxy_strip: bool,
-    /// 更多反代（`/auth/ => http://auth:9000; ...`）。
-    pub(crate) proxy_more: Entity<InputState>,
+    /// 更多反代（`/auth/ => http://auth:9000; ...`，一行一条）。
+    pub(crate) proxy_more: Entity<TextareaState>,
     /// 上游是另一个容器时，自动把两个容器接到同一个用户网络。
     pub(crate) auto_connect: bool,
     // 让折叠摘要随输入更新；表单关闭时自动退订。

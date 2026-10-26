@@ -340,9 +340,16 @@ impl Shell {
                 InputState::new(window, cx).placeholder("留空用镜像自己的，如 tail -f /dev/null")
             }),
             ports: cx.new(|cx| InputState::new(window, cx).placeholder("8080:80, 9090:90")),
-            env: cx.new(|cx| InputState::new(window, cx).placeholder("TZ=Asia/Shanghai")),
-            volumes: cx
-                .new(|cx| InputState::new(window, cx).placeholder("webdata:/usr/share/nginx/html")),
+            env: cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .rows(3)
+                    .placeholder("TZ=Asia/Shanghai\nMYSQL_ROOT_PASSWORD=…")
+            }),
+            volumes: cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .rows(2)
+                    .placeholder("webdata:/usr/share/nginx/html")
+            }),
             network: cx.new(|cx| InputState::new(window, cx).placeholder("留空则用 bridge")),
             memory: cx.new(|cx| InputState::new(window, cx).placeholder("512M")),
             cpus: cx.new(|cx| InputState::new(window, cx).placeholder("0.5")),

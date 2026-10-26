@@ -24,7 +24,9 @@ pub(crate) use gpui_kit::component::button::*;
 pub(crate) use gpui_kit::component::accordion::Accordion;
 // `Editor` 是 SQL 控制台那个多行编辑器（v0.12）。和多行 `Textarea` 的区别：
 // `Editor` 带语法高亮（靠 `tree-sitter-sql` feature）+ 行号 + 缩进线。
-pub(crate) use gpui_kit::component::input::{Editor, Input, InputContentType, InputState};
+pub(crate) use gpui_kit::component::input::{
+    Editor, Input, InputContentType, InputState, Textarea, TextareaState,
+};
 // `ListItem` 是树控件里"一行"的类型（`Tree` 的回调必须返回它）。
 // 它比 `Button` 合适得多：`Button` 会把文字**居中**、给整行套底色和内边距，
 // 画出来像一排色块（v0.12 实机就是这个效果，用户说"太丑了"）；

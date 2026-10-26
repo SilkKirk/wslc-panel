@@ -153,8 +153,9 @@ impl Shell {
         let proxy_upstream =
             cx.new(|cx| InputState::new(window, cx).placeholder("http://api:8080"));
         let proxy_more = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("/auth/ => http://auth:9000; /ws/ => http://ws:9001 strip")
+            TextareaState::new(window, cx)
+                .rows(3)
+                .placeholder("/auth/ => http://auth:9000\n/ws/ => http://ws:9001 strip")
         });
 
         app.update(cx, |state, cx| {
@@ -190,7 +191,7 @@ impl Shell {
         let handle = source.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
 
-        let input_subs = [&proxy_prefix, &proxy_upstream, &proxy_more]
+        let mut input_subs: Vec<Subscription> = [&proxy_prefix, &proxy_upstream]
             .into_iter()
             .map(|input| {
                 cx.subscribe(input, |_, _, event: &InputEvent, cx| {
@@ -200,6 +201,13 @@ impl Shell {
                 })
             })
             .collect();
+        // `proxy_more` 是 `TextareaState`（不是 `InputState`），不能塞进上面
+        // 那个同类型数组，单独订阅；事件类型仍是 `InputEvent`。
+        input_subs.push(cx.subscribe(&proxy_more, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        }));
         self.forms.deploy_form = Some(DeployForm {
             _input_subs: input_subs,
             editing,
@@ -364,18 +372,17 @@ impl Shell {
         let Some(form) = self.forms.deploy_form.as_ref() else {
             return;
         };
-        let input = match which {
-            DeployField::App => &form.app,
-            DeployField::Source => &form.source,
-            DeployField::Target => &form.target,
-            DeployField::Command => &form.command,
-            DeployField::Port => &form.port,
-            DeployField::ProxyPrefix => &form.proxy_prefix,
-            DeployField::ProxyUpstream => &form.proxy_upstream,
-            DeployField::ServerName => &form.server_name,
-            DeployField::ProxyMore => &form.proxy_more,
+        let handle = match which {
+            DeployField::App => form.app.read(cx).focus_handle(cx),
+            DeployField::Source => form.source.read(cx).focus_handle(cx),
+            DeployField::Target => form.target.read(cx).focus_handle(cx),
+            DeployField::Command => form.command.read(cx).focus_handle(cx),
+            DeployField::Port => form.port.read(cx).focus_handle(cx),
+            DeployField::ProxyPrefix => form.proxy_prefix.read(cx).focus_handle(cx),
+            DeployField::ProxyUpstream => form.proxy_upstream.read(cx).focus_handle(cx),
+            DeployField::ServerName => form.server_name.read(cx).focus_handle(cx),
+            DeployField::ProxyMore => form.proxy_more.read(cx).focus_handle(cx),
         };
-        let handle = input.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
     }
 

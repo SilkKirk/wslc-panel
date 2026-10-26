@@ -18,7 +18,9 @@ pub(crate) use gpui_kit::component::button::*;
 // 渲染整页的是 `Shell`，输入框改的只是它自己的值 —— 不订阅父级就不会重绘，
 // 过滤结果要等下一次自动刷新（默认 3 秒）才变，打字时像"搜索框坏了"。
 // 这套写法在 v0.6 的 tag 过滤框上验证过（`cx.subscribe` + `matches!(event, InputEvent::Change)`）。
-pub(crate) use gpui_kit::component::input::{EditorState, InputEvent, InputState, TabSize};
+pub(crate) use gpui_kit::component::input::{
+    EditorState, InputEvent, InputState, TabSize, TextareaState,
+};
 // 「微软商店」与「在线发行版」两张清单都走组件库的 `Select`（下拉框）——
 // 参考实现也是一个下拉框（`CustomComboBox`），而不是我们原先那种
 // "几十个按钮铺满一屏"的写法。

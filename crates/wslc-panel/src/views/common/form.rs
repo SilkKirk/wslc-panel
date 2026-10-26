@@ -188,6 +188,36 @@ pub(crate) fn form_field_secret(
     form_field_impl(id, label, input, cx, full, false, true)
 }
 
+/// 多行纯文本字段（官方 `Textarea`）：标签 + 可折行的输入区。
+///
+/// 只给"每行一条 / 可以粘多行"的字段用：环境变量、卷挂载、反代规则。
+/// 单行字段仍用 [`form_field`] —— `Input` 的密码遮罩 / 清除按钮 / 前后缀
+/// 都在那一层，混用会把简单字段也弄成多行。
+pub(crate) fn textarea_field(
+    id: &'static str,
+    label: &'static str,
+    input: &Entity<TextareaState>,
+    cx: &App,
+    full: bool,
+) -> AnyElement {
+    let empty = input.read(cx).value().trim().is_empty();
+    let label_color = if empty {
+        theme::text_muted()
+    } else {
+        theme::text_dim()
+    };
+
+    let field = Field::new()
+        .label_fn(move |_, _| div().text_xs().text_color(label_color).child(label))
+        .child(Textarea::new(input).id(id).w_full());
+
+    if full {
+        field.flex_none().w_full().into_any_element()
+    } else {
+        field.flex_1().min_w_0().into_any_element()
+    }
+}
+
 /// [`form_field`] 的错误态版本：`invalid` 时标签和输入框边框一起变红。
 ///
 /// 只给「添加实例」用：那一页点「开始安装」校验失败后，用红框指出哪一格
