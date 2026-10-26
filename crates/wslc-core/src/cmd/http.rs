@@ -48,8 +48,8 @@ mod tests {
     fn refuses_a_non_http_url_before_spawning_curl() {
         // 用不存在的域名也测不出区别：这个判据在起进程之前。
         for bad in ["ftp://x/y", "file:///C:/Windows/win.ini", "-K\\\\a\\\\b"] {
-            let err = curl(bad, &[bad], Duration::from_secs(1))
-                .expect_err("非法 URL 不该有机会到 curl");
+            let err =
+                curl(bad, &[bad], Duration::from_secs(1)).expect_err("非法 URL 不该有机会到 curl");
             assert!(err.to_string().contains("已拒绝调用"), "{err}");
         }
     }
