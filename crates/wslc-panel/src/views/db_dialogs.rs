@@ -330,8 +330,8 @@ pub(crate) fn db_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App) ->
     v_flex()
         .w_full()
         .gap_3()
-            .child(v_flex().gap_1().child(modal_title(kind.title())).child(
-                div().text_xs().text_color(theme::text_dim()).child(format!(
+        .child(v_flex().gap_1().child(modal_title(kind.title())).child(
+            div().text_xs().text_color(theme::text_dim()).child(format!(
                                 "在容器 {} 上执行 —— 用的是数据库页连接卡里那个账号。",
                                 shell
                                     .state
@@ -340,8 +340,8 @@ pub(crate) fn db_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App) ->
                                     .map(|db| db.container.clone())
                                     .unwrap_or_default()
                             )),
-            ))
-            .children(fields)
+        ))
+        .children(fields)
         .into_any_element()
 }
 
