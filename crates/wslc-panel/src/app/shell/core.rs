@@ -684,60 +684,28 @@ impl Shell {
             return;
         }
 
-        // 发行版被删掉之后它的详情弹窗就没有对象了 —— 现在先判断好，
-        // 待会儿 `action` 要移进异步块。
-        let close_detail = match &action {
-            ConfirmAction::Distro(DistroAction::Unregister { name, .. }) => {
-                self.distro_detail.as_deref() == Some(name.as_str())
-            }
-            _ => false,
-        };
-
-        // 「删除备份」**分流**到它自己的执行函数。
+        // 「做完还要干什么」由动作自己说（`ConfirmAction::aftermath`，纯数据）。
         //
-        // 它要做三件事（删本地文件 → 进容器 rm → 重扫目录写回 `AppState`），
-        // 而 `PendingAction::execute` 的形状是"跑一条 `wslc` 命令 → 返回字符串"
-        // —— 最后那件它表达不了（`&self`）。所以在这里把字段拆出来、交给
-        // `delete_db_backup_confirmed`，别让它掉进下面那个通用分支。
+        // 原先这里有四段按变体特判：注销要不要关详情、删除备份要分流、
+        // 删库要清本地账号、删库/删用户要重读列表 —— 每加一个动作都要回来改，
+        // 而 core 那边完全不知道有这些副作用。判据现在住在 `actions.rs`，
+        // 并且有测试盯着（`state/tests/actions.rs`）。
+        let aftermath = action.aftermath(self.distro_detail.as_deref());
+
+        // 「删除备份」分流到它自己的执行函数：它要做三件事（删本地文件 →
+        // 进容器 rm → 重扫目录写回 `AppState`），通用 `execute` 表达不了。
         //
         // 确认框已经 `take()` 走了（上面），所以这里 return 不会留下残影。
-        //
-        // ⚠️ clippy 的 `redundant_pattern_matching` 会建议把这段改成
-        // `matches!(…)` —— **不能改**：这里要**绑定四个字段**
-        // （container / database / windows_path / container_path），
-        // `matches!` 只能判真假、拿不到值。这是它的误报。
-        #[allow(clippy::redundant_pattern_matching)]
-        if let ConfirmAction::Container(PendingAction::DeleteDatabaseBackup {
+        if let Some(PendingAction::DeleteDatabaseBackup {
             container,
             database,
             windows_path,
             container_path,
-        }) = &action
+        }) = aftermath.special.clone()
         {
-            let (container, database) = (container.clone(), database.clone());
-            let (windows_path, container_path) = (windows_path.clone(), container_path.clone());
             self.delete_db_backup_confirmed(container, database, windows_path, container_path, cx);
             return;
         }
-
-        // 删库 / 删用户之后要重读数据库页那两张表 —— 容器的列表刷新管不到它们。
-        // 这里先算好（`action` 马上要移进异步块）。
-        // 删库还要**同时清掉本地存档里的账号**：库都没了，列表上不能再出现
-        // 一个连不上的用户名 / 密码（就算哪天重建同名库，密码也对不上了）。
-        let dropped_database = match &action {
-            ConfirmAction::Container(PendingAction::DropDatabase {
-                container,
-                database,
-                ..
-            }) => Some((container.clone(), database.clone())),
-            _ => None,
-        };
-        let reload_db = matches!(
-            action,
-            ConfirmAction::Container(
-                PendingAction::DropDatabase { .. } | PendingAction::DropUser { .. }
-            )
-        );
 
         // 点下去先给个回应。慢动作（压缩/移动）要等很久，
         // 没有这条的话用户只会觉得按钮坏了，然后去点第二次。
@@ -766,9 +734,9 @@ impl Shell {
                         .notify(Toast::error(format!("{title}失败：{e}"))),
                 }
 
-                // 删库成功：本地存档里的账号一起清（见 `dropped_database` 的注释）
+                // 删库成功：本地存档里的账号一起清（动作自己声明的事后效应）。
                 if ok {
-                    if let Some((container, database)) = dropped_database {
+                    if let Some((container, database)) = aftermath.forget_db_credentials {
                         shell.state.db_credentials.remove(&container, &database);
                         if let Some(e) = shell.state.save_db_credentials() {
                             shell.state.notify(Toast::error(e));
@@ -776,13 +744,13 @@ impl Shell {
                     }
                 }
 
-                if close_detail {
+                if aftermath.close_distro_detail {
                     shell.distro_detail = None;
                 }
 
                 // 删库 / 删用户：重读数据库页那两张表（成功失败都读一次 ——
                 // 失败了也要让用户看到"它到底还在不在"）。
-                if reload_db {
+                if aftermath.reload_db_lists {
                     shell.reload_db_lists(cx);
                 }
 

@@ -599,6 +599,76 @@ impl ConfirmAction {
     }
 }
 
+/// 一个危险动作执行完之后，界面还要跟着做什么。
+///
+/// # 为什么住在 core，而且只描述不执行
+///
+/// 这些"事后效应"和动作本身是同一件事：删了库要清掉本地存档里的账号、
+/// 注销了发行版要关掉它的详情。原先它们在 `app/shell/core.rs` 的
+/// `confirm_pending` 里靠 `match` 具体变体判断 —— 每加一个"删完要顺手做点什么"
+/// 的动作，都要回 UI 层改一遍，而 core 完全不知道有这回事。
+///
+/// 现在这里只**描述**（执行要 `&mut Shell`，那是 GPUI 实体），所以它是纯数据，
+/// 能在 `core` job 里断言（见 `state/tests/actions.rs`）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Aftermath {
+    /// 需要走**专用**执行路径的动作（今天只有「删除备份」）。
+    ///
+    /// 它塞不进 `execute`：删一份备份要做三件事（删本地文件 → 进容器 `rm` →
+    /// 重扫目录写回状态），而 `execute` 的形状是"跑一条命令 → 返回字符串"。
+    pub special: Option<PendingAction>,
+    /// 成功后要清掉的本地账号（容器, 库）。
+    pub forget_db_credentials: Option<(String, String)>,
+    /// 做完要重读数据库页那两张表（删库 / 删用户）。
+    pub reload_db_lists: bool,
+    /// 做完要关掉发行版详情（只在该详情正开着它时）。
+    pub close_distro_detail: bool,
+}
+
+impl Aftermath {
+    /// 这个动作要不要走专用路径（而不是通用的 `execute`）。
+    pub fn is_special(&self) -> bool {
+        self.special.is_some()
+    }
+}
+
+impl ConfirmAction {
+    /// 这个动作做完之后，界面还要跟着做什么。
+    ///
+    /// `open_distro_detail` 传"当前打开的发行版详情名" —— 注销的正是它时，
+    /// 那个弹窗的对象就没了，必须一起关掉。
+    pub fn aftermath(&self, open_distro_detail: Option<&str>) -> Aftermath {
+        let mut out = Aftermath::default();
+        match self {
+            ConfirmAction::Container(action) => match action {
+                PendingAction::DeleteDatabaseBackup { .. } => {
+                    out.special = Some((*action).clone());
+                }
+                PendingAction::DropDatabase {
+                    container,
+                    database,
+                    ..
+                } => {
+                    // 库都没了，列表上不能再出现一个连不上的账号
+                    // （就算哪天重建同名库，密码也对不上了）。
+                    out.forget_db_credentials = Some((container.clone(), database.clone()));
+                    out.reload_db_lists = true;
+                }
+                PendingAction::DropUser { .. } => {
+                    out.reload_db_lists = true;
+                }
+                _ => {}
+            },
+            ConfirmAction::Distro(action) => {
+                if let DistroAction::Unregister { name, .. } = action {
+                    out.close_distro_detail = open_distro_detail == Some(name.as_str());
+                }
+            }
+        }
+        out
+    }
+}
+
 /// 卷名能不能直接用。
 ///
 /// # 只挡一类：以 `-` 开头的名字

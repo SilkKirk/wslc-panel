@@ -249,3 +249,77 @@ fn prune_warns_about_being_irreversible() {
             .contains("不可撤销")
     );
 }
+
+#[test]
+fn delete_backup_declares_the_special_route() {
+    let action = ConfirmAction::Container(PendingAction::DeleteDatabaseBackup {
+        container: "db".into(),
+        database: "shop".into(),
+        windows_path: std::path::PathBuf::from(r"C:\backups\shop.sql"),
+        container_path: "/tmp/shop.sql".into(),
+    });
+    let after = action.aftermath(None);
+    assert!(after.is_special(), "删除备份必须走专用路径");
+    // 它不碰账号存档、也不重读列表
+    assert!(after.forget_db_credentials.is_none());
+    assert!(!after.reload_db_lists);
+    assert!(!after.close_distro_detail);
+}
+
+#[test]
+fn dropping_a_database_forgets_its_saved_credentials() {
+    let action = ConfirmAction::Container(PendingAction::DropDatabase {
+        container: "db".into(),
+        database: "shop".into(),
+        client: "mysql".into(),
+        creds: wslc_core::model::MysqlCreds::root("pw"),
+    });
+    let after = action.aftermath(None);
+    assert_eq!(
+        after.forget_db_credentials,
+        Some(("db".to_owned(), "shop".to_owned())),
+        "库没了，本地存档里的账号也不能留着"
+    );
+    assert!(after.reload_db_lists, "删库后要重读那两张表");
+    assert!(!after.is_special(), "删库走通用 execute");
+}
+
+#[test]
+fn dropping_a_user_only_reloads_the_lists() {
+    let action = ConfirmAction::Container(PendingAction::DropUser {
+        container: "db".into(),
+        user: "app".into(),
+        host: "%".into(),
+        client: "mysql".into(),
+        creds: wslc_core::model::MysqlCreds::root("pw"),
+    });
+    let after = action.aftermath(None);
+    assert!(after.reload_db_lists);
+    assert!(
+        after.forget_db_credentials.is_none(),
+        "删用户不动库的账号存档"
+    );
+}
+
+#[test]
+fn unregistering_closes_only_its_own_detail() {
+    let action = ConfirmAction::Distro(DistroAction::Unregister {
+        name: "Ubuntu".into(),
+        vhdx_bytes: None,
+    });
+    assert!(
+        action.aftermath(Some("Ubuntu")).close_distro_detail,
+        "注销的正是开着的那个详情时要关掉"
+    );
+    assert!(
+        !action.aftermath(Some("Other")).close_distro_detail,
+        "别的发行版的详情不该被关"
+    );
+    assert!(!action.aftermath(None).close_distro_detail);
+}
+
+#[test]
+fn ordinary_actions_have_no_aftermath() {
+    let after = ConfirmAction::Container(PendingAction::StopContainer("c".into())).aftermath(None);
+    assert_eq!(after, Aftermath::default(), "普通动作不该带副作用");
+}
