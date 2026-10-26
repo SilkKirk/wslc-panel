@@ -277,7 +277,12 @@ impl Shell {
     pub(crate) fn sync_keep_alive(&mut self, cx: &mut Context<Self>) {
         self.tasks.keep_alive.retain_mut(|k| k.is_alive());
 
-        let names: Vec<String> = self.tasks.keep_alive.iter().map(|k| k.name.clone()).collect();
+        let names: Vec<String> = self
+            .tasks
+            .keep_alive
+            .iter()
+            .map(|k| k.name.clone())
+            .collect();
         if self.state.kept_alive != names {
             self.state.kept_alive = names;
             cx.notify();
