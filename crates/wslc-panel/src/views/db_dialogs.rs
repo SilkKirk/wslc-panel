@@ -584,7 +584,11 @@ pub(crate) fn db_import_progress_body(db: &DbState) -> AnyElement {
 /// 收 `shell` 而不收 `DbPageForm`：这个浮层里的每个按钮都**按行走**
 /// （`Shell::creds_for_row`），一个输入框都不读 —— 收个 `&DbPageForm`
 /// 只会让人以为它和连接卡有关。
-pub fn db_backup_dialog_overlay(
+/// 「备份列表」对话框的**内容**（标题 / 底部关闭由 `Dialog` 负责）。
+///
+/// ⚠️ 「立即备份」留在内容里（标题栏右侧）：它是这个浮层**唯一的创建入口**，
+/// 挪到 footer 会和「关闭」挤在一起，反而看不出哪个是主操作。
+pub(crate) fn db_backup_dialog_body(
     db: &DbState,
     credentials: &wslc_panel_core::dbcreds::DbCredentialStore,
     shell: &Shell,
@@ -713,24 +717,11 @@ pub fn db_backup_dialog_overlay(
         })
         .collect();
 
-    let close = {
-        let entity = entity.clone();
-        Button::new("db-backup-close")
-            .label("关闭")
-            .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.close_db_backup_dialog(cx));
-            })
-    };
-
-    modal_scrim(
-        "db-backup-dialog",
-        modal_card(ModalSize::Wide)
-            .id("db-backup-dialog-card")
-            .max_h(px(560.))
-            .overflow_y_scroll()
-            .child(
-                v_flex()
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(
+            v_flex()
                     .gap_1()
                     .child(
                         h_flex()
@@ -775,9 +766,7 @@ pub fn db_backup_dialog_overlay(
                     .child(TableBody::new().children(rows))
                     .into_any_element()
             })
-            .child(h_flex().w_full().justify_end().child(close)),
-    )
-    .into_any_element()
+        .into_any_element()
 }
 
 // ---------------------------------------------------------------------------

@@ -802,6 +802,19 @@ impl Shell {
                 desired.push(DialogKey::DeployRemoveConfirm);
             }
         }
+        // 备份列表：门槛照抄原来 
+ender.rs 的双重判断 —— **页面进得来**
+        // （db_form 建好）**且**这一行的「备份」被点过。少了前一半，
+        // 没进数据库页时也会弹出一个空的备份列表。
+        if self.db_form.is_some()
+            && self
+                .state
+                .db
+                .as_ref()
+                .is_some_and(|db| db.backup_dialog.is_some())
+        {
+            desired.push(DialogKey::DbBackupList);
+        }
         if desired == self.dialog_stack {
             return;
         }
@@ -1331,6 +1344,66 @@ impl Shell {
                         ]))
                 });
             }
+        DialogKey::DbBackupList => {
+            let Some(database) = self
+                .state
+                .db
+                .as_ref()
+                .and_then(|db| db.backup_dialog.clone())
+            else {
+                return;
+            };
+            let title = format!("备份 —— {database}");
+            let entity = cx.entity();
+            let content = {
+                let view_entity = entity.clone();
+                let body_entity = entity.clone();
+                cx.new(move |cx| {
+                    ShellView::new(
+                        view_entity,
+                        move |shell, cx| match shell.state.db.as_ref() {
+                            Some(db) => crate::views::db_backup_dialog_body(
+                                db,
+                                &shell.state.db_credentials,
+                                shell,
+                                &body_entity,
+                                cx,
+                            ),
+                            None => div().into_any_element(),
+                        },
+                        cx,
+                    )
+                })
+            };
+            window.open_dialog(cx, move |dialog, _window, _cx| {
+                let close = {
+                    let entity = entity.clone();
+                    Button::new("db-backup-close")
+                        .label("关闭")
+                        .small()
+                        .on_click(move |_, window, cx| {
+                            entity.update(cx, |shell, cx| shell.close_db_backup_dialog(cx));
+                            window.close_dialog(cx);
+                        })
+                };
+                let on_cancel = {
+                    let entity = entity.clone();
+                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
+                        entity.update(cx, |shell, cx| shell.close_db_backup_dialog(cx));
+                        true
+                    }
+                };
+                dialog
+                    .title(title.clone())
+                    .w(px(800.))
+                    .overlay(true)
+                    .overlay_closable(true)
+                    .keyboard(true)
+                    .on_cancel(on_cancel.clone())
+                    .child(content.clone())
+                    .footer(modal_footer([close.into_any_element()]))
+            });
+        }
         }
     }
 }

@@ -327,16 +327,8 @@ impl Render for Shell {
 
         // 备份进度（跑着才有内容）与备份列表（点「备份」打开）。
         // NOTE: 备份进度走官方 Dialog 栈（DialogKey::DbBackupProgress）。
-        let db_backup_dialog: AnyElement = match &state.db {
-            Some(db) => match self.db_form.as_ref() {
-                // `db_form` 只用来判断"页面进得来没有"（浮层自己一个输入框都不读）。
-                Some(_) => {
-                    views::db_backup_dialog_overlay(db, &state.db_credentials, self, &entity, cx)
-                }
-                None => div().into_any_element(),
-            },
-            None => div().into_any_element(),
-        };
+        // NOTE: 备份列表走官方 Dialog 栈（DialogKey::DbBackupList），
+        // 门槛（db_form 建好 + 点了「备份」）在 sync_dialog_stack 里。
         // 导入进度（跑着才有内容）。
         // NOTE: 导入进度走官方 Dialog 栈（DialogKey::DbImportProgress）。
 
@@ -577,7 +569,6 @@ impl Render for Shell {
             // 漏挂不会编译失败、也不会运行时报错，只是"点了没反应"。
             // 备份进度要盖住它打开时所处的一切；备份列表在进度之后
             //（进度跑完自动关，那时列表还在）。
-            .child(db_backup_dialog)
             // ⚠️ **通用二次确认必须挂在最后一个。**
             //
             // 层序就是这个 `.child()` 链的先后：**后画的压在上面**（同一个文件里

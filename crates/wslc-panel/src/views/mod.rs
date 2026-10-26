@@ -48,7 +48,7 @@ mod wslconf;
 pub(crate) use common::{ShellView, modal_footer, modal_scrim};
 pub(crate) use create::create_dialog_overlay;
 pub(crate) use db_dialogs::{
-    db_backup_dialog_overlay, db_backup_progress_body, db_dialog_overlay, db_import_progress_body,
+    db_backup_dialog_body, db_backup_progress_body, db_dialog_overlay, db_import_progress_body,
     db_info_overlay,
 };
 pub(crate) use deploy::{

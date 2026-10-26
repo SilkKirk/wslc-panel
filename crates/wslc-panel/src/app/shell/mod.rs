@@ -70,6 +70,8 @@ pub(crate) enum DialogKey {
     DeploySiteConf,
     /// 「删除部署」确认框。
     DeployRemoveConfirm,
+    /// 「备份列表」对话框（数据库管理页）。
+    DbBackupList,
 }
 
 /// 应用外壳。
