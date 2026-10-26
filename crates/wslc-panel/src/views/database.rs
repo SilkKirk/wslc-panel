@@ -4,7 +4,8 @@
 
 use super::common::{
     NoContainer, REOPEN_DB_PAGE, badge, card, cell_muted, cell_text, danger_button, empty_state,
-    form_field, list_count, log_text, overlay_button, page_empty, tab_bar, table_card, table_row,
+    form_field, list_count, log_text, overlay_button, page_empty, store_warning, tab_bar,
+    table_card, table_row,
 };
 use super::prelude::*;
 
@@ -95,7 +96,7 @@ pub fn database(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
         .state
         .db_credentials_error
         .as_ref()
-        .map(|error| db_store_warning(&format!("数据库账号存档读不出来：{error}")));
+        .map(|error| store_warning("db-store", format!("数据库账号存档读不出来：{error}")));
 
     v_flex()
         .w_full()
@@ -371,25 +372,6 @@ pub(crate) fn db_error_banner(failure: &DbFailure) -> AnyElement {
                 .child(wslc_panel_core::util::strip_md(&failure.summary())),
         )
         .child(log_text(Some(&failure.detail), "db-error-detail"))
-        .into_any_element()
-}
-
-/// 「账号存档读不出来」这类**纯文字**警告。
-///
-/// 和 [`db_error_banner`] 分开：那个吃 `DbFailure`（会再给一条"该怎么办"的
-/// 提示，是针对 SQL 报错分类的）；存档读坏不是 SQL 失败，没有可分类的东西，
-/// 硬塞成 `DbFailure` 只会让分类器瞎猜一条不相干的建议。
-pub(crate) fn db_store_warning(text: &str) -> AnyElement {
-    use gpui_kit::component::alert::Alert;
-
-    // 官方 `Alert`：底色 / 边框 / 图标 / 关闭按钮都由组件库给，而它的
-    // `danger` 已经由 `theme::tune_component_theme` 换成我们自己的红 ——
-    // 所以观感和其余页面一致，不用再手写「底色 + 边框 + 文字色」三件套。
-    //
-    // `banner()`：整条铺满、无圆角（错误横幅的形态），不是那种飘在内容里的
-    // 圆角小卡片。
-    Alert::error("db-store-warning", text.to_owned())
-        .banner()
         .into_any_element()
 }
 

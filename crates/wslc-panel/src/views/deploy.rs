@@ -4,8 +4,8 @@
 // 弹窗的外壳都由官方 `Dialog` 负责（构造在 `app::shell::dialogs`）。
 use super::common::{
     NoContainer, cell_link, cell_muted_full, cell_text, disclosure, empty_state, form_field,
-    immediate_button, kv_block, log_text, modal_footer, overlay_button, page_empty, table_card,
-    table_row,
+    immediate_button, kv_block, log_text, modal_footer, overlay_button, page_empty, store_warning,
+    table_card, table_row,
 };
 use super::prelude::*;
 
@@ -57,21 +57,21 @@ pub fn deploy_page(shell: &Shell, _cx: &App, entity: &Entity<Shell>) -> AnyEleme
         deploy_loading(deploy.busy)
     };
 
+    // 存档读坏了要说出来 —— 不然用户会以为"我部署过的东西全没了"。
+    // `AppState::deploy_store_error` 存在的唯一目的就是这一行。
+    // 另一半在 `views::database` 的 `creds_warning`（账号存档读坏了）——
+    // 两个存档各有一条，别只补一边。
+    let store_problem = shell
+        .state
+        .deploy_store_error
+        .as_ref()
+        .map(|error| format!("部署存档读不出来：{error}"));
+
     v_flex()
         .w_full()
         .gap_3()
         .child(header)
-        // 存档读坏了要说出来 —— 不然用户会以为"我部署过的东西全没了"。
-        // `AppState::deploy_store_error` 存在的唯一目的就是这一行。
-        // 另一半在 `views::database` 的 `creds_warning`（账号存档读坏了）——
-        // 两个存档各有一条，别只补一边。
-        .children(
-            shell
-                .state
-                .deploy_store_error
-                .as_ref()
-                .map(|error| deploy_error_banner(&format!("部署存档读不出来：{error}"))),
-        )
+        .children(store_problem.map(|text| store_warning("deploy-store", text)))
         .children(
             deploy
                 .error
@@ -282,24 +282,6 @@ pub(crate) fn deploy_failure_banner(failure: &wslc_panel_core::state::DeployFail
                 .child(wslc_panel_core::util::strip_md(&failure.summary())),
         )
         .child(log_text(Some(&failure.detail), "deploy-error-detail"))
-        .into_any_element()
-}
-
-/// 存档读坏了的提示条（一行字，不折叠）。
-pub(crate) fn deploy_error_banner(text: &str) -> AnyElement {
-    div()
-        .w_full()
-        .p_3()
-        .rounded_lg()
-        .bg(theme::danger_soft())
-        .border_1()
-        .border_color(theme::danger_edge())
-        .child(
-            div()
-                .text_sm()
-                .text_color(theme::danger())
-                .child(text.to_owned()),
-        )
         .into_any_element()
 }
 

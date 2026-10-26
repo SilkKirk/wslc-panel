@@ -631,6 +631,32 @@ pub(crate) fn list_count(text: impl Into<SharedString>) -> AnyElement {
         .into_any_element()
 }
 
+/// 「某个存档读不出来」这类**一行**警告条（官方 `Alert`，banner 形态）。
+///
+/// # 为什么收成一处
+///
+/// 两处存档警告原先各写一份，而且**观感不同**：数据库页用官方 `Alert`
+/// （`db_store_warning`），部署页手写「底色 + 边框 + 文字色」三件套
+/// （`deploy_error_banner`，圆角还比另一处大一号）。同一类信息（"面板自己那份
+/// 存档读坏了，所以列表里有几列是空的"）在两个页面上长得不一样 ——
+/// 用户会以为是两种不同严重程度的问题。
+///
+/// 现在统一走官方 `Alert`：底色 / 边框 / 图标 / 关掉按钮都由组件库给，而
+/// `danger` 已经由 `theme::tune_component_theme` 换成我们自己的红。
+/// `banner()` 是**整条铺满、无圆角**的形态（错误横幅），不是飘在内容里的圆角卡片。
+///
+/// ⚠️ `id` 必须唯一：两处存档警告可能同时出现（数据库页 + 部署页），
+/// 它们的 id 不同，GPUI 才不会把两条当成同一个元素。
+///
+/// ⚠️ 带**可滚动原文**的那种错误（`db_error_banner`）**不走这里** ——
+/// `Alert::message` 收的是 `Text`（`From<SharedString | String | &str | TextView>`），
+/// 接不了任意 `Element`，两段式横幅只能手写外壳。
+pub(crate) fn store_warning(id: &'static str, text: impl Into<SharedString>) -> AnyElement {
+    use gpui_kit::component::alert::Alert;
+
+    Alert::error(id, text.into()).banner().into_any_element()
+}
+
 /// 单元格文字。
 pub(crate) fn cell_text(text: impl Into<SharedString>) -> AnyElement {
     div()
