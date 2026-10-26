@@ -247,15 +247,17 @@ pub fn format_bytes(bytes: u64) -> String {
 
 /// 按**字符**（不是字节）截断，超长时加省略号。
 ///
-/// 不能按字节切：`&s[..120]` 落在多字节字符中间会 panic，
-/// 而这里的输入是**外部命令的输出**（什么字符都可能有）。
+/// ⚠️ 实现只有一份：`wslc_core::util::truncate_chars` —— 这里只是转发。
+///
+/// 为什么不在这个 crate 里自己实现：`wslc-core` 的 `jsonl` 要截断**同一种东西**
+/// （外部命令的输出，什么字符都可能有），而依赖方向是 `panel-core → core`，
+/// 所以只有 core 那份能两边都用。原先两处是**各自独立写出来**的，
+/// 连"不能按字节切"的注释都各写了一遍 —— 那正是该合并的信号
+/// （`docs/AUDIT-2026-10-26.md` §2.5）。
+///
+/// 不能按字节切：`&s[..120]` 落在多字节字符中间会 panic。
 pub fn truncate_chars(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_owned();
-    }
-    let mut out: String = text.chars().take(max).collect();
-    out.push('…');
-    out
+    wslc_core::util::truncate_chars(text, max)
 }
 
 #[cfg(test)]

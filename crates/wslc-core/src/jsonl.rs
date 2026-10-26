@@ -9,6 +9,7 @@
 use serde::de::DeserializeOwned;
 
 use crate::error::{Error, Result};
+use crate::util::truncate_chars;
 
 /// 单行解析失败的记录。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,7 +64,7 @@ pub fn parse_lines_lenient<T: DeserializeOwned>(text: &str) -> (Vec<T>, Vec<Line
         if line.starts_with('[') {
             errors.push(LineError {
                 line_no: idx + 1,
-                raw: truncate(line, 200),
+                raw: truncate_chars(line, 200),
                 message: "JSON Lines 的每一行必须是对象，不能是数组".to_owned(),
             });
             continue;
@@ -73,7 +74,7 @@ pub fn parse_lines_lenient<T: DeserializeOwned>(text: &str) -> (Vec<T>, Vec<Line
             Ok(v) => items.push(v),
             Err(err) => errors.push(LineError {
                 line_no: idx + 1,
-                raw: truncate(line, 200),
+                raw: truncate_chars(line, 200),
                 message: err.to_string(),
             }),
         }
@@ -113,19 +114,11 @@ pub fn parse_object<T: DeserializeOwned>(text: &str) -> Result<T> {
     serde_json::from_str(trimmed).map_err(|e| {
         Error::Parse(format!(
             "解析 JSON 对象失败：{e}；原始输出前 200 字符：{}",
-            truncate(trimmed, 200)
+            truncate_chars(trimmed, 200)
         ))
     })
 }
 
-fn truncate(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_owned();
-    }
-    let mut out: String = s.chars().take(max_chars).collect();
-    out.push('…');
-    out
-}
 
 #[cfg(test)]
 mod tests {
@@ -239,10 +232,4 @@ mod tests {
         assert!(parse_object::<Row>("   ").is_err());
     }
 
-    #[test]
-    fn truncate_is_char_safe() {
-        let s = "中".repeat(300);
-        let t = truncate(&s, 200);
-        assert_eq!(t.chars().count(), 201); // 200 + 省略号
-    }
 }
