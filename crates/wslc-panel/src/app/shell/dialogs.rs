@@ -617,7 +617,11 @@ impl Shell {
                 let entity = cx.entity();
                 let content = shell_view(
                     &entity,
-                    move |shell, _cx| match shell.state.deploy.as_ref().and_then(|d| d.logs.as_ref())
+                    move |shell, _cx| match shell
+                        .state
+                        .deploy
+                        .as_ref()
+                        .and_then(|d| d.logs.as_ref())
                     {
                         Some(logs) => crate::views::deploy_logs_body(logs),
                         None => div().into_any_element(),
@@ -714,9 +718,7 @@ impl Shell {
                                 .label("关闭")
                                 .small()
                                 .on_click(move |_, window, cx| {
-                                    entity.update(cx, |shell, cx| {
-                                        shell.close_deploy_site_conf(cx)
-                                    });
+                                    entity.update(cx, |shell, cx| shell.close_deploy_site_conf(cx));
                                     window.close_dialog(cx);
                                 })
                         };
@@ -803,7 +805,11 @@ impl Shell {
                 });
             }
             DialogKey::DbBackupList => {
-                let Some(database) = self.state.db.as_ref().and_then(|db| db.backup_dialog.clone())
+                let Some(database) = self
+                    .state
+                    .db
+                    .as_ref()
+                    .and_then(|db| db.backup_dialog.clone())
                 else {
                     return;
                 };
