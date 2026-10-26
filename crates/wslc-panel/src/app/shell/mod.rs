@@ -74,6 +74,8 @@ pub(crate) enum DialogKey {
     DbBackupList,
     /// 通用二次确认（危险操作）。
     Confirm,
+    /// 「数据库动作」弹窗（新建库 / 建用户 / 改密 / 授权 / 导入）。
+    DbAction,
 }
 
 /// 应用外壳。

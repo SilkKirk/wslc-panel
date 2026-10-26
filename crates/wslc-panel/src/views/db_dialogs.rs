@@ -65,7 +65,7 @@ pub fn db_info_overlay(
 ///
 /// ⚠️ 提交前的校验（标识符白名单）在 `submit_db_dialog` 里：不合法就**不关弹窗**，
 /// 只给一条提示 —— 用户就在那一格上，改一个字比重打一遍强。
-pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyElement {
+pub(crate) fn db_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyElement {
     let Some(dialog) = shell.db_dialog.as_ref() else {
         return div().into_any_element();
     };
@@ -327,41 +327,9 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
         );
     }
 
-    let cancel = {
-        let entity = entity.clone();
-        Button::new("db-dialog-cancel")
-            .label("取消")
-            .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.close_db_dialog(cx));
-            })
-    };
-    let confirm = {
-        let entity = entity.clone();
-        // 导入不是一条 SQL（它是"送个文件进去让 mysql 读"），走自己的提交路径；
-        // 其余四种都是"拼一条 SQL 然后执行"。
-        let is_import = kind.is_import();
-        Button::new("db-dialog-confirm")
-            .label(kind.confirm_label())
-            .small()
-            .primary()
-            .on_click(move |_, window, cx| {
-                entity.update(cx, |shell, cx| {
-                    if is_import {
-                        shell.start_db_import(window, cx);
-                    } else {
-                        shell.submit_db_dialog(window, cx);
-                    }
-                });
-            })
-    };
-
-    modal_scrim(
-        "db-dialog",
-        modal_card(ModalSize::Medium)
-            .id("db-dialog-card")
-            .max_h(px(820.))
-            .overflow_y_scroll()
+    v_flex()
+        .w_full()
+        .gap_3()
             .child(v_flex().gap_1().child(modal_title(kind.title())).child(
                 div().text_xs().text_color(theme::text_dim()).child(format!(
                                 "在容器 {} 上执行 —— 用的是数据库页连接卡里那个账号。",
@@ -374,9 +342,7 @@ pub fn db_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> Any
                             )),
             ))
             .children(fields)
-            .child(modal_footer([cancel, confirm])),
-    )
-    .into_any_element()
+        .into_any_element()
 }
 
 /// 「授权到哪个库」那一格：**下拉框（选已有的库）+ 输入框（手打 / 留空）**。

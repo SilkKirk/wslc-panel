@@ -807,7 +807,11 @@ impl Shell {
         // 没进数据库页时也会弹出一个空的备份列表。
         // 通用二次确认（可以从**任何**浮层里弹出来 —— 这正是它必须走
         // 窗口级栈的原因：层序 = 栈序，不会像以前那样被下面的浮层盖住）。
-        if self.state.confirm.is_some() {
+        // 数据库动作弹窗（新建库 / 建用户 / 改密 / 授权 / 导入）。
+        // 门槛照旧：`db_form` 建好（页面进得来）且 `db_dialog` 有值。
+        if self.db_form.is_some() && self.state.db_dialog.is_some() {
+            desired.push(DialogKey::DbAction);
+        }        if self.state.confirm.is_some() {
             desired.push(DialogKey::Confirm);
         }
         if self.db_form.is_some()
@@ -1469,6 +1473,77 @@ impl Shell {
                         ]))
                 });
             }
+        DialogKey::DbAction => {
+            let Some(kind) = self.state.db_dialog.as_ref().map(|d| d.kind.clone()) else {
+                return;
+            };
+            let title = kind.title().to_owned();
+            let ok_label = kind.confirm_label().to_owned();
+            let is_import = kind.is_import();
+            let entity = cx.entity();
+            let content = {
+                let view_entity = entity.clone();
+                let body_entity = entity.clone();
+                cx.new(move |cx| {
+                    ShellView::new(
+                        view_entity,
+                        move |shell, cx| {
+                            crate::views::db_dialog_body(shell, &body_entity, cx)
+                        },
+                        cx,
+                    )
+                })
+            };
+            window.open_dialog(cx, move |dialog, _window, _cx| {
+                let cancel = {
+                    let entity = entity.clone();
+                    Button::new("db-dialog-cancel")
+                        .label("取消")
+                        .small()
+                        .on_click(move |_, window, cx| {
+                            entity.update(cx, |shell, cx| shell.close_db_dialog(cx));
+                            window.close_dialog(cx);
+                        })
+                };
+                let confirm = {
+                    let entity = entity.clone();
+                    Button::new("db-dialog-confirm")
+                        .label(ok_label.clone())
+                        .small()
+                        .primary()
+                        .on_click(move |_, window, cx| {
+                            // 导入不是一条 SQL（送文件进去让 mysql 读），走自己的提交路径。
+                            entity.update(cx, |shell, cx| {
+                                if is_import {
+                                    shell.start_db_import(window, cx);
+                                } else {
+                                    shell.submit_db_dialog(window, cx);
+                                }
+                            });
+                            window.close_dialog(cx);
+                        })
+                };
+                let on_cancel = {
+                    let entity = entity.clone();
+                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
+                        entity.update(cx, |shell, cx| shell.close_db_dialog(cx));
+                        true
+                    }
+                };
+                dialog
+                    .title(title.clone())
+                    .w(px(700.))
+                    .overlay(true)
+                    .overlay_closable(false)
+                    .keyboard(true)
+                    .on_cancel(on_cancel.clone())
+                    .child(content.clone())
+                    .footer(modal_footer([
+                        cancel.into_any_element(),
+                        confirm.into_any_element(),
+                    ]))
+            });
+        }
         }
     }
 }

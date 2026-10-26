@@ -305,9 +305,8 @@ impl Render for Shell {
         // （`Shell::open_exec` 里的 `window.open_dialog`，内容是
         // `views::exec_dialog_body` 包在 `ShellView` 里）。
 
-        // 数据库页的动作弹窗（新建库 / 新建用户 / 改密码 / 授权）。
-        // 要 `cx` 才能读表单里那几格的值。
-        let db_dialog: AnyElement = views::db_dialog_overlay(self, &entity, cx);
+        // NOTE: 数据库动作弹窗走官方 Dialog 栈（DialogKey::DbAction），
+        // 门槛（db_form 建好 + db_dialog 有值）在 sync_dialog_stack 里。
 
         // 「基础信息」（连接卡）—— 只有浮层开着、且确实在数据库页时才画。
         let db_info: AnyElement = match &state.db {
@@ -549,7 +548,6 @@ impl Render for Shell {
             // 删除确认排在日志之后：它是最后点的那个动作，应该在最上面
             //（日志浮层与它可能同时开着 —— 用户看着日志觉得该删了）。
             // 数据库页的动作弹窗排在最后：它可能盖在任一页（含容器详情）上。
-            .child(db_dialog)
             // 「基础信息」排在动作弹窗**之后**（同时开着时它在上面 —— 但两者
             // 互斥：动作弹窗要按底下的按钮才会开，而浮层挡着那些按钮）。
             .child(db_info)
