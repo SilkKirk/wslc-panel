@@ -378,26 +378,22 @@ impl Render for Shell {
                                         // 折叠按钮 + 标题绑在一起，否则
                                         // `justify_between` 会把标题推到中间
                                         // （三个孩子时它是"两边对齐 + 中间均分"）。
-                                        h_flex()
-                                            .gap_3()
-                                            .items_center()
-                                            .child(toggle)
-                                            .child(
-                                                v_flex()
-                                                    .gap_1()
-                                                    .child(
-                                                        div()
-                                                            .text_lg()
-                                                            .font_bold()
-                                                            .child(state.page.label()),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .text_xs()
-                                                            .text_color(theme::text_dim())
-                                                            .child(subtitle),
-                                                    ),
-                                            ),
+                                        h_flex().gap_3().items_center().child(toggle).child(
+                                            v_flex()
+                                                .gap_1()
+                                                .child(
+                                                    div()
+                                                        .text_lg()
+                                                        .font_bold()
+                                                        .child(state.page.label()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_xs()
+                                                        .text_color(theme::text_dim())
+                                                        .child(subtitle),
+                                                ),
+                                        ),
                                     )
                                     .child(refresh_button)
                                     .into_any_element()

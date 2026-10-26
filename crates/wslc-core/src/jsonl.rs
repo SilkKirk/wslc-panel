@@ -119,7 +119,6 @@ pub fn parse_object<T: DeserializeOwned>(text: &str) -> Result<T> {
     })
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,5 +230,4 @@ mod tests {
     fn object_parser_rejects_empty() {
         assert!(parse_object::<Row>("   ").is_err());
     }
-
 }
