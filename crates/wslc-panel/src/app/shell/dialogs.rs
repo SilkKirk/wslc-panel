@@ -317,21 +317,6 @@ impl Shell {
             .filter(|key| key.is_open(self))
             .collect();
 
-        // ⚠️ **自愈**：窗口里一层都没有、账上却还留着 —— 说明有谁绕过了记账把浮层
-        // 关掉了。不清掉的话，下面那个 `return` 会让"重新打开"永远进不去：
-        // 表现就是**详情再也点不出来**，而账里那条幽灵记录还在，
-        // 后面再开别的浮层还会走"非前缀 → 全关重建"把它顶回最上面。
-        //
-        // 官方只给了 `has_active_dialog`（bool），**没给层数**，所以这一条
-        // 只兜得住"全关光了"那一档；其余靠每条关闭路径自己记账
-        // （[`Shell::forget_top_dialog`] / [`close_top_dialog`]）。
-        if !self.dialog_ui.dialog_stack.is_empty() {
-            use gpui_kit::component::WindowExt as _;
-            if !window.has_active_dialog(cx) {
-                self.dialog_ui.dialog_stack.clear();
-            }
-        }
-
         if desired == self.dialog_ui.dialog_stack {
             return;
         }
@@ -379,8 +364,6 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        use gpui_kit::component::WindowExt as _;
-
         match key {
             DialogKey::DbInfo => {
                 let entity = cx.entity();
