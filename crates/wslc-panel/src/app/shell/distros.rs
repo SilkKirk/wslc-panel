@@ -802,8 +802,7 @@ impl Shell {
                 desired.push(DialogKey::DeployRemoveConfirm);
             }
         }
-        // 备份列表：门槛照抄原来 
-ender.rs 的双重判断 —— **页面进得来**
+        // 备份列表：门槛照抄原来 render.rs 的双重判断 —— **页面进得来**
         // （db_form 建好）**且**这一行的「备份」被点过。少了前一半，
         // 没进数据库页时也会弹出一个空的备份列表。
         if self.db_form.is_some()
