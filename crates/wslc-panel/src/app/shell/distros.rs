@@ -1017,7 +1017,6 @@ impl Shell {
                         .footer(modal_footer([close.into_any_element()]))
                 });
             }
-        }
         DialogKey::ContainerDetail => {
             let Some(name) = self.detail.clone() else {
                 return;
