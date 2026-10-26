@@ -513,24 +513,8 @@ impl Shell {
                             .iter()
                             .map(|candidate| {
                                 scope.spawn(move || {
-                                    // 纵深防御：`candidate.url` 来自远端清单，而它会作为
-                                    // **裸 argv** 交给 curl（见 `mirrors::is_http_url`）。
-                                    // `parse_catalog` 已经滤过一遍，界面这条探测路径是
-                                    // 独立拼的，再挡一次。
-                                    if !mirrors::is_http_url(&candidate.url) {
-                                        return None;
-                                    }
-                                    let args = mirrors::probe_args(&candidate.url);
-                                    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-                                    wslc_core::cli::run_helper_with_hint(
-                                        "curl.exe",
-                                        "curl.exe",
-                                        wslc_core::cli::CURL_NOT_FOUND_HINT,
-                                        &refs,
-                                        Duration::from_secs(20),
-                                    )
-                                    .ok()
-                                    .and_then(|out| mirrors::parse_probe(&out.stdout))
+                                    // 起 curl / 校验裸 argv 是 `cmd/` 的事，面板只拿结果。
+                                    wslc_core::cmd::catalog::probe_mirror(&candidate.url)
                                 })
                             })
                             .collect();

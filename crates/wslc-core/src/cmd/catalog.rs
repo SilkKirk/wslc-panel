@@ -108,6 +108,31 @@ pub fn fetch() -> Result<Catalog, String> {
     })
 }
 
+/// 测一个镜像地址的响应（**阻塞**，一次 `curl.exe`）。
+///
+/// 这是「添加实例」页选镜像源时用的探测：`curl -o NUL -w ...` 拿状态码 /
+/// 耗时 / 体积。放在这里而不是面板层，是因为它要起 `curl.exe`、要拼裸 argv，
+/// 属于 `cmd/` 的职责；面板只该拿 `Option<Probe>` 回来排序。
+///
+/// URL 先过 [`mirrors::is_http_url`]：它会作为**裸 argv** 交给 curl，
+/// 一个以 `-` 开头的字符串会被当成选项。
+pub fn probe_mirror(url: &str) -> Option<mirrors::Probe> {
+    if !mirrors::is_http_url(url) {
+        return None;
+    }
+    let args = mirrors::probe_args(url);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    cli::run_helper_with_hint(
+        "curl.exe",
+        "curl.exe",
+        cli::CURL_NOT_FOUND_HINT,
+        &refs,
+        Duration::from_secs(20),
+    )
+    .ok()
+    .and_then(|out| mirrors::parse_probe(&out.stdout))
+}
+
 /// 起一次 `curl.exe` 拿 JSON 正文。
 fn curl_json(url: &str) -> Result<String, String> {
     // 纵深防御：这个字符串会作为**裸 argv** 交给 `curl.exe`（见
@@ -127,5 +152,18 @@ fn curl_json(url: &str) -> Result<String, String> {
     ) {
         Ok(out) => Ok(out.stdout),
         Err(e) => Err(e.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn probe_refuses_a_non_http_url_before_spawning_curl() {
+        // 和 `cmd::registry` 的安全边界同一个判据：不是 http(s) 就不起进程。
+        // 用一个不存在的域名也测不出区别 —— 根本走不到 curl。
+        assert!(probe_mirror("file:///C:/Windows/win.ini").is_none());
+        assert!(probe_mirror("-K\\\\a\\\\b").is_none());
     }
 }
