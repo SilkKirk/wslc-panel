@@ -332,23 +332,9 @@ pub(crate) fn containers_page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -
         Input::new(input)
             .id("container-search")
             .w(px(240.))
-            .into_any_element()
-    });
-
-    let clear = (!query.trim().is_empty()).then(|| {
-        let entity = entity.clone();
-        let input = shell.forms.container_search.clone();
-        Button::new("container-search-clear")
-            .label("清空")
-            .small()
-            .on_click(move |_, window, cx| {
-                if let Some(input) = input.as_ref() {
-                    input.update(cx, |state, cx| state.set_value(String::new(), window, cx));
-                }
-                // `set_value` 会发 `InputEvent::Change`，订阅那边会 notify；
-                // 这里再补一次是兜底：输入框没变（本来就是空）时父级也该重绘。
-                entity.update(cx, |_, cx| cx.notify());
-            })
+            // 官方自带的清除按钮：改完会发 `InputEvent::Change`，
+            // `container_search_sub` 已经在订阅里 `notify`，不用再手写一颗。
+            .cleanable(true)
             .into_any_element()
     });
 
@@ -492,8 +478,7 @@ pub(crate) fn containers_page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -
                         .gap_2()
                         .items_center()
                         .child(create)
-                        .children(search)
-                        .children(clear),
+                        .children(search),
                 )
                 .child(
                     h_flex()

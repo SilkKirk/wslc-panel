@@ -214,7 +214,11 @@ jobs:
       - name: clippy
         shell: pwsh
         run: |
-          $out = (cargo clippy --workspace --all-targets --locked --message-format short 2>&1 | Out-String)
+          # `-- -D warnings`：让 rustc/clippy 自己把 warning 当失败，不依赖
+          # 下面那条"按行数诊断"的正则 —— 没有路径的警告、build script 警告
+          # 以及 cargo 自己失败，都不会再漏成绿。
+          $out = (cargo clippy --workspace --all-targets --locked --message-format short -- -D warnings 2>&1 | Out-String)
+          $code = $LASTEXITCODE
           Write-Output $out
           # ⚠️ 不能用 `^(warning|error)` 过滤：`--message-format short` 把每条诊断
           # 渲染成 `路径:行:列: warning: ...`（**行首是文件路径**），于是那个正则
@@ -223,16 +227,12 @@ jobs:
           # 教人拿错误的地方，那样写等于给人一个空壳。
           $diag = $out -split "`n" | Where-Object { $_ -match '^\S+?:\d+:\d+: (warning|error)' }
           $warn = $diag.Count
-          if ($warn -gt 0) {
-            Write-Output "::error title=clippy::clippy 报告了 $warn 条问题"
+          if ($code -ne 0 -or $warn -gt 0) {
+            Write-Output "::error title=clippy::cargo clippy 退出码 $code，诊断 $warn 条"
             $tail = ($diag | Select-Object -First 100) -join "`n"
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## clippy（$warn 条）`n`n``````n$tail`n``````"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## clippy（退出码 $code / $warn 条）`n`n``````n$tail`n``````"
             # 阻塞（2026-10-25 起）。清不掉的噪音请加 `#[allow(…)]` 并写理由，
             # 而不是把这条改回 `exit 0`。
-            #
-            # ⚠️ 例外：`cargo clippy` 自己失败（编译错误）时 `$warn` 可能是 0，
-            # 那时下面这行会 exit 0 —— 不要紧，`ui` / `core` 两个 job 会把
-            # 编译错误拦住，这里只负责"没有诊断"这一档。
             exit 1
           }
           Write-Output "clippy 通过"

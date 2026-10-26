@@ -228,10 +228,21 @@ pub(crate) fn command_preview(spec: &RunSpec) -> AnyElement {
         .w_full()
         .gap_1()
         .child(
-            div()
-                .text_xs()
-                .text_color(theme::text_dim())
-                .child("等效命令（与实际执行完全一致）"),
+            h_flex()
+                .w_full()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child("等效命令（与实际执行完全一致）"),
+                )
+                .child(
+                    Clipboard::new("copy-create-command")
+                        .value(command.clone())
+                        .accessibility_label("复制等效命令"),
+                ),
         )
         .child(
             div()

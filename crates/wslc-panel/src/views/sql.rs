@@ -436,7 +436,12 @@ pub(crate) fn sql_tree_pane(db: &DbState, shell: &Shell, entity: &Entity<Shell>)
     let search: AnyElement = match shell.forms.schema_search.as_ref() {
         Some(input) => div()
             .w_full()
-            .child(Input::new(input).id("db-schema-search").w_full())
+            .child(
+                Input::new(input)
+                    .id("db-schema-search")
+                    .w_full()
+                    .cleanable(true),
+            )
             .into_any_element(),
         None => div().into_any_element(),
     };

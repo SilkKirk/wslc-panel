@@ -163,10 +163,21 @@ impl Render for PromptContent {
                     .w_full()
                     .gap_1()
                     .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::text_dim())
-                            .child("等效命令"),
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme::text_dim())
+                                    .child("等效命令"),
+                            )
+                            .child(
+                                Clipboard::new("copy-prompt-command")
+                                    .value(preview.clone())
+                                    .accessibility_label("复制等效命令"),
+                            ),
                     )
                     .child(
                         div()

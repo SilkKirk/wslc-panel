@@ -702,12 +702,27 @@ pub(crate) fn install_log_card(
         format!("已收到 {} 行输出", progress.log.len())
     };
 
+    // 有百分比时给一条官方 `Progress`；未知进度用 loading 动画。
+    // 只加在"正在装"期间：装完之后再画一条满条只是噪音。
+    let progress_bar: AnyElement = if progress.is_running() {
+        use gpui_kit::component::progress::Progress;
+
+        let bar = Progress::new("install-progress");
+        match progress.percent() {
+            Some(percent) => bar.value(percent as f32).into_any_element(),
+            None => bar.loading(true).into_any_element(),
+        }
+    } else {
+        div().into_any_element()
+    };
+
     card(
         "安装过程",
         v_flex()
             .w_full()
             .gap_2()
             .child(head)
+            .child(progress_bar)
             .child(steps)
             .child(outcome)
             .child(fallback)

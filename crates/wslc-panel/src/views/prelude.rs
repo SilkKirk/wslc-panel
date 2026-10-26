@@ -111,6 +111,8 @@ pub(crate) use wslc_core::settings::{SETTING_KEYS, SettingKey, SettingKind};
 // 显式导入而不靠 `gpui_kit::*`：勾选框与开关都是这一层专用的组件，
 // 写明来源比"碰巧 glob 里有"可靠。
 pub(crate) use gpui_kit::component::checkbox::Checkbox;
+// 官方复制按钮：等效命令 / exec 上一次命令这类"让用户粘出去"的文本。
+pub(crate) use gpui_kit::component::clipboard::Clipboard;
 // 布尔选项统一用它 —— `Switch` 是组件库给"开 / 关一个设置"的控件，
 // 自带开关动画、焦点框与键盘可达性（空格 / 回车切换）。
 // 和 `Button` 的差别是**语义**：按钮表示"执行一个动作"，开关表示"某个状态是开还是关"。
