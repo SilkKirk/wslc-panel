@@ -110,6 +110,15 @@ jobs:
         # 于是 CI 全绿、而仓库里那份锁文件永远是旧的：构建不可复现，
         # release 会用一份**没记录在仓库里**的依赖集出包。
         run: cargo test --workspace --exclude wslc-panel --locked --profile ci -- --nocapture
+        env:
+          # 真机冒烟测试在 CI 上**必须跳过**：runner 自带 `wslc.exe`，但容器引擎
+          # 起不来，那几条命令会各自等到 `DEFAULT_TIMEOUT`（30 秒），而 Windows 上
+          # 杀掉卡住的子进程**不保证立刻生效**。实测（2026-10-26）core job 从约
+          # 1 分钟变成 10 分钟以上还没结束，整轮 CI 被拖住。
+          #
+          # 开关在 `wslc-core/tests/wslc_smoke.rs` 的 `wslc_if_available()` 里；
+          # 本机跑 `cargo test` 不设这个变量，照旧真机冒烟。
+          WSL_PANEL_SKIP_SMOKE: "1"
 
   ui:
     name: wslc-panel 编译检查（GPUI）

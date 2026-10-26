@@ -123,6 +123,11 @@ crates/
   写死的话，往 workspace 里加第 4 个 crate 时它的测试**永远不会跑**而 CI 照样绿
   （而 §2 恰恰鼓励把纯逻辑搬进 `wslc-panel-core`，也就是鼓励加新东西）。
   `--exclude` 是为了不把 GPUI 链接回来（那是 763 秒的来源）。
+- **真机冒烟（`wslc_smoke.rs`）在 CI 上跳过**：`core` 步骤带了
+  `WSL_PANEL_SKIP_SMOKE=1`。runner 上**有** `wslc.exe` 但容器引擎起不来，
+  那几条命令会各自等到 `DEFAULT_TIMEOUT`（30 秒），Windows 上杀卡住的子进程
+  又不保证立刻生效 —— **实测 2026-10-26 把 core 从 1 分钟拖到 10 分钟以上**，
+  看起来像代码坏了。本机跑 `cargo test` 不设这个变量，照旧真机冒烟。
 - **所有 cargo 步骤都带 `--locked`** —— 本机没有 cargo，改了 `Cargo.toml`
   之后**无法在本地重新生成锁文件**；不带 `--locked`，cargo 会自己解析一份新依赖集
   继续跑，于是 CI 全绿而仓库里那份 `Cargo.lock` 永远是旧的：构建不可复现，

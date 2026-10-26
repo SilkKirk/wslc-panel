@@ -272,6 +272,20 @@ fn truncated_and_out_of_order_fields_still_parse() {
 /// 所以这里改成**真的跑一条只碰引擎的只读命令**（`wslc list`）。
 /// 它成功了才说明这台机器能跑真机测试。
 fn wslc_if_available() -> Option<Wslc> {
+    // ⚠️ **CI 上显式跳过**（靠开关，不靠"探不到"）：GitHub 的 windows runner
+    // 自带 `wslc.exe`，但容器引擎起不来 —— 探测那条有 20 秒超时，可后面
+    // `cmd::*` 里那几条用的是 `DEFAULT_TIMEOUT`（30 秒），而 Windows 上杀掉
+    // 卡住的子进程**不保证立刻生效**。实测（2026-10-26）core job 卡了 10 分钟
+    // 以上，测试一直"在跑"，整轮 CI 被拖到超时 —— 看起来像代码坏了，其实
+    // 只是 runner 上没有可用的引擎。
+    //
+    // 真机冒烟在本机跑（`cargo test -p wslc-core --test wslc_smoke`）；
+    // CI 只跑夹具与纯逻辑（见 `ci.yml` 里 core 步骤的 `env`）。
+    if std::env::var_os("WSL_PANEL_SKIP_SMOKE").is_some() {
+        eprintln!("跳过真机测试：CI 设置了 WSL_PANEL_SKIP_SMOKE。");
+        return None;
+    }
+
     let wslc = Wslc::new();
     if !wslc.is_available() {
         eprintln!(
