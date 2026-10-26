@@ -79,7 +79,7 @@ impl Shell {
         self.state.set_section_open(UiSection::PullSource, false);
         // 下拉框里得有上一次查到的 tag（表单是留着的，但列表来自状态）。
         self.fill_tag_select(window, cx);
-        self.pull_open = true;
+        self.dialog_ui.pull_open = true;
         // 焦点给仓库名框：打开就能直接打字（registry 一般不用改）。
         if let Some(form) = self.forms.image_form.as_ref() {
             let handle = form.repository.read(cx).focus_handle(cx);
@@ -100,7 +100,7 @@ impl Shell {
             cx.notify();
             return;
         }
-        self.pull_open = false;
+        self.dialog_ui.pull_open = false;
         cx.notify();
     }
 
@@ -109,7 +109,7 @@ impl Shell {
     /// 两个浮层叠在一起没有任何好处（而且遮罩只有一层），关掉之后用户回头
     /// 还能在「本地镜像」表里看见刚拉下来的那一条。
     pub fn use_pulled_image(&mut self, image: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.pull_open = false;
+        self.dialog_ui.pull_open = false;
         self.open_create_dialog_prefilled(Some(image.as_str()), window, cx);
     }
 

@@ -5,6 +5,9 @@
 
 use super::super::prelude::*;
 
+// `dialog_stack` 的类型定义在 `dialogs.rs`（对话框栈的那套判据都在那儿）。
+use super::dialogs::DialogKey;
+
 /// 「添加实例」页的全部输入框与选项。
 ///
 /// # 为什么它属于**页面**而不是弹窗
@@ -1139,4 +1142,59 @@ pub(crate) struct SqlUi {
     /// 存 `(搜索关键字, 表总数)`：两者都没变就不重建 —— `TreeState` 重建会丢掉
     /// 用户已经展开的层级，所以这件事必须**只在真的变了**时做。
     pub(super) schema_tree_built_for: Option<(String, usize)>,
+}
+
+/// 「开着哪几个浮层 / 在看谁的详情」这五个字段。
+///
+/// # 为什么收成一组
+///
+/// 它们回答的是同一个问题：**此刻哪些浮层是开着的**。`dialog_stack` 记
+/// "已经压进官方 `Dialog` 栈的那几层"（下面那段长注释），其余四个是各自的
+/// 开 / 关判据 —— `DialogKey::is_open` 读的正是这四个 + [`Forms`] 里那两个
+/// `is_some()`。
+///
+/// 平铺的代价是：想知道"点这个按钮之后会弹什么"，得在几十行字段里找五处；
+/// 而这几处**必须一起改**（加一个浮层，栈记录和它的开合判据要同时加）。
+///
+/// 字段 `pub(super)`：这些判据只有 `app/shell` 自己读，`views/` 拿不到也不需要
+/// （它读的是已经算好的内容）。
+pub(crate) struct DialogUi {
+    /// 我们已经压进**窗口级对话框栈**的那几层（官方 `Dialog`），按打开顺序。
+    ///
+    /// # 为什么需要自己记一份
+    ///
+    /// 官方 `ActiveDialog` **没有 id 字段**（`root.rs` 里只有 focus_handle /
+    /// builder 等），所以**没法"按 id 关某一层"**。`WindowExt` 只给三个口子：
+    ///
+    /// - `close_dialog(cx)` → `active_dialogs.pop()`，**只关栈顶**；
+    /// - `close_all_dialogs(cx)` → 全关；
+    /// - `has_active_dialog(cx)` → 有没有开着。
+    ///
+    /// 于是"状态要求哪些浮层开着"和"实际开着哪些"之间只能靠**最长公共前缀**
+    /// 来对齐：多出来的从栈顶 pop（安全），缺的依次追加（不动下层）。
+    /// 这份记录就是那个 diff 的左边。见 `Shell::sync_dialog_stack`。
+    pub(super) dialog_stack: Vec<DialogKey>,
+
+    /// 正在查看详情的容器名；关闭时为 None。
+    pub(super) detail: Option<String>,
+
+    /// 正在查看详情的**发行版名**；关闭时为 None。
+    ///
+    /// 和容器的 `detail` 分成两个字段（而不是共用一个）：两者的详情弹窗内容
+    /// 完全不同，共用一个字符串还得额外判断"这个名字是容器还是发行版"。
+    pub(super) distro_detail: Option<String>,
+
+    /// 「数据库管理」页的「基础信息」浮层开着没有。
+    ///
+    /// 连接卡（用户名 / 密码 + 那两段说明）原来**常驻页面顶部**，实机反馈
+    /// "不用进来就在上面占用空间" —— 现在收进这个浮层，页面顶上是页头 +
+    /// 一个「基础信息」按钮。
+    pub(super) db_info_open: bool,
+
+    /// 「拉取镜像」弹窗开着吗。
+    ///
+    /// 和 `forms.image_form` 分开记：**表单建好之后一直留着**（用户第二次打开时
+    /// registry / 仓库名 / 上一批 tag 都还在），而这个布尔只管可见性。
+    /// 拉取进行中**不许关**（见 `Shell::close_pull_dialog`）。
+    pub(super) pull_open: bool,
 }

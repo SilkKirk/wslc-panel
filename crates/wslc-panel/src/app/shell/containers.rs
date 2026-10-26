@@ -841,7 +841,7 @@ impl Shell {
     /// 见 [`DetailInspect`]。inspect 是一次几百毫秒的子进程，所以照
     /// `AGENTS.md` §7.1 走后台，先画"正在读取…"。
     pub fn open_detail(&mut self, name: String, cx: &mut Context<Self>) {
-        self.detail = Some(name.clone());
+        self.dialog_ui.detail = Some(name.clone());
         self.state.detail_inspect = Some(DetailInspect::loading(name.clone()));
         cx.notify();
         self.load_detail_inspect(name, cx);
@@ -867,7 +867,7 @@ impl Shell {
             let _ = this.update(cx, |shell, cx| {
                 // 用户可能点了 A、没等回来又点 B，或者干脆关掉了详情 ——
                 // 这时候**不能**把 A 的数据写进去（会画到 B 的详情里）。
-                if shell.detail.as_deref() != Some(name.as_str()) {
+                if shell.dialog_ui.detail.as_deref() != Some(name.as_str()) {
                     return;
                 }
                 if let Some(detail) = shell.state.detail_inspect.as_mut() {
@@ -886,7 +886,7 @@ impl Shell {
 
     /// 关闭容器详情弹窗。
     pub fn close_detail(&mut self, cx: &mut Context<Self>) {
-        self.detail = None;
+        self.dialog_ui.detail = None;
         // 那份 inspect 跟着一起扔：留着的话下次打开**别的**容器会先闪一下旧数据
         //（写回时的名字比对能挡住"写错对象"，但挡不住"先把旧的画出来"）。
         self.state.detail_inspect = None;

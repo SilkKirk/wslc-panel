@@ -525,13 +525,13 @@ impl Shell {
 
     /// 打开「基础信息」浮层（数据库页的连接信息）。
     pub fn open_db_info(&mut self, cx: &mut Context<Self>) {
-        self.db_info_open = true;
+        self.dialog_ui.db_info_open = true;
         cx.notify();
     }
 
     /// 关掉「基础信息」浮层。
     pub fn close_db_info(&mut self, cx: &mut Context<Self>) {
-        self.db_info_open = false;
+        self.dialog_ui.db_info_open = false;
         cx.notify();
     }
 

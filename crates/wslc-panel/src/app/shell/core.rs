@@ -5,7 +5,9 @@
 
 use super::super::prelude::*;
 use super::Shell;
-use super::state::{DropdownItem, Forms, InstallForm, Refresh, SqlUi, Subscriptions, Tasks};
+use super::state::{
+    DialogUi, DropdownItem, Forms, InstallForm, Refresh, SqlUi, Subscriptions, Tasks,
+};
 
 /// 取锁；中毒（别的线程 panic 过）时照常用里面的值。
 ///
@@ -191,9 +193,6 @@ impl Shell {
                 keep_alive: Vec::new(),
                 picking: false,
             },
-            detail: None,
-            distro_detail: None,
-            pull_open: false,
             sql_ui: SqlUi {
                 sql_table: None,
                 sql_result_tab: 0,
@@ -202,9 +201,14 @@ impl Shell {
                 schema_tree_state: None,
                 schema_tree_built_for: None,
             },
-            dialog_stack: Vec::new(),
+            dialog_ui: DialogUi {
+                dialog_stack: Vec::new(),
+                detail: None,
+                distro_detail: None,
+                db_info_open: false,
+                pull_open: false,
+            },
             sidebar_collapsed: false,
-            db_info_open: false,
         };
         shell.refresh(cx);
         shell.start_auto_refresh(cx);
@@ -700,7 +704,7 @@ impl Shell {
         // 删库要清本地账号、删库/删用户要重读列表 —— 每加一个动作都要回来改，
         // 而 core 那边完全不知道有这些副作用。判据现在住在 `actions.rs`，
         // 并且有测试盯着（`state/tests/actions.rs`）。
-        let aftermath = action.aftermath(self.distro_detail.as_deref());
+        let aftermath = action.aftermath(self.dialog_ui.distro_detail.as_deref());
 
         // 「删除备份」分流到它自己的执行函数：它要做三件事（删本地文件 →
         // 进容器 rm → 重扫目录写回 `AppState`），通用 `execute` 表达不了。
@@ -755,7 +759,7 @@ impl Shell {
                 }
 
                 if aftermath.close_distro_detail {
-                    shell.distro_detail = None;
+                    shell.dialog_ui.distro_detail = None;
                 }
 
                 // 删库 / 删用户：重读数据库页那两张表（成功失败都读一次 ——

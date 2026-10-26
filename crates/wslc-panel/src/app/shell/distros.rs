@@ -366,13 +366,13 @@ impl Shell {
     /// 低频但重要的动作（改版本 / 压缩 / 打开安装位置）都收在这里，
     /// 列表行里只留高频的那几个 —— 和容器页同一套取舍。
     pub fn open_distro_detail(&mut self, name: String, cx: &mut Context<Self>) {
-        self.distro_detail = Some(name);
+        self.dialog_ui.distro_detail = Some(name);
         cx.notify();
     }
 
     /// 关闭发行版详情弹窗。
     pub fn close_distro_detail(&mut self, cx: &mut Context<Self>) {
-        self.distro_detail = None;
+        self.dialog_ui.distro_detail = None;
         cx.notify();
     }
 

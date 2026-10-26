@@ -47,9 +47,10 @@ mod settings;
 mod state;
 mod update;
 
-// 对话框栈的标识与开合逻辑住在 `dialogs.rs`（它跨所有域）；这里只再导出标识，
-// 因为 `Shell::dialog_stack` 这个字段的类型要它。
-pub(crate) use dialogs::DialogKey;
+// 对话框栈的**开合逻辑**住在 `dialogs.rs`（它跨所有域）。`DialogKey` 这个类型现在
+// 只有两处用：`dialogs.rs` 自己（层序表 / `is_open`），以及 `state.rs` 里
+// `DialogUi::dialog_stack` 的字段类型 —— 所以它跟着 `DialogUi` 走，本文件不再转发
+// （转发出去没有任何代码用，`unused_imports` 会让 lint 红）。
 pub(crate) use state::*;
 
 /// 应用外壳。
@@ -76,40 +77,15 @@ pub struct Shell {
     subs: Subscriptions,
     /// 错误横幅是不是展开着（多条错误时才用得上）。
     errors_expanded: bool,
-    /// 正在查看详情的容器名；关闭时为 None。
-    detail: Option<String>,
-    /// 正在查看详情的**发行版名**；关闭时为 None。
-    ///
-    /// 和容器的 `detail` 分成两个字段（而不是共用一个）：
-    /// 两者的详情弹窗内容完全不同，共用一个字符串还得额外判断
-    /// "这个名字是容器还是发行版"。
-    distro_detail: Option<String>,
-    /// 「拉取镜像」弹窗开着吗。
-    ///
-    /// 和 `forms.image_form` 分开记：**表单建好之后一直留着**（用户第二次打开时
-    /// registry / 仓库名 / 上一批 tag 都还在），而这个布尔只管可见性。
-    /// 拉取进行中**不许关**（见 [`Shell::close_pull_dialog`]）。
-    pull_open: bool,
     /// SQL 控制台这一页的界面状态（6 个，见 [`SqlUi`]）。
     ///
     /// 两个 GPUI 实体（结果表 / 表名树）加四个页内开关 —— 纯数据在 `AppState`，
     /// 实体在这里（`wslc-panel-core` 装不下 GPUI 实体）。
     pub(crate) sql_ui: SqlUi,
-    /// 我们已经压进**窗口级对话框栈**的那几层（官方 `Dialog`），按打开顺序。
+    /// 「开着哪几个浮层 / 在看谁的详情」（5 个，见 [`DialogUi`]）。
     ///
-    /// # 为什么需要自己记一份
-    ///
-    /// 官方 `ActiveDialog` **没有 id 字段**（`root.rs` 里只有 focus_handle /
-    /// builder 等），所以**没法"按 id 关某一层"**。`WindowExt` 只给三个口子：
-    ///
-    /// - `close_dialog(cx)` → `active_dialogs.pop()`，**只关栈顶**；
-    /// - `close_all_dialogs(cx)` → 全关；
-    /// - `has_active_dialog(cx)` → 有没有开着。
-    ///
-    /// 于是"状态要求哪些浮层开着"和"实际开着哪些"之间只能靠**最长公共前缀**
-    /// 来对齐：多出来的从栈顶 pop（安全），缺的依次追加（不动下层）。
-    /// 这份记录就是那个 diff 的左边。见 `Shell::sync_dialog_stack`。
-    pub(crate) dialog_stack: Vec<DialogKey>,
+    /// 栈记录与四个开合判据必须一起改，所以摆在一起。
+    dialog_ui: DialogUi,
     /// 左侧**应用导航栏**收起来了没有（v0.12.2）。
     ///
     /// 用的是组件库的 `Sidebar` + `SidebarCollapsible::Offcanvas`：
@@ -120,10 +96,4 @@ pub struct Shell {
     /// （`IconName::Server` / `Network` …）得先确认每个名字在 Lucide 里
     /// 都存在 —— 猜错了是编译错误，而我们本地编不了。所以先做"整体收起"。
     pub(crate) sidebar_collapsed: bool,
-    /// 「数据库管理」页的「基础信息」浮层开着没有。
-    ///
-    /// 连接卡（用户名 / 密码 + 那两段说明）原来**常驻页面顶部**，实机反馈
-    /// "不用进来就在上面占用空间" —— 现在收进这个浮层，页面顶上是页头 +
-    /// 一个「基础信息」按钮。
-    pub(crate) db_info_open: bool,
 }

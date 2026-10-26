@@ -108,7 +108,9 @@ impl DialogKey {
     pub(crate) fn is_open(self, shell: &Shell) -> bool {
         match self {
             DialogKey::DbInfo => {
-                shell.db_info_open && shell.forms.db_form.is_some() && shell.state.db.is_some()
+                shell.dialog_ui.db_info_open
+                    && shell.forms.db_form.is_some()
+                    && shell.state.db.is_some()
             }
             DialogKey::Export => shell.state.exporting.is_some(),
             // 备份 / 导入进度：`dismissed` 时不进栈（用户点过「放到后台」），
@@ -124,8 +126,8 @@ impl DialogKey {
                 .as_ref()
                 .is_some_and(|db| db.import.as_ref().is_some_and(|i| !i.dismissed)),
             DialogKey::ContainerLogs => shell.state.logs.is_some(),
-            DialogKey::ContainerDetail => shell.detail.is_some(),
-            DialogKey::DistroDetail => shell.distro_detail.is_some(),
+            DialogKey::ContainerDetail => shell.dialog_ui.detail.is_some(),
+            DialogKey::DistroDetail => shell.dialog_ui.distro_detail.is_some(),
             DialogKey::DeployLogs => shell
                 .state
                 .deploy
@@ -151,7 +153,7 @@ impl DialogKey {
             }
             DialogKey::DeployForm => shell.forms.deploy_form.is_some(),
             DialogKey::WslConf => shell.forms.wslconf_dialog.is_some(),
-            DialogKey::PullImage => shell.pull_open && shell.forms.image_form.is_some(),
+            DialogKey::PullImage => shell.dialog_ui.pull_open && shell.forms.image_form.is_some(),
             DialogKey::CreateContainer => shell.forms.create_dialog.is_some(),
             DialogKey::DbAction => shell.forms.db_form.is_some() && shell.forms.db_dialog.is_some(),
             DialogKey::Confirm => shell.state.confirm.is_some(),
@@ -269,12 +271,13 @@ impl Shell {
             .copied()
             .filter(|key| key.is_open(self))
             .collect();
-        if desired == self.dialog_stack {
+        if desired == self.dialog_ui.dialog_stack {
             return;
         }
 
         // 1. 最长公共前缀
         let common = self
+            .dialog_ui
             .dialog_stack
             .iter()
             .zip(desired.iter())
@@ -282,22 +285,22 @@ impl Shell {
             .count();
 
         // 2. 非前缀的乱序 → 兜底全关（正常走不到）
-        let is_prefix = common == self.dialog_stack.len().min(desired.len());
+        let is_prefix = common == self.dialog_ui.dialog_stack.len().min(desired.len());
         if !is_prefix {
             use gpui_kit::component::WindowExt as _;
             window.close_all_dialogs(cx);
-            self.dialog_stack.clear();
+            self.dialog_ui.dialog_stack.clear();
             for key in &desired {
                 self.open_dialog_for(*key, window, cx);
             }
-            self.dialog_stack = desired;
+            self.dialog_ui.dialog_stack = desired;
             return;
         }
 
         // 3. 多的从栈顶 pop
         {
             use gpui_kit::component::WindowExt as _;
-            for _ in common..self.dialog_stack.len() {
+            for _ in common..self.dialog_ui.dialog_stack.len() {
                 window.close_dialog(cx);
             }
         }
@@ -305,7 +308,7 @@ impl Shell {
         for key in desired[common..].iter().copied() {
             self.open_dialog_for(key, window, cx);
         }
-        self.dialog_stack = desired;
+        self.dialog_ui.dialog_stack = desired;
     }
 
     /// 打开一个我们已经迁到官方 `Dialog` 的浮层。
@@ -517,7 +520,7 @@ impl Shell {
                 );
             }
             DialogKey::ContainerDetail => {
-                let Some(name) = self.detail.clone() else {
+                let Some(name) = self.dialog_ui.detail.clone() else {
                     return;
                 };
                 let entity = cx.entity();
@@ -558,7 +561,7 @@ impl Shell {
                 );
             }
             DialogKey::DistroDetail => {
-                let Some(name) = self.distro_detail.clone() else {
+                let Some(name) = self.dialog_ui.distro_detail.clone() else {
                     return;
                 };
                 let entity = cx.entity();
