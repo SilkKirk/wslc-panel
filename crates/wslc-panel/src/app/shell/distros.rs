@@ -809,7 +809,8 @@ impl Shell {
         // 窗口级栈的原因：层序 = 栈序，不会像以前那样被下面的浮层盖住）。
         if self.state.confirm.is_some() {
             desired.push(DialogKey::Confirm);
-        }        if self.db_form.is_some()
+        }
+        if self.db_form.is_some()
             && self
                 .state
                 .db
@@ -1407,67 +1408,67 @@ impl Shell {
                         .footer(modal_footer([close.into_any_element()]))
                 });
             }
-        DialogKey::Confirm => {
-            let Some(action) = self.state.confirm.clone() else {
-                return;
-            };
-            let title = action.title().to_owned();
-            let ok_label = action.confirm_label().to_owned();
-            let entity = cx.entity();
-            let content = {
-                let view_entity = entity.clone();
-                let body_action = action.clone();
-                cx.new(move |cx| {
-                    ShellView::new(
-                        view_entity,
-                        move |_shell, _cx| super::core::confirm_body(&body_action),
-                        cx,
-                    )
-                })
-            };
-            window.open_dialog(cx, move |dialog, _window, _cx| {
-                let cancel = {
-                    let entity = entity.clone();
-                    Button::new("confirm-cancel")
-                        .label("取消")
-                        .small()
-                        .on_click(move |_, window, cx| {
+            DialogKey::Confirm => {
+                let Some(action) = self.state.confirm.clone() else {
+                    return;
+                };
+                let title = action.title().to_owned();
+                let ok_label = action.confirm_label().to_owned();
+                let entity = cx.entity();
+                let content = {
+                    let view_entity = entity.clone();
+                    let body_action = action.clone();
+                    cx.new(move |cx| {
+                        ShellView::new(
+                            view_entity,
+                            move |_shell, _cx| super::core::confirm_body(&body_action),
+                            cx,
+                        )
+                    })
+                };
+                window.open_dialog(cx, move |dialog, _window, _cx| {
+                    let cancel = {
+                        let entity = entity.clone();
+                        Button::new("confirm-cancel")
+                            .label("取消")
+                            .small()
+                            .on_click(move |_, window, cx| {
+                                entity.update(cx, |shell, cx| shell.cancel_pending(cx));
+                                window.close_dialog(cx);
+                            })
+                    };
+                    let confirm = {
+                        let entity = entity.clone();
+                        Button::new("confirm-ok")
+                            .label(ok_label.clone())
+                            .small()
+                            .primary()
+                            .on_click(move |_, window, cx| {
+                                entity.update(cx, |shell, cx| shell.confirm_pending(cx));
+                                window.close_dialog(cx);
+                            })
+                    };
+                    let on_cancel = {
+                        let entity = entity.clone();
+                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
                             entity.update(cx, |shell, cx| shell.cancel_pending(cx));
-                            window.close_dialog(cx);
-                        })
-                };
-                let confirm = {
-                    let entity = entity.clone();
-                    Button::new("confirm-ok")
-                        .label(ok_label.clone())
-                        .small()
-                        .primary()
-                        .on_click(move |_, window, cx| {
-                            entity.update(cx, |shell, cx| shell.confirm_pending(cx));
-                            window.close_dialog(cx);
-                        })
-                };
-                let on_cancel = {
-                    let entity = entity.clone();
-                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                        entity.update(cx, |shell, cx| shell.cancel_pending(cx));
-                        true
-                    }
-                };
-                dialog
-                    .title(title.clone())
-                    .w(px(460.))
-                    .overlay(true)
-                    .overlay_closable(false)
-                    .keyboard(true)
-                    .on_cancel(on_cancel.clone())
-                    .child(content.clone())
-                    .footer(modal_footer([
-                        cancel.into_any_element(),
-                        confirm.into_any_element(),
-                    ]))
-            });
-        }
+                            true
+                        }
+                    };
+                    dialog
+                        .title(title.clone())
+                        .w(px(460.))
+                        .overlay(true)
+                        .overlay_closable(false)
+                        .keyboard(true)
+                        .on_cancel(on_cancel.clone())
+                        .child(content.clone())
+                        .footer(modal_footer([
+                            cancel.into_any_element(),
+                            confirm.into_any_element(),
+                        ]))
+                });
+            }
         }
     }
 }
