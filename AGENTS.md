@@ -67,14 +67,18 @@ crates/
 >
 > | 目录 | 拆法 | 判断"新代码放哪" |
 > |---|---|---|
-> | `crates/wslc-panel/src/views/` | 一个页面/一类浮层一个文件；共用小组件进 `common.rs`，共用导入进 `prelude.rs` | **被两个以上页面用到？** 是 → `common`；否 → 那个页面自己的模块 |
+> | `crates/wslc-panel/src/views/` | 一个页面/一类浮层一个文件；共用小组件进 `common/`（`layout` / `table` / `form` / `button` 四个子模块，`common.rs` 与 `common/` 目录并存），共用导入进 `prelude.rs` | **被两个以上页面用到？** 是 → `common`；否 → 那个页面自己的模块 |
 > | `crates/wslc-panel/src/app/shell/` | 一个功能域一个文件，`impl Shell` **整块**搬（不按方法拆） | 新动作按**它属于哪个页面**归域（db / deploy / containers …） |
 > | `crates/wslc-panel-core/src/state/` | 一个域一个文件，`impl` 跟着它修饰的类型走 | 新状态类型跟着它的域走 |
 >
 > 两条硬约束（都踩过）：
 >
 > 1. **`Shell` 的结构体必须留在 `app/shell/mod.rs`** —— 域模块是它的**后代**
->    才能读那 20 个私有字段。挪进 `core.rs` 就变成兄弟，`self.state` 都访问不到。
+>    才能读那几个**私有**字段（`tasks` / `refresh` / `subs` / `dialog_ui` /
+>    `errors_expanded`）。挪进 `core.rs` 就变成兄弟，`self.state` 都访问不到。
+>    （2026-10-26 B8 收尾后 `Shell` 只剩 **9 个顶层字段**：`state`（`pub`）+
+>    `forms` / `sql_ui` / `sidebar_collapsed`（`pub(crate)`，`views` 要读）+
+>    上面那 5 个私有。）
 > 2. **按域命名文件要避开 `prelude` 里已有的路径段** —— `state/wslconf.rs` 会和
 >    `use wslc_core::model::wslconf;` 撞成 `E0659: ambiguous`（`registry` /
 >    `db` / `install` 同理，所以它们叫 `*_state.rs`）。
@@ -133,6 +137,16 @@ crates/
 8. **rustfmt 会把 `pub(crate) use` 混排进 `pub use` 列表**，别手写"先列 pub use、
    最后补 priv"的顺序：按路径排序，带属性的项在前
    （`#[cfg(test)] pub(crate) use backup::civil_from_days;` 在 `pub use backup::*;` **之前**）。
+9. **机械改字段路径（`self.x` → `self.group.x`）要一次扫四种写法**，只替换
+   `self.x` / `shell.x` 会漏 —— 实测 B8 那一轮漏了 **7 处断链**（rustfmt 把长链
+   写成 `shell` ⏎ `.schema_search` ⏎ …，字段在**行首**），编译期 7 条 `E0609`。
+   改完按这三条自扫（比等 CI 快得多）：
+   - `^\s*\.字段名$` → 断链漏网，补一行 `.group` 在它前面；
+   - 该行有字段、**下一行以 `.` 开头** → 链续行，rustfmt 要求 `self` /
+     `.group` / `.字段` / `.方法()` 各占一行；
+   - 全仓 `Line.Length -gt 100`，以及 **`chain_width`（默认 60）** ——
+     行宽没超、链宽超了照样红（实测两轮都栽在这上面）。
+   细节和实测记录见 `docs/AUDIT-2026-10-26.md` §11 那张表。
 
 > 判据：`core` job 的**测试条数不变**（纯搬迁不该动断言），`lint` 绿了才算收工。
 
