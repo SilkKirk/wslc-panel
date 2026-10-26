@@ -423,8 +423,7 @@ impl CreateDialog {
     /// 撞名要能看出来，所以得知道已经有哪些名字。
     pub(crate) fn to_spec(&self, existing_names: &[String], cx: &App) -> RunSpec {
         let text = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
-        let textarea =
-            |input: &Entity<TextareaState>| input.read(cx).value().trim().to_owned();
+        let textarea = |input: &Entity<TextareaState>| input.read(cx).value().trim().to_owned();
 
         let mut spec = RunSpec::new(text(&self.image));
         // 强制后台运行，理由见 `Shell::confirm_create` 的文档注释。
