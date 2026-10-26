@@ -129,7 +129,10 @@ fn dsn_redaction_handles_the_shapes_people_actually_paste() {
         "postgres://h:5432/db"
     );
     // 不像连接串的东西：原样返回，别瞎改
-    assert_eq!(wslc_core::db::redact_dsn("host=127.0.0.1"), "host=127.0.0.1");
+    assert_eq!(
+        wslc_core::db::redact_dsn("host=127.0.0.1"),
+        "host=127.0.0.1"
+    );
     assert_eq!(wslc_core::db::redact_dsn(""), "");
     // 没有库名、也没有端口
     assert_eq!(
