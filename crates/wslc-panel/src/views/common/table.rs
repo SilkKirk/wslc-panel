@@ -4,8 +4,8 @@
 //! `common.rs` 与 `common/` 目录并存，本模块由 `common.rs` 用
 //! `pub(crate) use table::*;` 再导出 —— 调用点仍然写 `common::…`。
 
-use super::badge;
 use super::super::prelude::*;
+use super::badge;
 
 /// 表格表头 —— 官方 `TableHeader` 里那一行 `TableHead`。
 ///
