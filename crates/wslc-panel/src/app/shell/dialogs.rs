@@ -490,147 +490,121 @@ impl Shell {
                 let Some(container) = self.state.logs.as_ref().map(|l| l.container.clone()) else {
                     return;
                 };
-                let title = format!("日志 —— {container}");
                 let entity = cx.entity();
-                let content = {
-                    let view_entity = entity.clone();
-                    let body_entity = entity.clone();
-                    cx.new(move |cx| {
-                        ShellView::new(
-                            view_entity,
-                            move |shell, _cx| {
-                                crate::views::logs_dialog_body(&shell.state, &body_entity)
-                            },
-                            cx,
-                        )
-                    })
-                };
-                window.open_dialog(cx, move |dialog, _window, _cx| {
-                    let close = {
-                        let entity = entity.clone();
-                        Button::new("logs-close").label("关闭").small().on_click(
-                            move |_, window, cx| {
-                                entity.update(cx, |shell, cx| shell.close_logs(cx));
-                                window.close_dialog(cx);
-                            },
-                        )
-                    };
-                    let on_cancel = {
-                        let entity = entity.clone();
-                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                            entity.update(cx, |shell, cx| shell.close_logs(cx));
-                            true
-                        }
-                    };
-                    dialog
-                        .title(title.clone())
-                        .w(px(760.))
-                        .overlay(true)
-                        .overlay_closable(true)
-                        .keyboard(true)
-                        .on_cancel(on_cancel.clone())
-                        .child(content.clone())
-                        .footer(modal_footer([close.into_any_element()]))
-                });
+                let body_entity = entity.clone();
+                let content = shell_view(
+                    &entity,
+                    move |shell, _cx| crate::views::logs_dialog_body(&shell.state, &body_entity),
+                    cx,
+                );
+                let for_button = entity.clone();
+                open_shell_dialog(
+                    window,
+                    cx,
+                    DialogSpec {
+                        title: format!("日志 —— {container}").into(),
+                        width: 760.,
+                        overlay_closable: true,
+                        keyboard: true,
+                        content,
+                    },
+                    Some(Shell::close_logs),
+                    move || {
+                        let entity = for_button.clone();
+                        vec![
+                            Button::new("logs-close")
+                                .label("关闭")
+                                .small()
+                                .on_click(move |_, window, cx| {
+                                    entity.update(cx, |shell, cx| shell.close_logs(cx));
+                                    window.close_dialog(cx);
+                                })
+                                .into_any_element(),
+                        ]
+                    },
+                );
             }
             DialogKey::ContainerDetail => {
                 let Some(name) = self.detail.clone() else {
                     return;
                 };
-                let title = name.clone();
                 let entity = cx.entity();
-                let content = {
-                    let view_entity = entity.clone();
-                    let body_entity = entity.clone();
-                    cx.new(move |cx| {
-                        ShellView::new(
-                            view_entity,
-                            move |shell, _cx| {
-                                crate::views::container_detail_body(
-                                    &name,
-                                    &shell.state,
-                                    &body_entity,
-                                )
-                            },
-                            cx,
-                        )
-                    })
-                };
-                window.open_dialog(cx, move |dialog, _window, _cx| {
-                    let close = {
-                        let entity = entity.clone();
-                        Button::new("detail-close").label("关闭").small().on_click(
-                            move |_, window, cx| {
-                                entity.update(cx, |shell, cx| shell.close_detail(cx));
-                                window.close_dialog(cx);
-                            },
-                        )
-                    };
-                    let on_cancel = {
-                        let entity = entity.clone();
-                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                            entity.update(cx, |shell, cx| shell.close_detail(cx));
-                            true
-                        }
-                    };
-                    dialog
-                        .title(title.clone())
-                        .w(px(700.))
-                        .overlay(true)
-                        .overlay_closable(true)
-                        .keyboard(true)
-                        .on_cancel(on_cancel.clone())
-                        .child(content.clone())
-                        .footer(modal_footer([close.into_any_element()]))
-                });
+                let body_entity = entity.clone();
+                let body_name = name.clone();
+                let content = shell_view(
+                    &entity,
+                    move |shell, _cx| {
+                        crate::views::container_detail_body(&body_name, &shell.state, &body_entity)
+                    },
+                    cx,
+                );
+                let for_button = entity.clone();
+                open_shell_dialog(
+                    window,
+                    cx,
+                    DialogSpec {
+                        title: name.into(),
+                        width: 700.,
+                        overlay_closable: true,
+                        keyboard: true,
+                        content,
+                    },
+                    Some(Shell::close_detail),
+                    move || {
+                        let entity = for_button.clone();
+                        vec![
+                            Button::new("detail-close")
+                                .label("关闭")
+                                .small()
+                                .on_click(move |_, window, cx| {
+                                    entity.update(cx, |shell, cx| shell.close_detail(cx));
+                                    window.close_dialog(cx);
+                                })
+                                .into_any_element(),
+                        ]
+                    },
+                );
             }
             DialogKey::DistroDetail => {
                 let Some(name) = self.distro_detail.clone() else {
                     return;
                 };
-                let title = name.clone();
                 let entity = cx.entity();
-                let content = {
-                    let view_entity = entity.clone();
-                    let body_entity = entity.clone();
-                    cx.new(move |cx| {
-                        ShellView::new(
-                            view_entity,
-                            move |shell, _cx| {
-                                crate::views::distro_detail_body(&name, &shell.state, &body_entity)
-                            },
-                            cx,
-                        )
-                    })
-                };
-                window.open_dialog(cx, move |dialog, _window, _cx| {
-                    let close = {
-                        let entity = entity.clone();
-                        Button::new("distro-detail-close")
-                            .label("关闭")
-                            .small()
-                            .on_click(move |_, window, cx| {
-                                entity.update(cx, |shell, cx| shell.close_distro_detail(cx));
-                                window.close_dialog(cx);
-                            })
-                    };
-                    let on_cancel = {
-                        let entity = entity.clone();
-                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                            entity.update(cx, |shell, cx| shell.close_distro_detail(cx));
-                            true
-                        }
-                    };
-                    dialog
-                        .title(title.clone())
-                        .w(px(800.))
-                        .overlay(true)
-                        .overlay_closable(true)
-                        .keyboard(true)
-                        .on_cancel(on_cancel.clone())
-                        .child(content.clone())
-                        .footer(modal_footer([close.into_any_element()]))
-                });
+                let body_entity = entity.clone();
+                let body_name = name.clone();
+                let content = shell_view(
+                    &entity,
+                    move |shell, _cx| {
+                        crate::views::distro_detail_body(&body_name, &shell.state, &body_entity)
+                    },
+                    cx,
+                );
+                let for_button = entity.clone();
+                open_shell_dialog(
+                    window,
+                    cx,
+                    DialogSpec {
+                        title: name.into(),
+                        width: 800.,
+                        overlay_closable: true,
+                        keyboard: true,
+                        content,
+                    },
+                    Some(Shell::close_distro_detail),
+                    move || {
+                        let entity = for_button.clone();
+                        vec![
+                            Button::new("distro-detail-close")
+                                .label("关闭")
+                                .small()
+                                .on_click(move |_, window, cx| {
+                                    entity.update(cx, |shell, cx| shell.close_distro_detail(cx));
+                                    window.close_dialog(cx);
+                                })
+                                .into_any_element(),
+                        ]
+                    },
+                );
             }
             DialogKey::DeployLogs => {
                 let Some(deploy) = self.state.deploy.as_ref() else {
@@ -641,52 +615,41 @@ impl Shell {
                 };
                 let title = format!("日志 · {}", logs.app);
                 let entity = cx.entity();
-                let content = {
-                    let view_entity = entity.clone();
-                    cx.new(move |cx| {
-                        ShellView::new(
-                            view_entity,
-                            move |shell, _cx| match shell
-                                .state
-                                .deploy
-                                .as_ref()
-                                .and_then(|d| d.logs.as_ref())
-                            {
-                                Some(logs) => crate::views::deploy_logs_body(logs),
-                                None => div().into_any_element(),
-                            },
-                            cx,
-                        )
-                    })
-                };
-                window.open_dialog(cx, move |dialog, _window, _cx| {
-                    let close = {
-                        let entity = entity.clone();
-                        Button::new("deploy-logs-close")
-                            .label("关闭")
-                            .small()
-                            .on_click(move |_, window, cx| {
-                                entity.update(cx, |shell, cx| shell.close_deploy_logs(cx));
-                                window.close_dialog(cx);
-                            })
-                    };
-                    let on_cancel = {
-                        let entity = entity.clone();
-                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                            entity.update(cx, |shell, cx| shell.close_deploy_logs(cx));
-                            true
-                        }
-                    };
-                    dialog
-                        .title(title.clone())
-                        .w(px(680.))
-                        .overlay(true)
-                        .overlay_closable(true)
-                        .keyboard(true)
-                        .on_cancel(on_cancel.clone())
-                        .child(content.clone())
-                        .footer(modal_footer([close.into_any_element()]))
-                });
+                let content = shell_view(
+                    &entity,
+                    move |shell, _cx| match shell.state.deploy.as_ref().and_then(|d| d.logs.as_ref())
+                    {
+                        Some(logs) => crate::views::deploy_logs_body(logs),
+                        None => div().into_any_element(),
+                    },
+                    cx,
+                );
+                let for_button = entity.clone();
+                open_shell_dialog(
+                    window,
+                    cx,
+                    DialogSpec {
+                        title: title.into(),
+                        width: 680.,
+                        overlay_closable: true,
+                        keyboard: true,
+                        content,
+                    },
+                    Some(Shell::close_deploy_logs),
+                    move || {
+                        let entity = for_button.clone();
+                        vec![
+                            Button::new("deploy-logs-close")
+                                .label("关闭")
+                                .small()
+                                .on_click(move |_, window, cx| {
+                                    entity.update(cx, |shell, cx| shell.close_deploy_logs(cx));
+                                    window.close_dialog(cx);
+                                })
+                                .into_any_element(),
+                        ]
+                    },
+                );
             }
             DialogKey::DeploySiteConf => {
                 let Some(conf) = self
@@ -699,74 +662,67 @@ impl Shell {
                 };
                 let title = format!("站点配置 · {}", conf.app);
                 let entity = cx.entity();
-                let content = {
-                    let view_entity = entity.clone();
-                    cx.new(move |cx| {
-                        ShellView::new(
-                            view_entity,
-                            move |shell, _cx| match shell
-                                .state
-                                .deploy
-                                .as_ref()
-                                .and_then(|d| d.site_conf.as_ref())
-                            {
-                                Some(conf) => crate::views::deploy_site_conf_body(conf),
-                                None => div().into_any_element(),
-                            },
-                            cx,
-                        )
-                    })
-                };
-                window.open_dialog(cx, move |dialog, _window, _cx| {
-                    let reapply = {
-                        let entity = entity.clone();
-                        Button::new("deploy-site-conf-reapply")
-                            .label("重写配置")
-                            .small()
-                            .on_click(move |_, _, cx| {
-                                entity.update(cx, |shell, cx| {
-                                    let app = shell
-                                        .state
-                                        .deploy
-                                        .as_ref()
-                                        .and_then(|d| d.site_conf.as_ref())
-                                        .map(|c| c.app.clone());
-                                    if let Some(app) = app {
-                                        shell.reapply_deploy_site(app, cx);
-                                    }
-                                });
-                            })
-                    };
-                    let close = {
-                        let entity = entity.clone();
-                        Button::new("deploy-site-conf-close")
-                            .label("关闭")
-                            .small()
-                            .on_click(move |_, window, cx| {
-                                entity.update(cx, |shell, cx| shell.close_deploy_site_conf(cx));
-                                window.close_dialog(cx);
-                            })
-                    };
-                    let on_cancel = {
-                        let entity = entity.clone();
-                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                            entity.update(cx, |shell, cx| shell.close_deploy_site_conf(cx));
-                            true
-                        }
-                    };
-                    dialog
-                        .title(title.clone())
-                        .w(px(700.))
-                        .overlay(true)
-                        .overlay_closable(true)
-                        .keyboard(true)
-                        .on_cancel(on_cancel.clone())
-                        .child(content.clone())
-                        .footer(modal_footer([
-                            reapply.into_any_element(),
-                            close.into_any_element(),
-                        ]))
-                });
+                let content = shell_view(
+                    &entity,
+                    move |shell, _cx| match shell
+                        .state
+                        .deploy
+                        .as_ref()
+                        .and_then(|d| d.site_conf.as_ref())
+                    {
+                        Some(conf) => crate::views::deploy_site_conf_body(conf),
+                        None => div().into_any_element(),
+                    },
+                    cx,
+                );
+                let for_reapply = entity.clone();
+                let for_close = entity.clone();
+                open_shell_dialog(
+                    window,
+                    cx,
+                    DialogSpec {
+                        title: title.into(),
+                        width: 700.,
+                        overlay_closable: true,
+                        keyboard: true,
+                        content,
+                    },
+                    Some(Shell::close_deploy_site_conf),
+                    move || {
+                        let reapply = {
+                            let entity = for_reapply.clone();
+                            Button::new("deploy-site-conf-reapply")
+                                .label("重写配置")
+                                .small()
+                                .on_click(move |_, _, cx| {
+                                    entity.update(cx, |shell, cx| {
+                                        let app = shell
+                                            .state
+                                            .deploy
+                                            .as_ref()
+                                            .and_then(|d| d.site_conf.as_ref())
+                                            .map(|c| c.app.clone());
+                                        if let Some(app) = app {
+                                            shell.reapply_deploy_site(app, cx);
+                                        }
+                                    });
+                                })
+                        };
+                        let close = {
+                            let entity = for_close.clone();
+                            Button::new("deploy-site-conf-close")
+                                .label("关闭")
+                                .small()
+                                .on_click(move |_, window, cx| {
+                                    entity.update(cx, |shell, cx| {
+                                        shell.close_deploy_site_conf(cx)
+                                    });
+                                    window.close_dialog(cx);
+                                })
+                        };
+                        vec![reapply.into_any_element(), close.into_any_element()]
+                    },
+                );
             }
             DialogKey::DeployRemoveConfirm => {
                 let Some(app) = self
@@ -847,64 +803,52 @@ impl Shell {
                 });
             }
             DialogKey::DbBackupList => {
-                let Some(database) = self
-                    .state
-                    .db
-                    .as_ref()
-                    .and_then(|db| db.backup_dialog.clone())
+                let Some(database) = self.state.db.as_ref().and_then(|db| db.backup_dialog.clone())
                 else {
                     return;
                 };
-                let title = format!("备份 —— {database}");
                 let entity = cx.entity();
-                let content = {
-                    let view_entity = entity.clone();
-                    let body_entity = entity.clone();
-                    cx.new(move |cx| {
-                        ShellView::new(
-                            view_entity,
-                            move |shell, cx| match shell.state.db.as_ref() {
-                                Some(db) => crate::views::db_backup_dialog_body(
-                                    db,
-                                    &shell.state.db_credentials,
-                                    shell,
-                                    &body_entity,
-                                    cx,
-                                ),
-                                None => div().into_any_element(),
-                            },
+                let body_entity = entity.clone();
+                let content = shell_view(
+                    &entity,
+                    move |shell, cx| match shell.state.db.as_ref() {
+                        Some(db) => crate::views::db_backup_dialog_body(
+                            db,
+                            &shell.state.db_credentials,
+                            shell,
+                            &body_entity,
                             cx,
-                        )
-                    })
-                };
-                window.open_dialog(cx, move |dialog, _window, _cx| {
-                    let close = {
-                        let entity = entity.clone();
-                        Button::new("db-backup-close")
-                            .label("关闭")
-                            .small()
-                            .on_click(move |_, window, cx| {
-                                entity.update(cx, |shell, cx| shell.close_db_backup_dialog(cx));
-                                window.close_dialog(cx);
-                            })
-                    };
-                    let on_cancel = {
-                        let entity = entity.clone();
-                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                            entity.update(cx, |shell, cx| shell.close_db_backup_dialog(cx));
-                            true
-                        }
-                    };
-                    dialog
-                        .title(title.clone())
-                        .w(px(800.))
-                        .overlay(true)
-                        .overlay_closable(true)
-                        .keyboard(true)
-                        .on_cancel(on_cancel.clone())
-                        .child(content.clone())
-                        .footer(modal_footer([close.into_any_element()]))
-                });
+                        ),
+                        None => div().into_any_element(),
+                    },
+                    cx,
+                );
+                let for_button = entity.clone();
+                open_shell_dialog(
+                    window,
+                    cx,
+                    DialogSpec {
+                        title: format!("备份 —— {database}").into(),
+                        width: 800.,
+                        overlay_closable: true,
+                        keyboard: true,
+                        content,
+                    },
+                    Some(Shell::close_db_backup_dialog),
+                    move || {
+                        let entity = for_button.clone();
+                        vec![
+                            Button::new("db-backup-close")
+                                .label("关闭")
+                                .small()
+                                .on_click(move |_, window, cx| {
+                                    entity.update(cx, |shell, cx| shell.close_db_backup_dialog(cx));
+                                    window.close_dialog(cx);
+                                })
+                                .into_any_element(),
+                        ]
+                    },
+                );
             }
             DialogKey::Confirm => {
                 let Some(action) = self.state.confirm.clone() else {
