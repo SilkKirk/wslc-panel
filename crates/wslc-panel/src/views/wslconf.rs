@@ -1,6 +1,6 @@
 //! ⑧ 发行版配置（`/etc/wsl.conf`）浮层。
 
-use super::common::{badge, cell_muted_full, modal_title};
+use super::common::{badge, cell_muted_full};
 use super::prelude::*;
 
 /// 「这一项显示的是 WSL 的默认值」的小标记。
@@ -341,13 +341,12 @@ pub(crate) fn wslconf_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &Ap
     v_flex()
         .w_full()
         .gap_3()
+        // ⚠️ 标题**不在这里画** —— `Dialog::title()` 已经画过一次了。
+        // 早期版本的浮层是自绘的（`modal_scrim` + `modal_card`），标题在 body 里；
+        // 迁移时忘了删，实机就是同一个标题连着出现两遍（v0.20.0 报过来的）。
         .child(
             v_flex()
                 .gap_1()
-                .child(modal_title(format!(
-                    "{} 配置（/etc/wsl.conf）",
-                    state.distro
-                )))
                 .child(div().text_xs().text_color(theme::text_dim()).child(format!(
                     "{}　·　保存前会先备份到 /etc/wsl.conf.bak；\
                              注释和本程序不认识的键都会原样保留。",

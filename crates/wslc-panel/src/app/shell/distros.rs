@@ -805,28 +805,6 @@ impl Shell {
         // 备份列表：门槛照抄原来 render.rs 的双重判断 —— **页面进得来**
         // （db_form 建好）**且**这一行的「备份」被点过。少了前一半，
         // 没进数据库页时也会弹出一个空的备份列表。
-        // 通用二次确认（可以从**任何**浮层里弹出来 —— 这正是它必须走
-        // 窗口级栈的原因：层序 = 栈序，不会像以前那样被下面的浮层盖住）。
-        // 添加部署 / 重新部署弹窗（输入框在 `open_deploy_dialog` 里建好）。
-        if self.deploy_form.is_some() {
-            desired.push(DialogKey::DeployForm);
-        } // 发行版配置弹窗（输入框在 `open_wslconf` 里建好并存进 dialog）。
-        if self.wslconf_dialog.is_some() {
-            desired.push(DialogKey::WslConf);
-        } // 拉取镜像弹窗（表单/进度两态都在 `pull_dialog_body` 里分流）。
-        if self.pull_open && self.image_form.is_some() {
-            desired.push(DialogKey::PullImage);
-        } // 创建容器弹窗（输入框在 `open_create_dialog_prefilled` 里就建好了）。
-        if self.create_dialog.is_some() {
-            desired.push(DialogKey::CreateContainer);
-        } // 数据库动作弹窗（新建库 / 建用户 / 改密 / 授权 / 导入）。
-        // 门槛照旧：`db_form` 建好（页面进得来）且 `db_dialog` 有值。
-        if self.db_form.is_some() && self.db_dialog.is_some() {
-            desired.push(DialogKey::DbAction);
-        }
-        if self.state.confirm.is_some() {
-            desired.push(DialogKey::Confirm);
-        }
         if self.db_form.is_some()
             && self
                 .state
@@ -835,6 +813,32 @@ impl Shell {
                 .is_some_and(|db| db.backup_dialog.is_some())
         {
             desired.push(DialogKey::DbBackupList);
+        }
+        // 通用二次确认：可以从**任何**浮层里弹出来 —— 这正是它必须走
+        // 窗口级栈的原因（层序 = 栈序，不会被下面的浮层盖住）。
+        if self.state.confirm.is_some() {
+            desired.push(DialogKey::Confirm);
+        }
+        // 添加部署 / 重新部署弹窗（输入框在 `open_deploy_dialog` 里建好）。
+        if self.deploy_form.is_some() {
+            desired.push(DialogKey::DeployForm);
+        }
+        // 发行版配置弹窗（输入框在 `open_wslconf` 里建好并存进 dialog）。
+        if self.wslconf_dialog.is_some() {
+            desired.push(DialogKey::WslConf);
+        }
+        // 拉取镜像弹窗（表单/进度两态都在 `pull_dialog_body` 里分流）。
+        if self.pull_open && self.image_form.is_some() {
+            desired.push(DialogKey::PullImage);
+        }
+        // 创建容器弹窗（输入框在 `open_create_dialog_prefilled` 里就建好了）。
+        if self.create_dialog.is_some() {
+            desired.push(DialogKey::CreateContainer);
+        }
+        // 数据库动作弹窗（新建库 / 建用户 / 改密 / 授权 / 导入）。
+        // 门槛照旧：`db_form` 建好（页面进得来）且 `db_dialog` 有值。
+        if self.db_form.is_some() && self.db_dialog.is_some() {
+            desired.push(DialogKey::DbAction);
         }
         if desired == self.dialog_stack {
             return;
@@ -1352,12 +1356,24 @@ impl Shell {
                                 window.close_dialog(cx);
                             })
                     };
+                    // ⚠️ `overlay_closable(true)` 就必须配 `on_cancel` ——
+                    // 点遮罩 Dialog 会被关掉，但**状态不会自动清**。
+                    // `sync_dialog_stack` 是按状态对齐的，状态留着会在下一次
+                    // 重绘把这个确认框重新打开（v0.20.0 报过来的那个 bug）。
+                    let on_cancel = {
+                        let entity = entity.clone();
+                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
+                            entity.update(cx, |shell, cx| shell.cancel_remove_deployment(cx));
+                            true
+                        }
+                    };
                     dialog
                         .title(title.clone())
                         .w(px(560.))
                         .overlay(true)
                         .overlay_closable(true)
                         .keyboard(true)
+                        .on_cancel(on_cancel.clone())
                         .child(content.clone())
                         .footer(modal_footer([
                             cancel.into_any_element(),
@@ -1701,6 +1717,18 @@ impl Shell {
                         )
                     })
                 };
+                // ⚠️ `overlay_closable(false)` 是刻意的（配置表单填一半不该被误点丢掉），
+                // 但**必须**有 `on_cancel`：否则 Esc 也关不掉，这个弹窗就没有任何
+                // "不用按钮"的退出路径了。而且关掉时**必须把状态清掉** ——
+                // `sync_dialog_stack` 是按状态对齐的，状态留着会在下一次重绘
+                // 把弹窗重新打开（v0.20.0 报过来的"点其他位置也会弹出"就是这个）。
+                let on_cancel = {
+                    let entity = entity.clone();
+                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
+                        entity.update(cx, |shell, cx| shell.close_wslconf(cx));
+                        true
+                    }
+                };
                 window.open_dialog(cx, move |dialog, _window, _cx| {
                     dialog
                         .title(title.clone())
@@ -1708,6 +1736,7 @@ impl Shell {
                         .overlay(true)
                         .overlay_closable(false)
                         .keyboard(true)
+                        .on_cancel(on_cancel.clone())
                         .child(content.clone())
                 });
             }
