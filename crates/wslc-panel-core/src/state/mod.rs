@@ -57,7 +57,8 @@ mod snapshot;
 // 模块路径，两者在 `use super::prelude::*;` 之后就成了 `E0659: ambiguous`
 // （实测踩过，8 处报错）。
 mod wslconf_state;
-// 测试单独一个文件：116 条断言占了原来那份文件的 2711 行。
+// 测试放在 `tests/` 目录里，**一个域一个文件**（原先是一整份 2720 行的
+// `tests.rs`，跨 10 个域 —— 见 `tests/mod.rs` 的说明）。
 #[cfg(test)]
 mod tests;
 
