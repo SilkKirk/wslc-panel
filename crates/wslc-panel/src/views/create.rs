@@ -332,139 +332,136 @@ pub(crate) fn create_dialog_body(
     v_flex()
         .w_full()
         .gap_4()
-            .child(
-                // 左边是唯一的事实来源（可以手打、可以粘完整引用），
-                // 右边那个下拉框只是**从本地已有的镜像里挑一个**的快捷方式 ——
-                // 数据来自每 3 秒刷新的快照，不用手打一长串 registry 前缀
-                // （手打时最容易漏的就是它，漏了 `wslc run` 会去 Docker Hub 找，
-                // 而那台机器上不可达）。
-                h_flex()
-                    .w_full()
-                    .gap_2()
-                    .child(form_field(
-                        "create-image",
-                        "镜像引用（必填，例如 nginx:latest）",
-                        &dialog.image,
-                        cx,
-                        false,
-                    ))
-                    .child(
-                        v_flex()
-                            .gap_1()
-                            .w(px(300.))
-                            .flex_none()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme::text_dim())
-                                    .child("或从本地镜像里选（可搜索）"),
-                            )
-                            .child(
-                                Select::new(&dialog.image_select)
-                                    // 占位符说的是"还没选"，不是"没有镜像"。
-                                    // v0.6.5 把**空状态**文案写成了占位符，于是
-                                    // 展开明明有 3 个镜像、触发器却写着"本地还没有镜像"。
-                                    .placeholder("选一个本地镜像…")
-                                    // ⚠️ 菜单**默认和触发器一样宽**（`menu_width`
-                                    // 默认 `Length::Auto`），而镜像引用比这 300px
-                                    // 长得多 —— 不加宽就是每个候选都带省略号。
-                                    .menu_width(px(460.))
-                                    .empty(|_, _| {
-                                        div()
-                                            .px_3()
-                                            .py_2()
-                                            .text_sm()
-                                            .text_color(theme::text_muted())
-                                            .child("本地还没有镜像 —— 先去「镜像」页拉一个")
-                                    })
-                                    .w_full()
-                                    .menu_max_h(px(320.)),
-                            ),
-                    ),
-            )
-            .child(image_facts_hint(dialog))
-            .child(form_field(
-                "create-name",
-                "容器名（留空按镜像命名）",
-                &dialog.name,
+        .child(
+            // 左边是唯一的事实来源（可以手打、可以粘完整引用），
+            // 右边那个下拉框只是**从本地已有的镜像里挑一个**的快捷方式 ——
+            // 数据来自每 3 秒刷新的快照，不用手打一长串 registry 前缀
+            // （手打时最容易漏的就是它，漏了 `wslc run` 会去 Docker Hub 找，
+            // 而那台机器上不可达）。
+            h_flex()
+                .w_full()
+                .gap_2()
+                .child(form_field(
+                    "create-image",
+                    "镜像引用（必填，例如 nginx:latest）",
+                    &dialog.image,
+                    cx,
+                    false,
+                ))
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .w(px(300.))
+                        .flex_none()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::text_dim())
+                                .child("或从本地镜像里选（可搜索）"),
+                        )
+                        .child(
+                            Select::new(&dialog.image_select)
+                                // 占位符说的是"还没选"，不是"没有镜像"。
+                                // v0.6.5 把**空状态**文案写成了占位符，于是
+                                // 展开明明有 3 个镜像、触发器却写着"本地还没有镜像"。
+                                .placeholder("选一个本地镜像…")
+                                // ⚠️ 菜单**默认和触发器一样宽**（`menu_width`
+                                // 默认 `Length::Auto`），而镜像引用比这 300px
+                                // 长得多 —— 不加宽就是每个候选都带省略号。
+                                .menu_width(px(460.))
+                                .empty(|_, _| {
+                                    div()
+                                        .px_3()
+                                        .py_2()
+                                        .text_sm()
+                                        .text_color(theme::text_muted())
+                                        .child("本地还没有镜像 —— 先去「镜像」页拉一个")
+                                })
+                                .w_full()
+                                .menu_max_h(px(320.)),
+                        ),
+                ),
+        )
+        .child(image_facts_hint(dialog))
+        .child(form_field(
+            "create-name",
+            "容器名（留空按镜像命名）",
+            &dialog.name,
+            cx,
+            true,
+        ))
+        .child(auto_name_hint(dialog, state, cx))
+        .children(command_required.then(|| {
+            form_field(
+                "create-command",
+                "启动命令（镜像没有默认命令，必填）",
+                &dialog.command,
                 cx,
                 true,
-            ))
-            .child(auto_name_hint(dialog, state, cx))
-            .children(command_required.then(|| {
-                form_field(
-                    "create-command",
-                    "启动命令（镜像没有默认命令，必填）",
-                    &dialog.command,
-                    cx,
-                    true,
-                )
-            }))
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap_3()
-                    .child(form_field(
-                        "create-ports",
-                        "端口映射（逗号或换行分隔，如 8080:80）",
-                        &dialog.ports,
-                        cx,
-                        false,
-                    ))
-                    .child(form_field(
-                        "create-env",
-                        "环境变量 KEY=VALUE（每行一个；值里可以有逗号）",
-                        &dialog.env,
-                        cx,
-                        false,
-                    )),
             )
-            .child(
+        }))
+        .child(
+            h_flex()
+                .w_full()
+                .gap_3()
+                .child(form_field(
+                    "create-ports",
+                    "端口映射（逗号或换行分隔，如 8080:80）",
+                    &dialog.ports,
+                    cx,
+                    false,
+                ))
+                .child(form_field(
+                    "create-env",
+                    "环境变量 KEY=VALUE（每行一个；值里可以有逗号）",
+                    &dialog.env,
+                    cx,
+                    false,
+                )),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child("端口映射需在创建时设置，创建后不能直接修改。"),
+        )
+        .child(image_env_hint(dialog, cx))
+        .child(form_field(
+            "create-volumes",
+            "卷挂载（卷名:/容器内路径）",
+            &dialog.volumes,
+            cx,
+            true,
+        ))
+        .child(disclosure(
+            UiSection::CreateAdvanced,
+            format!("高级设置 · {}", advanced_summary.join(" · ")),
+            state,
+            entity,
+            advanced,
+        ))
+        .child(disclosure(
+            UiSection::CreateCommandPreview,
+            "查看等效命令",
+            state,
+            entity,
+            command_preview(&spec),
+        ))
+        .child(
+            h_flex().w_full().justify_between().child(
                 div()
                     .text_xs()
-                    .text_color(theme::text_dim())
-                    .child("端口映射需在创建时设置，创建后不能直接修改。"),
-            )
-            .child(image_env_hint(dialog, cx))
-            .child(form_field(
-                "create-volumes",
-                "卷挂载（卷名:/容器内路径）",
-                &dialog.volumes,
-                cx,
-                true,
-            ))
-            .child(disclosure(
-                UiSection::CreateAdvanced,
-                format!("高级设置 · {}", advanced_summary.join(" · ")),
-                state,
-                entity,
-                advanced,
-            ))
-            .child(disclosure(
-                UiSection::CreateCommandPreview,
-                "查看等效命令",
-                state,
-                entity,
-                command_preview(&spec),
-            ))
-            .child(
-                h_flex()
-                    .w_full()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(if image_missing {
-                                theme::warning()
-                            } else {
-                                theme::text_dim()
-                            })
-                            .child(if image_missing {
-                                "还差一个镜像引用"
-                            } else {
-                                ""
-                            }),
-                    )
-                )
+                    .text_color(if image_missing {
+                        theme::warning()
+                    } else {
+                        theme::text_dim()
+                    })
+                    .child(if image_missing {
+                        "还差一个镜像引用"
+                    } else {
+                        ""
+                    }),
+            ),
+        )
         .into_any_element()
 }

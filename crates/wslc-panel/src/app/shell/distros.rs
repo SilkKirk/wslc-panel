@@ -810,7 +810,7 @@ impl Shell {
         // 创建容器弹窗（输入框在 `open_create_dialog_prefilled` 里就建好了）。
         if self.create_dialog.is_some() {
             desired.push(DialogKey::CreateContainer);
-        }        // 数据库动作弹窗（新建库 / 建用户 / 改密 / 授权 / 导入）。
+        } // 数据库动作弹窗（新建库 / 建用户 / 改密 / 授权 / 导入）。
         // 门槛照旧：`db_form` 建好（页面进得来）且 `db_dialog` 有值。
         if self.db_form.is_some() && self.db_dialog.is_some() {
             desired.push(DialogKey::DbAction);
@@ -1546,69 +1546,71 @@ impl Shell {
                         ]))
                 });
             }
-        DialogKey::CreateContainer => {
-            let entity = cx.entity();
-            let content = {
-                let view_entity = entity.clone();
-                let body_entity = entity.clone();
-                cx.new(move |cx| {
-                    ShellView::new(
-                        view_entity,
-                        move |shell, cx| match shell.create_dialog.as_ref() {
-                            Some(dialog) => {
-                                crate::views::create_dialog_body(dialog, &shell.state, &body_entity, cx)
-                            }
-                            None => div().into_any_element(),
-                        },
-                        cx,
-                    )
-                })
-            };
-            window.open_dialog(cx, move |dialog, _window, _cx| {
-                let cancel = {
-                    let entity = entity.clone();
-                    Button::new("create-cancel")
-                        .label("取消")
-                        .small()
-                        .on_click(move |_, window, cx| {
+            DialogKey::CreateContainer => {
+                let entity = cx.entity();
+                let content = {
+                    let view_entity = entity.clone();
+                    let body_entity = entity.clone();
+                    cx.new(move |cx| {
+                        ShellView::new(
+                            view_entity,
+                            move |shell, cx| match shell.create_dialog.as_ref() {
+                                Some(dialog) => crate::views::create_dialog_body(
+                                    dialog,
+                                    &shell.state,
+                                    &body_entity,
+                                    cx,
+                                ),
+                                None => div().into_any_element(),
+                            },
+                            cx,
+                        )
+                    })
+                };
+                window.open_dialog(cx, move |dialog, _window, _cx| {
+                    let cancel = {
+                        let entity = entity.clone();
+                        Button::new("create-cancel").label("取消").small().on_click(
+                            move |_, window, cx| {
+                                entity.update(cx, |shell, cx| shell.close_create_dialog(cx));
+                                window.close_dialog(cx);
+                            },
+                        )
+                    };
+                    let confirm = {
+                        let entity = entity.clone();
+                        Button::new("create-ok")
+                            .label("创建并启动")
+                            .small()
+                            .primary()
+                            .on_click(move |_, window, cx| {
+                                // `window` 是必需的：提交时要检查"预填了但没填值"的必需变量，
+                                // 并把焦点送到那一格（`confirm_create` 里有说明）。
+                                entity.update(cx, |shell, cx| shell.confirm_create(window, cx));
+                                window.close_dialog(cx);
+                            })
+                    };
+                    let on_cancel = {
+                        let entity = entity.clone();
+                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
                             entity.update(cx, |shell, cx| shell.close_create_dialog(cx));
-                            window.close_dialog(cx);
-                        })
-                };
-                let confirm = {
-                    let entity = entity.clone();
-                    Button::new("create-ok")
-                        .label("创建并启动")
-                        .small()
-                        .primary()
-                        .on_click(move |_, window, cx| {
-                            // `window` 是必需的：提交时要检查"预填了但没填值"的必需变量，
-                            // 并把焦点送到那一格（`confirm_create` 里有说明）。
-                            entity.update(cx, |shell, cx| shell.confirm_create(window, cx));
-                            window.close_dialog(cx);
-                        })
-                };
-                let on_cancel = {
-                    let entity = entity.clone();
-                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                        entity.update(cx, |shell, cx| shell.close_create_dialog(cx));
-                        true
-                    }
-                };
-                dialog
-                    .title("创建容器")
-                    .w(px(800.))
-                    .overlay(true)
-                    .overlay_closable(false)
-                    .keyboard(true)
-                    .on_cancel(on_cancel.clone())
-                    .child(content.clone())
-                    .footer(modal_footer([
-                        cancel.into_any_element(),
-                        confirm.into_any_element(),
-                    ]))
-            });
-        }
+                            true
+                        }
+                    };
+                    dialog
+                        .title("创建容器")
+                        .w(px(800.))
+                        .overlay(true)
+                        .overlay_closable(false)
+                        .keyboard(true)
+                        .on_cancel(on_cancel.clone())
+                        .child(content.clone())
+                        .footer(modal_footer([
+                            cancel.into_any_element(),
+                            confirm.into_any_element(),
+                        ]))
+                });
+            }
         }
     }
 }
