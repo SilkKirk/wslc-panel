@@ -19,7 +19,7 @@
 
 use super::super::prelude::*;
 use super::Shell;
-use crate::views::ShellView;
+use crate::views::{ShellView, modal_footer};
 
 /// 已经压进**窗口级对话框栈**的浮层标识（官方 `Dialog`）。
 ///

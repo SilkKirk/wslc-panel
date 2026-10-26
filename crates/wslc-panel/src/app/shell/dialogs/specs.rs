@@ -744,7 +744,7 @@ impl Shell {
                 let body_action = action.clone();
                 let content = shell_view(
                     &entity,
-                    move |_shell, _cx| super::core::confirm_body(&body_action),
+                    move |_shell, _cx| super::super::core::confirm_body(&body_action),
                     cx,
                 );
                 let for_cancel = entity.clone();
