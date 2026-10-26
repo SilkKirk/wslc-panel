@@ -78,6 +78,8 @@ pub(crate) enum DialogKey {
     DbAction,
     /// 「创建容器」弹窗。
     CreateContainer,
+    /// 「拉取镜像」弹窗。
+    PullImage,
 }
 
 /// 应用外壳。

@@ -266,14 +266,7 @@ impl Render for Shell {
         // NOTE: 通用二次确认走官方 Dialog 栈（DialogKey::Confirm）——
         // 它能从**任何**浮层里弹出来，窗口级栈保证它一定盖在最上面。
 
-        // 「拉取镜像」弹窗。表单住在 `Shell::image_form` 里（不在 `state` 里），
-        // 所以只有这里能画它。
-        let pull_dialog: AnyElement = match (self.pull_open, self.image_form.as_ref()) {
-            (true, Some(form)) => views::pull_dialog_overlay(form, state, &entity, cx),
-            // `pull_open` 为真时表单一定在（`open_pull_dialog` 先建再置位）——
-            // 真走到这里也只是什么都不画，不 panic。
-            _ => div().into_any_element(),
-        };
+        // NOTE: 拉取镜像弹窗走官方 Dialog 栈（DialogKey::PullImage）。
 
         // NOTE: 创建容器弹窗走官方 Dialog 栈（DialogKey::CreateContainer）。
 
@@ -530,7 +523,6 @@ impl Render for Shell {
             // 拉取弹窗排在创建弹窗**之前**：两者不会同时开着
             // （`use_pulled_image` 会先关掉拉取弹窗），但万一同时开着，
             // 后画的创建表单应该压在上面 —— 用户刚点的是它。
-            .child(pull_dialog)
             // ⚠️ 「单输入框提示」不在这条链子上 —— 它走官方 `Dialog` 的窗口级层栈
             // （见上面 `Shell::open_prompt` 那段的说明）。
             .child(wslconf_dialog)

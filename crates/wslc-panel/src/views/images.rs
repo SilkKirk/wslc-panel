@@ -167,66 +167,20 @@ pub(crate) fn image_row_actions(ix: usize, reference: &str, entity: &Entity<Shel
         .into_any_element()
 }
 
-/// 「拉取镜像」弹窗（覆盖层）。
+/// 「拉取镜像」对话框的**内容**（标题 / 底部关闭由 `Dialog` 负责）。
 ///
-/// # 两种形态
-///
-/// 没在拉取时是**表单**（[`pull_dialog_form`]）；拉取中是**进度**
+/// 两种形态：没在拉取时是**表单**（[`pull_dialog_form`]），拉取中是**进度**
 /// （[`pull_progress_body`]，里面自带「取消拉取」）。
-/// ⚠️ 拉取进行中这个弹窗**关不掉**（`Shell::close_pull_dialog` 会拒绝并给提示），
-/// 所以进度形态下也不画「关闭」—— 一个按下去只会弹提示的按钮不如没有。
-///
-/// # 表单里的三段
-///
-/// 1. registry（**可编辑**，默认内置加速站）+ 仓库名 + 「查询」；
-/// 2. **tag 下拉框**（可搜索）—— 选中即去量体积，而且**只量选中的那一个**：
-///    一次要两个请求（index → 本机架构那份 manifest，实测内容协商省不掉），
-///    实测 `node` 有 9170 个 tag，全量一遍就是 9170 次请求，直接撞限流；
-/// 3. 选中之后：完整引用 + 「下载约 N MB」+「拉取」，
-///    以及镜像已经在本地时的「**用这个镜像创建容器**」。
-pub fn pull_dialog_overlay(
+pub(crate) fn pull_dialog_body(
     form: &ImageForm,
     state: &AppState,
     entity: &Entity<Shell>,
     cx: &App,
 ) -> AnyElement {
-    let pulling = state.pulling.is_some();
-    let body: AnyElement = match &state.pulling {
+    match &state.pulling {
         Some(progress) => pull_progress_body(progress, entity),
         None => pull_dialog_form(form, state, entity, cx),
-    };
-
-    let mut card = v_flex()
-        // tag 下拉框展开时会很高，允许滚动，别把按钮挤没。
-        // ⚠️ 滚动容器**必须**带 `.id(...)`（`overflow_y_scroll` 来自
-        // `StatefulInteractiveElement`，只对带 id 的元素可用 —— 漏了是编译错误）。
-        .id("pull-dialog-card")
-        .w(px(720.))
-        .max_h(px(820.))
-        .overflow_y_scroll()
-        .gap_4()
-        .p_5()
-        .rounded_lg()
-        .bg(theme::bg_card())
-        .border_1()
-        .border_color(theme::border())
-        .child(modal_title("拉取镜像"))
-        .child(body);
-
-    if !pulling {
-        let close = {
-            let entity = entity.clone();
-            Button::new("pull-dialog-close")
-                .label("关闭")
-                .small()
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |shell, cx| shell.close_pull_dialog(cx));
-                })
-        };
-        card = card.child(h_flex().w_full().justify_end().child(close));
     }
-
-    modal_scrim("pull-dialog", card).into_any_element()
 }
 
 /// 弹窗里那张**表单**（没在拉取时）。
