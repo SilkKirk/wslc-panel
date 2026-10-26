@@ -30,7 +30,8 @@ use crate::views::{ShellView, modal_footer};
 /// 才能和实际栈做最长公共前缀的比对（官方 `ActiveDialog` 没有 id，见
 /// [`Shell::sync_dialog_stack`]）。
 ///
-/// 枚举里的**顺序不代表层序** —— 层序由 `sync_dialog_stack` 里 push 的先后决定。
+/// 枚举里的顺序**就是** `DialogKey::ALL` 里的顺序（那个才是层序），
+/// 枚举自身的排列只是为了好读 —— 改层序去改 `ALL`。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DialogKey {
     /// 「数据库基础信息」对话框（连接卡）。
@@ -69,6 +70,95 @@ pub(crate) enum DialogKey {
     DeployForm,
 }
 
+impl DialogKey {
+    /// 全部浮层，**顺序 = 层序**（`Root` 的栈按 push 顺序叠，后 push 的在上面）。
+    ///
+    /// 这张表就是"z 序"的唯一来源。原先顺序藏在 `sync_dialog_stack` 的 17 个
+    /// `if` 书写顺序里 —— 加浮层时插在哪、为什么插在那，读的人只能猜。
+    ///
+    /// ⚠️ **`Confirm` 必须在最后**：它是"从任何浮层里弹出来的二次确认"，
+    /// 压在表单弹窗**下面**就是 v0.9.14 那个"压缩磁盘的确认框在详情之下"的同型 bug。
+    pub(crate) const ALL: [DialogKey; 17] = [
+        // 只读说明卡压在最底下：用户从页头点开后，还会接着打开备份列表 /
+        // 数据库动作，那些必须盖在它上面。
+        DialogKey::DbInfo,
+        DialogKey::Export,
+        DialogKey::DbBackupProgress,
+        DialogKey::DbImportProgress,
+        DialogKey::ContainerLogs,
+        DialogKey::ContainerDetail,
+        DialogKey::DistroDetail,
+        DialogKey::DeployLogs,
+        DialogKey::DeploySiteConf,
+        DialogKey::DeployRemoveConfirm,
+        DialogKey::DbBackupList,
+        DialogKey::DeployForm,
+        DialogKey::WslConf,
+        DialogKey::PullImage,
+        DialogKey::CreateContainer,
+        DialogKey::DbAction,
+        DialogKey::Confirm,
+    ];
+
+    /// 这一帧这个浮层该开着吗 —— **唯一判据**（原先散在 17 个 `if` 里）。
+    ///
+    /// 每个臂都必须能回答"哪些状态同时成立才开"。尤其注意带"页面进得来"
+    /// 门槛的那几个（`db_form.is_some()`）：少了前半句，没进数据库页时
+    /// 也会弹出一个内容空空的浮层。
+    pub(crate) fn is_open(self, shell: &Shell) -> bool {
+        match self {
+            DialogKey::DbInfo => {
+                shell.db_info_open && shell.db_form.is_some() && shell.state.db.is_some()
+            }
+            DialogKey::Export => shell.state.exporting.is_some(),
+            // 备份 / 导入进度：`dismissed` 时不进栈（用户点过「放到后台」），
+            // 但任务照跑 —— 它**只影响浮层**，不影响任务本身。
+            DialogKey::DbBackupProgress => shell
+                .state
+                .db
+                .as_ref()
+                .is_some_and(|db| db.backup.as_ref().is_some_and(|b| !b.dismissed)),
+            DialogKey::DbImportProgress => shell
+                .state
+                .db
+                .as_ref()
+                .is_some_and(|db| db.import.as_ref().is_some_and(|i| !i.dismissed)),
+            DialogKey::ContainerLogs => shell.state.logs.is_some(),
+            DialogKey::ContainerDetail => shell.detail.is_some(),
+            DialogKey::DistroDetail => shell.distro_detail.is_some(),
+            DialogKey::DeployLogs => shell
+                .state
+                .deploy
+                .as_ref()
+                .is_some_and(|d| d.logs.is_some()),
+            DialogKey::DeploySiteConf => shell
+                .state
+                .deploy
+                .as_ref()
+                .is_some_and(|d| d.site_conf.is_some()),
+            DialogKey::DeployRemoveConfirm => shell
+                .state
+                .deploy
+                .as_ref()
+                .is_some_and(|d| d.confirm_remove.is_some()),
+            DialogKey::DbBackupList => {
+                shell.db_form.is_some()
+                    && shell
+                        .state
+                        .db
+                        .as_ref()
+                        .is_some_and(|db| db.backup_dialog.is_some())
+            }
+            DialogKey::DeployForm => shell.deploy_form.is_some(),
+            DialogKey::WslConf => shell.wslconf_dialog.is_some(),
+            DialogKey::PullImage => shell.pull_open && shell.image_form.is_some(),
+            DialogKey::CreateContainer => shell.create_dialog.is_some(),
+            DialogKey::DbAction => shell.db_form.is_some() && shell.db_dialog.is_some(),
+            DialogKey::Confirm => shell.state.confirm.is_some(),
+        }
+    }
+}
+
 impl Shell {
     /// 把「窗口级对话框栈」对齐到当前状态（官方 `Dialog`）。
     ///
@@ -92,97 +182,16 @@ impl Shell {
     ///
     /// 每帧都会调一次，但**只在真的要变时才动窗口**（第一行那个 return）。
     pub(crate) fn sync_dialog_stack(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let mut desired: Vec<DialogKey> = Vec::new();
-        // 「基础信息」压在最底下：它是一张**只读**说明卡，用户从页头点开后
-        // 可能接着打开备份列表 / 数据库动作 —— 那些必须盖在它上面。
+        // 「这一帧该开哪些、按什么顺序」只有一张表：`DialogKey::ALL` + `is_open`。
         //
-        // 门槛照抄原来 `render.rs` 里那段：这一页进得来（`db_form` 建好）
-        // **且**读到了数据库状态。少一个都画不出内容。
-        if self.db_info_open && self.db_form.is_some() && self.state.db.is_some() {
-            desired.push(DialogKey::DbInfo);
-        }
-        if self.state.exporting.is_some() {
-            desired.push(DialogKey::Export);
-        }
-        // 备份 / 导入进度：`dismissed` 时不进栈（用户点过「放到后台」），
-        // 但任务照跑 —— 所以它**只影响浮层**，不影响任务本身。
-        if self
-            .state
-            .db
-            .as_ref()
-            .is_some_and(|db| db.backup.as_ref().is_some_and(|b| !b.dismissed))
-        {
-            desired.push(DialogKey::DbBackupProgress);
-        }
-        if self
-            .state
-            .db
-            .as_ref()
-            .is_some_and(|db| db.import.as_ref().is_some_and(|i| !i.dismissed))
-        {
-            desired.push(DialogKey::DbImportProgress);
-        }
-        // 容器日志：open_logs / close_logs 只改状态，浮层由这里对齐。
-        if self.state.logs.is_some() {
-            desired.push(DialogKey::ContainerLogs);
-        }
-        // 两个详情弹窗同样是纯状态驱动（`self.detail` / `self.distro_detail`）。
-        if self.detail.is_some() {
-            desired.push(DialogKey::ContainerDetail);
-        }
-        if self.distro_detail.is_some() {
-            desired.push(DialogKey::DistroDetail);
-        }
-        // 部署管理页的三个（状态都在 `state.deploy` 上）。
-        if let Some(deploy) = self.state.deploy.as_ref() {
-            if deploy.logs.is_some() {
-                desired.push(DialogKey::DeployLogs);
-            }
-            if deploy.site_conf.is_some() {
-                desired.push(DialogKey::DeploySiteConf);
-            }
-            if deploy.confirm_remove.is_some() {
-                desired.push(DialogKey::DeployRemoveConfirm);
-            }
-        }
-        // 备份列表：门槛照抄原来 render.rs 的双重判断 —— **页面进得来**
-        // （db_form 建好）**且**这一行的「备份」被点过。少了前一半，
-        // 没进数据库页时也会弹出一个空的备份列表。
-        if self.db_form.is_some()
-            && self
-                .state
-                .db
-                .as_ref()
-                .is_some_and(|db| db.backup_dialog.is_some())
-        {
-            desired.push(DialogKey::DbBackupList);
-        }
-        // 通用二次确认：可以从**任何**浮层里弹出来 —— 这正是它必须走
-        // 窗口级栈的原因（层序 = 栈序，不会被下面的浮层盖住）。
-        if self.state.confirm.is_some() {
-            desired.push(DialogKey::Confirm);
-        }
-        // 添加部署 / 重新部署弹窗（输入框在 `open_deploy_dialog` 里建好）。
-        if self.deploy_form.is_some() {
-            desired.push(DialogKey::DeployForm);
-        }
-        // 发行版配置弹窗（输入框在 `open_wslconf` 里建好并存进 dialog）。
-        if self.wslconf_dialog.is_some() {
-            desired.push(DialogKey::WslConf);
-        }
-        // 拉取镜像弹窗（表单/进度两态都在 `pull_dialog_body` 里分流）。
-        if self.pull_open && self.image_form.is_some() {
-            desired.push(DialogKey::PullImage);
-        }
-        // 创建容器弹窗（输入框在 `open_create_dialog_prefilled` 里就建好了）。
-        if self.create_dialog.is_some() {
-            desired.push(DialogKey::CreateContainer);
-        }
-        // 数据库动作弹窗（新建库 / 建用户 / 改密 / 授权 / 导入）。
-        // 门槛照旧：`db_form` 建好（页面进得来）且 `db_dialog` 有值。
-        if self.db_form.is_some() && self.db_dialog.is_some() {
-            desired.push(DialogKey::DbAction);
-        }
+        // 原先这里是 17 个顺序 `if`（约 90 行），层序**只**体现在书写顺序里，
+        // 而且"要不要开"的判据和"怎么开"（`open_dialog_for`）分居两处 ——
+        // 加一个浮层要动三个地方，漏一个的表现是"浮层自己弹出来"或"点了没反应"。
+        let desired: Vec<DialogKey> = DialogKey::ALL
+            .iter()
+            .copied()
+            .filter(|key| key.is_open(self))
+            .collect();
         if desired == self.dialog_stack {
             return;
         }
