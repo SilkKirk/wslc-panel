@@ -695,23 +695,50 @@ pub(crate) fn cell_muted_full(
     cell_full(key, text, true, None)
 }
 
+/// 「一行会被截断的文字 + 悬停看全文」的唯一实现。
+///
+/// 用 gpui **原生**的 `.tooltip(..)`，不借 `Button`（理由见 [`cell_full`]）。
+///
+/// `.tooltip` 挂在 `Stateful` 那一层，所以 `.id()` 是**必需**的；
+/// `id` 还必须当帧唯一（GPUI 的 hover 状态按元素 id 记）。
+fn cell_text_with_tip(
+    id: SharedString,
+    text: SharedString,
+    tip: SharedString,
+    color: Rgba,
+) -> impl IntoElement {
+    use gpui_kit::component::tooltip::Tooltip;
+
+    div()
+        .id(id)
+        .w_full()
+        .text_sm()
+        .text_color(color)
+        .overflow_hidden()
+        .truncate()
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+        .child(text)
+}
+
 /// 会截断的单元格：省略号 + **悬停显示全文**。
 ///
-/// # 为什么借组件库的 `Button`（`text` 变体）来画一行字
+/// # 为什么不借 `Button` 了（v0.20.2）
 ///
-/// tooltip 那一套（`ManagedTooltipExt` / `ComponentTooltip`）在 gpui-kit 里是
-/// `pub(crate)` 的 —— **只有它自己的控件**（`Button` / `Switch` / …）能挂 tooltip，
-/// 我们自己画的 `div` 挂不上（`gpui::InteractiveElement` 本身没有 tooltip 方法，
-/// 只有一个 `tooltip_show_delay` 设置）。所以这里用 `Button` 当"承载 tooltip 的壳"：
-/// `text` 变体没有内边距 / 底色 / 边框（`no_padding()`），看起来就是一行字。
+/// 原先这里拿 `Button`（`text` 变体）当"承载 tooltip 的壳"，理由是
+/// "gpui 的 `InteractiveElement` 没有 tooltip 方法"。**那条在 gpui-kit 0.8.0
+/// 已经不成立**：gpui **原生**就有 `.tooltip(..)`（`TooltipOverlay` 的文档还专门
+/// 写了一句话声明"它不管这个原生 API"），普通 `div` 加个 `.id()` 就能挂。
+/// 官方示例见 <https://gpui-kit.com/zh-CN/component/tooltip>。
 ///
-/// 内容是**自己画的**而不是用 `.label()`：`.label()` 的字号由按钮尺寸决定
-/// （`button_text_size(size)`），和隔壁单元格的 `text_sm()` 未必一致；
-/// 自己画就能保证同一张表里字号 / 省略号**完全一样**，看不出是两种东西。
+/// 换回 `div` 的收益不只是少一层：
+///
+/// - `Button` 带着按钮的焦点 / 键盘语义（`tab_stop(false)` 只是不参与 Tab，
+///   元素本身仍然是按钮），而这些单元格是**纯展示**；
+/// - GPUI 的 hover 状态按元素 id 记 —— `Button` 和我们自己的 `div` 抢同一个
+///   id 是没有必要的风险（`cell_link` 那边还要靠 hover 变色）。
 ///
 /// # `key` 必须当帧唯一
 ///
-/// GPUI 的 hover 状态按元素 id 记，id 重复会让两个单元格互相干扰。
 /// 调用点传的是容器名 / 镜像引用 / 卷名 / 发行版名这类**本来就唯一**的标识。
 pub(crate) fn cell_full(
     key: impl Into<SharedString>,
@@ -727,55 +754,50 @@ pub(crate) fn cell_full(
         theme::text()
     };
 
-    Button::new(SharedString::from(format!("cell-tip-{key}")))
-        .text()
-        .tooltip(tip.unwrap_or_else(|| text.clone()))
-        // 纯展示（"文字 + tooltip"），不是动作，别进 Tab 顺序
-        .tab_stop(false)
-        .w_full()
-        .child(
-            div()
-                .w_full()
-                .text_sm()
-                .text_color(color)
-                .overflow_hidden()
-                .truncate()
-                .child(text),
-        )
-        .into_any_element()
+    cell_text_with_tip(
+        SharedString::from(format!("cell-tip-{key}")),
+        text.clone(),
+        // 没给 tip 就用全文（截断之后悬停能看全）
+        tip.unwrap_or(text),
+        color,
+    )
+    .into_any_element()
 }
 
 /// 可点击的 URL 单元格：主色 + 悬停变亮 + 点击用默认浏览器打开。
 ///
-/// 和 [`cell_full`] 一样借组件库的 `Button::text()` 当壳，所以长 URL 仍然
-/// 可以悬停看全文；区别只是多了一个 `on_click`，并且用主色让人看出能点。
+/// 和 [`cell_full`] 同一套"`div` + `.id()` + 原生 tooltip"，另外多三件事：
+/// `cursor_pointer()`、手写的 hover / active 变色（`AGENTS.md` §7.5：
+/// 自己画的可点元素必须手写，否则鼠标移上去毫无反应）、以及 `on_click`。
 pub(crate) fn cell_link(
     key: impl Into<SharedString>,
     text: impl Into<SharedString>,
     url: impl Into<String>,
     entity: &Entity<Shell>,
 ) -> AnyElement {
+    use gpui_kit::component::tooltip::Tooltip;
+
     let key: SharedString = key.into();
     let text: SharedString = text.into();
     let url: String = url.into();
     let entity = entity.clone();
+    let tip = text.clone();
 
-    Button::new(SharedString::from(format!("cell-link-{key}")))
-        .text()
-        .tooltip(text.clone())
+    div()
+        .id(SharedString::from(format!("cell-link-{key}")))
         .w_full()
+        .cursor_pointer()
+        .text_sm()
+        .text_color(theme::primary())
+        .overflow_hidden()
+        .truncate()
+        .hover(|this| this.text_color(theme::link_hover()))
+        .active(|this| this.text_color(theme::primary()))
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         .on_click(move |_, _, cx| {
             entity.update(cx, |shell, cx| shell.open_url(url.clone(), cx));
         })
-        .child(
-            div()
-                .w_full()
-                .text_sm()
-                .text_color(theme::primary())
-                .overflow_hidden()
-                .truncate()
-                .child(text),
-        )
+        .child(text)
         .into_any_element()
 }
 
