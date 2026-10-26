@@ -750,13 +750,12 @@ impl Shell {
                     move || {
                         let cancel = {
                             let entity = for_cancel.clone();
-                            Button::new("prompt-cancel")
-                                .label("取消")
-                                .small()
-                                .on_click(move |_, window, cx| {
+                            Button::new("prompt-cancel").label("取消").small().on_click(
+                                move |_, window, cx| {
                                     entity.update(cx, |shell, cx| shell.close_prompt(cx));
                                     close_top_dialog(&entity, window, cx);
-                                })
+                                },
+                            )
                         };
                         let confirm = {
                             let entity = for_confirm.clone();
