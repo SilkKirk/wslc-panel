@@ -674,7 +674,10 @@ impl Shell {
             }
         }
 
-        let command = format!("wslc {}", spec.to_args().join(" "));
+        let command = format!(
+            "wslc {}",
+            wslc_core::util::format_args_for_display(&spec.to_args())
+        );
         tracing::info!("创建容器：{command}");
 
         self.forms.create_dialog = None;

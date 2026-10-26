@@ -219,7 +219,10 @@ pub(crate) fn pull_policy_row(current: &PullPolicy, entity: &Entity<Shell>) -> A
 /// 直接调 `RunSpec::to_args()` 生成 —— 和真正执行时用的是**同一段代码**，
 /// 不会出现"预览和执行不一致"。用户也可以直接复制到终端复现。
 pub(crate) fn command_preview(spec: &RunSpec) -> AnyElement {
-    let command = format!("wslc {}", spec.to_args().join(" "));
+    let command = format!(
+        "wslc {}",
+        wslc_core::util::format_args_for_display(&spec.to_args())
+    );
 
     v_flex()
         .w_full()

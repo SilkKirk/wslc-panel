@@ -183,8 +183,12 @@ impl PlannedStep {
     /// 只会让人以为我们真的跑了 `mkdir`。
     pub fn line(&self) -> String {
         match self.program {
-            PlanProgram::Wsl => format!("wsl {}", join_for_display(&self.args)),
-            PlanProgram::Curl => format!("curl {}", join_for_display(&self.args)),
+            PlanProgram::Wsl => {
+                format!("wsl {}", crate::util::format_args_for_display(&self.args))
+            }
+            PlanProgram::Curl => {
+                format!("curl {}", crate::util::format_args_for_display(&self.args))
+            }
             _ => self.label.clone(),
         }
     }
@@ -193,20 +197,6 @@ impl PlannedStep {
     pub fn spawns_process(&self) -> bool {
         matches!(self.program, PlanProgram::Wsl | PlanProgram::Curl)
     }
-}
-
-/// 拼给人看的命令行：含空格的参数加引号（路径里带空格极常见）。
-fn join_for_display(args: &[String]) -> String {
-    args.iter()
-        .map(|arg| {
-            if arg.contains(' ') && !arg.starts_with('"') {
-                format!("\"{arg}\"")
-            } else {
-                arg.clone()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 /// 装一个发行版的**完整计划**。

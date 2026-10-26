@@ -49,6 +49,27 @@ pub fn shell_quote(value: &str) -> String {
     out
 }
 
+/// 拼一条**给人看 / 复制**的命令行：含空格或为空的参数加双引号。
+///
+/// 这不是执行参数转义（执行永远走 `argv`），只是让"等效命令预览"能直接
+/// 粘进终端。路径里带空格极常见；空参数不加引号会被 shell 吞掉。
+///
+/// ⚠️ 只处理"能不能看出参数边界"这一档：参数里若本身含 `"`，这里不负责
+/// 转义（显示层面，用户能看出原文即可）。真要在 shell 里精确表达，用
+/// [`shell_quote`] 或 Windows 侧自己的规则。
+pub fn format_args_for_display(args: &[String]) -> String {
+    args.iter()
+        .map(|arg| {
+            if (arg.is_empty() || arg.contains(' ')) && !arg.starts_with('"') {
+                format!("\"{arg}\"")
+            } else {
+                arg.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// 按**字符**（不是字节）截断，超长时在末尾加一个省略号。
 ///
 /// # 为什么不能按字节切
@@ -95,6 +116,16 @@ mod tests {
                 "转义数量不对：{raw:?} → {quoted}"
             );
         }
+    }
+
+    #[test]
+    fn display_args_quote_spaces_and_empty_values() {
+        let args = vec!["run".to_owned(), "a b".to_owned(), String::new()];
+        assert_eq!(format_args_for_display(&args), "run \"a b\" \"\"");
+        // 已经带引号的参数不重复套（用户手写的预览可能已经加过）
+        let quoted = vec!["\"a b\"".to_owned()];
+        assert_eq!(format_args_for_display(&quoted), "\"a b\"");
+        assert_eq!(format_args_for_display(&[]), "");
     }
 
     #[test]

@@ -56,7 +56,7 @@ mod views;
 // 顺便让 `file.write_all(...)` 的 trait 方法解析有据可依。
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 // `cx.new(...)` 来自 `AppContext` trait，不导入就没有这个方法。
 //
@@ -240,7 +240,9 @@ fn log_file_path() -> Option<PathBuf> {
 /// 现在只有一条路径，两种构建都会编译到。
 #[derive(Clone)]
 struct LogWriter {
-    path: Arc<PathBuf>,
+    /// 一直握着的文件句柄。早先每次 `write` 都重新 open / close，
+    /// 后台任务密集时会把日志变成一串系统调用。
+    file: Arc<Mutex<std::fs::File>>,
     /// debug 构建下把同样的内容再写一份到 stderr，`cargo run` 时直接可见。
     mirror_stderr: bool,
 }
@@ -251,16 +253,14 @@ impl Write for LogWriter {
             // 尽力而为：没有控制台时写 stderr 会失败，但不该因此中断日志。
             let _ = std::io::stderr().write_all(buf);
         }
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.path.as_path())?;
+        let mut file = self.file.lock().unwrap_or_else(|e| e.into_inner());
         file.write_all(buf)?;
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
+        let mut file = self.file.lock().unwrap_or_else(|e| e.into_inner());
+        file.flush()
     }
 }
 
@@ -289,13 +289,28 @@ fn init_tracing() {
         let _ = std::fs::create_dir_all(dir);
     }
 
+    let file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(e) => {
+            // 日志文件打不开时退回只写 stderr（发布版没有控制台，等于丢日志，
+            // 但总比启动失败好）。这时还没有 subscriber，只能用 eprintln。
+            eprintln!("日志文件 {} 打不开（{e}），改为只写 stderr", path.display());
+            tracing_subscriber::fmt().with_env_filter(filter).init();
+            return;
+        }
+    };
+
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         // 文件里不要 ANSI 颜色转义。代价是 debug 的控制台也没有颜色，
         // 换来的是同一份字节同时进文件和终端。
         .with_ansi(false)
         .with_writer(LogWriter {
-            path: Arc::new(path),
+            file: Arc::new(Mutex::new(file)),
             mirror_stderr: cfg!(debug_assertions),
         })
         .init();

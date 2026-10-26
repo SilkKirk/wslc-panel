@@ -63,15 +63,50 @@ impl Render for PromptContent {
         // 等效命令**逐种拼**，不抽一个"flag"出来：导出的 `--export` 不是
         // `--manage` 的子命令、创建卷走的甚至是另一个可执行文件（`wslc`），
         // 硬塞进同一个模板反而要写一堆特例。
-        let preview = match kind {
-            PromptKind::MoveDistro => format!("wsl --manage {} --move {shown}", self.distro),
-            PromptKind::ResizeDistro => format!("wsl --manage {} --resize {shown}", self.distro),
-            PromptKind::SetDefaultUser => {
-                format!("wsl --manage {} --set-default-user {shown}", self.distro)
-            }
-            PromptKind::ExportDistro => format!("wsl --export {} {shown}", self.distro),
-            PromptKind::CreateVolume => format!("wslc volume create {shown}"),
+        //
+        // 参数先放进 `Vec` 再统一走 `format_args_for_display`：路径里有空格时
+        // 要加引号，用户复制出去的命令才不会被拆开。
+        let (program, args) = match kind {
+            PromptKind::MoveDistro => (
+                "wsl",
+                vec![
+                    "--manage".to_owned(),
+                    self.distro.clone(),
+                    "--move".to_owned(),
+                    shown.clone(),
+                ],
+            ),
+            PromptKind::ResizeDistro => (
+                "wsl",
+                vec![
+                    "--manage".to_owned(),
+                    self.distro.clone(),
+                    "--resize".to_owned(),
+                    shown.clone(),
+                ],
+            ),
+            PromptKind::SetDefaultUser => (
+                "wsl",
+                vec![
+                    "--manage".to_owned(),
+                    self.distro.clone(),
+                    "--set-default-user".to_owned(),
+                    shown.clone(),
+                ],
+            ),
+            PromptKind::ExportDistro => (
+                "wsl",
+                vec!["--export".to_owned(), self.distro.clone(), shown.clone()],
+            ),
+            PromptKind::CreateVolume => (
+                "wslc",
+                vec!["volume".to_owned(), "create".to_owned(), shown.clone()],
+            ),
         };
+        let preview = format!(
+            "{program} {}",
+            wslc_core::util::format_args_for_display(&args)
+        );
 
         // 「创建卷」不属于任何发行版（卷是全局的），所以那一行只在有主体时画。
         // 画一行空的"发行版："比不画更让人困惑。
