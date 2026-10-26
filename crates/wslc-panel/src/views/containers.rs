@@ -311,7 +311,8 @@ pub fn containers(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> impl IntoE
         .map(|input| input.read(cx).value().trim().to_owned())
         .unwrap_or_default();
     let visible = wslc_panel_core::listview::visible_containers(items, query.trim(), view);
-    let (all_count, running_count, not_running_count) = wslc_panel_core::listview::scope_counts(items);
+    let (all_count, running_count, not_running_count) =
+        wslc_panel_core::listview::scope_counts(items);
 
     let rows: Vec<TableRow> = visible
         .iter()

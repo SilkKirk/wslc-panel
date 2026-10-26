@@ -132,6 +132,7 @@ pub(crate) use wslc_panel_core::columns::{
     IMAGE_COLUMNS, NETWORK_COLUMNS, VOLUME_COLUMNS,
 };
 // 容器列表的筛选 / 排序状态与纯逻辑（在 `wslc-panel-core`，带单测）。
+pub(crate) use crate::theme;
 pub(crate) use wslc_panel_core::listview::{ContainerScope, ContainerSort, ContainerView};
 pub(crate) use wslc_panel_core::presets::presets_for;
 pub(crate) use wslc_panel_core::state::{
@@ -140,7 +141,6 @@ pub(crate) use wslc_panel_core::state::{
     LogsState, OnlineListSource, Page, PendingAction, PromptKind, PullProgress, SettingsTab,
     UiSection, WslConfState,
 };
-pub(crate) use crate::theme;
 // 基本信息页那排圆环用的纯逻辑：用量分档（≥60% 黄、≥85% 红）。
 // 它在 `wslc-panel-core` 里（带单测），因为这个文件里的断言 CI 不会跑。
 pub(crate) use wslc_panel_core::util::{LoadLevel, format_bytes, load_level};

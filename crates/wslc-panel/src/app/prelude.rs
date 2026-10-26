@@ -68,6 +68,7 @@ pub(crate) use wslc_core::settings::SettingKey;
 // `Wsl` 是发行版（实例）的调用器，和容器的 `Wslc` 并列。
 pub(crate) use wslc_core::{Wsl, Wslc};
 
+pub(crate) use crate::theme;
 pub(crate) use wslc_panel_core::state::{
     self, AppState, BackupState, ConfirmAction, DbFailure, DbState, DbTab, DeployFailure,
     DeployLogs, DeployPhase, DeployProgress, DeploySiteConf, DeployState, DetailInspect,
@@ -75,9 +76,8 @@ pub(crate) use wslc_panel_core::state::{
     InstallProgress, InstallSourceKind, LogsState, MirrorChoice, MirrorProbeResult, Page,
     PendingAction, PromptKind, Toast, ToastKind, UiSection, create_command, exec_argv,
 };
-pub(crate) use crate::theme;
 // `split_list` / `split_env_list` / `refresh_label` 是纯函数，
 // 住在不依赖 GPUI 的 `wslc-panel-core` 里
 // —— 这样它们的单测不必链接 GPUI（见那个 crate 的顶层说明）。
-pub(crate) use wslc_panel_core::util::{refresh_label, split_env_list, split_list};
 pub(crate) use crate::views;
+pub(crate) use wslc_panel_core::util::{refresh_label, split_env_list, split_list};

@@ -248,7 +248,9 @@ impl Shell {
         };
         let typed = input.read(cx).value().trim().to_owned();
         match wslc_panel_core::prefs::parse_custom_dir(&typed) {
-            Ok(dir) => self.set_terminal_dir(wslc_panel_core::prefs::TerminalStartDir::Custom(dir), cx),
+            Ok(dir) => {
+                self.set_terminal_dir(wslc_panel_core::prefs::TerminalStartDir::Custom(dir), cx)
+            }
             Err(e) => {
                 self.state.notify(Toast::error(e));
                 cx.notify();
@@ -315,7 +317,11 @@ impl Shell {
     }
 
     /// 写回偏好文件（+ 提示）。
-    pub(crate) fn persist_theme(&mut self, theme: wslc_panel_core::prefs::ThemePref, cx: &mut Context<Self>) {
+    pub(crate) fn persist_theme(
+        &mut self,
+        theme: wslc_panel_core::prefs::ThemePref,
+        cx: &mut Context<Self>,
+    ) {
         match self.state.prefs.save() {
             Ok(()) => {
                 tracing::info!("主题已改为{}", theme.label());

@@ -518,26 +518,20 @@ pub(crate) fn terminal_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement
                     .child(Input::new(input).id("terminal-dir").w(px(360.)))
                     .child(apply),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme::text_dim())
-                    .child(wslc_panel_core::util::strip_md(
-                        "填发行版里的路径（`/home/wt/project` 或 `~`）—— Windows 路径不认，\
+            .child(div().text_xs().text_color(theme::text_dim()).child(
+                wslc_panel_core::util::strip_md(
+                    "填发行版里的路径（`/home/wt/project` 或 `~`）—— Windows 路径不认，\
                      那是「面板所在目录」那一档的事。写错的路径 `wsl.exe` 不报错，只会落在 `/`。",
-                    )),
-            );
+                ),
+            ));
     }
 
-    body = body.child(
-        div()
-            .text_xs()
-            .text_color(theme::text_dim())
-            .child(wslc_panel_core::util::strip_md(
-                "容器的「打开终端」走 `wslc exec -w`，只对**绝对路径**生效：容器里没有\
+    body = body.child(div().text_xs().text_color(theme::text_dim()).child(
+        wslc_panel_core::util::strip_md(
+            "容器的「打开终端」走 `wslc exec -w`，只对**绝对路径**生效：容器里没有\
              「Linux home」这个概念，`~` 交给镜像自己的工作目录决定。改动只影响之后新开的终端。",
-            )),
-    );
+        ),
+    ));
 
     card("终端", body).into_any_element()
 }

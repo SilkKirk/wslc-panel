@@ -691,17 +691,14 @@ pub(crate) fn db_backup_dialog_body(
                 // 而且仍然靠右 —— 和它在自绘时代的位置一致。
                 .child(h_flex().w_full().justify_end().items_center().child(start))
                 .child(account)
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_dim())
-                        .child(wslc_panel_core::util::strip_md(
-                            "列表是 Windows 侧的存档（容器删了它们还在），\
+                .child(div().text_xs().text_color(theme::text_dim()).child(
+                    wslc_panel_core::util::strip_md(
+                        "列表是 Windows 侧的存档（容器删了它们还在），\
                                      也是**恢复的输入**：恢复时会把这份文件送进容器再导入，\
                                      所以容器重建过也照样能恢复。\
                                      恢复**覆盖**这个库现有的全部数据。",
-                        )),
-                ),
+                    ),
+                )),
         )
         .child(if rows.is_empty() {
             // 备份列表整块是空的 → 官方 `Empty`

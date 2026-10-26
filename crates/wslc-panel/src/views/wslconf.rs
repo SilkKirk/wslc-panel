@@ -71,18 +71,21 @@ pub(crate) fn wslconf_row(
     match field.kind {
         wslconf::FieldKind::Bool => {
             let entity = entity.clone();
-            Checkbox::new(wslc_panel_core::state::wslconf_field_id(field.section, field.key))
-                .label(field.label)
-                .checked(state.doc.effective_bool(field.section, field.key))
-                // `Checkbox` 是**受控**组件：`on_change` 给的是"请求的新值"，
-                // 由我们存下来再 notify（见 gpui-kit 的 checkbox 文档）。
-                .on_change(move |checked, _, cx| {
-                    let value = *checked;
-                    entity.update(cx, |shell, cx| {
-                        shell.set_wslconf_bool(field.section, field.key, value, cx);
-                    });
-                })
-                .into_any_element()
+            Checkbox::new(wslc_panel_core::state::wslconf_field_id(
+                field.section,
+                field.key,
+            ))
+            .label(field.label)
+            .checked(state.doc.effective_bool(field.section, field.key))
+            // `Checkbox` 是**受控**组件：`on_change` 给的是"请求的新值"，
+            // 由我们存下来再 notify（见 gpui-kit 的 checkbox 文档）。
+            .on_change(move |checked, _, cx| {
+                let value = *checked;
+                entity.update(cx, |shell, cx| {
+                    shell.set_wslconf_bool(field.section, field.key, value, cx);
+                });
+            })
+            .into_any_element()
         }
         wslconf::FieldKind::Text => {
             let mut row = v_flex().w_full().gap_1().child(
@@ -101,7 +104,10 @@ pub(crate) fn wslconf_row(
             if let Some(input) = dialog.inputs.get(&(field.section, field.key)) {
                 row = row.child(
                     Input::new(input)
-                        .id(wslc_panel_core::state::wslconf_field_id(field.section, field.key))
+                        .id(wslc_panel_core::state::wslconf_field_id(
+                            field.section,
+                            field.key,
+                        ))
                         .w_full(),
                 );
             }

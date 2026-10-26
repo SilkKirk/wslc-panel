@@ -119,14 +119,16 @@ impl Shell {
 
                 if newer {
                     let version = release.raw_version.clone();
-                    self.state.update = wslc_panel_core::update::Phase::Available { release, skipped };
+                    self.state.update =
+                        wslc_panel_core::update::Phase::Available { release, skipped };
                     if !skipped {
                         self.state.notify(Toast::info(format!(
                             "有新版本 {version} —— 在「设置 → 关于」里打开发布页"
                         )));
                     }
                 } else {
-                    self.state.update = wslc_panel_core::update::Phase::UpToDate { checked_at: now };
+                    self.state.update =
+                        wslc_panel_core::update::Phase::UpToDate { checked_at: now };
                     if manual {
                         self.state
                             .notify(Toast::info(format!("已是最新（{}）", release.raw_version)));
@@ -164,7 +166,9 @@ impl Shell {
     /// 「跳过这个版本」：记住它，不再提示。
     pub fn skip_update_version(&mut self, cx: &mut Context<Self>) {
         let Some(version) = (match &self.state.update {
-            wslc_panel_core::update::Phase::Available { release, .. } => Some(release.raw_version.clone()),
+            wslc_panel_core::update::Phase::Available { release, .. } => {
+                Some(release.raw_version.clone())
+            }
             _ => None,
         }) else {
             return;

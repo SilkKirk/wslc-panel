@@ -655,10 +655,9 @@ pub(crate) fn sql_results_pane(
             .into_any_element(),
     };
     // 页脚：行数 / 列数 / 耗时。文案规则在 `sqlview::footer_text`（有单测）。
-    let footer = div()
-        .text_xs()
-        .text_color(theme::text_muted())
-        .child(wslc_panel_core::sqlview::footer_text(result, db.sql_elapsed_ms));
+    let footer = div().text_xs().text_color(theme::text_muted()).child(
+        wslc_panel_core::sqlview::footer_text(result, db.sql_elapsed_ms),
+    );
     // 导出 CSV：只有真的有表格时才给按钮 —— 空结果导出一个只有表头的 CSV
     // 没有意义，只会让用户以为导出坏了。
     let export: AnyElement = if result.columns.is_empty() {

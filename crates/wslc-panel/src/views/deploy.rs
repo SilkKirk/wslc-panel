@@ -397,16 +397,13 @@ pub(crate) fn deploy_table(deploy: &DeployState, entity: &Entity<Shell>) -> AnyE
     v_flex()
         .w_full()
         .gap_2()
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme::text_dim())
-                .child(wslc_panel_core::util::strip_md(&format!(
-                    "共 {} 条部署。「部署过什么」来自面板自己的存档（容器停着也看得到）；\
+        .child(div().text_xs().text_color(theme::text_dim()).child(
+            wslc_panel_core::util::strip_md(&format!(
+                "共 {} 条部署。「部署过什么」来自面板自己的存档（容器停着也看得到）；\
                      「现在跑没跑」是**问容器**得来的。",
-                    deploy.entries.len()
-                ))),
-        )
+                deploy.entries.len()
+            )),
+        ))
         .child(table_card(DEPLOY_COLUMNS, rows, empty))
         .into_any_element()
 }
@@ -770,14 +767,11 @@ pub(crate) fn deploy_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App
             cx,
             true,
         ))
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme::text_dim())
-                .child(wslc_panel_core::util::strip_md(
-                    "命令原样交给 /bin/sh -c，支持管道与 &&；日志位于目标目录的 app.log。",
-                )),
-        )
+        .child(div().text_xs().text_color(theme::text_dim()).child(
+            wslc_panel_core::util::strip_md(
+                "命令原样交给 /bin/sh -c，支持管道与 &&；日志位于目标目录的 app.log。",
+            ),
+        ))
     } else {
         card.child(
             div()
@@ -984,15 +978,12 @@ pub(crate) fn deploy_logs_body(logs: &DeployLogs) -> AnyElement {
     v_flex()
         .w_full()
         .gap_3()
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme::text_dim())
-                .child(wslc_panel_core::util::strip_md(
-                    "是这个应用**自己**的输出（启动时把它重定向到了目标目录的 \
+        .child(div().text_xs().text_color(theme::text_dim()).child(
+            wslc_panel_core::util::strip_md(
+                "是这个应用**自己**的输出（启动时把它重定向到了目标目录的 \
                  app.log）—— 不是容器主进程的日志，那个在「日志」按钮里。",
-                )),
-        )
+            ),
+        ))
         .child(body)
         .into_any_element()
 }
@@ -1038,24 +1029,18 @@ pub(crate) fn deploy_site_conf_body(conf: &DeploySiteConf) -> AnyElement {
     v_flex()
         .w_full()
         .gap_3()
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme::text_dim())
-                .child(wslc_panel_core::util::strip_md(
-                    "容器里的 `/etc/nginx/conf.d/00-wslc-panel-<应用名>.conf`（只读）。\
+        .child(div().text_xs().text_color(theme::text_dim()).child(
+            wslc_panel_core::util::strip_md(
+                "容器里的 `/etc/nginx/conf.d/00-wslc-panel-<应用名>.conf`（只读）。\
                  重新部署会整份覆盖；要改就改部署弹窗里的站点区，别直接改这个文件。",
-                )),
-        )
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme::text_dim())
-                .child(wslc_panel_core::util::strip_md(
-                    "容器重建后这份 conf 会丢 —— 可以点「重写配置」补回来\
+            ),
+        ))
+        .child(div().text_xs().text_color(theme::text_dim()).child(
+            wslc_panel_core::util::strip_md(
+                "容器重建后这份 conf 会丢 —— 可以点「重写配置」补回来\
                  （只写 conf，不重新铺文件 / 不重新接网络）。",
-                )),
-        )
+            ),
+        ))
         .child(body)
         .into_any_element()
 }

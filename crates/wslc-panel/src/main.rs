@@ -221,7 +221,11 @@ fn fit_to_display(usable: f32, desired: f32, min: f32) -> f32 {
 /// 发布版没有控制台，这个文件是**唯一**能看到日志的地方，
 /// 所以出问题时要让用户先看这里。
 fn log_file_path() -> Option<PathBuf> {
-    Some(wslc_panel_core::prefs::app_dir()?.join("logs").join("wslc-panel.log"))
+    Some(
+        wslc_panel_core::prefs::app_dir()?
+            .join("logs")
+            .join("wslc-panel.log"),
+    )
 }
 
 /// 日志出口：追加写日志文件，debug 构建下**同时**镜像到 stderr。
