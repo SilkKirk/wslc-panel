@@ -10,7 +10,7 @@ impl Shell {
     /// ⚠️ 取消会留下一个**不完整**的 tar —— 提示里要说明，
     /// 免得用户把它当成一个能用的备份。
     pub fn cancel_export(&mut self, cx: &mut Context<Self>) {
-        match &self.export_cancel {
+        match &self.tasks.export_cancel {
             Some(token) => {
                 token.cancel();
                 tracing::info!("已请求取消导出");
@@ -77,7 +77,7 @@ impl Shell {
         };
 
         self.state.exporting = Some(ExportProgress::new(name.clone(), path.clone()));
-        self.export_cancel = Some(handle.cancel_token());
+        self.tasks.export_cancel = Some(handle.cancel_token());
         cx.notify();
 
         let probe = std::path::PathBuf::from(&path);
@@ -131,7 +131,7 @@ impl Shell {
                     .take()
                     .map(|p| p.last_line)
                     .unwrap_or_default();
-                shell.export_cancel = None;
+                shell.tasks.export_cancel = None;
 
                 if cancelled {
                     shell.state.notify(Toast::info(format!(
@@ -246,7 +246,7 @@ impl Shell {
             let _ = this.update(cx, |shell, cx| {
                 match result {
                     Ok(child) => {
-                        shell.keep_alive.push(KeepAlive {
+                        shell.tasks.keep_alive.push(KeepAlive {
                             name: name.clone(),
                             child,
                         });
@@ -275,9 +275,9 @@ impl Shell {
     /// 放在 `refresh` 里每轮跑一次：`try_wait` 是**非阻塞**的，几乎不要钱；
     /// 而且它顺手回收了退出的子进程，不留僵尸。
     pub(crate) fn sync_keep_alive(&mut self, cx: &mut Context<Self>) {
-        self.keep_alive.retain_mut(|k| k.is_alive());
+        self.tasks.keep_alive.retain_mut(|k| k.is_alive());
 
-        let names: Vec<String> = self.keep_alive.iter().map(|k| k.name.clone()).collect();
+        let names: Vec<String> = self.tasks.keep_alive.iter().map(|k| k.name.clone()).collect();
         if self.state.kept_alive != names {
             self.state.kept_alive = names;
             cx.notify();
@@ -400,13 +400,13 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.picking {
+        if self.tasks.picking {
             self.state
                 .notify(Toast::info("已经有一个选择框开着了，先处理它"));
             cx.notify();
             return;
         }
-        self.picking = true;
+        self.tasks.picking = true;
         let input = input.clone();
         cx.notify();
 
@@ -424,7 +424,7 @@ impl Shell {
                 .await;
 
             let _ = this.update_in(cx, |shell, window, cx| {
-                shell.picking = false;
+                shell.tasks.picking = false;
 
                 match picked {
                     Ok(Some(path)) => {

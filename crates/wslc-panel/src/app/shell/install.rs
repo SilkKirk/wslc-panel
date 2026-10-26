@@ -24,13 +24,13 @@ impl Shell {
             return;
         };
 
-        if self.picking {
+        if self.tasks.picking {
             self.state
                 .notify(Toast::info("已经有一个选择框开着了，先处理它"));
             cx.notify();
             return;
         }
-        self.picking = true;
+        self.tasks.picking = true;
         cx.notify();
 
         cx.spawn_in(window, async move |this, cx| {
@@ -40,7 +40,7 @@ impl Shell {
                 .await;
 
             let _ = this.update_in(cx, |shell, window, cx| {
-                shell.picking = false;
+                shell.tasks.picking = false;
 
                 match picked {
                     Ok(Some(path)) => {
@@ -597,7 +597,7 @@ impl Shell {
     /// 3. 界面每 250 ms 把事件搬进 `AppState::installing`，
     ///    所以日志和进度是**边跑边显示**的。
     pub fn confirm_install(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.install_run.is_some() {
+        if self.tasks.install_run.is_some() {
             self.state
                 .notify(Toast::error("已经有一个安装在进行 —— 等它结束，或者先取消"));
             cx.notify();
@@ -697,12 +697,12 @@ impl Shell {
         // （比如 `Ubuntu-26.04`），而重定位（导出 → 注销 → 导入）恰好在那段时间里跑。
         // 只记最终名字的话，那一行不受任何互斥保护（见 `AppState::busy_with`）。
         self.state.installing = Some(InstallProgress::new(plan.name.clone(), plan.source_names()));
-        self.install_run = Some(InstallRun {
+        self.tasks.install_run = Some(InstallRun {
             events: Arc::clone(&events),
             done: Arc::clone(&done),
             started: Instant::now(),
         });
-        self.install_cancel = Some(cancel.clone());
+        self.tasks.install_cancel = Some(cancel.clone());
         self.state.notify(Toast::info(format!(
             "正在安装 {}…（期间界面可以继续用，随时能取消）",
             plan.name
@@ -752,7 +752,7 @@ impl Shell {
     /// 重定位阶段（`--unregister` 之后）更是根本不给取消 ——
     /// 见 `wslc_core::cmd::install` 的模块说明。
     pub fn cancel_install(&mut self, cx: &mut Context<Self>) {
-        match &self.install_cancel {
+        match &self.tasks.install_cancel {
             Some(token) => {
                 token.cancel();
                 tracing::info!("已请求取消安装");
@@ -778,7 +778,7 @@ impl Shell {
             // 用 `?` 而不是 `let ... else { return None }`：两者等价，
             // 而这一个函数返回的就是 `Option`，`?` 更短也更难写错
             // （clippy 的 `question_mark` 报的就是这条）。
-            let run = self.install_run.as_ref()?;
+            let run = self.tasks.install_run.as_ref()?;
             let drained: Vec<InstallEvent> = std::mem::take(&mut *lock(&run.events));
             (drained, run.started, lock(&run.done).clone())
         };
@@ -810,8 +810,8 @@ impl Shell {
     /// 失败时**留在页面上** —— 那里有完整日志，用户要能读它；
     /// 成功才跳到实例列表，让他直接看到新装好的东西。
     pub(crate) fn finish_install(&mut self, summary: InstallSummary, cx: &mut Context<Self>) {
-        self.install_run = None;
-        self.install_cancel = None;
+        self.tasks.install_run = None;
+        self.tasks.install_cancel = None;
 
         let outcome = if summary.cancelled {
             InstallOutcome::Cancelled

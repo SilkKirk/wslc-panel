@@ -875,3 +875,51 @@ pub(crate) struct DbStatement {
     /// 输入框的值拿不到了。
     pub(crate) to_record: Option<(String, String, String)>,
 }
+
+/// 长任务与"正在进行的动作"的句柄。
+///
+/// 全是**能力**而不是界面状态：能 kill 一个子进程、能阻止重复弹窗、能判断
+/// 我们吊着的发行版还在不在。对应的纯数据（拉了哪个镜像、走到第几步、日志）
+/// 在 `AppState` 里 —— 因为 `views/` 只拿得到 `&AppState`。
+///
+/// 字段 `pub(super)`：定义模块是 `app::shell::state`，父模块是 `app::shell`，
+/// 而各域模块（`db/` / `deploy/` …）都是它的后代 —— 于是它们读写得到，
+/// `views/` 看不见。
+pub(crate) struct Tasks {
+    /// 正在进行的拉取任务的取消令牌。
+    ///
+    /// 放 `Shell`：这是**能力**（能 kill 子进程），不是"状态"。
+    /// 纯数据部分（拉了哪个镜像、输出了什么）在 `AppState::pulling` 里，
+    /// 因为 `views/` 只拿得到 `&AppState`。
+    pub(super) pull_cancel: Option<wslc_core::CancelToken>,
+
+    /// 正在进行的**导出**任务的取消令牌。
+    ///
+    /// 和 `pull_cancel` 并列：两者都是长任务，都能取消，但一个走 `wslc.exe`、
+    /// 一个走 `wsl.exe`，句柄类型也不同，合并只会让这个字段变成 `enum`。
+    pub(super) export_cancel: Option<wslc_core::CancelToken>,
+
+    /// 正在跑的安装（事件队列 + 结果）；空闲时为 `None`。
+    ///
+    /// 纯数据部分（走到第几步、日志、进度）在 `AppState::installing` 里 ——
+    /// `views/` 只拿得到 `&AppState`。
+    pub(super) install_run: Option<InstallRun>,
+
+    /// 正在跑的安装的取消令牌。
+    ///
+    /// 和 `export_cancel` 并列：都是长任务、都能取消，但一个走 `wsl.exe`
+    /// （外加 `curl.exe`），另一个只有 `wsl --export`。
+    pub(super) install_cancel: Option<InstallCancel>,
+
+    /// 本面板正在吊着的发行版（见 [`KeepAlive`]）。
+    ///
+    /// 界面只看到 `AppState::kept_alive` 里的名字；真正的进程句柄留在这里 ——
+    /// 那是"能力"，不是界面状态。
+    pub(super) keep_alive: Vec<KeepAlive>,
+
+    /// 是否正在等一个文件 / 目录选择器的结果。
+    ///
+    /// 用来**防止重复弹窗**：选择器没有超时（用户不点完它就一直开着），
+    /// 连点两下「浏览…」会堆出两个对话框。见 `cmd::picker` 的说明。
+    pub(super) picking: bool,
+}

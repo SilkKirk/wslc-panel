@@ -402,7 +402,7 @@ impl Shell {
             }
         };
 
-        self.pull_cancel = Some(handle.cancel_token());
+        self.tasks.pull_cancel = Some(handle.cancel_token());
         self.state.pulling = Some(state::PullProgress::new(reference.clone()));
         self.state
             .notify(Toast::info(format!("开始拉取 {reference}")));
@@ -456,7 +456,7 @@ impl Shell {
                     .to_owned();
 
                 shell.state.pulling = None;
-                shell.pull_cancel = None;
+                shell.tasks.pull_cancel = None;
 
                 if cancelled {
                     shell
@@ -490,7 +490,7 @@ impl Shell {
 
     /// 取消正在进行的拉取（kill 子进程）。
     pub fn cancel_pull(&mut self, cx: &mut Context<Self>) {
-        match &self.pull_cancel {
+        match &self.tasks.pull_cancel {
             Some(token) => {
                 token.cancel();
                 tracing::info!("已请求取消拉取");

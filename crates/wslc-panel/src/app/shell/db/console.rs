@@ -370,7 +370,7 @@ impl Shell {
     /// 导出也弹选择框，两边共用同一个守卫才不会一次弹出两个对话框
     /// —— 任务栏里堆一排对话框是最糟的。
     pub fn export_sql_result_csv(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.picking {
+        if self.tasks.picking {
             self.state
                 .notify(Toast::info("已经有一个选择框开着了，先处理它"));
             cx.notify();
@@ -379,7 +379,7 @@ impl Shell {
 
         // ⚠️ 这一段**整体**放在一个块里，让 `db`（对 `self.state` 的不可变借用）
         // 在块结束时立刻归还。外面还要 `self.state.notify(..)`（那要 `&mut`）
-        // 和 `self.picking = true`（要 `&mut self`）—— 借用没结束就写，是 E0502。
+        // 和 `self.tasks.picking = true`（要 `&mut self`）—— 借用没结束就写，是 E0502。
         //
         // 这个形状在 `open_db_backup_dialog` / `run_db_console` 里都用过：
         // 先把要用的东西算成 owned 的，出了块再用。
@@ -415,7 +415,7 @@ impl Shell {
             return;
         };
 
-        self.picking = true;
+        self.tasks.picking = true;
         cx.notify();
 
         let title = "导出 CSV".to_owned();
@@ -438,7 +438,7 @@ impl Shell {
             //
             // 返回值：`Ok(决定)` = 回调跑过了；`Err(_)` = 实体已销毁（窗口关了）。
             let decision = this.update_in(cx, |shell, _window, _cx| {
-                shell.picking = false;
+                shell.tasks.picking = false;
                 match picked {
                     Ok(Some(path)) => SaveDecision::Write(std::path::PathBuf::from(path)),
                     Ok(None) => SaveDecision::Cancelled,

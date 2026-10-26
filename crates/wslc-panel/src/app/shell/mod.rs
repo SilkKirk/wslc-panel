@@ -47,6 +47,11 @@ pub(crate) use state::*;
 pub struct Shell {
     /// 全部状态。
     pub state: AppState,
+    /// 长任务与"正在进行的动作"的句柄（取消令牌 / 选择器状态 / 吊着的发行版）。
+    ///
+    /// 收成一组而不是平铺：它们是同一类东西 —— **能力**，不是界面状态
+    /// （对应的纯数据在 `AppState::pulling` / `exporting` / `installing`）。
+    tasks: Tasks,
     /// 最近一次采集完成的时间（自动刷新与手动刷新都算）。
     ///
     /// 只用于页头那句「最后刷新：N 秒前」—— 它是**界面状态**，不进快照：
@@ -65,27 +70,6 @@ pub struct Shell {
     /// ⚠️ **必须存着**：`Subscription` 一 drop 就退订，表现是"打字时列表
     /// 不跟着变"，不会报错 —— 这是本仓库踩过的坑（见 `select_subs`）。
     container_search_sub: Option<Subscription>,
-    /// 正在进行的拉取任务的取消令牌。
-    ///
-    /// 放 `Shell`：这是**能力**（能 kill 子进程），不是"状态"。
-    /// 纯数据部分（拉了哪个镜像、输出了什么）在 `AppState::pulling` 里，
-    /// 因为 `views/` 只拿得到 `&AppState`。
-    pull_cancel: Option<wslc_core::CancelToken>,
-    /// 正在进行的**导出**任务的取消令牌。
-    ///
-    /// 和 `pull_cancel` 并列：两者都是长任务，都能取消，但一个走 `wslc.exe`、
-    /// 一个走 `wsl.exe`，句柄类型也不同，合并只会让这个字段变成 `enum`。
-    export_cancel: Option<wslc_core::CancelToken>,
-    /// 是否正在等一个文件 / 目录选择器的结果。
-    ///
-    /// 用来**防止重复弹窗**：选择器没有超时（用户不点完它就一直开着），
-    /// 连点两下「浏览…」会堆出两个对话框。见 `cmd::picker` 的说明。
-    picking: bool,
-    /// 本面板正在吊着的发行版（见 [`KeepAlive`]）。
-    ///
-    /// 界面只看到 `AppState::kept_alive` 里的名字；真正的进程句柄留在这里 ——
-    /// 那是"能力"，不是界面状态。
-    keep_alive: Vec<KeepAlive>,
     /// 「发行版配置（`/etc/wsl.conf`）」弹窗的输入框；关闭时为 `None`。
     ///
     /// `views::wslconf_overlay` 要读它来画 `Input`，所以是 `pub(crate)`。
@@ -170,16 +154,6 @@ pub struct Shell {
     /// 来对齐：多出来的从栈顶 pop（安全），缺的依次追加（不动下层）。
     /// 这份记录就是那个 diff 的左边。见 `Shell::sync_dialog_stack`。
     pub(crate) dialog_stack: Vec<DialogKey>,
-    /// 正在跑的安装（事件队列 + 结果）；空闲时为 `None`。
-    ///
-    /// 纯数据部分（走到第几步、日志、进度）在 `AppState::installing` 里 ——
-    /// `views/` 只拿得到 `&AppState`。
-    install_run: Option<InstallRun>,
-    /// 正在跑的安装的取消令牌。
-    ///
-    /// 和 `export_cancel` 并列：都是长任务、都能取消，但一个走 `wsl.exe`
-    /// （外加 `curl.exe`），另一个只有 `wsl --export`。
-    install_cancel: Option<InstallCancel>,
     /// 采集期间又有刷新请求进来了吗（本轮跑完要立刻补一次）。
     ///
     /// 丢不得：操作（启动 / 停止 / 创建 / 删除）完成后都会补刷，撞上 3 秒一次的

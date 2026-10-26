@@ -5,7 +5,7 @@
 
 use super::super::prelude::*;
 use super::Shell;
-use super::state::{DropdownItem, InstallForm};
+use super::state::{DropdownItem, InstallForm, Tasks};
 
 /// 取锁；中毒（别的线程 panic 过）时照常用里面的值。
 ///
@@ -158,10 +158,14 @@ impl Shell {
             errors_expanded: false,
             container_search: None,
             container_search_sub: None,
-            pull_cancel: None,
-            export_cancel: None,
-            picking: false,
-            keep_alive: Vec::new(),
+            tasks: Tasks {
+                pull_cancel: None,
+                export_cancel: None,
+                install_run: None,
+                install_cancel: None,
+                keep_alive: Vec::new(),
+                picking: false,
+            },
             wslconf_dialog: None,
             terminal_dir_input: None,
             create_dialog: None,
@@ -176,8 +180,6 @@ impl Shell {
             create_subs: Vec::new(),
             prompt: None,
             dialog_stack: Vec::new(),
-            install_run: None,
-            install_cancel: None,
             refresh_again: false,
             refresh_visible: false,
             status_tick: 0,
