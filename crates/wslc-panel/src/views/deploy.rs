@@ -1,11 +1,9 @@
 //! ②c 应用部署管理页：表格、行内动作、三个浮层。
 
-// ⚠️ `modal_title_danger` / `modal_footer` 不再导入：三个已迁的浮层
-// （日志 / 站点配置 / 删除确认）把标题和底部交给 `Dialog` + 调用处的
-// `modal_footer`，本文件只产出内容。剩下的「添加部署」弹窗仍用
-// `modal_card` / `modal_scrim` / `modal_title`。
-// ⚠️ `modal_title_danger` 不再需要（删除确认的标题交给 `Dialog`），
-// 但 `modal_footer` **仍要留着**：「添加部署」弹窗（未迁）还在用它。
+// 三个浮层（日志 / 站点配置 / 删除确认）已迁到官方 `Dialog`，所以
+// `modal_title_danger` 不再需要（危险色标题交给 `Dialog` 的 title + 调用处）。
+// 但 `modal_card` / `modal_scrim` / `modal_title` / `modal_footer` **仍要留着**：
+// 「添加部署」弹窗（还没迁）还在用它们。
 use super::common::{
     ModalSize, NoContainer, cell_link, cell_muted_full, cell_text, disclosure, empty_state,
     form_field, immediate_button, kv_block, log_text, modal_card, modal_footer, modal_scrim,
@@ -1086,7 +1084,7 @@ pub(crate) fn deploy_remove_confirm_body(app: &str, deploy: Option<&DeployState>
     // ⚠️ 这一处**不能**用 `modal_card`：它是唯一一个"危险配色"的确认框
     // （`danger_edge` 边框 + 红色标题），而 `modal_card` 给的是常规边框。
     // 那个差异是**有意义的**（用户要一眼看出这是不可撤销的操作），不是散落。
-    // 但宽度仍走 `ModalSize::Narrow` —— 尺寸该统一，配色该区分。
+    // 宽度交给 `Dialog` 的 `.w(560.)` —— 尺寸该统一，配色该区分。
     v_flex()
         .w_full()
         .gap_3()

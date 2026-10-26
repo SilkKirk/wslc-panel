@@ -106,8 +106,6 @@ pub(crate) fn disclosure(
 /// **卡片边缘会挪动 20px**。正式软件里同一种模态只有一两档宽度。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModalSize {
-    /// 窄：确认框、单输入弹窗（原 560 / 620）。
-    Narrow,
     /// 中：常规表单（原 680 / 700）。
     Medium,
     /// 宽：详情 / 日志 / 表格（原 760 / 780 / 820）。
@@ -118,7 +116,6 @@ impl ModalSize {
     /// 这一档的像素宽度。
     pub fn width(self) -> f32 {
         match self {
-            Self::Narrow => 560.,
             // 680 → 700：簇内取整，和 `Medium` 的另一处（700）对齐。
             Self::Medium => 700.,
             // 760 / 780 / 820 → 800：同上，取簇内中位。
@@ -524,19 +521,6 @@ pub(crate) fn modal_title(title: impl Into<SharedString>) -> AnyElement {
         .text_lg()
         .font_bold()
         .text_color(theme::text())
-        .child(title.into())
-        .into_any_element()
-}
-
-/// 危险动作的弹窗标题（删除确认那一类）：同样的字号，颜色换成 `danger`。
-///
-/// 单独一个函数而不是给 [`modal_title`] 加个 `danger: bool`：调用点只有一处，
-/// 布尔参数在调用点读起来是 `modal_title(text, true)` —— 不知道 `true` 是什么。
-pub(crate) fn modal_title_danger(title: impl Into<SharedString>) -> AnyElement {
-    div()
-        .text_lg()
-        .font_bold()
-        .text_color(theme::danger())
         .child(title.into())
         .into_any_element()
 }
