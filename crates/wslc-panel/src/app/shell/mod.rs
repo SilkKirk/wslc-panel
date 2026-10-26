@@ -72,6 +72,8 @@ pub(crate) enum DialogKey {
     DeployRemoveConfirm,
     /// 「备份列表」对话框（数据库管理页）。
     DbBackupList,
+    /// 通用二次确认（危险操作）。
+    Confirm,
 }
 
 /// 应用外壳。

@@ -6,8 +6,7 @@
 
 use super::super::prelude::*;
 use super::Shell;
-// `confirm_overlay` 定义在 `core.rs`：`Render` 只是把当前待确认的动作画出来。
-use super::core::confirm_overlay;
+// 通用二次确认已迁到官方 `Dialog`（`DialogKey::Confirm`），内容在 `core::confirm_body`。
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -264,10 +263,8 @@ impl Render for Shell {
             }
         };
 
-        let confirm: AnyElement = match &state.confirm {
-            None => div().into_any_element(),
-            Some(action) => confirm_overlay(action, &entity),
-        };
+        // NOTE: 通用二次确认走官方 Dialog 栈（DialogKey::Confirm）——
+        // 它能从**任何**浮层里弹出来，窗口级栈保证它一定盖在最上面。
 
         // 「拉取镜像」弹窗。表单住在 `Shell::image_form` 里（不在 `state` 里），
         // 所以只有这里能画它。
@@ -567,30 +564,18 @@ impl Render for Shell {
             //
             // 教训：**这棵树里每算一个 `AnyElement`，都必须确认它真的被挂上去了。**
             // 漏挂不会编译失败、也不会运行时报错，只是"点了没反应"。
-            // 备份进度要盖住它打开时所处的一切；备份列表在进度之后
-            //（进度跑完自动关，那时列表还在）。
-            // ⚠️ **通用二次确认必须挂在最后一个。**
+            // ℹ️ 通用二次确认（`DialogKey::Confirm`）**已经不在这条链子上**：
+            // 它走官方 `Dialog` 的窗口级栈，层序 = 栈序 —— 从**任何**浮层里
+            // 弹出来都一定盖在最上面。
             //
-            // 层序就是这个 `.child()` 链的先后：**后画的压在上面**（同一个文件里
-            // 上面那几段注释都是按这条写的）。而 `confirm` 是"最后点的那个动作"
-            // 的确认框，它可以从**任一**浮层里点出来：
+            // 这正是 v0.9.14 那条老坑的根治：当时它挂在这条链子的最前面，
+            // 于是从详情里点「压缩磁盘」时，确认框连着遮罩一起被详情盖住 ——
+            // 既看不到「确认」，也挡不住背后的按钮（实机原话："压缩磁盘的
+            // 对话确认在详情之下"）。手写链子只能靠"记得排后面"，栈不会忘。
             //
-            // - 发行版详情 → 「压缩磁盘」「删除」
-            // - 容器详情   → 「强杀」
-            // - 备份列表   → 「恢复」
-            //
-            //（⚠️ 备份列表里的「删除」**不**走这里 —— 它直接删、没有确认框，
-            // 见 `Shell::delete_db_backup`。别照这句话去推断它。）
-            //
-            // v0.9.14 及以前它挂在整条链子的**最前面**（`pull_dialog` 之前），
-            // 于是这些确认框全被自己下面那层浮层盖住了 —— 实机报过来的就是这一条：
-            // "实例详情这里点击压缩磁盘之后没有隐藏详情，压缩磁盘的对话确认在详情之下"
-            //（确认框连着它的遮罩一起被盖住：既看不到「确认」，也挡不住背后的按钮）。
-            //
-            // ⚠️ 加新浮层时问一句：**它能不能从另一个浮层里被打开？** 能的话，
-            // 就必须排在那个浮层之后。`views::modal_scrim` 那套遮罩只保证"点不到
-            // 背后"，管不了层序 —— 层序全靠这条链子。见 `AGENTS.md` §7.5。
-            .child(confirm)
+            // ⚠️ 仍在链子上的浮层（`pull_dialog` / `create_dialog` / `deploy_dialog`
+            // / `wslconf_dialog` / `db_dialog` 等）**还是按 `.child()` 的先后定层序**，
+            // 加新浮层时仍要问那句：**它能不能从另一个浮层里被打开？**
     }
 }
 // ---------------------------------------------------------------------------

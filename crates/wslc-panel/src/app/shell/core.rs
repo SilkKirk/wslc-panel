@@ -137,63 +137,16 @@ pub(crate) fn folder_id(database: &str) -> String {
 ///
 /// 容器域和发行版域共用这一个浮层 —— 文案由 [`ConfirmAction`] 自己给，
 /// 所以这里不需要知道是哪个域。
-pub(crate) fn confirm_overlay(action: &ConfirmAction, entity: &Entity<Shell>) -> AnyElement {
-    let cancel = {
-        let entity = entity.clone();
-        Button::new("confirm-cancel")
-            .label("取消")
-            .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.cancel_pending(cx));
-            })
-    };
-
-    let confirm = {
-        let entity = entity.clone();
-        Button::new("confirm-ok")
-            .label(action.confirm_label())
-            .primary()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.confirm_pending(cx));
-            })
-    };
-
-    views::modal_scrim(
-        "confirm",
-        v_flex()
-            .w(px(460.))
-            .gap_4()
-            .p_5()
-            .rounded_lg()
-            .bg(theme::bg_card())
-            .border_1()
-            .border_color(theme::danger().opacity(0.5))
-            .child(
-                div()
-                    .text_lg()
-                    .font_bold()
-                    .text_color(theme::danger())
-                    .child(action.title()),
-            )
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(theme::text_muted())
-                    // 文案里写的是 Markdown（`**已停止**`），而这里是纯文本
-                    // 渲染 —— 不清掉的话用户看到的是字面星号，
-                    // 而这恰好是"不可撤销"那类确认框。见 `util::strip_md`。
-                    .child(crate::util::strip_md(&action.body())),
-            )
-            .child(
-                h_flex()
-                    .w_full()
-                    .justify_end()
-                    .gap_2()
-                    .child(cancel)
-                    .child(confirm),
-            ),
-    )
-    .into_any_element()
+/// 通用二次确认对话框的**内容**（标题 / 底部按钮由 `Dialog` 负责）。
+///
+/// 文案里的 Markdown 必须过 `strip_md`：这一条是"不可撤销"那类确认框，
+/// 留着字面星号比别处更糟（`util::strip_md` 的注释里有完整理由）。
+pub(crate) fn confirm_body(action: &ConfirmAction) -> AnyElement {
+    div()
+        .text_sm()
+        .text_color(theme::text_muted())
+        .child(crate::util::strip_md(&action.body()))
+        .into_any_element()
 }
 
 impl Shell {
