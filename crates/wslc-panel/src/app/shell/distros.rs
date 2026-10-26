@@ -1128,7 +1128,6 @@ impl Shell {
                         .footer(modal_footer([close.into_any_element()]))
                 });
             }
-        }
         DialogKey::DeployLogs => {
             let Some(deploy) = self.state.deploy.as_ref() else {
                 return;
