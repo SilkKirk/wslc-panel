@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use super::*;
+use super::{curl::ProgressSource, *};
 
 /// 把刚装好的发行版弄成"用户要的名字 + 用户要的位置"。
 ///

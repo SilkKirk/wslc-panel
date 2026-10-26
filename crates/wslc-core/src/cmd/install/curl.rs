@@ -176,14 +176,14 @@ pub(super) fn output_path(args: &[String]) -> Result<PathBuf> {
 }
 
 /// 轮询产物大小的进度源。
-struct ProgressSource {
-    path: PathBuf,
-    total: Option<u64>,
-    started: Instant,
+pub(super) struct ProgressSource {
+    pub(super) path: PathBuf,
+    pub(super) total: Option<u64>,
+    pub(super) started: Instant,
 }
 
 impl ProgressSource {
-    fn emit(&self, opts: &RunOptions) {
+    pub(super) fn emit(&self, opts: &RunOptions) {
         // 文件还没建出来时算 0 —— 不报错，用户看到的是"0 B"。
         let have = std::fs::metadata(&self.path)
             .map(|meta| meta.len())
