@@ -39,6 +39,10 @@ mod relocate;
 use relocate::{MOVE_FIRST_WAIT, MOVE_MAX_WAIT, MOVE_TOTAL_BUDGET, same_dir};
 use relocate::{ensure_relocated, is_busy};
 
+mod curl;
+// 下载（curl）与流式输出那一簇住在 curl.rs；主流程只用 run_curl_step。
+use curl::{finish_stream, line_sink, run_curl_step};
+
 /// 轮询子进程是否结束的间隔。
 ///
 /// 250 ms 是"界面看起来是活的"和"别把 CPU 烧在这上面"之间的折中；
@@ -548,195 +552,6 @@ fn args_with_id_replaced(args: &[String], id: &str) -> Option<Vec<String>> {
     Some(out)
 }
 
-/// 起一个 `curl.exe` 步骤（下载），并轮询产物大小当进度。
-fn run_curl_step(step: &PlannedStep, opts: &RunOptions) -> Result<()> {
-    let out = output_path(&step.args)?;
-    let (sink, last) = line_sink(opts);
-    let handle =
-        cli::spawn_streaming_program(CURL, CURL_LABEL, cli::CURL_NOT_FOUND_HINT, &step.args, sink)?;
-    let progress = ProgressSource {
-        path: out.clone(),
-        total: opts.expected_bytes,
-        started: Instant::now(),
-    };
-
-    let result = finish_stream(
-        handle,
-        CURL_LABEL,
-        &step.args,
-        last,
-        step.cancellable,
-        Some(&progress),
-        opts,
-    );
-
-    // 下载没成功 → 把半成品删掉。留着只会占空间，而且用户会把它当成能用的 rootfs。
-    if result.is_err() && out.exists() {
-        match std::fs::remove_file(&out) {
-            Ok(()) => emit(
-                opts,
-                InstallEvent::Line(format!("已删掉没下完的临时文件 {}", out.display())),
-            ),
-            Err(e) => emit(
-                opts,
-                InstallEvent::Line(format!(
-                    "临时文件 {} 删不掉（{e}），要自己清理",
-                    out.display()
-                )),
-            ),
-        }
-    }
-
-    result
-}
-
-/// 轮询到子进程结束（或取消），把结果翻译成 `Result`。
-#[allow(clippy::too_many_arguments)]
-fn finish_stream(
-    handle: StreamHandle,
-    program: &'static str,
-    args: &[String],
-    last: Arc<Mutex<Vec<String>>>,
-    cancellable: bool,
-    progress: Option<&ProgressSource>,
-    opts: &RunOptions,
-) -> Result<()> {
-    loop {
-        if cancellable && opts.cancel.is_cancelled() {
-            handle.cancel_token().cancel();
-            // 杀掉之后还要等它退出，否则读取线程会跟着走掉、日志丢尾巴。
-            let _ = handle.finish();
-            return Err(Error::Cancelled {
-                program,
-                args: args.join(" "),
-            });
-        }
-
-        match handle.try_wait() {
-            Ok(Some(code)) => {
-                let _ = handle.finish();
-                if code == 0 {
-                    return Ok(());
-                }
-                let tail = last.lock().map(|guard| guard.clone()).unwrap_or_default();
-                return Err(Error::NonZeroExit {
-                    program,
-                    args: args.join(" "),
-                    code,
-                    stderr: failure_detail(&tail),
-                });
-            }
-            Ok(None) => {}
-            Err(e) => {
-                // `cancel()` 返回 `()`，所以不要写成 `let _ = ...`：
-                // 那会让 clippy 报 `let_unit_value`，也让人误以为这里在丢弃
-                // 一个 `Result`（真正需要看结果的是下面那句 `finish()`）。
-                handle.cancel_token().cancel();
-                let _ = handle.finish();
-                return Err(e);
-            }
-        }
-
-        if let Some(progress) = progress {
-            progress.emit(opts);
-        }
-        std::thread::sleep(POLL_INTERVAL);
-    }
-}
-
-/// 造一个"记住最后几行输出、同时发给界面"的回调。
-///
-/// ⚠️ 记**最后几行**而不是最后一行：`wsl.exe` 失败时会把真正的原因写在前面，
-/// 末尾跟一句固定的"如果此错误是意外错误，请考虑搜索现有问题…"。
-/// 只留最后一行，用户（和我们）看到的就是那句废话 —— 这个坑真的踩过一次：
-/// `--manage --move` 当时失败，界面上只有那句套话，查了半天才发现是
-/// "装完还没稳定"。
-fn line_sink(
-    opts: &RunOptions,
-) -> (
-    impl Fn(&str) + Send + Sync + 'static,
-    Arc<Mutex<Vec<String>>>,
-) {
-    /// 留多少行。
-    const KEEP: usize = 6;
-
-    let events = Arc::clone(&opts.on_event);
-    let tail: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let slot = Arc::clone(&tail);
-
-    let sink = move |line: &str| {
-        if let Ok(mut guard) = slot.lock() {
-            if !line.trim().is_empty() {
-                guard.push(line.to_owned());
-                if guard.len() > KEEP {
-                    guard.remove(0);
-                }
-            }
-        }
-        events(InstallEvent::Line(line.to_owned()));
-    };
-
-    (sink, tail)
-}
-
-/// 把"最后几行"拼成一句能给人看的失败原因。
-///
-/// 去掉 `wsl.exe` 那句固定套话（它每行都一样，且不含任何信息），
-/// 剩下的按行拼起来 —— 真正的错误码（`Wsl/InstallDistro/...`）就在里面。
-fn failure_detail(tail: &[String]) -> String {
-    let meaningful: Vec<&str> = tail
-        .iter()
-        .map(String::as_str)
-        .filter(|line| {
-            let line = line.trim();
-            !line.is_empty()
-                && !line.contains("如果此错误是意外错误")
-                && !line.contains("github.com/microsoft/WSL/issues")
-        })
-        .collect();
-
-    if meaningful.is_empty() {
-        "（它没有给出任何有用的输出）".to_owned()
-    } else {
-        meaningful.join(" / ")
-    }
-}
-
-/// 从 `curl` 的参数里找出 `-o` 指的文件。
-fn output_path(args: &[String]) -> Result<PathBuf> {
-    let at = args.iter().position(|a| a == "-o").ok_or_else(|| {
-        Error::Install("内部错误：下载步骤里没有 `-o`，拿不到产物路径".to_owned())
-    })?;
-    let path = args
-        .get(at + 1)
-        .ok_or_else(|| Error::Install("内部错误：下载步骤的 `-o` 后面没有路径".to_owned()))?;
-    Ok(PathBuf::from(path))
-}
-
-/// 轮询产物大小的进度源。
-struct ProgressSource {
-    path: PathBuf,
-    total: Option<u64>,
-    started: Instant,
-}
-
-impl ProgressSource {
-    fn emit(&self, opts: &RunOptions) {
-        // 文件还没建出来时算 0 —— 不报错，用户看到的是"0 B"。
-        let have = std::fs::metadata(&self.path)
-            .map(|meta| meta.len())
-            .unwrap_or(0);
-        emit(
-            opts,
-            InstallEvent::Progress {
-                have,
-                total: self.total,
-                secs: self.started.elapsed().as_secs(),
-            },
-        );
-    }
-}
-
 fn create_dir(step: &PlannedStep) -> Result<()> {
     let dir = arg(step, 0)?;
     std::fs::create_dir_all(dir).map_err(|e| Error::Install(format!("建不出安装目录 {dir}：{e}")))
@@ -825,6 +640,9 @@ fn sleep_cancellable(total: Duration, opts: &RunOptions) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `failure_detail` / `output_path` 搬进 curl.rs 了，而正式构建里没人直接用
+    // 它们（只有这里的断言要）—— 所以在测试模块内部导入，不给顶层留 cfg(test)。
+    use super::curl::{failure_detail, output_path};
     use crate::model::install::{InstallSource, InstallSpec, PlanContext};
 
     #[test]
