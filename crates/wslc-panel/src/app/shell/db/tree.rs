@@ -58,8 +58,8 @@ impl Shell {
         let total = db.schema_tree.table_count();
         let fingerprint = (query.trim().to_owned(), total);
         // 指纹没变就别动 —— 见函数文档（重建会丢展开状态）。
-        if self.schema_tree_built_for.as_ref() == Some(&fingerprint)
-            && self.schema_tree_state.is_some()
+        if self.sql_ui.schema_tree_built_for.as_ref() == Some(&fingerprint)
+            && self.sql_ui.schema_tree_state.is_some()
         {
             return;
         }
@@ -100,8 +100,8 @@ impl Shell {
 
         let state = cx.new(|cx| gpui_kit::component::tree::TreeState::new(cx));
         state.update(cx, |s, cx| s.set_items(items, cx));
-        self.schema_tree_state = Some(state);
-        self.schema_tree_built_for = Some(fingerprint);
+        self.sql_ui.schema_tree_state = Some(state);
+        self.sql_ui.schema_tree_built_for = Some(fingerprint);
 
         // 表结构变了 → 给补全换一份新快照。
         //
@@ -214,7 +214,7 @@ impl Shell {
                 if ok {
                     // 换了数据就得重灌 items。指纹先清掉，否则"表总数没变、
                     // 但表名变了"（改表名场景）会被误判成不变。
-                    shell.schema_tree_built_for = None;
+                    shell.sql_ui.schema_tree_built_for = None;
                     let query = shell
                         .forms
                         .schema_search

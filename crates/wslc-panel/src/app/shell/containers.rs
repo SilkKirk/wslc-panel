@@ -479,7 +479,8 @@ impl Shell {
             &dialog.memory,
             &dialog.cpus,
         ] {
-            self.subs.create_subs
+            self.subs
+                .create_subs
                 .push(cx.subscribe(input, |_, _, event: &InputEvent, cx| {
                     if matches!(event, InputEvent::Change) {
                         cx.notify();

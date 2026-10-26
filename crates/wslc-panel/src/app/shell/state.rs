@@ -1081,3 +1081,62 @@ pub(crate) struct Subscriptions {
     /// 和 `container_search_sub` 同一个坑，只是它影响的是树。
     pub(super) schema_search_sub: Option<Subscription>,
 }
+
+/// SQL 控制台这一页的**界面状态**（6 个）：结果表格、结果 tab、原始输出、左侧表名树。
+///
+/// # 为什么在 `Shell` 而不是 `AppState`
+///
+/// 里面有两个 GPUI 实体（`TableState` / `TreeState`），而 `wslc-panel-core` 不依赖
+/// GPUI —— 装不下它们。所以纯数据（`DbState::sql_results` / `DbState::schema_tree`）
+/// 在 `AppState`，**实体与页内开关**在这里；和 [`Forms`] 里那几个输入框同一个理由。
+///
+/// # 什么时候重建
+///
+/// `sql_table` 每次跑完 SQL 就**整个换掉**（结果集变了，列定义、行、排序全要重来），
+/// 缓存着旧的不如重建 —— 代价只是按列名估一次宽度（前 100 行）。
+/// `schema_tree_state` 则**只在真的变了**时才重建：重建会丢掉用户已经展开的层级。
+///
+/// # 可见性
+///
+/// 除 `schema_tree_built_for` 之外都是 `pub(crate)`：这一页在 `views/sql.rs` 里渲染，
+/// 那几个开关和实体它都要读。`schema_tree_built_for` 只有 `app` 自己算"要不要重建"
+/// 时用，所以是 `pub(super)`。
+pub(crate) struct SqlUi {
+    /// SQL 结果表格的 `TableState`（v0.11）。
+    pub(crate) sql_table:
+        Option<Entity<gpui_kit::component::table::TableState<crate::sql_table::SqlResultDelegate>>>,
+
+    /// 当前在看的**第几个**结果（多语句时按 tab 分开）。
+    pub(crate) sql_result_tab: usize,
+
+    /// 「看原始输出」是不是展开着。
+    ///
+    /// 原始输出（`mysql --table` 的 ASCII 表格）不常看 —— 只在排查列宽异常 /
+    /// 字符集问题时才有用，所以默认收起。
+    pub(crate) sql_raw_open: bool,
+
+    /// SQL 页左侧**表名树**收起来了没有（v0.12.2）。
+    ///
+    /// 和 `sidebar_collapsed`（应用级导航）分开记：一个是全局面板，一个是这一页的
+    /// 工作区侧栏，两者该各自开关 —— 看代码时不想看到导航栏，不代表也不想看表结构。
+    pub(crate) tree_collapsed: bool,
+
+    /// 库 / 表树的**树控件状态**（v0.12.1）。
+    ///
+    /// # 为什么换成组件的 `Tree`
+    ///
+    /// v0.12 里这棵树是**自己用 `Button` 一行行画的**，实机一看就丑：`Button` 会把
+    /// 文字**居中**、给每一行套一个整行宽度的底色和内边距，于是 110 行看起来像
+    /// 110 个色块，完全不像树（缩进也读不出来）。
+    ///
+    /// `gpui-kit` 自带 `component::tree::Tree`（虚拟滚动 + 逐级展开 + 选中态 +
+    /// 右键菜单），官方 `examples/editor` 就是用它做文件树的。它自己管展开/折叠
+    /// 和选中，我们只管把 `TreeItem` 喂进去。
+    pub(crate) schema_tree_state: Option<Entity<gpui_kit::component::tree::TreeState>>,
+
+    /// 树是**按哪次查询**建出来的（用于判断要不要重建）。
+    ///
+    /// 存 `(搜索关键字, 表总数)`：两者都没变就不重建 —— `TreeState` 重建会丢掉
+    /// 用户已经展开的层级，所以这件事必须**只在真的变了**时做。
+    pub(super) schema_tree_built_for: Option<(String, usize)>,
+}

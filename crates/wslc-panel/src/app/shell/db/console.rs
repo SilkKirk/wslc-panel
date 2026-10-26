@@ -271,7 +271,7 @@ impl Shell {
                         .position(|r| !r.columns.is_empty())
                         .unwrap_or(0);
                     new_table = db.sql_results.get(first_grid).cloned();
-                    self.sql_result_tab = first_grid;
+                    self.sql_ui.sql_result_tab = first_grid;
                     // 控制台可能刚改了库 / 表 —— 顺手把列表刷新一次。
                     // 失败时列表不会变，就不白跑一趟了。
                     reload = true;
@@ -295,7 +295,7 @@ impl Shell {
         }
         // 表格整个换掉。`None`（报错 / 全是 DDL / 没有结果）时也清，
         // 免得旧结果还留在屏幕上。
-        self.sql_table = new_table.map(|r| {
+        self.sql_ui.sql_table = new_table.map(|r| {
             cx.new(|cx| {
                 gpui_kit::component::table::TableState::new(
                     crate::sql_table::SqlResultDelegate::new(r),
@@ -328,10 +328,10 @@ impl Shell {
         };
         if result.columns.is_empty() {
             // 没有表格的结果（DDL / 无输出）不建表格 —— 界面画一句说明就够了
-            self.sql_table = None;
+            self.sql_ui.sql_table = None;
         } else {
             let result = result.clone();
-            self.sql_table = Some(cx.new(|cx| {
+            self.sql_ui.sql_table = Some(cx.new(|cx| {
                 gpui_kit::component::table::TableState::new(
                     crate::sql_table::SqlResultDelegate::new(result),
                     window,
@@ -340,7 +340,7 @@ impl Shell {
                 .cell_selectable(true)
             }));
         }
-        self.sql_result_tab = index;
+        self.sql_ui.sql_result_tab = index;
         cx.notify();
     }
 
@@ -348,7 +348,7 @@ impl Shell {
     ///
     /// 收目标值：界面上是受控 `Switch`，回调给的就是用户请求的新状态。
     pub fn set_sql_raw_open(&mut self, open: bool, cx: &mut Context<Self>) {
-        self.sql_raw_open = open;
+        self.sql_ui.sql_raw_open = open;
         cx.notify();
     }
 
@@ -387,7 +387,7 @@ impl Shell {
             let Some(db) = self.state.db.as_ref() else {
                 return;
             };
-            let result = db.sql_results.get(self.sql_result_tab);
+            let result = db.sql_results.get(self.sql_ui.sql_result_tab);
             // 没有结果、或者结果没有表格（DDL / 无输出）→ 不给导出。
             // 一个只有表头的 CSV 没有意义，只会让用户以为导出坏了。
             match result {

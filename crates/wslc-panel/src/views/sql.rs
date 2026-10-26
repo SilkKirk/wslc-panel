@@ -129,7 +129,7 @@ pub(crate) fn sql_console_page(
     // 窄条上就是"展开"按钮，否则用户把树收起来之后找不到开回来的入口。
     // （专业 SQL 客户端也是这个做法：侧栏收起后留一条能点开的边。）
     let tree_column: AnyElement =
-        if shell.tree_collapsed {
+        if shell.sql_ui.tree_collapsed {
             let entity = entity.clone();
             v_flex()
                 .w(px(32.))
@@ -142,7 +142,7 @@ pub(crate) fn sql_console_page(
                 .child(Button::new("sql-expand-tree").label("»").small().on_click(
                     move |_, _, cx| {
                         entity.update(cx, |shell, cx| {
-                            shell.tree_collapsed = false;
+                            shell.sql_ui.tree_collapsed = false;
                             cx.notify();
                         });
                     },
@@ -417,7 +417,7 @@ pub(crate) fn sql_tree_pane(db: &DbState, shell: &Shell, entity: &Entity<Shell>)
                             .small()
                             .on_click(move |_, _, cx| {
                                 collapse_entity.update(cx, |shell, cx| {
-                                    shell.tree_collapsed = true;
+                                    shell.sql_ui.tree_collapsed = true;
                                     cx.notify();
                                 });
                             }),
@@ -458,7 +458,7 @@ pub(crate) fn sql_tree_pane(db: &DbState, shell: &Shell, entity: &Entity<Shell>)
 
     // 树本体。`TreeState` 由 `Shell` 持有并负责重建（纯数据在
     // `DbState::schema_tree`，界面状态必须在 `Shell` 里）。
-    let tree_body: AnyElement = match shell.schema_tree_state.as_ref() {
+    let tree_body: AnyElement = match shell.sql_ui.schema_tree_state.as_ref() {
         Some(state) => {
             let entity = entity.clone();
             gpui_kit::component::tree::tree(
@@ -598,7 +598,7 @@ pub(crate) fn sql_results_pane(db: &DbState, shell: &Shell, entity: &Entity<Shel
                 .into_any_element(),
         );
     }
-    let Some(result) = db.sql_results.get(shell.sql_result_tab) else {
+    let Some(result) = db.sql_results.get(shell.sql_ui.sql_result_tab) else {
         return shell_area(
             div()
                 .text_sm()
@@ -621,16 +621,16 @@ pub(crate) fn sql_results_pane(db: &DbState, shell: &Shell, entity: &Entity<Shel
         tab_bar(
             "db-sql-tabs",
             labels,
-            shell.sql_result_tab,
+            shell.sql_ui.sql_result_tab,
             entity,
             |shell, ix, window, cx| shell.switch_sql_result_tab(ix, window, cx),
         )
     } else {
         div().into_any_element()
     };
-    // 表格本体。`shell.sql_table` 为 `None` 说明这个结果没有表格
+    // 表格本体。`shell.sql_ui.sql_table` 为 `None` 说明这个结果没有表格
     // （DDL / 无输出），画一句话就够。
-    let grid: AnyElement = match shell.sql_table.as_ref() {
+    let grid: AnyElement = match shell.sql_ui.sql_table.as_ref() {
         Some(state) => div()
             .w_full()
             .flex_1()
@@ -670,7 +670,7 @@ pub(crate) fn sql_results_pane(db: &DbState, shell: &Shell, entity: &Entity<Shel
             let entity = entity.clone();
             Switch::new("db-sql-raw-toggle")
                 .label("原始输出")
-                .checked(shell.sql_raw_open)
+                .checked(shell.sql_ui.sql_raw_open)
                 .on_change(move |checked: &bool, _, cx| {
                     let open = *checked;
                     entity.update(cx, |shell, cx| shell.set_sql_raw_open(open, cx));
@@ -679,7 +679,7 @@ pub(crate) fn sql_results_pane(db: &DbState, shell: &Shell, entity: &Entity<Shel
         }
         _ => div().into_any_element(),
     };
-    let raw_panel: AnyElement = if shell.sql_raw_open {
+    let raw_panel: AnyElement = if shell.sql_ui.sql_raw_open {
         match db.sql_raw.as_deref() {
             Some(raw) => log_text(Some(raw), "db-sql-raw"),
             None => div().into_any_element(),

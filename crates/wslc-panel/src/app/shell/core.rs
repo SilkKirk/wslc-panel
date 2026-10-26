@@ -5,7 +5,7 @@
 
 use super::super::prelude::*;
 use super::Shell;
-use super::state::{DropdownItem, Forms, InstallForm, Refresh, Subscriptions, Tasks};
+use super::state::{DropdownItem, Forms, InstallForm, Refresh, SqlUi, Subscriptions, Tasks};
 
 /// 取锁；中毒（别的线程 panic 过）时照常用里面的值。
 ///
@@ -194,14 +194,16 @@ impl Shell {
             detail: None,
             distro_detail: None,
             pull_open: false,
+            sql_ui: SqlUi {
+                sql_table: None,
+                sql_result_tab: 0,
+                sql_raw_open: false,
+                tree_collapsed: false,
+                schema_tree_state: None,
+                schema_tree_built_for: None,
+            },
             dialog_stack: Vec::new(),
-            sql_table: None,
-            sql_result_tab: 0,
-            sql_raw_open: false,
             sidebar_collapsed: false,
-            tree_collapsed: false,
-            schema_tree_state: None,
-            schema_tree_built_for: None,
             db_info_open: false,
         };
         shell.refresh(cx);

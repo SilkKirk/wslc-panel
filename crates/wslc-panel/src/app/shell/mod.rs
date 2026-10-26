@@ -90,6 +90,11 @@ pub struct Shell {
     /// registry / 仓库名 / 上一批 tag 都还在），而这个布尔只管可见性。
     /// 拉取进行中**不许关**（见 [`Shell::close_pull_dialog`]）。
     pull_open: bool,
+    /// SQL 控制台这一页的界面状态（6 个，见 [`SqlUi`]）。
+    ///
+    /// 两个 GPUI 实体（结果表 / 表名树）加四个页内开关 —— 纯数据在 `AppState`，
+    /// 实体在这里（`wslc-panel-core` 装不下 GPUI 实体）。
+    pub(crate) sql_ui: SqlUi,
     /// 我们已经压进**窗口级对话框栈**的那几层（官方 `Dialog`），按打开顺序。
     ///
     /// # 为什么需要自己记一份
@@ -105,28 +110,6 @@ pub struct Shell {
     /// 来对齐：多出来的从栈顶 pop（安全），缺的依次追加（不动下层）。
     /// 这份记录就是那个 diff 的左边。见 `Shell::sync_dialog_stack`。
     pub(crate) dialog_stack: Vec<DialogKey>,
-    /// SQL 结果表格的 `TableState`（v0.11）。
-    ///
-    /// # 为什么在 `Shell` 而不是 `AppState`
-    ///
-    /// `TableState` 是 GPUI 的实体（`Entity<TableState<D>>`），`wslc-panel-core`
-    /// 不依赖 GPUI，装不下它。这和 `forms.container_search` 的处境一样：
-    /// **界面状态**留在 `Shell`，纯数据（`DbState::sql_results`）在 `AppState`。
-    ///
-    /// # 什么时候重建
-    ///
-    /// 每次跑完 SQL 就**整个换掉**（见 [`Shell::apply_db_console_result`]）：
-    /// 结果集变了，列定义、行、排序全都要重新来。缓存着旧的不如重建 ——
-    /// 重建的代价只是按列名估一次宽度（前 100 行），微不足道。
-    pub(crate) sql_table:
-        Option<Entity<gpui_kit::component::table::TableState<crate::sql_table::SqlResultDelegate>>>,
-    /// 当前在看的**第几个**结果（多语句时按 tab 分开）。
-    pub(crate) sql_result_tab: usize,
-    /// 「看原始输出」是不是展开着。
-    ///
-    /// 原始输出（`mysql --table` 的 ASCII 表格）不常看 —— 只在排查
-    /// 列宽异常 / 字符集问题时才有用，所以默认收起。
-    pub(crate) sql_raw_open: bool,
     /// 左侧**应用导航栏**收起来了没有（v0.12.2）。
     ///
     /// 用的是组件库的 `Sidebar` + `SidebarCollapsible::Offcanvas`：
@@ -137,32 +120,6 @@ pub struct Shell {
     /// （`IconName::Server` / `Network` …）得先确认每个名字在 Lucide 里
     /// 都存在 —— 猜错了是编译错误，而我们本地编不了。所以先做"整体收起"。
     pub(crate) sidebar_collapsed: bool,
-    /// SQL 页左侧**表名树**收起来了没有（v0.12.2）。
-    ///
-    /// 和上面分开记：一个是应用级导航，一个是这一页的工作区侧栏，
-    /// 两者该各自开关（看代码时不想看到导航栏，不代表也不想看表结构）。
-    pub(crate) tree_collapsed: bool,
-    /// 库 / 表树的**树控件状态**（v0.12.1）。
-    ///
-    /// # 为什么换成组件的 `Tree`
-    ///
-    /// v0.12 里这棵树是**自己用 `Button` 一行行画的**，实机一看就丑：
-    /// `Button` 会把文字**居中**、给每一行套一个整行宽度的底色和内边距，
-    /// 于是 110 行看起来像 110 个色块，完全不像树（缩进也读不出来）。
-    ///
-    /// `gpui-kit` 自带 `component::tree::Tree`（虚拟滚动 + 逐级展开 + 选中态 +
-    /// 右键菜单），官方 `examples/editor` 就是用它做文件树的。
-    /// 它自己管展开/折叠和选中，我们只管把 `TreeItem` 喂进去。
-    ///
-    /// ⚠️ `TreeState` 是 GPUI 实体，`wslc-panel-core` 装不下 —— 和
-    /// [`Shell::sql_table`] 同一个理由：纯数据（`DbState::schema_tree`）在
-    /// core，**界面状态**在 `Shell`。
-    pub(crate) schema_tree_state: Option<Entity<gpui_kit::component::tree::TreeState>>,
-    /// 树是**按哪次查询**建出来的（用于判断要不要重建）。
-    ///
-    /// 存 `(搜索关键字, 表总数)`：两者都没变就不重建 —— `TreeState` 重建会
-    /// 丢掉用户已经展开的层级，所以这件事必须**只在真的变了**时做。
-    pub(crate) schema_tree_built_for: Option<(String, usize)>,
     /// 「数据库管理」页的「基础信息」浮层开着没有。
     ///
     /// 连接卡（用户名 / 密码 + 那两段说明）原来**常驻页面顶部**，实机反馈
