@@ -194,7 +194,7 @@ pub(crate) fn form_field_secret(
 /// 单行字段仍用 [`form_field`] —— `Input` 的密码遮罩 / 清除按钮 / 前后缀
 /// 都在那一层，混用会把简单字段也弄成多行。
 pub(crate) fn textarea_field(
-    id: &'static str,
+    _id: &'static str,
     label: &'static str,
     input: &Entity<TextareaState>,
     cx: &App,
@@ -207,9 +207,11 @@ pub(crate) fn textarea_field(
         theme::text_dim()
     };
 
+    // `Textarea` 没有 `Input::id()` 那条链；它自己从 `TextareaState` 的实体
+    // 拿元素 id。`_id` 保留在签名里，是为了和 `form_field` 的调用形状一致。
     let field = Field::new()
         .label_fn(move |_, _| div().text_xs().text_color(label_color).child(label))
-        .child(Textarea::new(input).id(id).w_full());
+        .child(Textarea::new(input).w_full());
 
     if full {
         field.flex_none().w_full().into_any_element()

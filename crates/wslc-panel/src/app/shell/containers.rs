@@ -374,12 +374,20 @@ impl Shell {
             &dialog.name,
             &dialog.command,
             &dialog.ports,
-            &dialog.env,
-            &dialog.volumes,
             &dialog.network,
             &dialog.memory,
             &dialog.cpus,
         ] {
+            self.subs
+                .create_subs
+                .push(cx.subscribe(input, |_, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        cx.notify();
+                    }
+                }));
+        }
+        // `env` / `volumes` 是 `TextareaState`，不能塞进上面那个同类型数组。
+        for input in [&dialog.env, &dialog.volumes] {
             self.subs
                 .create_subs
                 .push(cx.subscribe(input, |_, _, event: &InputEvent, cx| {
