@@ -1,6 +1,6 @@
 //! ⑤ 应用设置页：四个 tab 与其中的「界面 / 终端 / 主题 / 更新 / 关于」卡片。
 
-use super::common::{card, cell_link, kv, radio_row};
+use super::common::{card, cell_link, kv, radio_row, tab_bar};
 use super::config::{config, wsl_config};
 use super::prelude::*;
 
@@ -34,39 +34,32 @@ pub fn app_settings(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         .into_any_element()
 }
 
-/// 设置页的 tab 行。
+/// 设置页的 tab 行（常规 / wslc 配置 / WSL 配置 / 关于）。
 ///
-/// 用 Button 而不是 gpui-kit 的 `TabBar`：项目现有的"选中态"就是这么做的
-/// （见 [`theme_card`]），风格一致，而且是**已经编译通过**的形式。
-/// 想换成 `TabBar` 的话，替换点只有这一个函数。
-/// 「应用设置」的四个 tab（常规 / wslc 配置 / WSL 配置 / 关于）。
-///
-/// 和 [`db_tabs`] 同一个做法：官方 `TabBar` + `Tab`，不是拿 `Button` 拼。
+/// 走 `common::tab_bar`（官方 `TabBar` + `Tab`）—— 和「数据库管理」、
+/// SQL 多结果那两处是同一份接线。
 pub(crate) fn settings_tabs(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
-    use gpui_kit::component::tab::{Tab, TabBar};
-
-    let tabs: Vec<Tab> = SettingsTab::ALL
+    let labels: Vec<SharedString> = SettingsTab::ALL
         .iter()
-        .map(|tab| Tab::new().label(tab.label()))
+        .map(|tab| SharedString::from(tab.label()))
         .collect();
-
     let selected = SettingsTab::ALL
         .iter()
         .position(|tab| *tab == state.settings_tab)
         .unwrap_or(0);
 
-    let entity = entity.clone();
-    TabBar::new("settings-tabs")
-        .pill()
-        .selected_index(selected)
-        .children(tabs)
-        .on_click(move |ix, _, cx| {
-            if let Some(tab) = SettingsTab::ALL.get(*ix) {
+    tab_bar(
+        "settings-tabs",
+        labels,
+        selected,
+        entity,
+        |shell, ix, _, cx| {
+            if let Some(tab) = SettingsTab::ALL.get(ix) {
                 let tab = *tab;
-                entity.update(cx, |shell, cx| shell.set_settings_tab(tab, cx));
+                shell.set_settings_tab(tab, cx);
             }
-        })
-        .into_any_element()
+        },
+    )
 }
 
 /// 「常规」tab：界面 + 主题 + 终端。
@@ -163,90 +156,7 @@ pub fn settings_about(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         .child(update_card(shell, entity))
         .child(card("地址", v_flex().w_full().gap_3().children(rows)));
 
-    // ⚠️ 仅 debug 构建：官方 `Dialog` 的验证入口（见 [`dialog_spike_card`]）。
-    // release 构建里这一整段不存在，所以发布产物不会有这个按钮。
-    #[cfg(debug_assertions)]
-    let page = page.child(dialog_spike_card());
-
     page.into_any_element()
-}
-
-/// 【SPIKE，仅 debug】官方 `Dialog` 能不能替掉手写的 18 个模态 —— 一个最小验证。
-///
-/// # 为什么要有它
-///
-/// 我们的 18 个模态是**自己拼**的：`modal_scrim`（遮罩 + `.occlude()` +
-/// 140ms 淡入 + 稳定 id）、`modal_card`、以及 `Shell::render` 末尾那条
-/// **手工层序链子**。那条链子已经踩过两次坑（`AGENTS.md` §7.5）。
-///
-/// 官方 `Dialog` 是**窗口级层栈**（读 `src/dialog/dialog.rs` 与 `window_ext.rs`
-/// 确认）：
-///
-/// - `window.open_dialog(cx, |dialog, window, cx| …)` 把对话框压进
-///   `WindowState::active_dialogs`，由 `Root` 统一渲染；
-/// - `Dialog::render` 里用 `layer_ix` 做层叠偏移、`Anchored` + `snap_to_window`
-///   定位、`.occlude()` 自带（不需要我们记得加）、`close_on_escape(keyboard)`、
-///   `close_on_backdrop_press(overlay_closable)`、焦点句柄、入场动画全都有；
-/// - **层序 = 栈序**，也就是说"从详情里弹出的确认框盖在详情**之上**"是**结构保证**的，
-///   不需要人工维护渲染顺序 —— 那正是 §7.5 那条坑的根治办法。
-///
-/// # 它要求的两件事（迁移前必须想清楚）
-///
-/// 1. **浮层不再是 `Shell::render` 的孩子**：要用 `open_dialog` 把它压进窗口栈。
-///    而 `open_dialog` 是**打开动作**，不是"每帧画一次" —— 所以
-///    "状态说该显示" → "调一次 open_dialog"之间需要一个**只触发一次**的接线
-///    （现在 18 个浮层全是"状态驱动的纯函数渲染"，这是最大的改动面）；
-/// 2. 官方的 builder 闭包**可能被重跑**（源码注释原话："it may run again when the
-///    dialog layer is rebuilt. Keep it cheap and create persistent entities before
-///    opening, not inside the builder"）—— 所以 `InputState` 这类实体必须在**打开前**
-///    建好。我们已经是懒创建 + 存在 `Shell` 上，这条天然满足。
-///
-/// # 这个按钮做什么
-///
-/// 点一下弹一个官方 `Dialog`，里面写清"该验证什么"。本机没有 Rust 工具链，
-/// 所以**只能由人在实机上判断**；CI 只能证明这段代码编得过。
-#[cfg(debug_assertions)]
-fn dialog_spike_card() -> AnyElement {
-    // 就近导入：只有这里用（放 prelude 会让 release 构建报 unused import）。
-    use gpui_kit::component::WindowExt as _;
-
-    let open = Button::new("dialog-spike-open")
-        .label("打开官方 Dialog（spike）")
-        .small()
-        .on_click(move |_, window, cx| {
-            window.open_dialog(cx, |dialog, _window, _cx| {
-                dialog
-                    .title("官方 Dialog（spike）")
-                    .w(px(560.))
-                    // 这三样我们现在**没有**：点遮罩关、Esc 关、以及栈序保证。
-                    .overlay(true)
-                    .overlay_closable(true)
-                    .keyboard(true)
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .gap_2()
-                            .child(div().text_sm().text_color(theme::text()).child(
-                                "这个对话框由 gpui-component 的窗口级栈渲染，不是 Shell 的孩子。",
-                            ))
-                            .child(div().text_xs().text_color(theme::text_dim()).child(
-                                "该验证四件事：① 它盖在所有自绘浮层之上；② Esc 能关；\
-                                 ③ 点遮罩能关；④ 从某个自绘浮层里再打开它，它仍在上层。",
-                            )),
-                    )
-            });
-        });
-
-    card(
-        "Dialog spike（仅 debug 构建）",
-        v_flex().w_full().gap_2().child(open).child(
-            div().text_xs().text_color(theme::text_dim()).child(
-                "验证用：官方 Dialog 走窗口级栈。若四项都通过，18 个手写模态就可以迁过去 —— \
-                 顺带删掉遮罩的 occlude、入场动画 id、以及 Shell::render 末尾那条手工层序链子。",
-            ),
-        ),
-    )
-    .into_any_element()
 }
 
 /// 「更新」卡。

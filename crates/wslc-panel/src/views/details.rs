@@ -1,7 +1,6 @@
 //! 容器详情 / 发行版详情两个浮层。
 
-// 两个详情浮层都已迁到官方 `Dialog`，所以 `modal_card` / `modal_scrim` /
-// `modal_title` / `ModalSize` 在这里不再需要 —— 外壳由 `Dialog` 负责，
+// 两个详情浮层的外壳都由官方 `Dialog` 负责（构造在 `app::shell::dialogs`），
 // 本文件只产出"中间那块内容"。
 use super::common::{
     danger_button, danger_button_distro, immediate_button, kv, kv_block, overlay_button,

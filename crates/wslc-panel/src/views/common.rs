@@ -87,122 +87,10 @@ pub(crate) fn disclosure(
         .into_any_element()
 }
 
-/// 弹窗卡片的**统一尺寸档**。
-///
-/// # 为什么需要它
-///
-/// 原来 18 个弹窗各写各的 `.w(px(…))`，实测下来有 **6 种**宽度：
-///
-/// ```text
-/// 560 / 620 / 680 / 700 / 760 / 780 / 820
-/// ```
-///
-/// 但它们的实际分布是**三簇**：`560/620`（3 处，确认与单输入）、
-/// `680/700`（4 处，表单）、`760/780/820`（6 处，详情 / 日志 / 表格）。
-/// 簇内那 ±20~60px 的差别不是布局需要 —— 同样 680 宽的两个弹窗，
-/// 一个 `max_h 560`、一个 `max_h 820`，纯属各写各的。
-///
-/// 后果用户能看见：点「创建容器」(780) 再点「执行命令」(760)，
-/// **卡片边缘会挪动 20px**。正式软件里同一种模态只有一两档宽度。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModalSize {
-    /// 中：常规表单。
-    ///
-    /// ⚠️ 曾经有 `Narrow`（560）和 `Wide`（800）两档。浮层迁到官方 `Dialog`
-    /// 之后宽度由调用处的 `.w(px(..))` 直接给，这两档再没人用（clippy 的
-    /// dead_code 抓出来的），所以只剩这一档 —— 它服务于**唯一还在自绘路径上**
-    /// 的「数据库基础信息」（`db_info_overlay`）。
-    Medium,
-}
-
-impl ModalSize {
-    /// 这一档的像素宽度。
-    pub fn width(self) -> f32 {
-        match self {
-            Self::Medium => 700.,
-        }
-    }
-}
-
-/// 弹窗卡片的**视觉外壳**：宽度 / 内边距 / 圆角 / 底色 / 边框。
-///
-/// 只做这一件事 —— **`id`、`max_h`、滚动都不在这里**。原因：
-///
-/// - `id` 只有"需要滚动 / 需要 hover"的卡片才有（18 处里 9 处），
-///   做成必填会逼着另外 9 处编一个假的；
-/// - `max_h` 各弹窗差得多（确认框 3 行 vs 日志几百行），这里猜不了。
-///
-/// 所以调用方式是把本函数当成**起点**，返回 `Div` 可以继续挂：
-///
-/// ```ignore
-/// modal_card(ModalSize::Medium)
-///     .id("create-dialog-card")        // 需要滚动时才有
-///     .max_h(px(880.))
-///     .overflow_y_scroll()             // 只对带 id 的元素可用
-///     .child(…)
-/// ```
-///
-/// ⚠️ 返回 `Div` 而不是 `impl IntoElement`：调用方要能继续 `.id(…)`
-/// （`StatefulInteractiveElement` 的方法）。
-pub fn modal_card(size: ModalSize) -> gpui_kit::Div {
-    v_flex()
-        .w(px(size.width()))
-        .gap_4()
-        .p_5()
-        .rounded_lg()
-        .bg(theme::bg_card())
-        .border_1()
-        .border_color(theme::border())
-}
-
-/// 模态浮层的**外壳**：满屏遮罩 + 居中的卡片槽。
-///
-/// # 分工
-///
-/// - 这里只管**遮罩**（行为 + 入场动画）；
-/// - 卡片本体的视觉走 [`modal_card`]；
-/// - 具体内容由调用方给。
-///
-/// 早先这里写着"8 个弹窗各不相同，做成参数只会让调用点更长" ——
-/// 那句话后来被实测推翻了：不是"各不相同"，是**没人统一**，
-/// 于是攒出 6 种宽度（见 [`ModalSize`]）。
-///
-/// # 但这一层必须抽
-///
-/// 遮罩的**行为**（`.occlude()`）以前在 8 处各写一份，于是漏了 ——
-/// 结果 8 个弹窗开着的时候都能点到背后的页面（实测：打开「创建容器」
-/// 还能点它背后那一列的按钮）。行为只有一份，才不会下次又漏一处。
-///
-/// # `id` 是给**入场动画**用的
-///
-/// v0.6.5 起这里给整个遮罩播一次 ~140ms 的淡入（`with_animation`）：
-/// 之前弹窗是"啪"地一下出现，实机反馈是"不顺滑"。
-///
-/// ⚠️ `id` 必须在**同一个弹窗**的多次重绘之间保持稳定、**不同弹窗之间不同**：
-/// 稳定才不会每帧重播（GPUI 按这个 id 记住播放进度），不同才不会让两个弹窗
-/// 共用一条进度（弹窗叠着的时候会互相干扰）。所以每个调用点都传自己的字面量。
-pub fn modal_scrim(id: &'static str, card: impl IntoElement) -> AnyElement {
-    div()
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(theme::scrim())
-        // 见 `theme::scrim()`：不带 `occlude()` 的遮罩吃不到点击，
-        // 点下去会穿到背后的页面上。
-        .occlude()
-        .child(card)
-        // 一次性入场淡入：GPUI 在这 140ms 里逐帧请求重绘，结束后**保持终值**
-        // （不再请求帧）。系统开了"减弱动态效果"时 GPUI 直接给终值 ——
-        // 这是 `AnimationExt` 自己遵守的偏好，我们不用另外判断。
-        .with_animation(
-            id,
-            Animation::new(Duration::from_millis(140)),
-            |el, delta| el.opacity(delta),
-        )
-        .into_any_element()
-}
+// 弹窗的**遮罩与卡片外壳**不在这里：19 个浮层全部走官方 `Dialog` 的窗口级
+// 层栈（`app::shell::dialogs`），遮罩、尺寸、标题、入场动画都由它负责。
+// 本文件只保留"内容里会用到"的助手 —— 包括弹窗底部那行按钮 [`modal_footer`]
+// （它属于内容，不属于外壳：官方 `Dialog` 不会自动画 OK / Cancel）。
 
 /// 键值对行。
 pub(crate) fn kv(label: &'static str, value: impl Into<SharedString>) -> impl IntoElement {
@@ -507,24 +395,6 @@ pub(crate) fn table_card(
         .child(body)
 }
 
-/// 弹窗标题。
-///
-/// # 为什么要收
-///
-/// 18 个浮层原先各写一份 6 行的 `div().text_lg().font_bold().text_color(…)`，
-/// 而且**并不一致**：`deploy.rs` 那 4 处用的是 `font_semibold`、其中 2 处根本没设
-/// `text_color`（靠继承）。同一类控件（"这是哪个弹窗"）在同一屏里粗细不同，
-/// 看起来像两个层级的东西 —— 而这种差异 **CI 完全看不见**（`AGENTS.md` §8）。
-/// 收到一处之后，粗细只剩一种。
-pub(crate) fn modal_title(title: impl Into<SharedString>) -> AnyElement {
-    div()
-        .text_lg()
-        .font_bold()
-        .text_color(theme::text())
-        .child(title.into())
-        .into_any_element()
-}
-
 /// 弹窗底部那一行**按钮**：右对齐、按钮之间 `gap_2`。
 ///
 /// 收的是 `impl IntoIterator<Item = impl IntoElement>`，所以调用点写
@@ -628,6 +498,48 @@ pub(crate) fn radio_row(
         .children(labels.into_iter().map(Radio::from))
         .selected_index(selected)
         .on_change(move |ix, window, cx| {
+            let ix = *ix;
+            entity.update(cx, |shell, cx| pick(shell, ix, window, cx));
+        })
+        .into_any_element()
+}
+
+/// 一排**互斥的 tab** —— 官方 `TabBar` + `Tab`，选中项由 `selected` 指出。
+///
+/// # 为什么收成一处
+///
+/// 「应用设置」的四个 tab、「数据库管理」的两个 tab、SQL 的多结果 tab 原先
+/// 各写一份接线：建 `Vec<Tab>` → 算选中下标 → `TabBar::new(id).pill()…on_click`。
+/// 三份逐字相同，只有"哪个枚举"和"选完写回哪"不同 —— 而**同一类控件在一个
+/// 应用里必须长得一样、行为一样**。
+///
+/// # 为什么不再用"一排按钮 + 选中那颗 `.primary()`"
+///
+/// 那是本项目的旧写法（v0.18 前 9 处）。它把**状态**画成了**动作**：一排按钮
+/// 对读屏软件是一堆各自独立的动作，键盘上也拿不到 tab 该有的左右箭头移动。
+/// 组件库本来就有 `TabBar`（下划线 / 胶囊等形态由 `TabVariant` 管）。
+///
+/// ⚠️ `on_click` 回调给的是**下标**（`&usize`），由调用页映射回自己的值 ——
+/// 组件的 API 就是这样，硬泛型化成一个 `T` 反而让调用点更长。
+///
+/// ⚠️ 它**不适合塞进紧凑工具栏**：横向布局在 `RadioGroup` 那边有同样的限制，
+/// 而这排 tab 自带间距与滚动，塞进一行按钮中间会把那一行撑坏。工具栏里的
+/// 行数档位（日志浮层）因此仍是按钮。
+pub(crate) fn tab_bar(
+    id: &'static str,
+    labels: Vec<SharedString>,
+    selected: usize,
+    entity: &Entity<Shell>,
+    pick: impl Fn(&mut Shell, usize, &mut Window, &mut Context<Shell>) + 'static,
+) -> AnyElement {
+    use gpui_kit::component::tab::{Tab, TabBar};
+
+    let entity = entity.clone();
+    TabBar::new(id)
+        .pill()
+        .selected_index(selected)
+        .children(labels.into_iter().map(|label| Tab::new().label(label)))
+        .on_click(move |ix, window, cx| {
             let ix = *ix;
             entity.update(cx, |shell, cx| pick(shell, ix, window, cx));
         })

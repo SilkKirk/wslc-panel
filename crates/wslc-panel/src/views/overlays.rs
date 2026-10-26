@@ -1,9 +1,7 @@
 //! 容器日志 / exec / 导出 / 单输入框提示 —— 四个容器域浮层。
 
-// 四个浮层（prompt / exec / logs / export）都已迁到官方 `Dialog`，所以
-// `modal_card` / `modal_scrim` / `modal_title` / `ModalSize` 在这里**不再需要**
-// —— 外壳（遮罩、卡片、标题、底部按钮）现在由 `Dialog` 和我们自己的
-// `modal_footer` 负责。本文件只产出"中间那块内容"。
+// 四个浮层（prompt / exec / logs / export）的外壳都由官方 `Dialog` 负责
+// （构造在 `app::shell::dialogs`），本文件只产出"中间那块内容"。
 use super::common::{form_field, kv, kv_block, log_text};
 use super::prelude::*;
 

@@ -1,13 +1,14 @@
 //! 数据库的弹窗与进度浮层：新建库 / 建用户 / 改密 / 授权 / 备份 / 导入 / 基础信息。
 
 use super::common::{
-    ModalSize, cell_muted, cell_text_full, disclosure, form_field, modal_card, modal_scrim,
-    modal_title, overlay_button, page_empty, radio_row, table_header, table_row,
+    cell_muted, cell_text_full, disclosure, form_field, overlay_button, page_empty, radio_row,
+    table_header, table_row,
 };
 use super::database::db_connection_card;
 use super::prelude::*;
 
-/// 「基础信息」浮层：连接卡（用户名 / 密码 + 那两段说明）。
+/// 「基础信息」对话框的**内容**（标题 / 关闭按钮在 `app::shell::dialogs` 的
+/// `DialogKey::DbInfo` 那个臂里）。
 ///
 /// # 为什么从页面上搬进浮层
 ///
@@ -19,42 +20,35 @@ use super::prelude::*;
 /// 取舍：现在要"确认自己在用哪个账号"得点一下按钮。为了不让这一步变成
 /// 盲区，页头的按钮就写着「基础信息」，而**连接失败时**页面上的错误条
 /// 与「重新读取」仍然直接把注意力引到它上面。
-pub fn db_info_overlay(
-    db: &DbState,
-    form: &DbPageForm,
-    entity: &Entity<Shell>,
-    cx: &App,
-) -> AnyElement {
-    let close = {
-        let entity = entity.clone();
-        Button::new("db-info-close")
-            .label("关闭")
-            .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.close_db_info(cx));
-            })
+///
+/// # 为什么只出内容、不出外壳
+///
+/// 外壳（遮罩 / 卡片 / 标题 / 关闭按钮）现在归官方 `Dialog` —— 这是**最后一块**
+/// 从自绘路径迁走的浮层。迁完之后 `views::common` 里那套自绘模态
+/// （`modal_scrim` / `modal_card` / `ModalSize`）就整块删掉了：
+/// 同一类东西只保留一种实现（`AGENTS.md` §7.5：层序 = 栈序）。
+pub(crate) fn db_info_body(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyElement {
+    let (Some(db), Some(form)) = (shell.state.db.as_ref(), shell.db_form.as_ref()) else {
+        return div().into_any_element();
     };
 
-    modal_scrim(
-        "db-info",
-        modal_card(ModalSize::Medium)
-            .id("db-info-card")
-            .max_h(px(560.))
-            .overflow_y_scroll()
-            .child(v_flex().gap_1().child(modal_title("基础信息")).child(
-                div().text_xs().text_color(theme::text_dim()).child(format!(
-                    "容器 {} · {} · {} · 客户端 {}",
-                    db.container,
-                    db.engine_label(),
-                    db.image,
-                    db.client_version.as_deref().unwrap_or(db.client.as_str()),
-                )),
-            ))
-            // 连接卡本体照旧用它自己那份渲染（表单 + 说明都在里面）
-            .child(db_connection_card(db, form, entity, cx))
-            .child(h_flex().w_full().justify_end().child(close)),
-    )
-    .into_any_element()
+    v_flex()
+        .w_full()
+        .gap_3()
+        // 滚动容器必须带 id（`overflow_y_scroll` 来自 `StatefulInteractiveElement`）。
+        .id("db-info-scroll")
+        .max_h(px(560.))
+        .overflow_y_scroll()
+        .child(div().text_xs().text_color(theme::text_dim()).child(format!(
+            "容器 {} · {} · {} · 客户端 {}",
+            db.container,
+            db.engine_label(),
+            db.image,
+            db.client_version.as_deref().unwrap_or(db.client.as_str()),
+        )))
+        // 连接卡本体照旧用它自己那份渲染（表单 + 说明都在里面）
+        .child(db_connection_card(db, form, entity, cx))
+        .into_any_element()
 }
 
 /// 「数据库管理」页的动作弹窗（新建库 / 新建用户 / 改密码 / 授权）。
@@ -327,20 +321,24 @@ pub(crate) fn db_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App) ->
         );
     }
 
+    // 这条说明里的容器名要**当场取**（不是弹窗打开那一刻的快照）：
+    // 用户可能先切了容器，再点某个库的「建用户」。取不到就留空。
+    let container = shell
+        .state
+        .db
+        .as_ref()
+        .map(|db| db.container.clone())
+        .unwrap_or_default();
+
     v_flex()
         .w_full()
         .gap_3()
-        .child(v_flex().gap_1().child(modal_title(kind.title())).child(
-            div().text_xs().text_color(theme::text_dim()).child(format!(
-                                "在容器 {} 上执行 —— 用的是数据库页连接卡里那个账号。",
-                                shell
-                                    .state
-                                    .db
-                                    .as_ref()
-                                    .map(|db| db.container.clone())
-                                    .unwrap_or_default()
-                            )),
-        ))
+        // ⚠️ 标题**不在这里画** —— `Dialog::title()` 已经画过 `kind.title()` 了。
+        // 早期浮层是自绘的（标题在 body 里），迁到官方 `Dialog` 时忘了删，
+        // 实机上就是同一个标题连着出现两遍（`wslconf` 那处 v0.20.0 修过）。
+        .child(div().text_xs().text_color(theme::text_dim()).child(format!(
+            "在容器 {container} 上执行 —— 用的是数据库页连接卡里那个账号。"
+        )))
         .children(fields)
         .into_any_element()
 }
@@ -689,14 +687,9 @@ pub(crate) fn db_backup_dialog_body(
         .child(
             v_flex()
                 .gap_1()
-                .child(
-                    h_flex()
-                        .w_full()
-                        .justify_between()
-                        .items_center()
-                        .child(modal_title(format!("备份 —— {database}")))
-                        .child(start),
-                )
+                // 标题在 `Dialog::title()`（"备份 —— 库名"）里，这里只放动作，
+                // 而且仍然靠右 —— 和它在自绘时代的位置一致。
+                .child(h_flex().w_full().justify_end().items_center().child(start))
                 .child(account)
                 .child(
                     div()

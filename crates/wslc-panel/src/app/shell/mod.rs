@@ -5,6 +5,7 @@
 //! ```text
 //! shell/mod.rs     struct Shell（**就在这里**）、各子模块声明
 //! shell/core.rs    构造 / 刷新 / 导航 / 确认 / 提示条
+//! shell/dialogs.rs 官方 `Dialog` 的窗口级层栈（DialogKey / 状态对齐 / 各浮层构造）
 //! shell/<域>.rs    该域的全部 impl Shell { … }
 //! shell/render.rs  impl Render for Shell
 //! shell/state.rs   挂在 Shell 上的纯数据
@@ -28,6 +29,7 @@ mod containers;
 mod core;
 mod db;
 mod deploy;
+mod dialogs;
 mod distros;
 mod images;
 mod install;
@@ -36,55 +38,10 @@ mod settings;
 mod state;
 mod update;
 
+// 对话框栈的标识与开合逻辑住在 `dialogs.rs`（它跨所有域）；这里只再导出标识，
+// 因为 `Shell::dialog_stack` 这个字段的类型要它。
+pub(crate) use dialogs::DialogKey;
 pub(crate) use state::*;
-
-/// 已经压进**窗口级对话框栈**的浮层标识（官方 `Dialog`）。
-///
-/// # 为什么是一个枚举而不是"直接比状态"
-///
-/// 状态里那几样东西（`exporting` / `db_backup` …）各自独立，而对话框栈是**有序**的。
-/// 用一个 `Vec<DialogKey>` 把"这一帧应该开着哪些、按什么顺序"表达出来，
-/// 才能和实际栈做最长公共前缀的比对（官方 `ActiveDialog` 没有 id，见
-/// `Shell::dialog_stack` 的说明）。
-///
-/// ⚠️ 迁移进度：目前只有「导出进度」走这条路。其余浮层还在
-/// `views::modal_scrim` 的自绘路径上，**不在这个栈里** ——
-/// 所以 `Shell::sync_dialog_stack` 现在只认这一种。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DialogKey {
-    /// 「正在导出」进度对话框。
-    Export,
-    /// 「正在备份数据库」进度对话框。
-    DbBackupProgress,
-    /// 「正在导入 SQL」进度对话框。
-    DbImportProgress,
-    /// 「容器日志」对话框。
-    ContainerLogs,
-    /// 「容器详情」对话框。
-    ContainerDetail,
-    /// 「发行版详情」对话框。
-    DistroDetail,
-    /// 「应用日志」对话框（部署管理页）。
-    DeployLogs,
-    /// 「站点配置」对话框（部署管理页）。
-    DeploySiteConf,
-    /// 「删除部署」确认框。
-    DeployRemoveConfirm,
-    /// 「备份列表」对话框（数据库管理页）。
-    DbBackupList,
-    /// 通用二次确认（危险操作）。
-    Confirm,
-    /// 「数据库动作」弹窗（新建库 / 建用户 / 改密 / 授权 / 导入）。
-    DbAction,
-    /// 「创建容器」弹窗。
-    CreateContainer,
-    /// 「拉取镜像」弹窗。
-    PullImage,
-    /// 「发行版配置」（/etc/wsl.conf）弹窗。
-    WslConf,
-    /// 「添加部署 / 重新部署」弹窗。
-    DeployForm,
-}
 
 /// 应用外壳。
 pub struct Shell {

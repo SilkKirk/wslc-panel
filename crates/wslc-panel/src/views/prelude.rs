@@ -88,8 +88,6 @@ pub(crate) use gpui_kit::component::radio::{Radio, RadioGroup};
 pub(crate) use gpui_kit::component::description_list::DescriptionList;
 pub(crate) use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
 pub(crate) use gpui_kit::*;
-// 弹窗的入场动画要一个时长（`Animation::new(Duration)`）。
-pub(crate) use std::time::Duration;
 
 pub(crate) use wslc_core::cmd::container::{PullPolicy, RunSpec};
 // 安装的**计划**是纯逻辑（在 `wslc-core` 里）：页面直接把它的步骤列表画出来，

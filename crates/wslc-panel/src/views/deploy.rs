@@ -1,13 +1,11 @@
 //! ②c 应用部署管理页：表格、行内动作、三个浮层。
 
-// 三个浮层（日志 / 站点配置 / 删除确认）已迁到官方 `Dialog`，所以
-// `modal_title_danger` 不再需要（危险色标题交给 `Dialog` 的 title + 调用处）。
-// 但 `modal_card` / `modal_scrim` / `modal_title` / `modal_footer` **仍要留着**：
-// 「添加部署」弹窗（还没迁）还在用它们。
+// 本文件只产出**内容**：三个浮层（日志 / 站点配置 / 删除确认）和「添加部署」
+// 弹窗的外壳都由官方 `Dialog` 负责（构造在 `app::shell::dialogs`）。
 use super::common::{
     NoContainer, cell_link, cell_muted_full, cell_text, disclosure, empty_state, form_field,
-    immediate_button, kv_block, log_text, modal_footer, modal_title, overlay_button, page_empty,
-    table_card, table_row,
+    immediate_button, kv_block, log_text, modal_footer, overlay_button, page_empty, table_card,
+    table_row,
 };
 use super::prelude::*;
 
@@ -693,28 +691,21 @@ pub(crate) fn deploy_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App
     let re_deploy = form.editing.is_some();
 
     // 站点块出现后弹窗会高出一截；带 id 的滚动容器（AGENTS §7.5）。
-    // 宽度从 560 提到 `ModalSize::Wide`（800）：这个弹窗里有「目标目录」
-    // 「启动命令」这类长路径，560 宽时输入框里的路径几乎全是省略号。
+    // 弹窗宽度 800 在 `dialogs.rs` 的 `DialogKey::DeployForm` 那个臂里给 ——
+    // 这个弹窗有「目标目录」「启动命令」这类长路径，560 宽时几乎全是省略号。
     let card = v_flex()
         .w_full()
         .gap_3()
         .id("deploy-dialog-scroll")
         .max_h(px(760.))
         .overflow_y_scroll()
+        // ⚠️ 标题**不在这里画**：`Dialog::title()` 里已经是"添加部署 · Nginx" /
+        // "重新部署 app"。这里只留那句"目标容器"。
         .child(
-            v_flex()
-                .gap_1()
-                .child(modal_title(if re_deploy {
-                    format!("重新部署 {}", form.editing.clone().unwrap_or_default())
-                } else {
-                    format!("添加部署 · {}", runtime.label())
-                }))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_dim())
-                        .child(format!("目标容器 {}", deploy.container)),
-                ),
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child(format!("目标容器 {}", deploy.container)),
         );
 
     // 重新部署时**不给**应用名的输入框，只把名字写出来 ——
@@ -1083,8 +1074,8 @@ pub(crate) fn deploy_remove_confirm_body(app: &str, deploy: Option<&DeployState>
         .and_then(|d| d.index_of(app).map(|i| d.entries[i].is_process()))
         .unwrap_or(false);
 
-    // ⚠️ 这一处**不能**用 `modal_card`：它是唯一一个"危险配色"的确认框
-    // （`danger_edge` 边框 + 红色标题），而 `modal_card` 给的是常规边框。
+    // ⚠️ 这一处**不用** `danger_button` 那套红色标题：标题由 `Dialog` 给
+    // （`DialogKey::DeployRemoveConfirm`）。危险感靠**正文说清代价**表达 ——
     // 那个差异是**有意义的**（用户要一眼看出这是不可撤销的操作），不是散落。
     // 宽度交给 `Dialog` 的 `.w(560.)` —— 尺寸该统一，配色该区分。
     v_flex()

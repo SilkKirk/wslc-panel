@@ -263,61 +263,16 @@ impl Render for Shell {
             }
         };
 
-        // NOTE: 通用二次确认走官方 Dialog 栈（DialogKey::Confirm）——
-        // 它能从**任何**浮层里弹出来，窗口级栈保证它一定盖在最上面。
-
-        // NOTE: 拉取镜像弹窗走官方 Dialog 栈（DialogKey::PullImage）。
-
-        // NOTE: 创建容器弹窗走官方 Dialog 栈（DialogKey::CreateContainer）。
-
-        // NOTE: 容器详情 / 发行版详情都走官方 Dialog 栈
-        // （`DialogKey::ContainerDetail` / `DistroDetail`，由 `sync_dialog_stack` 对齐）。
-        // 它们的内容分别是 `views::container_detail_body` / `distro_detail_body`。
-
-        // ⚠️ 「单输入框提示」（移动位置 / 调整大小 / 设置默认用户 / 导出 / 创建卷）
-        // **不在这条链子上**：它已迁到官方 `Dialog`（窗口级层栈），
-        // 由 `Shell::open_prompt` 里的 `window.open_dialog` 打开；
-        // 内容由 `views::prompt_dialog_content` 提供。
+        // 浮层全部在**官方 `Dialog` 的窗口级栈**里（`app::shell::dialogs` 的
+        // `sync_dialog_stack` / `open_dialog_for`），不在这条 `.child()` 链子上。
         //
-        // 迁它的理由不只是"用官方组件"：窗口级层栈让**层序 = 栈序**，
-        // 不再依赖这条 `.child()` 链子的先后（见本文件末尾那段长注释）。
-
-        // NOTE: export progress 走官方 Dialog 栈，见 sync_dialog_stack。
-
-        // NOTE: 发行版配置弹窗走官方 Dialog 栈（DialogKey::WslConf）。
-
-        // NOTE: 容器日志走官方 Dialog 栈（DialogKey::ContainerLogs）。
-
-        // ⚠️ 「容器 exec」不在这条链子上 —— 它走官方 `Dialog` 的窗口级层栈
-        // （`Shell::open_exec` 里的 `window.open_dialog`，内容是
-        // `views::exec_dialog_body` 包在 `ShellView` 里）。
-
-        // NOTE: 数据库动作弹窗走官方 Dialog 栈（DialogKey::DbAction），
-        // 门槛（db_form 建好 + db_dialog 有值）在 sync_dialog_stack 里。
-
-        // 「基础信息」（连接卡）—— 只有浮层开着、且确实在数据库页时才画。
-        let db_info: AnyElement = match &state.db {
-            Some(db) if self.db_info_open => match self.db_form.as_ref() {
-                Some(form) => views::db_info_overlay(db, form, &entity, cx),
-                None => div().into_any_element(),
-            },
-            _ => div().into_any_element(),
-        };
-
-        // ⚠️ v0.12 起 SQL 控制台是**整页**（`Page::Sql`），不再是浮层 ——
-        // 所以这里没有它的位置了。浮层那一版（`db_console_overlay`）已删：
-        // 它盖住页面、看着像弹窗，而且塞不下"树 + 编辑器 + 表格"三块。
-
-        // 备份进度（跑着才有内容）与备份列表（点「备份」打开）。
-        // NOTE: 备份进度走官方 Dialog 栈（DialogKey::DbBackupProgress）。
-        // NOTE: 备份列表走官方 Dialog 栈（DialogKey::DbBackupList），
-        // 门槛（db_form 建好 + 点了「备份」）在 sync_dialog_stack 里。
-        // 导入进度（跑着才有内容）。
-        // NOTE: 导入进度走官方 Dialog 栈（DialogKey::DbImportProgress）。
-
-        // NOTE: 添加部署 / 重新部署弹窗走官方 Dialog 栈（DialogKey::DeployForm）。
-        // NOTE: 部署日志 / 站点配置 / 删除确认都走官方 Dialog 栈
-        // （DialogKey::DeployLogs / DeploySiteConf / DeployRemoveConfirm）。
+        // 这条链子原来挂着 19 个自绘浮层（`modal_scrim` + `modal_card`），层序靠
+        // "谁写在后面"人工维持 —— v0.9.14 的"压缩磁盘的确认框在详情之下"就是
+        // 那么来的。现在**层序 = 栈序**，链子上只剩页面本体和提示条。
+        //
+        // ⚠️ 加新浮层：在 `dialogs.rs` 里加一个 `DialogKey` 变体 +
+        // `sync_dialog_stack` 里一个 `if` + `open_dialog_for` 里一个臂，
+        // **不要**往这条链子上加。
 
         // 页面渲染要 `&Shell`（不只是 `&AppState`）——「添加实例」页有输入框，
         // 而输入框的 `InputState` 住在 `Shell` 里。
@@ -516,26 +471,6 @@ impl Render for Shell {
                             .child(toast),
                     ),
             )
-            // ⚠️ **这条链子上现在只剩「数据库基础信息」一个浮层。**
-            //
-            // 其余浮层（19 个里的 18 个）都已迁到官方 `Dialog` 的**窗口级栈**
-            // （`WindowState::active_dialogs`，由 `Root` 渲染）—— **层序 = 栈序**，
-            // 不再需要在这里排先后。
-            //
-            // 这根治了 v0.9.14 那条老坑：确认框当时挂在这条链子的最前面，
-            // 从详情里点「压缩磁盘」就被详情盖住了（实机原话："压缩磁盘的
-            // 对话确认在详情之下"）。手写链子只能靠"记得排后面"，栈不会忘。
-            //
-            // 「基础信息」之所以还留着：它是一张**只读小卡片**（参数来自
-            // `state.db`，没有输入框、没有提交动作），迁过去的收益只有"统一"；
-            // 而 `modal_scrim` 那条路径已被 18 个兄弟验证过 —— 留着最省。
-            // 真要迁，照 `DialogKey::DbAction` 那个臂抄一遍即可。
-            //
-            // ⚠️ 加新浮层时**优先走 `Dialog`**；只有确实不该进模态栈的才加到这里，
-            // 并注意"后画的压在上面"。另外：这棵树里每算一个 `AnyElement`，
-            // 都必须确认它真的被挂上去了（v0.9.2 的 SQL 浮层就是算了没挂，
-            // 表现是"点了没反应"，既不编译失败也不报错）。
-            .child(db_info)
     }
 }
 // ---------------------------------------------------------------------------

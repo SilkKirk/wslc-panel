@@ -1,7 +1,7 @@
 //! 「创建容器」弹窗，以及它依赖的那几个从镜像读来的提示块。
 
-// 这个弹窗已迁到官方 `Dialog`，所以 `modal_card` / `modal_scrim` / `modal_title` /
-// `ModalSize` 都不再需要 —— 外壳由 `Dialog` 负责，本文件只出字段。
+// 本文件只出字段：外壳（遮罩 / 卡片 / 标题 / 底部按钮）由官方 `Dialog` 负责
+// （构造在 `app::shell::dialogs` 的 `DialogKey::CreateContainer`）。
 use super::common::{disclosure, form_field, radio_row};
 use super::prelude::*;
 

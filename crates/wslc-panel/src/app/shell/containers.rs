@@ -9,17 +9,12 @@ use crate::views::{ShellView, modal_footer};
 impl Shell {
     /// 打开提示对话框，并把焦点交给输入框。
     ///
-    /// # 这是**第一个**迁到官方 `Dialog` 的浮层
+    /// # 官方 `Dialog` 的三个注意点（v0.19.0 实机踩出来的；所有浮层通用）
     ///
-    /// 其余 17 个浮层还是"状态驱动的纯函数 + `views::modal_scrim`"，作为
-    /// `Shell::render` 的孩子画出来 —— 它们的层序靠 `render.rs` 末尾那条
-    /// `.child()` 链子手工维持（`AGENTS.md` §7.5 记着这条链子踩过两次坑）。
-    ///
-    /// 官方 `Dialog` 走的是**窗口级层栈**（`WindowState::active_dialogs`，由
-    /// `Root` 渲染），所以：层序 = 栈序，遮罩自带 `.occlude()`、Esc 与点遮罩
-    /// 关闭自带（`keyboard` / `overlay_closable`），不用我们维护。
-    ///
-    /// # 三个要注意的地方（都是 v0.19.0 实机踩出来的）
+    /// 它走**窗口级层栈**（`WindowState::active_dialogs`，由 `Root` 渲染），
+    /// 所以层序 = 栈序，遮罩自带 `.occlude()`、Esc 与点遮罩关闭自带
+    /// （`keyboard` / `overlay_closable`），不用我们维护 —— 见
+    /// `app::shell::dialogs`。
     ///
     /// 1. builder 闭包**可能被重跑**（gpui-component 的原话："it may run again
     ///    when the dialog layer is rebuilt. Keep it cheap and create persistent

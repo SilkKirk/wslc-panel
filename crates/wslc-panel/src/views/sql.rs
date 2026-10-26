@@ -1,6 +1,6 @@
 //! SQL 控制台（整页工作区）：左树 + 编辑器 + 结果表。
 
-use super::common::{NoContainer, log_text, page_empty};
+use super::common::{NoContainer, log_text, page_empty, tab_bar};
 use super::prelude::*;
 
 /// 「SQL 控制台」**整页**（v0.12）：左侧库 / 表树 + 右上编辑器 + 右下结果。
@@ -618,33 +618,24 @@ pub(crate) fn sql_results_pane(
                 .into_any_element(),
         );
     };
-    // 多语句：结果之间用一排小按钮切换。
+    // 多语句：结果之间用**官方 `TabBar`** 切换（走 `common::tab_bar`）。
+    //
+    // 旧写法是"一排 `Button`、当前那个 `.primary()`"—— 那是把**状态**画成了
+    // **动作**（项目里另外两处 tab 早就换成 `TabBar` 了，这里是最后一处）。
     let tabs: AnyElement = if db.sql_results.len() > 1 {
-        let buttons: Vec<AnyElement> = db
+        let labels: Vec<SharedString> = db
             .sql_results
             .iter()
             .enumerate()
-            .map(|(ix, r)| {
-                let entity = entity.clone();
-                let active = ix == shell.sql_result_tab;
-                let label = crate::sqlview::result_tab_label(ix, r);
-                let mut b = Button::new(SharedString::from(format!("db-sql-tab-{ix}")))
-                    .label(label)
-                    .small();
-                if active {
-                    b = b.primary();
-                }
-                b.on_click(move |_, window, cx| {
-                    entity.update(cx, |shell, cx| shell.switch_sql_result_tab(ix, window, cx));
-                })
-                .into_any_element()
-            })
+            .map(|(ix, r)| SharedString::from(crate::sqlview::result_tab_label(ix, r)))
             .collect();
-        h_flex()
-            .w_full()
-            .gap_1()
-            .children(buttons)
-            .into_any_element()
+        tab_bar(
+            "db-sql-tabs",
+            labels,
+            shell.sql_result_tab,
+            entity,
+            |shell, ix, window, cx| shell.switch_sql_result_tab(ix, window, cx),
+        )
     } else {
         div().into_any_element()
     };

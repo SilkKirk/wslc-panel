@@ -4,7 +4,7 @@
 
 use super::common::{
     NoContainer, REOPEN_DB_PAGE, badge, card, cell_muted, cell_text, danger_button, empty_state,
-    form_field, log_text, overlay_button, page_empty, table_card, table_row,
+    form_field, log_text, overlay_button, page_empty, tab_bar, table_card, table_row,
 };
 use super::prelude::*;
 
@@ -44,7 +44,7 @@ pub fn database(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
     // 表单没建好就没法渲染（输入框是懒创建的）。
     //
     // 这里**不再绑一个 `form`**：连接卡搬进浮层之后，这一页正文一个输入框
-    // 都不用（`form` 在 `db_info_overlay` 里用；v0.12 起 SQL 控制台有自己
+    // 都不用（`form` 在「基础信息」对话框里用；v0.12 起 SQL 控制台有自己
     // 的整页 `sql_console_page`，那儿的编辑器是 `EditorState`，也不在这儿读），
     // 绑了就是一个 unused 警告。
     if shell.db_form.is_none() {
@@ -55,7 +55,7 @@ pub fn database(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
     let header = db_header(db, entity);
 
     // ⚠️ 连接卡**不再常驻页面**：实机反馈"不用进来就在上面占用空间"。
-    // 它现在在 `db_info_overlay` 里（点页头的「基础信息」打开），
+    // 它现在在「基础信息」对话框里（点页头那个按钮打开），
     // 所以这里一个 `connecting` 都不画 —— 两处都画就等于同一份信息两个入口。
     if let Some(blocked) = db.blocked.as_ref() {
         return v_flex()
@@ -226,11 +226,11 @@ pub(crate) fn db_header(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
 
 /// 连接卡：用户名 / 密码 + 一句说明。
 ///
-/// ⚠️ 它**现在住在一个浮层里**（`db_info_overlay`，点页头的「基础信息」打开），
-/// 不再常驻页面顶部 —— 实机反馈"不用进来就在上面占用空间"。原先这里的注释
-/// 写的是"挂在**页面**上而不是弹窗里：用户扫一眼就该知道这一页连的是谁"，
-/// 那条取舍被这条反馈推翻了：那一页最有价值的是两张表，而顶部 ~250px 花在
-/// 一份很少改的连接信息上。
+/// ⚠️ 它**现在住在「基础信息」对话框里**（`views::db_info_body`，点页头那个
+/// 按钮打开，走官方 `Dialog`），不再常驻页面顶部 —— 实机反馈"不用进来就在
+/// 上面占用空间"。原先这里的注释写的是"挂在**页面**上而不是弹窗里：用户扫一眼
+/// 就该知道这一页连的是谁"，那条取舍被这条反馈推翻了：那一页最有价值的是
+/// 两张表，而顶部 ~250px 花在一份很少改的连接信息上。
 pub(crate) fn db_connection_card(
     db: &DbState,
     form: &DbPageForm,
@@ -454,69 +454,50 @@ pub(crate) fn db_loading(busy: bool) -> AnyElement {
         .into_any_element()
 }
 
-/// 三个 tab。
-///
-/// `mysql_family` 为假时**一个 tab 都不画**：那两个 tab 里全是 MySQL 专有的
-/// 动作（建库 / 建用户 / 授权），对 PostgreSQL 点了只会报错。
 /// 「数据库 / 用户」两个 tab。
 ///
-/// # 用官方 `TabBar` 而不是拿 `Button` 拼
+/// `mysql_family` 为假时**一个都不画**：那两个 tab 里的动作（建库 / 建用户 /
+/// 授权）全是 MySQL 专有的，对 PostgreSQL 点了只会报错 —— 那一页走
+/// [`db_postgres_card`]。
 ///
-/// 原来这里是「两个 `Button`，选中的那个 `.primary()`」—— 那是最早的表单做法，
-/// 而组件库有专门的 `TabBar` / `Tab`：
+/// `users_failed` 只改**标签文案**（"用户（读取失败）"）：整页横幅已经不占
+/// 地方了，用户至少要能看出点进去会看到什么。
 ///
-/// - **选中态**由组件自己画（下划线 / 胶囊，跟着 `TabVariant` 走），不用我们
-///   手动在 `.primary()` 和默认样式之间切；
-/// - `selected_index(ix)` 是**声明式**的 —— 我们只需要报告"现在是第几个"，
-///   点击由组件回调出来，不用为每个 tab 各建一个 `on_click`；
-/// - 键盘导航（左右箭头）、无障碍 role 都是组件带的。
-///
-/// 这正是"规范统一"的意思：**同一类控件在同一个应用里长得一样、行为一样**，
-/// 而不是"tab 用按钮拼、另一个 tab 用组件"。
+/// 走 `common::tab_bar`（官方 `TabBar` + `Tab`）—— 和设置页、SQL 结果那两处
+/// 是同一份接线。旧写法是"两个 `Button`、选中那个 `.primary()`"：那是把
+/// **状态**画成了**动作**，而且每个 tab 都要各建一个 `on_click`。
 pub(crate) fn db_tabs(
     current: DbTab,
     entity: &Entity<Shell>,
     mysql_family: bool,
     users_failed: bool,
 ) -> AnyElement {
-    use gpui_kit::component::tab::{Tab, TabBar};
-
     if !mysql_family {
         return div().into_any_element();
     }
 
-    let tabs: Vec<Tab> = DbTab::ALL
+    let labels: Vec<SharedString> = DbTab::ALL
         .iter()
         .map(|tab| {
             let tab = *tab;
-            // 用户列表读失败时打个标记：否则用户不知道点进来会看到什么
-            // （整页横幅已经不占地方了，见 `db_users_card`）。
-            Tab::new().label(if users_failed && tab == DbTab::Users {
+            SharedString::from(if users_failed && tab == DbTab::Users {
                 "用户（读取失败）"
             } else {
                 tab.label()
             })
         })
         .collect();
-
     let selected = DbTab::ALL
         .iter()
         .position(|tab| *tab == current)
         .unwrap_or(0);
 
-    let entity = entity.clone();
-    TabBar::new("db-tabs")
-        .pill()
-        .selected_index(selected)
-        .children(tabs)
-        .on_click(move |ix, _, cx| {
-            // `ix` 是 TabBar 给的**下标**，换回域类型再交给 Shell。
-            if let Some(tab) = DbTab::ALL.get(*ix) {
-                let tab = *tab;
-                entity.update(cx, |shell, cx| shell.set_db_tab(tab, cx));
-            }
-        })
-        .into_any_element()
+    tab_bar("db-tabs", labels, selected, entity, |shell, ix, _, cx| {
+        if let Some(tab) = DbTab::ALL.get(ix) {
+            let tab = *tab;
+            shell.set_db_tab(tab, cx);
+        }
+    })
 }
 
 /// PostgreSQL 连接在数据库页上的说明卡（v0.14）。
