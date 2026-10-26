@@ -1086,7 +1086,9 @@ impl Shell {
                     // "不用按钮"的退出路径；而且不清状态的话下一帧会重开。
                     Some(Shell::close_wslconf),
                     // 底部按钮在内容里（预览 / 取消 / 保存 ×2），不走 footer。
-                    || Vec::new(),
+                    // `Vec::new` 本身就是 `Fn() -> Vec<AnyElement>`（clippy 会拦
+                    // `|| Vec::new()` 这种冗余闭包）。
+                    Vec::new,
                 );
             }
             DialogKey::DeployForm => {
