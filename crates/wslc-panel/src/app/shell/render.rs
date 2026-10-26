@@ -1,8 +1,8 @@
 //! `impl Render for Shell` —— 整个窗口的渲染体。
 //!
-//! 它是这一摊里**唯一必须认识所有页面和所有浮层**的地方：
-//! `views::xxx_overlay()` 的调用点、以及「后画的压在上面」那条层序，
-//! 全在同一条 `.child(…)` 链子上。所以它单独一个文件，也刻意不拆。
+//! 它是这一摊里**唯一必须认识所有页面**的地方：页面分发、页头、侧边栏都在这里。
+//! 浮层**不在这条链子上** —— 它们由 `dialogs.rs` 的 `sync_dialog_stack` 管，
+//! 层序 = 官方 `Dialog` 的栈序。所以它单独一个文件，也刻意不拆。
 
 use super::super::prelude::*;
 use super::Shell;
@@ -436,9 +436,7 @@ impl Render for Shell {
                                         .child(page_body)
                                         .into_any_element()
                                 },
-                            ), // 提示条放在主内容列**最后**：它是一条贴底的布局项，
-                               // 出现时把上面那个 `flex_1` 的滚动区挤矮一点，
-                               // 而不是盖在它上面（见 `toast` 的说明）。
+                            ),
                     ),
             )
     }

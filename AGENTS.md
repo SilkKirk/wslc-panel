@@ -31,7 +31,7 @@ Rust + [gpui-kit](https://github.com/longbridge/gpui-kit)（GPUI）。
 
 ---
 
-## 2. 仓库结构：三个 crate，拆法是有原因的
+## 2. 仓库结构：四个 crate，拆法是有原因的
 
 ```
 crates/
@@ -48,6 +48,9 @@ crates/
 │       ├── distro.rs                                                    ← wsl.exe
 │       └── picker.rs  文件/目录选择器（借独立进程弹 Windows 原生对话框）
 │
+├── wslc-db/          原生（进程内）数据库驱动。同步 mysql / postgres；
+│                     依赖 wslc-core，不依赖 GPUI（拆出去是为了不带那两棵驱动树）
+│
 ├── wslc-panel-core/  面板里**不依赖 GPUI** 的那一半。edition 2024
 │   ├── state/        AppState / Snapshot / 各域状态（按域分 10 个模块 + `tests/` 目录）
 │   ├── prefs.rs      本程序自己的偏好（refresh_secs / theme）
@@ -58,7 +61,7 @@ crates/
 └── wslc-panel/       只有 UI。edition 2024，rust-version 1.85
     ├── main.rs       入口、启动日志、应用主题
     ├── app/          Shell（GPUI 实体）：shell/ 下按域分子模块（+ `dialogs.rs` 对话框栈、`db/` 目录）
-    ├── views/        渲染：按页面/浮层分 18 个模块（common 放共用小组件）
+    ├── views/        渲染：按页面/浮层分模块（common 放共用小组件）
     └── theme.rs      颜色
 ```
 
@@ -133,10 +136,11 @@ crates/
    `pub(crate)` 并在 `mod.rs` 再导出（实测踩过 `is_name_char` / `validate`）。
 7. **"只有测试按名字用"的 helper** 要三件套：`#[allow(dead_code)]`（库构建里没人调）
    + `pub(crate) fn` + `#[cfg(test)] pub(crate) use`（不 `cfg` 的话库构建报
-   unused import）。实测：`civil_from_days`。
+   unused import）。历史上 `civil_from_days` 就是这么处理的（2026-10-27 改用
+   `chrono` 后已删）。
 8. **rustfmt 会把 `pub(crate) use` 混排进 `pub use` 列表**，别手写"先列 pub use、
    最后补 priv"的顺序：按路径排序，带属性的项在前
-   （`#[cfg(test)] pub(crate) use backup::civil_from_days;` 在 `pub use backup::*;` **之前**）。
+   （`#[cfg(test)] pub(crate) use xxx::helper;` 在 `pub use xxx::*;` **之前**）。
 9. **机械改字段路径（`self.x` → `self.group.x`）要一次扫四种写法**，只替换
    `self.x` / `shell.x` 会漏 —— 实测 B8 那一轮漏了 **7 处断链**（rustfmt 把长链
    写成 `shell` ⏎ `.schema_search` ⏎ …，字段在**行首**），编译期 7 条 `E0609`。
@@ -609,7 +613,7 @@ cx.spawn_in(window, async move |this, cx| {
 | **`--cd` 才是指定终端起点的开关**（实测于 WSL 3.0.3.0） | `wsl -d X --cd ~` → `/home/wt`；`--cd ~/tmp` 会把 `~` 展开；**`--cd` 指向不存在的目录不报错**，只在 stderr 留一行 `chdir(...) failed 2` 然后落在 `/`（所以写错的路径不会"点了没反应"，但也别指望它提示）；`--cd D:\wsl` 也会被翻译成 `/mnt/d/wsl`（我们还是只让用户填 Linux 路径 —— 两个坐标系之间猜最容易出错）。面板里由偏好 `terminal_dir` 决定，见 `wslc_panel_core::prefs::TerminalStartDir` |
 | `wslc exec -i -t` **有 `-w/--workdir`** | 容器里的起点可以指定（`wslc exec --help`），但容器里**没有**"Linux home"这个概念 —— `~` 是谁由镜像决定，面板不往下传，见 `TerminalStartDir::container_workdir` |
 
-### 7.4 gpui-kit（0.7.1）没有文件选择器
+### 7.4 gpui-kit（0.8.0）没有文件选择器
 
 `crates/component/src/` 里没有 picker。所以 `cmd/picker.rs` 走的是
 **起一个 `powershell.exe` 让另一个进程弹 Windows 原生对话框**这条路。
