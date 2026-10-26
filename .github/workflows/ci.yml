@@ -35,7 +35,7 @@ name: CI
 #
 #    那些测试全是纯逻辑，现在跟着 `prefs.rs` / `state.rs` / 列宽 / 预设值
 #    一起搬进了 **`wslc-panel-core`**（不依赖 GPUI），
-#    由 `core` 任务里的 `cargo test -p wslc-panel-core` 跑，十几秒完事。
+#    由 `core` 任务里的 `cargo test --workspace --exclude wslc-panel` 跑，十几秒完事。
 #    **测试一条没少**，只是不再为了它们去链接 GPUI。
 #
 #    所以 `ui` 任务现在只做类型检查，不再执行任何测试。

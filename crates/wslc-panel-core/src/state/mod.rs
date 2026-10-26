@@ -66,10 +66,12 @@ mod tests;
 // 界面按它显示「在线清单来自 `wsl -l -o` 还是兜底 JSON」那句说明。
 pub use prelude::OnlineListSource;
 
-// ⚠️ 这几行必须是 `pub` 而不是 `pub(crate)`：`wslc-panel/src/main.rs` 里有一层
-// 垫片 `pub use wslc_panel_core::state::*;`，那是**跨 crate**的再导出 ——
-// `pub(crate)` 在另一个 crate 里完全看不见（实测：ui job 报 29 个 E0432）。
-// 这些类型本来就是这个 crate 的公开 API，`pub` 才是它们原本的可见性。
+// 这里用 glob 再导出，而 `views/mod.rs` 是逐项列的 —— 两处规则不同，理由也不同：
+// `views` 是 bin 内部模块，逐项列能让"漏写一行"变成编译错误；
+// 这里几十个类型、而且本来就是本 crate 的公开 API（`publish = false` 的内部 crate），
+// 逐项列只会变成一份要手工维护的清单。
+// ⚠️ 用 glob 的代价：新增类型默认就对外可见。加之前先问一句
+// "它该不该被 `wslc-panel` 看见"。
 pub use actions::*;
 pub use app::*;
 pub use db_state::*;

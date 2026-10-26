@@ -308,9 +308,14 @@ impl AppState {
 
     /// 新建初始状态。
     pub fn new(wslc: Wslc, wsl: Wsl) -> Self {
-        // 只读一次盘，然后把两半分别放进结构体 —— 对比上面 `db_credentials`
-        // 那两行（各调一次 `db_credentials_at_startup()`，白读一遍）。
+        // 两份存档各读一次盘，然后把两半分别放进结构体。
+        //
+        // ⚠️ 两半**必须来自同一次读取**：`*_at_startup()` 返回的是 `(值, 错误)`，
+        // 分开调两次的话，两次读之间文件若被另一个实例改过，就会出现
+        // "值读成功、错误却非空"这种自相矛盾的状态（v0.20 的 `db_credentials`
+        // 就是这么写的，一次启动读两遍盘）。
         let (deploy_store, deploy_store_error) = deploy_store_at_startup();
+        let (db_credentials, db_credentials_error) = db_credentials_at_startup();
         let data_dir = crate::prefs::app_dir();
         Self {
             wslc,
@@ -347,8 +352,8 @@ impl AppState {
             db: None,
             // 凭据存档 / 备份目录都挂在面板自己的数据目录下（读坏了给提示，
             // 不 panic —— 账号可以在建库时重新录入）
-            db_credentials: db_credentials_at_startup().0,
-            db_credentials_error: db_credentials_at_startup().1,
+            db_credentials,
+            db_credentials_error,
             backup_dir: data_dir,
             deploy: None,
             deploy_store,

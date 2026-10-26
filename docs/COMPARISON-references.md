@@ -64,9 +64,9 @@
 ### 2.1 本项目（3 crate）
 
 ```
-wslc-core/        纯数据层，不依赖 UI（MSRV 1.75）
-wslc-panel-core/  不依赖 GPUI 的那一半（edition 2024）
-wslc-panel/       只有 UI（app.rs 364 KB + views.rs 330 KB）
+wslc-core/        纯数据层，不依赖 UI（edition 2024 / MSRV 1.85）
+wslc-panel-core/  不依赖 GPUI 的那一半（edition 2024 / MSRV 1.85）
+wslc-panel/       只有 UI（`app/` 与 `views/` 两个目录，按功能域拆开）
 ```
 
 拆 `wslc-panel-core` 的理由是**实测的 CI 时间**：`cargo test -p wslc-panel --bins`

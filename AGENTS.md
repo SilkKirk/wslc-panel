@@ -35,7 +35,7 @@ Rust + [gpui-kit](https://github.com/longbridge/gpui-kit)（GPUI）。
 
 ```
 crates/
-├── wslc-core/        数据层。不依赖任何 UI。MSRV 1.75，edition 2021
+├── wslc-core/        数据层。不依赖任何 UI。MSRV 1.85，edition 2024
 │   ├── cli.rs        Wslc / Wsl 两个调用器 + 超时 / 取消 / 流式
 │   ├── decode.rs     UTF-16LE ↔ UTF-8（wsl.exe 的编码坑）
 │   ├── jsonl.rs      JSON Lines 解析（空输出 / 坏行 / 字段缺失都不 panic）
@@ -290,10 +290,9 @@ git push origin main
 ## 4. 发布流程
 
 1. **先让 CI 在 main 上全绿**（尤其是 `ui`）。
-2. 升版本号（**四个文件、七行**，少一处 CI 就会红）：
-   - 根 `Cargo.toml` 的 `[workspace.package] version`
-   - `crates/wslc-core/Cargo.toml` 里那个**显式**的 `version`（它还没改成
-     `version.workspace = true`，是个小遗留）
+2. 升版本号（**三个文件、六行**，少一处 CI 就会红）：
+   - 根 `Cargo.toml` 的 `[workspace.package] version` —— 四个成员都继承它
+     （`wslc-core` 从 v0.20.1 起也用 `version.workspace = true`，不再是手改项）
    - **`Cargo.lock` 里四个 workspace 成员的 `version`** —— 锁文件记着成员版本，
      不改的话 `--locked` 直接报"锁文件与清单不一致"。
      ⚠️ **成员是四个，不是三个**：v0.16 加了 `wslc-db`
@@ -316,7 +315,7 @@ git push origin main
    指向的都是它。改名等于让所有存量用户的"去发布页下载"落空。
    安装包和 zip 可以改名，它不能。
 
-   **版本号仍然只有那七行要改**（本节第 2 条）—— 安装包版本由
+   **版本号仍然只有那六行要改**（本节第 2 条）—— 安装包版本由
    `scripts/build-installer.ps1` 从 tag 读，`.iss` 里**不写死**，
    所以它**不是**第 5 个要手改版本号的文件。
 

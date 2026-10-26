@@ -4,8 +4,8 @@
 // 弹窗的外壳都由官方 `Dialog` 负责（构造在 `app::shell::dialogs`）。
 use super::common::{
     NoContainer, cell_link, cell_muted_full, cell_text, disclosure, empty_state, form_field,
-    immediate_button, kv_block, log_text, modal_footer, overlay_button, page_empty, store_warning,
-    table_card, table_row,
+    immediate_button, kv_block, log_text, overlay_button, page_empty, store_warning, table_card,
+    table_row,
 };
 use super::prelude::*;
 
@@ -917,28 +917,10 @@ pub(crate) fn deploy_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App
                     .text_color(theme::text_dim())
                     .child("启动命令须监听此端口，面板不会自动修改命令。")
             }),
-        )
-        .child(modal_footer([
-            {
-                let entity = entity.clone();
-                Button::new("deploy-cancel")
-                    .label("取消")
-                    .small()
-                    .on_click(move |_, _, cx| {
-                        entity.update(cx, |shell, cx| shell.close_deploy_dialog(cx));
-                    })
-            },
-            {
-                let entity = entity.clone();
-                Button::new("deploy-submit")
-                    .label(if re_deploy { "重新部署" } else { "部署" })
-                    .small()
-                    .primary()
-                    .on_click(move |_, window, cx| {
-                        entity.update(cx, |shell, cx| shell.submit_deploy(window, cx));
-                    })
-            },
-        ]));
+        );
+
+    // 底部按钮**不在这里**：`Dialog` 的 footer 由 `app::shell::dialogs` 统一挂。
+    // 这里再画一份就是"两排按钮 + 两套同 id 的元素" —— v0.20.1 的 bug。
 
     card.into_any_element()
 }

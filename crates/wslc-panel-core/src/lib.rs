@@ -19,9 +19,10 @@
 //! 这里只放**不依赖 GPUI 的东西**。判断标准很简单：`use gpui_kit::` 出现在哪个文件，
 //! 那个文件就留在 `wslc-panel` 里。
 //!
-//! `wslc-panel` 那边在 `main.rs` 里用一层 re-export 垫片继续暴露
-//! `crate::state::…` / `crate::prefs::…` 这些旧路径 ——
-//! 所以 `app/` / `views/` 里的调用点一行都没改。
+//! 引用这里的东西时**写全路径** `wslc_panel_core::state::…`。
+//! 2026-10-26 之前 `wslc-panel/src/main.rs` 里有一层 re-export 垫片，
+//! 让调用点还能写 `crate::state::…`；垫片已删 ——
+//! 于是"这个类型属于哪个 crate"在调用点就看得见。
 
 pub mod columns;
 // 数据库账号的本地存档（v0.8：建库同时建用户，列表要展示用户名 / 密码 ——
