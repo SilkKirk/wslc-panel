@@ -176,7 +176,9 @@ pub(crate) fn sql_console_page(
                             .size_range(px(200.)..px(420.))
                             .child(tree_column),
                     )
-                    .child(right),
+                    // `ResizablePanelGroup::child` 收的是 `Into<AnyElement>`，
+                    // 不是 `IntoElement` —— `v_flex()` 得先装箱。
+                    .child(right.into_any_element()),
             )
             .into_any_element()
     };
