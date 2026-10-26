@@ -49,7 +49,7 @@ pub(crate) fn database_page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> 
     // 的整页 `sql_console_page`，那儿的编辑器是 `EditorState`，也不在这儿读），
     // 绑了就是一个 unused 警告。
     if shell.db_form.is_none() {
-        return empty_state(REOPEN_DB_PAGE).into_any_element();
+        return page_empty(REOPEN_DB_PAGE);
     }
 
     // 页头（含「基础信息」按钮）。

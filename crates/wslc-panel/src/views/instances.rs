@@ -299,7 +299,3 @@ pub(crate) fn cell_distro_badge(state: DistroState) -> AnyElement {
     let (fg, bg) = theme::distro_state_colors(&state);
     badge(state.label().to_owned(), fg, bg).into_any_element()
 }
-
-// ---------------------------------------------------------------------------
-// ④b 添加实例
-// ---------------------------------------------------------------------------

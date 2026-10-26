@@ -85,7 +85,7 @@ pub fn config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
             entity,
             // 同 app/：滚动容器必须先有 id。
             v_flex()
-                .id("settings-raw-yaml")
+                .id("wslc-config-raw")
                 .w_full()
                 .max_h(px(420.))
                 .overflow_y_scroll()
@@ -104,7 +104,7 @@ pub fn config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
 }
 
 // ---------------------------------------------------------------------------
-// ⑥b WSL 配置（.wslconfig）
+// WSL 配置（.wslconfig）
 // ---------------------------------------------------------------------------
 
 /// 「WSL 配置」页 —— `%USERPROFILE%\.wslconfig`。
@@ -154,7 +154,7 @@ pub fn wsl_config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     } else if let Some(text) = &info.text {
         v_flex()
             // 滚动容器必须先有 id（同 config 页的说明）
-            .id("wslconfig-raw")
+            .id("wslconf-raw")
             .w_full()
             .max_h(px(420.))
             .overflow_y_scroll()

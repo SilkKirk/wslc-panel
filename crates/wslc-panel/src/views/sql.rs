@@ -149,7 +149,7 @@ pub(crate) fn sql_console_page(
                 ))
                 .into_any_element()
         } else {
-            sql_tree_pane(db, shell, entity, cx)
+            sql_tree_pane(db, shell, entity)
         };
     v_flex()
         .w_full()
@@ -185,8 +185,8 @@ pub(crate) fn sql_console_page(
                         .min_w_0()
                         .h_full()
                         .min_h_0()
-                        .child(sql_editor_pane(db, form, entity, &account, cx))
-                        .child(sql_results_pane(db, shell, entity, cx)),
+                        .child(sql_editor_pane(db, form, entity, &account))
+                        .child(sql_results_pane(db, shell, entity)),
                 ),
         )
         .into_any_element()
@@ -250,7 +250,6 @@ pub(crate) fn sql_editor_pane(
     form: &DbPageForm,
     entity: &Entity<Shell>,
     account: &str,
-    _cx: &App,
 ) -> AnyElement {
     let run: AnyElement = if db.busy {
         // ⚠️ 点下去必须有变化（`AGENTS.md` §7.1）：从点击到结果出来这段时间
@@ -375,7 +374,6 @@ pub(crate) fn sql_tree_pane(
     db: &DbState,
     shell: &Shell,
     entity: &Entity<Shell>,
-    _cx: &App,
 ) -> AnyElement {
     let pane = |inner: AnyElement| -> AnyElement {
         v_flex()
@@ -570,7 +568,6 @@ pub(crate) fn sql_results_pane(
     db: &DbState,
     shell: &Shell,
     entity: &Entity<Shell>,
-    _cx: &App,
 ) -> AnyElement {
     // 统一的容器：吃满剩余高度 + 内边距。三种形态共用，免得各写一遍。
     let shell_area = |inner: AnyElement| -> AnyElement {

@@ -542,6 +542,3 @@ pub(crate) fn containers_page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -
         )
         .child(table_card(ALL_COLUMNS, rows, empty))
 }
-// ---------------------------------------------------------------------------
-// ②b 容器里的数据库管理（MySQL / MariaDB，v0.7.0）
-// ---------------------------------------------------------------------------

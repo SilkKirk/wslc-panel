@@ -197,7 +197,7 @@ impl Render for Shell {
                 body =
                     body.child(
                         v_flex()
-                            .id("error-list")
+                            .id("app-errors")
                             .w_full()
                             .max_h(px(160.))
                             .overflow_y_scroll()

@@ -71,7 +71,7 @@ use prelude::*;
 // 同名时要靠 `use dashboard::dashboard;` 把函数引进命名空间，而"少了这一行
 // 就只剩模块名、报 cannot find function"是本文件踩过的坑（v0.18 那条注释）。
 // 带 `_page` 后缀之后，`use` 与调用点都不再有这层歧义。
-use common::{REOPEN_DB_PAGE, empty_state};
+use common::{REOPEN_DB_PAGE, page_empty};
 use containers::containers_page;
 use dashboard::dashboard_page;
 use database::database_page;
@@ -118,7 +118,7 @@ pub(crate) fn page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElemen
             // 防御分支（理论上走不到：进这一页时 `ensure_db_form` 已经建好了）。
             // ⚠️ 文案不解释内部状态 —— "编辑器还没建好"是给开发看的，
             // 用户只需要知道**下一步点哪**。
-            None => empty_state(REOPEN_DB_PAGE).into_any_element(),
+            None => page_empty(REOPEN_DB_PAGE),
         },
         // 「部署管理」也要 `&Shell` + `cx`：「添加部署」弹窗那五格输入框
         // 住在 `Shell` 里（页面本身没有输入框）。
