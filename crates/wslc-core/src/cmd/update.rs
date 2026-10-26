@@ -12,8 +12,6 @@
 
 use std::time::Duration;
 
-use crate::cli;
-use crate::mirrors;
 // 逐个导入而不是 `use crate::update::{self, …}`：**本模块就叫 `update`**，
 // 再把 `crate::update` 整个导成 `update` 会让读者分不清 `update::api_url()`
 // 指的是哪一层。名字写全反而省事。
@@ -31,24 +29,10 @@ const TIMEOUT: Duration = Duration::from_secs(25);
 /// 连不上、返回的不是 JSON…… 界面直接显示它。
 pub fn check() -> Result<Release, String> {
     let url = api_url();
-
-    // 纵深防御：URL 会作为**裸 argv** 交给 curl（见 `mirrors::is_http_url` 的说明）。
-    // 这个 URL 是我们自己拼的常量，理论上用不着校验；但那条判据一旦有了，
-    // 常量改了没人拦 —— 在这里再判一次成本为零。
-    if !mirrors::is_http_url(&url) {
-        return Err(format!("不是 http(s) 地址，已拒绝调用 curl：{url}"));
-    }
-
     let args = curl_args(&url);
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
-    match cli::run_helper_with_hint(
-        "curl.exe",
-        "curl.exe",
-        cli::CURL_NOT_FOUND_HINT,
-        &refs,
-        TIMEOUT,
-    ) {
+    match super::http::curl(&url, &refs, TIMEOUT) {
         Ok(out) if out.success() => parse_release(&out.stdout),
 
         // ⚠️ 这里**不能**只给 `out.combined()`：它优先返回 stderr，而 403 的

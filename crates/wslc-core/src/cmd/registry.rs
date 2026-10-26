@@ -14,7 +14,6 @@
 //! `alpine` 2 KB / 1.3 秒），量体积两次（index + manifest）。
 //! 只能在后台执行器上调用（`AGENTS.md` §7.1）。
 
-use crate::cli;
 use crate::error::Error;
 use crate::mirrors;
 use crate::registry::{self, ImageSize, ManifestKind};
@@ -102,21 +101,8 @@ fn get_manifest(url: &str) -> Result<String, String> {
 ///
 /// 这样就不用去猜状态码，也不用为了拿状态码去解析 `-w` 的输出。
 fn run(url: &str, args: Vec<String>) -> Result<String, String> {
-    // 纵深防御：这个字符串会作为**裸 argv** 交给 `curl.exe`
-    // （一个以 `-` 开头的"URL"会被 curl 当成选项，`-K<file>` 能变成任意下载写盘，
-    // 见 `registry::curl_args` 的说明）。调用方全都走拼 URL 的那几个函数，
-    // 但常量改了没人拦，在这里再判一次成本为零。
-    if !mirrors::is_http_url(url) {
-        return Err(format!("不是 http(s) 地址，已拒绝调用 curl：{url}"));
-    }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    match cli::run_helper_with_hint(
-        "curl.exe",
-        "curl.exe",
-        cli::CURL_NOT_FOUND_HINT,
-        &refs,
-        registry::http_timeout(),
-    ) {
+    match super::http::curl(url, &refs, registry::http_timeout()) {
         Ok(out) if out.success() => Ok(out.stdout),
         Ok(out) => Err(registry::explain_failure(&out.stdout, &out.stderr)),
         Err(e) => Err(match e {

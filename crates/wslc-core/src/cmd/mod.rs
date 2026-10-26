@@ -27,6 +27,9 @@ pub mod catalog;
 pub mod container;
 pub mod deploy;
 pub mod distro;
+// `curl.exe` 的公共入口（URL 校验 + 起进程 + 超时）。不给外部：面板层
+// 只该看到 `probe_mirror` / `fetch_tags` 这类有语义的函数。
+mod http;
 pub mod image;
 pub mod install;
 pub mod mysql;

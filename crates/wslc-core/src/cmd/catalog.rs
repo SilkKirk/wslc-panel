@@ -24,7 +24,6 @@
 
 use std::time::Duration;
 
-use crate::cli;
 use crate::mirrors::{self, Offer};
 
 /// 清单的来源，界面要如实显示"这份清单是哪儿来的"。
@@ -117,42 +116,20 @@ pub fn fetch() -> Result<Catalog, String> {
 /// URL 先过 [`mirrors::is_http_url`]：它会作为**裸 argv** 交给 curl，
 /// 一个以 `-` 开头的字符串会被当成选项。
 pub fn probe_mirror(url: &str) -> Option<mirrors::Probe> {
-    if !mirrors::is_http_url(url) {
-        return None;
-    }
     let args = mirrors::probe_args(url);
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    cli::run_helper_with_hint(
-        "curl.exe",
-        "curl.exe",
-        cli::CURL_NOT_FOUND_HINT,
-        &refs,
-        Duration::from_secs(20),
-    )
-    .ok()
-    .and_then(|out| mirrors::parse_probe(&out.stdout))
+    super::http::curl(url, &refs, Duration::from_secs(20))
+        .ok()
+        .and_then(|out| mirrors::parse_probe(&out.stdout))
 }
 
 /// 起一次 `curl.exe` 拿 JSON 正文。
 fn curl_json(url: &str) -> Result<String, String> {
-    // 纵深防御：这个字符串会作为**裸 argv** 交给 `curl.exe`（见
-    // `mirrors::is_http_url` 的说明）。`parse_discovery` 已经挡过一次，
-    // 但内置常量也走这条路（常量改了没人拦），在这里再判一次成本为零。
-    if !mirrors::is_http_url(url) {
-        return Err(format!("不是 http(s) 地址，已拒绝调用 curl：{url}"));
-    }
     let args = mirrors::curl_json_args(url);
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    match cli::run_helper_with_hint(
-        "curl.exe",
-        "curl.exe",
-        cli::CURL_NOT_FOUND_HINT,
-        &refs,
-        Duration::from_secs(30),
-    ) {
-        Ok(out) => Ok(out.stdout),
-        Err(e) => Err(e.to_string()),
-    }
+    super::http::curl(url, &refs, Duration::from_secs(30))
+        .map(|out| out.stdout)
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

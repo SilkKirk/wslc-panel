@@ -399,13 +399,7 @@ pub fn online_distros(wsl: &Wsl) -> OnlineListing {
     let mut fallback_error = String::new();
     for url in ONLINE_LIST_FALLBACK_URLS {
         let args = ["-s", "-L", "--max-time", "20", "--retry", "1", url];
-        match cli::run_helper_with_hint(
-            "curl.exe",
-            "curl.exe",
-            cli::CURL_NOT_FOUND_HINT,
-            &args,
-            Duration::from_secs(30),
-        ) {
+        match super::http::curl(url, &args, Duration::from_secs(30)) {
             Ok(out) if out.success() => match parse_distribution_info(&out.stdout) {
                 Ok(items) if !items.is_empty() => {
                     return OnlineListing {
