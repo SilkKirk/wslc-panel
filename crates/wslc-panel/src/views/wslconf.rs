@@ -370,5 +370,27 @@ pub(crate) fn wslconf_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &Ap
                     .children(sections)
                     .children(preview),
             )
+        .child(
+            v_flex()
+                .w_full()
+                .flex_none()
+                .gap_2()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child("仅保存需下次启动才生效；重启会中断此发行版中正在运行的任务。"),
+                )
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .flex_wrap()
+                        .justify_end()
+                        .child(preview_btn)
+                        .child(cancel)
+                        .children(save_actions),
+                ),
+        )
         .into_any_element()
 }

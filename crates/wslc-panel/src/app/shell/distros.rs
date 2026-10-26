@@ -1678,7 +1678,7 @@ impl Shell {
             }
         DialogKey::WslConf => {
             let title = match self.wslconf_dialog.as_ref() {
-                Some(d) => format!("{} 配置（/etc/wsl.conf）", d.state.distro),
+                Some(_) => match self.state.wslconf.as_ref() {`n                    Some(w) => format!("{} 配置（/etc/wsl.conf）", w.distro),`n                    None => "配置（/etc/wsl.conf）".to_owned(),`n                },
                 None => return,
             };
             let entity = cx.entity();
