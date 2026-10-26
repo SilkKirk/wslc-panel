@@ -306,6 +306,7 @@ pub(crate) fn containers_page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -
 
     // 查询词住在 `InputState` 里；没有输入框（理论上不该发生）时按空串处理。
     let query = shell
+        .forms
         .container_search
         .as_ref()
         .map(|input| input.read(cx).value().trim().to_owned())

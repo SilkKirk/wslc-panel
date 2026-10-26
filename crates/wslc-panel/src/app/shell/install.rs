@@ -127,6 +127,7 @@ impl Shell {
     pub fn switch_to_mirror_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // 在线清单里选过的那个 id（没选过就用输入框里的名字）
         let online_id = self
+            .forms
             .install_form
             .as_ref()
             .map(|form| {
@@ -247,6 +248,7 @@ impl Shell {
     /// 却永久失去了名字联动。
     pub fn browse_install_dir(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(input) = self
+            .forms
             .install_form
             .as_ref()
             .map(|form| form.install_dir.clone())

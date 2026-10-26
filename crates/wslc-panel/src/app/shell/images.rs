@@ -34,7 +34,7 @@ impl Shell {
         // "选了 tag 之后量体积 / 出现拉取按钮"整条链都断了。
         //
         // 订阅本身要存进 `Shell`：`Subscription` **一 drop 就退订**
-        // （和 `select_subs` 同一个坑，见那个字段的说明）。
+        // （和 `subs.select_subs` 同一个坑，见那个字段的说明）。
         let tags_sub = cx.subscribe(
             &tags_select,
             |shell, _emitter, event: &SelectEvent<Vec<DropdownItem>>, cx| {
@@ -53,7 +53,7 @@ impl Shell {
                 cx.notify();
             }
         });
-        self.image_subs = vec![tags_sub, host_sub, repository_sub];
+        self.subs.image_subs = vec![tags_sub, host_sub, repository_sub];
 
         self.forms.image_form = Some(ImageForm {
             host,

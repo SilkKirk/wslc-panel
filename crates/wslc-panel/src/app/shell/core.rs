@@ -5,7 +5,7 @@
 
 use super::super::prelude::*;
 use super::Shell;
-use super::state::{DropdownItem, Forms, InstallForm, Refresh, Tasks};
+use super::state::{DropdownItem, Forms, InstallForm, Refresh, Subscriptions, Tasks};
 
 /// 取锁；中毒（别的线程 panic 过）时照常用里面的值。
 ///
@@ -175,8 +175,14 @@ impl Shell {
                 db_dialog: None,
                 deploy_form: None,
             },
+            subs: Subscriptions {
+                container_search_sub: None,
+                select_subs: Vec::new(),
+                image_subs: Vec::new(),
+                create_subs: Vec::new(),
+                schema_search_sub: None,
+            },
             errors_expanded: false,
-            container_search_sub: None,
             tasks: Tasks {
                 pull_cancel: None,
                 export_cancel: None,
@@ -187,10 +193,7 @@ impl Shell {
             },
             detail: None,
             distro_detail: None,
-            select_subs: Vec::new(),
-            image_subs: Vec::new(),
             pull_open: false,
-            create_subs: Vec::new(),
             dialog_stack: Vec::new(),
             sql_table: None,
             sql_result_tab: 0,
@@ -199,7 +202,6 @@ impl Shell {
             tree_collapsed: false,
             schema_tree_state: None,
             schema_tree_built_for: None,
-            schema_search_sub: None,
             db_info_open: false,
         };
         shell.refresh(cx);
@@ -232,7 +234,7 @@ impl Shell {
         });
 
         self.forms.container_search = Some(input);
-        self.container_search_sub = Some(sub);
+        self.subs.container_search_sub = Some(sub);
         cx.notify();
     }
 
@@ -288,7 +290,7 @@ impl Shell {
                 }
             },
         );
-        self.select_subs = vec![store_sub, mirror_sub];
+        self.subs.select_subs = vec![store_sub, mirror_sub];
 
         self.forms.install_form = Some(InstallForm {
             name: cx.new(|cx| {
@@ -831,6 +833,7 @@ impl Shell {
                     // 数据已经有了，但树控件的 items 可能还没灌过（第一次进这一页，
                     // 或者上次是在"有搜索关键字"的状态下离开的）—— 补一次。
                     let query = self
+                        .forms
                         .schema_search
                         .as_ref()
                         .map(|i| i.read(cx).value().to_string())

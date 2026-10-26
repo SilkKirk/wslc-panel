@@ -70,13 +70,12 @@ pub struct Shell {
     /// 这一组**必须** `pub(crate)`：`views/` 画输入框要读它们（`Input::new` 收
     /// `&Entity<InputState>`，而页面渲染只拿得到 `&Shell`）。
     pub(crate) forms: Forms,
+    /// 输入框 / 下拉框的订阅句柄（5 个，见 [`Subscriptions`]）。
+    ///
+    /// 丢了不会报错，只会"选了什么都没反应" —— 所以整组放在一起，见结构体的文档。
+    subs: Subscriptions,
     /// 错误横幅是不是展开着（多条错误时才用得上）。
     errors_expanded: bool,
-    /// 搜索框内容变化的订阅。
-    ///
-    /// ⚠️ **必须存着**：`Subscription` 一 drop 就退订，表现是"打字时列表
-    /// 不跟着变"，不会报错 —— 这是本仓库踩过的坑（见 `select_subs`）。
-    container_search_sub: Option<Subscription>,
     /// 正在查看详情的容器名；关闭时为 None。
     detail: Option<String>,
     /// 正在查看详情的**发行版名**；关闭时为 None。
@@ -85,31 +84,12 @@ pub struct Shell {
     /// 两者的详情弹窗内容完全不同，共用一个字符串还得额外判断
     /// "这个名字是容器还是发行版"。
     distro_detail: Option<String>,
-    /// 两个下拉框（商店清单 / 镜像源清单）的**订阅**。
-    ///
-    /// ⚠️ 必须存着：`Context::subscribe_in` 返回的 `Subscription`
-    /// **一 drop 就退订**（组件库自己也是 `vec![cx.subscribe_in(..)]` 存起来的）。
-    /// 丢了它不会报错，只是"选了下拉框什么都不会发生" —— 那种 bug 很难查。
-    select_subs: Vec<Subscription>,
-    /// 「镜像」页 tag 下拉框的**订阅**。
-    ///
-    /// ⚠️ 和 `select_subs` 同一个坑：`Subscription` **一 drop 就退订**，
-    /// 表现是"在下拉框里选了一个 tag，什么都不发生"—— 不会报错，所以很难查。
-    image_subs: Vec<Subscription>,
     /// 「拉取镜像」弹窗开着吗。
     ///
     /// 和 `forms.image_form` 分开记：**表单建好之后一直留着**（用户第二次打开时
     /// registry / 仓库名 / 上一批 tag 都还在），而这个布尔只管可见性。
     /// 拉取进行中**不许关**（见 [`Shell::close_pull_dialog`]）。
     pull_open: bool,
-    /// 「创建容器」弹窗里那个「从本地镜像里选」下拉框的**订阅**。
-    ///
-    /// ⚠️ 和 `select_subs` / `image_subs` 同一个坑：`Subscription`
-    /// **一 drop 就退订**，表现是"选了一个镜像，输入框没变"。
-    ///
-    /// 它跟着弹窗的**创建**走（每次开弹窗重建一份），所以这里不用
-    /// `Option` —— 弹窗关掉时订阅也跟着丢，正好。
-    create_subs: Vec<Subscription>,
     /// 我们已经压进**窗口级对话框栈**的那几层（官方 `Dialog`），按打开顺序。
     ///
     /// # 为什么需要自己记一份
@@ -183,11 +163,6 @@ pub struct Shell {
     /// 存 `(搜索关键字, 表总数)`：两者都没变就不重建 —— `TreeState` 重建会
     /// 丢掉用户已经展开的层级，所以这件事必须**只在真的变了**时做。
     pub(crate) schema_tree_built_for: Option<(String, usize)>,
-    /// 搜索框内容变化的订阅。
-    ///
-    /// ⚠️ **必须存着**：`Subscription` 一 drop 就退订，表现是"打字时树不跟着过滤"，
-    /// 不会报错 —— 这是本仓库踩过的坑（见 `container_search_sub`）。
-    pub(crate) schema_search_sub: Option<Subscription>,
     /// 「数据库管理」页的「基础信息」浮层开着没有。
     ///
     /// 连接卡（用户名 / 密码 + 那两段说明）原来**常驻页面顶部**，实机反馈

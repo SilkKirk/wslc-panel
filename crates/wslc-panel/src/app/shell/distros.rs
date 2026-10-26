@@ -471,6 +471,7 @@ impl Shell {
     /// 给提示弹窗的输入框弹选择器（移动位置选目录 / 导出选文件）。
     pub fn browse_prompt_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let picked = self
+            .forms
             .prompt
             .as_ref()
             .and_then(|p| p.kind.pick_target().map(|t| (p.input.clone(), t)));

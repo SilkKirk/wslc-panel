@@ -26,7 +26,7 @@ impl Shell {
             }
         });
         self.forms.schema_search = Some(input);
-        self.schema_search_sub = Some(sub);
+        self.subs.schema_search_sub = Some(sub);
     }
 
     /// 按当前数据 + 关键字**重建** `TreeState` 的 items。
@@ -216,6 +216,7 @@ impl Shell {
                     // 但表名变了"（改表名场景）会被误判成不变。
                     shell.schema_tree_built_for = None;
                     let query = shell
+                        .forms
                         .schema_search
                         .as_ref()
                         .map(|i| i.read(cx).value().to_string())

@@ -1103,6 +1103,7 @@ impl Shell {
                     },
                 };
                 let re_deploy = self
+                    .forms
                     .deploy_form
                     .as_ref()
                     .is_some_and(|f| f.editing.is_some());

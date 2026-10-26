@@ -424,7 +424,7 @@ impl Shell {
 
         // ⚠️ 这个订阅是**必须**的：不订阅的话"从下拉框里选了一个镜像"什么都不会发生
         // （输入框不变、也不会去读它的端口）。订阅本身要存进 `Shell` ——
-        // `Subscription` **一 drop 就退订**（和 `select_subs` 同一个坑）。
+        // `Subscription` **一 drop 就退订**（和 `subs.select_subs` 同一个坑）。
         let pick_sub = cx.subscribe_in(
             &image_select,
             window,
@@ -434,7 +434,7 @@ impl Shell {
                 }
             },
         );
-        self.create_subs = vec![pick_sub];
+        self.subs.create_subs = vec![pick_sub];
 
         let dialog = CreateDialog {
             image: cx.new(|cx| {
@@ -479,7 +479,7 @@ impl Shell {
             &dialog.memory,
             &dialog.cpus,
         ] {
-            self.create_subs
+            self.subs.create_subs
                 .push(cx.subscribe(input, |_, _, event: &InputEvent, cx| {
                     if matches!(event, InputEvent::Change) {
                         cx.notify();
@@ -661,7 +661,7 @@ impl Shell {
         self.forms.create_dialog = None;
         // 订阅跟着弹窗一起丢：下拉框已经没了，留着它只是白占一个 `Subscription`
         // （下次开弹窗会重新建一份）。
-        self.create_subs.clear();
+        self.subs.create_subs.clear();
         cx.notify();
     }
 
@@ -754,7 +754,12 @@ impl Shell {
         // ⚠️ `spec.command` 是**拼好的 argv**（`state::create_command`）：留空时是
         // 空表（那正是"不给命令、用镜像自己的"），所以判空用 `is_empty()`。
         if spec.command.is_empty() {
-            let has_cmd = match self.forms.create_dialog.as_ref().map(|dialog| &dialog.facts) {
+            let has_cmd = match self
+                .forms
+                .create_dialog
+                .as_ref()
+                .map(|dialog| &dialog.facts)
+            {
                 Some(FactsState::Ready(facts)) => Some(facts.has_cmd),
                 _ => None,
             };

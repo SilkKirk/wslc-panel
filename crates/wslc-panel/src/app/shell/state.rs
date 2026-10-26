@@ -1042,3 +1042,42 @@ pub(crate) struct Forms {
     /// 它们只有按钮和文字，没有 `InputState`。
     pub(crate) deploy_form: Option<DeployForm>,
 }
+
+/// 输入框 / 下拉框的**订阅句柄**（5 个）。
+///
+/// ⚠️ 这五个必须**一直存着**：`Subscription` 一 drop 就退订，而退订**不会报错** ——
+/// 表现只是"打字时列表不跟着变""在下拉框里选了一个 tag，什么都不发生"。
+/// 这是本仓库踩过的坑（v0.6 的 tag 过滤框），所以每个字段的注释各记了一遍。
+///
+/// 收成一组是因为它们**是同一个坑的五次踩**：读的人只要记住一条规则
+/// （订阅句柄不许丢），不必逐条去发现四个例外；写新代码时看一眼这个结构体
+/// 就知道"要在 `Shell` 上持有订阅"。
+///
+/// 字段 `pub(super)`，理由同 [`Tasks`]：这是**生命周期管理**，不是界面状态，
+/// `views/` 不该看见（也确实一处都没读）。
+pub(crate) struct Subscriptions {
+    /// 「容器」搜索框内容变化的订阅。
+    pub(super) container_search_sub: Option<Subscription>,
+
+    /// 两个下拉框（商店清单 / 镜像源清单）的订阅。
+    ///
+    /// `Context::subscribe_in` 返回的 `Subscription` **一 drop 就退订**
+    /// （组件库自己也是 `vec![cx.subscribe_in(..)]` 存起来的）。
+    pub(super) select_subs: Vec<Subscription>,
+
+    /// 「镜像」页 tag 下拉框的订阅。
+    ///
+    /// 和 `select_subs` 同一个坑：表现是"在下拉框里选了一个 tag，什么都不发生"。
+    pub(super) image_subs: Vec<Subscription>,
+
+    /// 「创建容器」弹窗里那个「从本地镜像里选」下拉框的订阅。
+    ///
+    /// 它跟着弹窗的**创建**走（每次开弹窗重建一份），所以这里是 `Vec` 而不是
+    /// `Option` —— 弹窗关掉时订阅也跟着丢，正好。
+    pub(super) create_subs: Vec<Subscription>,
+
+    /// 库 / 表树搜索框内容变化的订阅。
+    ///
+    /// 和 `container_search_sub` 同一个坑，只是它影响的是树。
+    pub(super) schema_search_sub: Option<Subscription>,
+}
