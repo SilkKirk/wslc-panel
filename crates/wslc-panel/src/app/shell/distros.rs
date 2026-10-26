@@ -1616,6 +1616,8 @@ impl Shell {
             }
         DialogKey::PullImage => {
             let title = "拉取镜像".to_owned();
+            // 在闭包**外面**算：self 的借用不能逃进 'static 闭包（E0521）。
+            let pulling = self.state.pulling.is_some();
             let entity = cx.entity();
             let content = {
                 let view_entity = entity.clone();
@@ -1656,7 +1658,6 @@ impl Shell {
                 };
                 // ⚠️ 拉取**进行中**时这个弹窗关不掉（`close_pull_dialog` 会拒绝并给提示），
                 // 所以那时不画「关闭」——一个按下去只弹提示的按钮不如没有。
-                let pulling = self.state.pulling.is_some();
                 dialog
                     .title(title.clone())
                     .w(px(760.))
