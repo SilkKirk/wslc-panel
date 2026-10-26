@@ -1,7 +1,7 @@
 //! 数据库的弹窗与进度浮层：新建库 / 建用户 / 改密 / 授权 / 备份 / 导入 / 基础信息。
 
 use super::common::{
-    ModalSize, cell_muted, cell_text_full, disclosure, form_field, modal_card, modal_footer,
+    ModalSize, cell_muted, cell_text_full, disclosure, form_field, modal_card,
     modal_scrim, modal_title, overlay_button, page_empty, radio_row, table_header, table_row,
 };
 use super::database::db_connection_card;
