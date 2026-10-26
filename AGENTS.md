@@ -147,6 +147,17 @@ crates/
    - 全仓 `Line.Length -gt 100`，以及 **`chain_width`（默认 60）** ——
      行宽没超、链宽超了照样红（实测两轮都栽在这上面）。
    细节和实测记录见 `docs/AUDIT-2026-10-26.md` §11 那张表。
+10. **按行号区间替换时，区间要从"正文第一行"开始**，别把上一行的
+    `let x = if cond {` 一起吃进去 —— 实测 B5b 那轮有三处因此变成
+    `busy_text(...) } else {`（语法错）。做法：先从文件里读出那段原文、
+    `Contains` 断言过再替换，而不是隔着屏幕数行号。
+11. **把调用换进 helper 之后，回头查一眼导入** —— 某个名字唯一的调用点被 helper
+    吃掉之后，它在顶部的 `use` 就变成未使用的（clippy 阻塞）。实测 B5b 的
+    `deploy.rs` / `database.rs` 都留了 `log_text`。
+12. **链变短也会触发 rustfmt**（反方向同样要动）：`.child(sidebar_toggle)` 换成
+    更短的 `.child(toggle)` 之后，整条链短到能合并，rustfmt 要求
+    `h_flex().gap_3().items_center().child(toggle)` 挤成一行、内层整体左移 4 格。
+    判据永远是**行宽 100 + `chain_width` 60 两个都要重算**，不是"我加长了所以要看"。
 
 > 判据：`core` job 的**测试条数不变**（纯搬迁不该动断言），`lint` 绿了才算收工。
 
