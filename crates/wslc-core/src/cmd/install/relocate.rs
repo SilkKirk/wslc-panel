@@ -184,11 +184,11 @@ pub(super) fn ensure_relocated(wsl: &Wsl, step: &PlannedStep, opts: &RunOptions)
 /// ⚠️ 低于实测窗口的代价不是"报个错"，而是**退到「导出 → 注销 → 导入」**
 /// 那条要把整个根文件系统拷一遍的路（几个 GB、几分钟）。
 /// 等待是便宜的那一边。
-const MOVE_TOTAL_BUDGET: Duration = Duration::from_secs(94);
+pub(super) const MOVE_TOTAL_BUDGET: Duration = Duration::from_secs(94);
 /// 第一次等多久，之后翻倍。
-const MOVE_FIRST_WAIT: Duration = Duration::from_secs(2);
+pub(super) const MOVE_FIRST_WAIT: Duration = Duration::from_secs(2);
 /// 单次等待的上限。
-const MOVE_MAX_WAIT: Duration = Duration::from_secs(32);
+pub(super) const MOVE_MAX_WAIT: Duration = Duration::from_secs(32);
 
 /// `wsl --manage <name> --move <dir>`，失败就等一下再试。
 ///

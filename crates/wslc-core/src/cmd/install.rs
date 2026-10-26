@@ -36,7 +36,7 @@ mod relocate;
 // `ensure_relocated` 与 `is_busy` 主流程要用；`same_dir` **只有测试**按名字用，
 // 所以单独 `#[cfg(test)]` 导入 —— 否则非测试构建会报 unused_imports（clippy 阻塞）。
 #[cfg(test)]
-use relocate::same_dir;
+use relocate::{MOVE_FIRST_WAIT, MOVE_MAX_WAIT, MOVE_TOTAL_BUDGET, same_dir};
 use relocate::{ensure_relocated, is_busy};
 
 /// 轮询子进程是否结束的间隔。
