@@ -5,7 +5,7 @@
 ; 两个 define 都由 scripts/build-installer.ps1 注入 —— 版本号只有一处来源
 ; （根 Cargo.toml / git tag），.iss 里不写死。
 ;
-; 三条刻意的选择，理由见 docs/PLAN-install-update.md §3.1：
+; 三条刻意的选择：
 ;   ① per-user（lowest）：本项目没有任何需要管理员的操作，per-user 装完目录
 ;      用户可写，将来真要自更新也不用弹 UAC；
 ;   ② 不走 Restart Manager，自己在 [Code] 里 taskkill（GPUI 窗口对 RM 的

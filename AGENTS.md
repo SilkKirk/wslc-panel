@@ -146,7 +146,6 @@ crates/
      `.group` / `.字段` / `.方法()` 各占一行；
    - 全仓 `Line.Length -gt 100`，以及 **`chain_width`（默认 60）** ——
      行宽没超、链宽超了照样红（实测两轮都栽在这上面）。
-   细节和实测记录见 `docs/AUDIT-2026-10-26.md` §11 那张表。
 10. **按行号区间替换时，区间要从"正文第一行"开始**，别把上一行的
     `let x = if cond {` 一起吃进去 —— 实测 B5b 那轮有三处因此变成
     `busy_text(...) } else {`（语法错）。做法：先从文件里读出那段原文、
@@ -486,7 +485,7 @@ Button::new(id).label("更多").small()
 ⚠️ **v0.9.13→v0.9.14 的教训**：容器行铺到 7 个按钮时，我先把 `ALL_COLUMNS` 的操作列
 从 330 加到 440 想"装下它们" —— 实机截图里那一列**还是两行**。
 **"列太窄"有时候不是列的问题，是按钮太多。** 加第 5 个按钮之前先问一句
-"它该不该进「更多」"。细节见 `docs/PLAN-v0.9.md` §20。
+"它该不该进「更多」"。
 
 ### 组件选型：这几个**评估过、不换**（别再论证一遍）
 
@@ -505,9 +504,12 @@ Button::new(id).label("更多").small()
 
 ### 计划文档
 
-`docs/PLAN-*.md` 是分阶段计划，`docs/SPIKE.md` 是前期技术验证，
-`docs/wslc-schema.md` 是字段字典。**改行为时顺手更新它们**，
-它们是这个项目"当时为什么这么决定"的唯一记录。
+`docs/SPIKE.md` 是前期技术验证，`docs/wslc-schema.md` 是实测字段字典，
+`docs/releases/` 是逐版本发布说明。**改行为时顺手更新它们。**
+
+> 各阶段的 `docs/PLAN-*.md` / `docs/AUDIT-*.md` / `docs/COMPARISON-references.md`
+> 已在 2026-10-27 删掉 —— 现状以本文件 + `README.md` 为准，历史事实从 git 里翻
+> （`git log -- docs/`）。别再往这些路径加新引用。
 
 ---
 
@@ -722,7 +724,7 @@ cx.spawn_in(window, async move |this, cx| {
 - **模态里放 `Select`（可搜索下拉框）**：v0.6.3 起「拉取镜像」弹窗里有 tag
   下拉框，这是本仓库**第一次**把 `Select` 放进模态。看实现是安全的
   （弹层走 `deferred` + `POPUP_PRIORITY`，遮罩只有 `BlockMouse`，见上一条），
-  但 ⚠️ **这一条是推的，没有实机验证过**（`docs/PLAN-v0.6.md` §3.8 也记着）。
+  但 ⚠️ **这一条是推的，没有实机验证过**。
   真出问题（弹层被遮罩盖住 / 点不到）时的退路有两条：把下拉框换回
   "输入框 + 列表"，或者把表单从弹窗移回页面。
 - **入场动画走 `with_animation`，id 必须"稳定 + 互不相同"**：切页有 120ms 淡入
@@ -907,11 +909,9 @@ PATCH /git/refs/heads/X  { sha: <新 commit>, force: true }
 
 另外实测**新旧两个版本可以同时运行** —— 所以换完文件重启时要有交接
 （新进程先等旧进程 PID 消失再开始轮询 `wslc`），否则会有一瞬间
-两个面板各自 3 秒轮询，正是 `docs/COMPARISON-references.md` §3 里
-那条 sharing violation 的成因。
+两个面板各自 3 秒轮询 —— 那正是 `wslc` sharing violation 的成因。
 
-完整方案（含三步替换、回滚、失败路径）在
-`docs/PLAN-install-update.md` 的旧版里，当前版只保留了提示那部分。
+完整方案（含三步替换、回滚、失败路径）当时记在 `docs/PLAN-install-update.md` 里（那份文档 2026-10-27 已删）。
 
 ---
 

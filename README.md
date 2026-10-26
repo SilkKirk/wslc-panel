@@ -265,14 +265,8 @@ base, component, and assets, so a Rust application lists a single dependency.」
 
 - [`AGENTS.md`](AGENTS.md) —— **给 AI 代理看的**仓库约定与踩坑记录（本机没有 Rust 工具链、
   CI 怎么读、发布流程、弹窗约定……）。人也能看：里面全是"不知道就会踩坑"的那类东西。
-- [`docs/PLAN.md`](docs/PLAN.md) —— **当前**的实施方案、里程碑、风险对策
-- [`docs/PLAN-v0.2.md`](docs/PLAN-v0.2.md) / [`PLAN-v0.3.md`](docs/PLAN-v0.3.md) /
-  [`PLAN-v0.5.md`](docs/PLAN-v0.5.md) / [`PLAN-v0.6.md`](docs/PLAN-v0.6.md) /
-  [`PLAN-v0.7.md`](docs/PLAN-v0.7.md) / [`PLAN-v0.8.md`](docs/PLAN-v0.8.md) /
-  [`PLAN-v0.9.md`](docs/PLAN-v0.9.md) ——
-  各阶段的**历史**计划。里面的"未做"说的是**当时**的状态，不是现状。
-  （`PLAN-v0.9.md` 是「部署管理」那一版，§1 是**实测表**、§2 记了**两次被推翻的
-  机制选型**、§10 是审查捞出来的问题 —— 包括一条"单测自己写错、断言恒假"。）
+- [`docs/postgres-measured.md`](docs/postgres-measured.md) —— PostgreSQL 驱动的**实测记录**（真容器抓的）
+- [`docs/releases/`](docs/releases) —— 逐版本发布说明（v0.10 ~ v0.17）
 - [`docs/wslc-schema.md`](docs/wslc-schema.md) —— **实测采集**的 `wslc` 输出字段字典（踩坑记录）
 - [`docs/SPIKE.md`](docs/SPIKE.md) —— M0 选型验证清单与回退方案
 
@@ -295,7 +289,7 @@ base, component, and assets, so a Rust application lists a single dependency.」
   所以日志浮层里给了一个「在终端里跟随」，开独立窗口（能滚、能 Ctrl+C）。
 - **容器页的批量只有「停止全部」这一档**：`wslc stop` 收多个名字，所以工具栏上
   那一颗能一键停掉所有正在运行的容器；但**行首没有复选框**，不能只挑几个来
-  停 / 删（`docs/PLAN.md` §4.3 里那个"批量"形状还没做）。
+  停 / 删（那个"批量"形状还没做）。
 - **本机直连 Docker Hub 会超时**：`run` 表单默认 **`--pull never`**
   （`CreateDialog` 的默认值，和上面「创建容器」那一行一致）——
   想让它自己拉，就把高级设置里的拉取策略改成 `missing` / `always`。
@@ -305,8 +299,7 @@ base, component, and assets, so a Rust application lists a single dependency.」
   `daocloud` 连 tag 列表都要，而 `registry-1.docker.io` / `hub.docker.com`
   在这台机器上直接不可达）。要拉**别的 registry**：把「registry」那个框改成它的
   地址，并在仓库名后面写上 tag（`nginx:1.27`）—— **列不出 tag 也能拉**，
-  只是没有下拉框可选。认证链路（`WWW-Authenticate` → token）**没写**，
-  待补清单在 [`docs/PLAN-v0.6.md`](docs/PLAN-v0.6.md) §3.4。
+  只是没有下拉框可选。认证链路（`WWW-Authenticate` → token）**还没写**。
 - **镜像的「体积」有两个口径，别混**：「拉取区」显示的是「**下载约 N MB**」
   （registry manifest 里各层压缩后之和），而下面的「本地镜像」表里 `wslc images`
   的 `Size` 是**解压后**的落盘占用。同机 nginx 实测 60.9 MB vs 163 MB，差 2.7 倍 —— 两个数都对。

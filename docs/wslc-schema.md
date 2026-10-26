@@ -433,7 +433,7 @@ wslc remove wslc-panel-probe
 
 ## 12. `wslc exec` 的补充实测（v0.7.0，数据库管理页）
 
-为了"在容器里跑 mysql 客户端"这个功能实测的（背景见 `docs/PLAN-v0.7.md`）。
+为了"在容器里跑 mysql 客户端"这个功能实测的。
 容器是本机那个 `mysql`（`docker.1panel.live/library/mysql:latest`，26.7.0）。
 
 ### 12.1 `exec` 的选项
