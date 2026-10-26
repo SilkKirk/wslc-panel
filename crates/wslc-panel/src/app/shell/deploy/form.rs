@@ -46,7 +46,7 @@ impl Shell {
         let existing_ports = self.state.deploy_store.binding_ports(&container);
         let published_ports = deploy_model::published_container_ports(&ports);
 
-        // ⚠️ 默认应用名**不是**运行时键（`java` → `/opt/java`，正是 §15 那次
+        // ⚠️ 默认应用名**不是**运行时键（`java` → `/opt/java`，正是"部署把镜像自带的 JDK 删掉"那次
         // 把镜像自带 JDK 删掉的路径）。理由写在 `DEFAULT_APP_NAME` 那儿。
         // 多应用时再点一次「添加部署」，`suggest_app_name` 会给出 `app-2`。
         let app_value = record
@@ -63,7 +63,7 @@ impl Shell {
             .unwrap_or_else(|| {
                 // nginx 的目标必须**跟着挂载点走**，而且**每个应用一个子目录**：
                 // 所有应用铺进同一个 Web 根时，`removals_script` 的逐名删除会把
-                // 另一个应用的同名文件删掉（见 `docs/PLAN-multi-app.md` §1.3）。
+                // 另一个应用的同名文件删掉。
                 deploy_model::default_app_target(runtime, &app_value, web_root.as_deref())
             });
         // 存档里有就用存档的；没有就从来源路径推（Java / Go 的默认启动命令

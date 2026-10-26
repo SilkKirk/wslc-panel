@@ -18,7 +18,7 @@ pub(crate) use wslc_core::model::install::{
 // 定义在 `wslc-core` 里；这里转出去，界面按它显示那句说明。
 pub use wslc_core::model::install::OnlineListSource;
 // 多驱动层的连接类型（v0.13）。`DbState::conn` 用它 —— 现在只是容器 + 家族的
-// 镜像，阶段 1 起它会成为"连接"的真正载体（见 `docs/PLAN-multi-db.md`）。
+// 镜像，阶段 1 起它会成为"连接"的真正载体。
 pub(crate) use wslc_core::db::{
     Credentials, DbConn, DbHost, DbKind, MySqlDriver, PostgresDriver, SqlDriver,
 };

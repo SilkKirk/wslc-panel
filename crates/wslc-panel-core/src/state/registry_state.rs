@@ -20,8 +20,7 @@ pub struct RegistryState {
     /// registry 地址（**用户可编辑**，见 [`registry::is_valid_host`]）。
     ///
     /// v0.6.2 之前这是个常量：合并两页时它必须变成字段，否则"从别的 registry 拉"
-    /// 这个能力就没了（当初正是为了它才留着两个拉取入口，见
-    /// `docs/PLAN-v0.6.md` §3.6）。
+    /// 这个能力就没了（当初正是为了它才留着两个拉取入口）。
     pub host: String,
     /// 用户输进框里的原文（用来显示"由 … 解析为 …"）。
     pub input: String,

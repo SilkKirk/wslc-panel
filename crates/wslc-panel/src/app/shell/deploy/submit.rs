@@ -118,7 +118,6 @@ impl Shell {
         // 方向很重要：**老记录铺在 Web 根、新应用铺到根下的子目录**是迁移路径，
         // 要放行；只有"新目标是旧目标的父目录 / 同一个目录"，或者子目录名正好
         // 是旧应用铺过的名字（会被它的逐名删除带走）时才拦。
-        // 见 `docs/PLAN-multi-app.md` §4.3。
         let previous_target = editing
             .as_ref()
             .and_then(|app| self.state.deploy_store.get(&container, app.as_str()))
@@ -365,7 +364,7 @@ impl Shell {
         //（`DeployRecord::members`）—— `model::deploy::removals_script` 的文档
         // 写着删除列表有三个来源，而早先这里只给了"这一次"的：源目录里
         // **改名 / 删掉**的文件于是永远留在目标目录里（"我明明改了，页面上还是
-        // 旧的"正是 PLAN-v0.9 §2.3 当初要避免的那一类），记录随后又被覆盖，
+        // 旧的"正是当初要避免的那一类），记录随后又被覆盖，
         // 连「删除」也再收拾不到它。
         let previous_members = editing
             .as_ref()

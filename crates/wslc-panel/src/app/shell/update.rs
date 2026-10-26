@@ -1,4 +1,4 @@
-//! 更新检查（只检查、不下载，见 `docs/PLAN-install-update.md`）。
+//! 更新检查（只检查、不下载）。
 
 use super::super::prelude::*;
 use super::Shell;

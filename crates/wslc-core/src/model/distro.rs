@@ -2,7 +2,7 @@
 //!
 //! # 实测依据
 //!
-//! 全部来自本机 `WSL 3.0.1.0`，见 `docs/PLAN-v0.3.md` §3。
+//! 全部来自本机 `WSL 3.0.1.0`。
 //!
 //! ## `wsl -l -v`（`WSL_UTF8=1`，stdout 恰好 80 字节）
 //!
@@ -108,7 +108,7 @@ impl DistroState {
 /// 一个 WSL 发行版（实例）。
 ///
 /// 前四个字段来自 `wsl -l -v`；后四个来自**注册表**
-/// （`wsl` 命令不报告安装位置，只有注册表有，见 `docs/PLAN-v0.3.md` §3.4）。
+/// （`wsl` 命令不报告安装位置，只有注册表有）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Distro {
     /// 发行版名。
@@ -129,7 +129,7 @@ pub struct Distro {
     /// 虚拟磁盘的**虚拟大小**（字节，即文件的 `Length`）。
     ///
     /// ⚠️ 这是虚拟大小，不是磁盘实际占用。实际可回收量要用
-    /// `wsl --manage <name> --compact` 问（见 `docs/PLAN-v0.3.md` §3.5）。
+    /// `wsl --manage <name> --compact` 问。
     pub vhdx_bytes: Option<u64>,
     /// 默认用户 UID（注册表 `DefaultUid`）。
     pub default_uid: Option<u32>,

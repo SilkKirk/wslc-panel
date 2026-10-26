@@ -45,7 +45,7 @@ impl PgSession {
         }
         // ⚠️ `NoTls`：`postgres` 0.19 的 TLS 要靠额外的 `MakeTlsConnect`
         // 实现（`postgres-native-tls` 等）。阶段 A 先只做明文 ——
-        // 远程库要 TLS 是**下一步必须补的**，见 `docs/PLAN-native-db.md`。
+        // 远程库要 TLS 是**下一步必须补的**。
         let client = postgres::Client::connect(&spec.postgres_conninfo(), postgres::NoTls)
             .map_err(classify)?;
         Ok(Self {

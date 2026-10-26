@@ -316,7 +316,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         // ⚠️ 先挡掉"正在查"，**再**动输入框：反过来的话输入框已经变成新仓库名，
-        // 而结果列表还是上一个仓库的 —— 那正是 §3.2 要避免的串台，
+        // 而结果列表还是上一个仓库的 —— 那正是要避免的串台，
         // 只不过这次是我们自己造成的。
         if self.state.registry.loading {
             self.state.notify(Toast::info("上一个查询还没回来"));

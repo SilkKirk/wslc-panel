@@ -10,7 +10,7 @@
 //!
 //! `wsl` 命令**不报告**发行版装在哪个盘。唯一来源是
 //! `HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss\<GUID>` 下的
-//! `BasePath` / `VhdFileName`（实测，见 `docs/PLAN-v0.3.md` §3.4）。
+//! `BasePath` / `VhdFileName`（实测）。
 //!
 //! 读取方式选了 `reg.exe query` 而不是注册表 API，理由见
 //! [`crate::cli::run_helper`] 的文档（实测 7~27 ms，且输出恒为 UTF-8）。
@@ -56,7 +56,7 @@ pub fn list(wsl: &Wsl) -> Result<DistroList> {
 ///
 /// ⚠️ 这只是**兜底**：默认发行版的权威来源是列表里的 `*`。
 /// 而且 `--status` 的输出是**本地化**的（中文系统是「默认分发:」），
-/// 所以采集频率刻意放低（30 秒），见 `docs/PLAN-v0.3.md` §10。
+/// 所以采集频率刻意放低（30 秒）。
 pub fn status(wsl: &Wsl) -> Result<WslStatus> {
     let out = wsl.run_checked(&["--status"])?;
     Ok(WslStatus::parse(&out.stdout))
@@ -241,7 +241,7 @@ const KEEP_ALIVE_ARGS: [&str; 3] = ["--", "sleep", "infinity"];
 ///
 /// # 为什么要这么绕
 ///
-/// 实测（WSL 3.0.1.0，见 `docs/PLAN-v0.3.md`）：
+/// 实测（WSL 3.0.1.0）：
 ///
 /// | 做法 | 结果 |
 /// |---|---|
@@ -519,8 +519,8 @@ pub fn move_distro(wsl: &Wsl, name: &str, location: &str) -> Result<()> {
 ///
 /// ⚠️ **开的时候要带 `--allow-unsafe`**：WSL 3.0.1.0 起默认拒绝开稀疏盘
 /// （理由是"潜在的数据损坏"），报错里自己给出的命令就是
-/// `wsl.exe --manage <分发> --set-sparse true --allow-unsafe`（实测输出，
-/// 见 `docs/PLAN-v0.5.md`）。不带的话这条动作在界面上永远失败。
+/// `wsl.exe --manage <分发> --set-sparse true --allow-unsafe`（实测输出）。
+/// 不带的话这条动作在界面上永远失败。
 /// 关的时候不需要那个开关。
 pub fn set_sparse(wsl: &Wsl, name: &str, sparse: bool) -> Result<()> {
     let flag = if sparse { "true" } else { "false" };
@@ -799,7 +799,7 @@ pub fn read_registry() -> Vec<RegistryEntry> {
 
 /// 解析 `reg.exe query <Lxss> /s` 的输出。
 ///
-/// # 实测格式（`docs/PLAN-v0.3.md` §3.4）
+/// # 实测格式
 ///
 /// ```text
 ///

@@ -151,7 +151,7 @@ impl DbHost {
 /// `%APPDATA%\...\prefs.json` 是不行的（那是个普通文件），
 /// 正确做法是 Windows DPAPI（要新依赖）。
 ///
-/// 按 `docs/PLAN-multi-db.md` §6 的决定：**阶段 1 不存密码**，
+/// 定下的做法是**阶段 1 不存密码**，
 /// 所以类型里根本没有这个字段 —— 想加的人必须先回答"存哪儿"。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DbConn {

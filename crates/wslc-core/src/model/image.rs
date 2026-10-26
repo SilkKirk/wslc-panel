@@ -106,7 +106,7 @@ pub struct ImageFacts {
     /// 实测 `eclipse-temurin:8-jre-alpine` 就是后者：`Cmd` 是 `null`，
     /// entrypoint 末行是 `exec "$@"` —— 于是「创建容器」里「启动命令」留空，
     /// 容器起来 **1.1 ms** 就 `Exited (0)`；用户点「启动」看到"成功"、
-    /// 状态却还是「已退出」，反复点都一样（`docs/PLAN-v0.9.md` §11 与 §16）。
+    /// 状态却还是「已退出」，反复点都一样（那次的教训）。
     /// 有了这一位，`confirm_create` 就能在提交时拦住"留空 + 镜像没 CMD"这一种。
     pub has_cmd: bool,
 }

@@ -22,7 +22,7 @@ pub struct ConnSpec {
     pub user: String,
     /// 明文口令。
     ///
-    /// ⚠️ **不落盘**（`docs/PLAN-native-db.md` 阶段 C 之前）。这个 struct
+    /// ⚠️ **不落盘**。这个 struct
     /// 会进日志/错误信息，所以 `Debug` 是手写的，只写"有没有"。
     pub password: String,
     pub database: Option<String>,

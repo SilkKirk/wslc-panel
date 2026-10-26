@@ -36,7 +36,6 @@ pub mod cmd;
 //
 // 纯数据 + 纯判断，不连库、不起进程 —— 所以能在这里单测，
 // 也能被 `wslc-panel-core` 的补全反过来消费（方向是单向的）。
-// 方案见 `docs/PLAN-multi-db.md`。
 pub mod db;
 pub mod decode;
 pub mod error;

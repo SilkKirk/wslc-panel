@@ -91,7 +91,7 @@ pub fn default_user_for(database: &str) -> String {
 /// | `mysqldump … --databases djxm …`（改之后） | exit 0，110 张表 / 2.3 MB |
 ///
 /// 之所以一直没人发现：这个函数**只有一个调用方**（`cmd::mysql::backup_database`），
-/// 而"备份"这个按钮从 v0.8 到 v0.9.6 之间**根本不存在**（见 `docs/PLAN-v0.9.md` §12），
+/// 而"备份"这个按钮从 v0.8 到 v0.9.6 之间**根本不存在**，
 /// 单测又只传 `"mysqldump"` 进来、从不检查 argv[0]，于是两边一起沉默。
 ///
 /// # 规则

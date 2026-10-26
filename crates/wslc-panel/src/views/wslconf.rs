@@ -331,7 +331,7 @@ pub(crate) fn wslconf_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &Ap
     // 弹窗一点变化都没有，两个按钮也照样能点 —— 连点会并发出两轮 `wsl.exe`，
     // 重复写一遍配置、再 terminate 一次发行版。
     //
-    // 项目约定**不用** `.disabled()`（禁用态的文字几乎看不清，见 §7.5），
+    // 项目约定**不用** `.disabled()`（禁用态的文字几乎看不清，见 `AGENTS.md` §7.5），
     // 所以这里是换掉元素、不是置灰。
     let save_actions: Vec<AnyElement> = if state.busy {
         vec![

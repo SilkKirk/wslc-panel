@@ -529,7 +529,7 @@ impl Shell {
                     if dialog.create_user {
                         let user = text(&dialog.db_user);
                         // 留空就拦下来：这条路径下"没填用户名"= 建了一个连不上
-                        // 的库，属于 §7.5 那种"看着填了、其实空着"的陷阱。
+                        // 的库，属于 `AGENTS.md` §7.5 那种"看着填了、其实空着"的陷阱。
                         // 报错**不关弹窗**（外面的 Err 分支只发提示），
                         // 用户改一个字就能重试。
                         if user.is_empty() {

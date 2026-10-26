@@ -3,8 +3,7 @@
 //! 职责：
 //!
 //! 1. **注入 `WSL_UTF8=1`** —— 否则两个程序都输出 UTF-16LE
-//!    （`wslc` 见 `docs/wslc-schema.md` §0.1；`wsl` 见 `docs/PLAN-v0.3.md` §3.1，
-//!    两者实测行为一致）。
+//!    （`wslc` 的字段见 `docs/wslc-schema.md` §0.1，`wsl` 的行为实测一致）。
 //! 2. **不弹控制台窗口** —— 这是个 GUI 程序，每次调用都闪一个黑框
 //!    是不可接受的，因此用 `CREATE_NO_WINDOW`。
 //! 3. **超时与取消** —— `exec` / `attach` 这类命令可能永远不返回，
@@ -740,7 +739,7 @@ fn execute(
 ///
 /// # 为什么是 `reg.exe` 而不是注册表 API
 ///
-/// 实测（见 `docs/PLAN-v0.3.md` §3.4）：
+/// 实测：
 ///
 /// - `reg.exe query ... /s` 只要 **7~27 ms**（对比：起 PowerShell 要 300ms+，
 ///   这正是当初 `storage.rs` 不用 PowerShell 的原因）；

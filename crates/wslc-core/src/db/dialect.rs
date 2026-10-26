@@ -5,7 +5,7 @@
 //! dbx 把方言做成 38 份 YAML + 热加载（`plugins/dialects/*.yaml`，30+ 能力位）。
 //! 那是因为它要覆盖 100+ 数据库，维护成本靠数据化摊薄。
 //!
-//! 我们只有三种引擎（`docs/PLAN-multi-db.md` §4.3）：**几个 `const` 结构体
+//! 我们只有三种引擎：**几个 `const` 结构体
 //! 的成本远低于**"解析器 + 校验器 + 热加载 + 快照测试"那一套。
 //! 但形状按数据design —— 将来真要搬进文件，只改 [`dialect_for`] 一处。
 //!
@@ -55,7 +55,7 @@ pub enum LimitSyntax {
 ///
 /// # 为什么要这个
 ///
-/// `docs/PLAN-multi-db.md` §2.2 第 2 条：界面按能力位显隐，
+/// 界面按能力位显隐，
 /// 而不是在 `views/` 里写 `if kind == Postgres`。
 ///
 /// 用 bool 字段而不是 `bitflags` crate：只有 5 个位，引一个依赖不值得，

@@ -169,7 +169,7 @@ pub fn settings_about(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
 ///
 /// # 为什么不做"下载并安装"
 ///
-/// 用户要的是**提示**，下载他自己挑加速站（`docs/PLAN-install-update.md` §9）。
+/// 用户要的是**提示**，下载他自己挑加速站。
 /// 而且实测本机到 release 资产只有 11–15 KB/s，30 MB 要 40 分钟 ——
 /// 应用内下载只会更糟。
 pub(crate) fn update_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {

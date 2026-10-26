@@ -580,7 +580,7 @@ pub fn plan(spec: &InstallSpec, ctx: &PlanContext) -> Result<InstallPlan, String
                     // ⚠️ 中转 tar 的路径**必须**是个真路径。
                     //
                     // 这里原来传的是 `String::new()`：`--manage --move` 一失败
-                    // （PLAN-v0.5 的 v0.5.2 补记写明"紧接着 `--install` 之后跑
+                    // 紧接着 `--install` 之后跑
                     // `--move` 会失败（返回 -1）"，所以这条回退路径是**设计上
                     // 会出现**的），就退到「导出 → 注销 → 导入」，
                     // 而那时跑的是 `wsl --export <name> ""` ——

@@ -698,7 +698,7 @@ impl ContainerInspect {
     /// 只显示一段会误导 —— 实测那个 `eclipse-temurin:8-jre-alpine` 就是
     /// **只有 entrypoint、没有 cmd**（它的 entrypoint 末行是 `exec "$@"`，
     /// 于是不带参数时什么都不做、容器 1.1 ms 就正常退出）；只看 entrypoint
-    /// 会读成"这镜像有命令、能跑"（`docs/PLAN-v0.9.md` §11 那次事故）。
+    /// 会读成"这镜像有命令、能跑"。
     ///
     /// 两段都空时返回 `None`（界面显示 `—`）。
     pub fn command_line(&self) -> Option<String> {
@@ -1284,7 +1284,7 @@ mod tests {
         );
 
         // 只有 entrypoint（那个 temurin 镜像的形状）：**原样给出来** ——
-        // 不补个 `—`、也不假装它还有 cmd。这一条正是 §11 那次事故的教训：
+        // 不补个 `—`、也不假装它还有 cmd。这一条正是"镜像没 CMD、起来就退"那次事故的教训：
         // 只读 entrypoint 的人会以为"这镜像有命令、能跑"。
         let only_entry = ContainerInspect::new(serde_json::json!({
             "Config": { "Entrypoint": ["/__cacert_entrypoint.sh"], "Cmd": [] }

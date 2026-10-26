@@ -11,7 +11,7 @@ use super::prelude::*;
 /// 带时间戳备份的保存 + 用系统编辑器打开。
 ///
 /// 任意文本输入的完整表单需要 GPUI 的 `InputState` / `TextInput`，
-/// 属于下一步（见 `docs/PLAN.md` M6）。
+/// 属于下一步（见  M6）。
 pub fn config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     let Some(doc) = &state.settings else {
         let message = state

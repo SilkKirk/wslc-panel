@@ -85,7 +85,7 @@ pub(crate) struct ImageForm {
     ///
     /// ⚠️ 它是**可编辑**的，这不是顺便给的：v0.6.2 合并「镜像 / 镜像仓库」两页、
     /// 去掉「按引用拉取…」弹窗时，正是靠它才没丢掉"从别的 registry 拉"这个能力
-    /// （`docs/PLAN-v0.6.md` §3.6 记着当初就是因为这个能力才留了两个入口）。
+    /// （当初就是因为这个能力才留了两个入口）。
     /// 用户输入会先过 [`wslc_core::registry::normalize_host`]，
     /// 再由 [`wslc_core::registry::is_valid_host`] 把关 —— 它会拼进 URL
     /// 再作为裸 argv 交给 `curl.exe`。

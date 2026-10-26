@@ -50,7 +50,7 @@ pub const DEFAULT_REGISTRY: &str = "docker.1panel.live";
 ///
 /// 每一项都在 `docker.1panel.live` 上实测过 200（2026-10-13），
 /// 不是从文档抄的 —— 界面上的快捷按钮点下去 404 是最难解释的一种。
-/// 刻意只放 10 个：`PLAN-v0.5.md` §4.4 记着"几十个按钮铺满一屏"是已经被
+/// 刻意只放 10 个：当初"几十个按钮铺满一屏"是已经被
 /// 否掉的做法（那次的结论是改用下拉框）。
 pub const COMMON_IMAGES: &[&str] = &[
     "nginx",
@@ -65,8 +65,8 @@ pub const COMMON_IMAGES: &[&str] = &[
     "hello-world",
 ];
 
-/// 快捷入口**不能又变成"几十个按钮铺满一屏"** —— 那正是 `PLAN-v0.5.md` §4.4
-/// 记着已经被否掉的做法（那次的结论是改用下拉框）。现在 10 个，
+/// 快捷入口**不能又变成"几十个按钮铺满一屏"** —— 那正是当初
+/// 已经被否掉的做法（那次的结论是改用下拉框）。现在 10 个，
 /// 超过 12 个就该换成下拉框了，所以在这里编译期拦一下。
 const _: () = assert!(COMMON_IMAGES.len() <= 12);
 
@@ -330,7 +330,7 @@ pub fn is_valid_reference(reference: &str) -> bool {
 /// URL（[`tags_url`] / [`manifest_url`]）再作为裸 argv 交给 `curl.exe`
 /// （见 [`curl_args`] 的说明）。区别是它**现在是用户可编辑的** ——
 /// v0.6.2 合并「镜像 / 镜像仓库」两页时把 registry 提成了输入框，
-/// 因为不这么做就会丢掉"从别的 registry 拉"这个能力（`docs/PLAN-v0.6.md` §3.6）。
+/// 因为不这么做就会丢掉"从别的 registry 拉"这个能力。
 /// 常量用不着校验，输入框必须校验。
 ///
 /// 规则按 Docker 的 registry 主机名：`[A-Za-z0-9.-]`，可选 `:端口`，
@@ -1130,8 +1130,8 @@ mod tests {
 
     // ---- registry 主机名 -------------------------------------------------
     //
-    // v0.6.2 起它**来自输入框**（合并两页时把 registry 提成了字段，见
-    // `docs/PLAN-v0.6.md` §3.6）—— 所以这两个函数的判据必须写死在这里。
+    // v0.6.2 起它**来自输入框**（合并两页时把 registry 提成了字段）
+    // —— 所以这两个函数的判据必须写死在这里。
 
     #[test]
     fn accepts_the_hosts_people_actually_type() {

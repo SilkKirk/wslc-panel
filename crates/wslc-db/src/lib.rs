@@ -21,7 +21,7 @@
 //! 这个项目的铁律是"所有阻塞调用跑在 `background_executor` 上"
 //! （`AGENTS.md` §7.1）。同步驱动天然符合；异步驱动（`sqlx` /
 //! `tokio-postgres`）要把 tokio runtime 桥到 GPUI 后面，多一层就多一类
-//! "卡界面 / 死锁"的 bug。见 `docs/PLAN-native-db.md` §2。
+//! "卡界面 / 死锁"的 bug。
 //!
 //! # 分层
 //!

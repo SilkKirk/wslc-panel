@@ -5,7 +5,7 @@
 //! Percona 是 MySQL 的兼容发行版，MariaDB 是 fork —— 三者的**客户端命令行
 //! 参数、输出格式、协议**都一样。dbx 也是这么做的：`dbx-driver-mysql` 一个
 //! crate 里塞了 `dolt` / `doris` / `starrocks` / `tidb` / `oceanbase` 一堆
-//! 兼容垫片，各自只处理差异（见 `docs/PLAN-multi-db.md` §2.1）。
+//! 兼容垫片，各自只处理差异。
 //!
 //! 差异只有两处，都不影响"怎么跑命令"：
 //! - 客户端二进制名（`mysql` / `mariadb`）；

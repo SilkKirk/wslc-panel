@@ -736,7 +736,7 @@ mod tests {
     fn a_plan_with_only_cleanup_steps_runs_to_completion() {
         // 这条测试**不起任何进程**：`CreateDir` 与 `RemoveFile` 是纯文件系统操作，
         // 所以能真跑一遍 executor 的主循环（包括事件顺序），
-        // 而"起 wsl.exe"那几条只能在真机上验 —— 见 §12 的手测清单。
+        // 而"起 wsl.exe"那几条只能在真机上验 —— 见真机手测清单。
         let dir =
             std::env::temp_dir().join(format!("wslc-panel-install-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
