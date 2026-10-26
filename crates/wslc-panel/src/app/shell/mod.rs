@@ -60,6 +60,10 @@ pub(crate) enum DialogKey {
     DbImportProgress,
     /// 「容器日志」对话框。
     ContainerLogs,
+    /// 「容器详情」对话框。
+    ContainerDetail,
+    /// 「发行版详情」对话框。
+    DistroDetail,
 }
 
 /// 应用外壳。

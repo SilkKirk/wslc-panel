@@ -166,7 +166,7 @@ pub(crate) fn distro_row(
     // （权重 85 / 总和 1060），而 `table_row` 的单元格**不裁剪**内容 ——
     // 超出的部分就这么画进了下一列。单独加宽状态列只是把阈值往后推，
     // 换一种字体 / 缩放到 125% 又会溢出来。
-    // 「谁在维持它」是低频信息，改写在详情弹窗里（`distro_detail_overlay`）。
+    // 「谁在维持它」是低频信息，改写在详情弹窗里（`distro_detail_body`）。
     let status = cell_distro_badge(distro.state);
 
     table_row(
@@ -285,7 +285,7 @@ pub(crate) fn distro_row_actions(
 
     // 「删除」**不在这里** —— 它挪去了详情。列表行是横向排布的，
     // 一个红色的「删除」和「打开终端」挨着，误点的代价太大；
-    // 详情里地方宽，能把"要删掉多少"写清楚（见 `distro_detail_overlay`）。
+    // 详情里地方宽，能把"要删掉多少"写清楚（见 `distro_detail_body`）。
 
     h_flex()
         .gap_2()

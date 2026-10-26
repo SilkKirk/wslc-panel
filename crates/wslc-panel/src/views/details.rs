@@ -1,8 +1,11 @@
 //! 容器详情 / 发行版详情两个浮层。
 
+// 两个详情浮层都已迁到官方 `Dialog`，所以 `modal_card` / `modal_scrim` /
+// `modal_title` / `ModalSize` 在这里不再需要 —— 外壳由 `Dialog` 负责，
+// 本文件只产出"中间那块内容"。
 use super::common::{
-    ModalSize, danger_button, danger_button_distro, immediate_button, kv, kv_block, modal_card,
-    modal_scrim, modal_title, overlay_button, prompt_button,
+    danger_button, danger_button_distro, immediate_button, kv, kv_block, overlay_button,
+    prompt_button,
 };
 use super::prelude::*;
 
@@ -22,7 +25,7 @@ use super::prelude::*;
 ///
 /// 挂载用 `kv_block`（换行不截断）：`E:\code → /etc/nginx/conf.d/`
 /// 这种长路径用 `kv` 会被截成 `E:\...\con...`，等于没显示。
-pub fn container_detail_overlay(
+pub(crate) fn container_detail_body(
     name: &str,
     state: &AppState,
     entity: &Entity<Shell>,
@@ -106,16 +109,6 @@ pub fn container_detail_overlay(
         "终端 / 重启 / 日志 / 删除 在列表那一行的「更多」菜单里（停止在行内）"
     } else {
         "这个容器已经停止 —— 启动在行内，日志 / 删除 在那一行的「更多」菜单里"
-    };
-
-    let close = {
-        let entity = entity.clone();
-        Button::new("detail-close")
-            .label("关闭")
-            .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.close_detail(cx));
-            })
     };
 
     // 端口在这里显示**完整形式**（含绑定地址），和列表里的精简形式区分开：
@@ -231,33 +224,21 @@ pub fn container_detail_overlay(
         rows.push(kv("PID", stats.pids.to_string()).into_any_element());
     }
 
-    modal_scrim(
-        "container-detail",
-        modal_card(ModalSize::Medium)
-            .id("detail-card")
-            .max_h(px(860.))
-            .overflow_y_scroll()
-            .child(modal_title(name.to_owned()))
-            .child(v_flex().w_full().gap_2().children(rows))
-            .child(
-                v_flex()
-                    .w_full()
-                    .gap_2()
-                    // 先说明"其余动作在列表里"，再是这一页独有的那几个。
-                    // 顺序反过来的话，停止的容器那一条会只剩右下角一个「关闭」，
-                    // 看起来像界面坏了。
-                    .child(div().text_xs().text_color(theme::text_dim()).child(hint))
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .justify_between()
-                            .items_center()
-                            .child(h_flex().gap_2().flex_wrap().children(actions))
-                            .child(close),
-                    ),
-            ),
-    )
-    .into_any_element()
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(v_flex().w_full().gap_2().children(rows))
+        .child(
+            v_flex()
+                .w_full()
+                .gap_2()
+                // 先说明"其余动作在列表里"，再是这一页独有的那几个。
+                // 顺序反过来的话，停止的容器那一条会只剩右下角一个「关闭」，
+                // 看起来像界面坏了。
+                .child(div().text_xs().text_color(theme::text_dim()).child(hint))
+                .child(h_flex().w_full().gap_2().flex_wrap().children(actions)),
+        )
+        .into_any_element()
 }
 
 /// 发行版详情弹窗。
@@ -274,7 +255,7 @@ pub fn container_detail_overlay(
 /// 另外这里**替列表行承担了一件事**：如果这个发行版正被本面板吊着
 /// （`state.kept_alive`），在「状态」下面加一句说明 —— 那个标记原先画在
 /// 列表行的状态列里，会溢到隔壁「版本」列上（见 [`distro_row`]）。
-pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+pub(crate) fn distro_detail_body(name: &str, state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     let Some(distro) = state.snapshot.distros.iter().find(|d| d.name == name) else {
         // 发行版刚被删掉 —— 弹窗自己消失，别留一个空壳
         return div().into_any_element();
@@ -391,15 +372,6 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
             })
     };
 
-    let close = {
-        let entity = entity.clone();
-        Button::new("distro-detail-close")
-            .label("关闭")
-            .small()
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.close_distro_detail(cx));
-            })
-    };
 
     // -- 信息 --------------------------------------------------------------
 
@@ -466,35 +438,28 @@ pub fn distro_detail_overlay(name: &str, state: &AppState, entity: &Entity<Shell
         vec![reveal.into_any_element(), edit_conf.into_any_element()];
     buttons.extend(actions);
 
-    modal_scrim(
-        "distro-detail",
-        modal_card(ModalSize::Wide)
-            .id("distro-detail-card")
-            .max_h(px(860.))
-            .overflow_y_scroll()
-            .child(
-                v_flex().gap_1().child(modal_title(name.to_owned())).child(
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child("磁盘维护、导出与删除都在这里；删除不可撤销。"),
+        )
+        .child(v_flex().w_full().gap_2().children(rows))
+        .child(
+            v_flex()
+                .w_full()
+                .gap_2()
+                .child(
                     div()
                         .text_xs()
+                        .font_semibold()
                         .text_color(theme::text_dim())
-                        .child("磁盘维护、导出与删除都在这里；删除不可撤销。"),
-                ),
-            )
-            .child(v_flex().w_full().gap_2().children(rows))
-            .child(
-                v_flex()
-                    .w_full()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(theme::text_dim())
-                            .child("操作"),
-                    )
-                    .child(h_flex().w_full().gap_2().flex_wrap().children(buttons)),
-            )
-            .child(h_flex().w_full().justify_end().child(close)),
-    )
-    .into_any_element()
+                        .child("操作"),
+                )
+                .child(h_flex().w_full().gap_2().flex_wrap().children(buttons)),
+        )
+        .into_any_element()
 }

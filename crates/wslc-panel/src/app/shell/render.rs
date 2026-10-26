@@ -285,17 +285,9 @@ impl Render for Shell {
             Some(dialog) => views::create_dialog_overlay(dialog, &self.state, &entity, cx),
         };
 
-        // 容器详情弹窗。
-        let detail_dialog: AnyElement = match &self.detail {
-            None => div().into_any_element(),
-            Some(name) => views::container_detail_overlay(name, state, &entity),
-        };
-
-        // 发行版详情弹窗。
-        let distro_detail_dialog: AnyElement = match &self.distro_detail {
-            None => div().into_any_element(),
-            Some(name) => views::distro_detail_overlay(name, state, &entity),
-        };
+        // NOTE: 容器详情 / 发行版详情都走官方 Dialog 栈
+        // （`DialogKey::ContainerDetail` / `DistroDetail`，由 `sync_dialog_stack` 对齐）。
+        // 它们的内容分别是 `views::container_detail_body` / `distro_detail_body`。
 
         // ⚠️ 「单输入框提示」（移动位置 / 调整大小 / 设置默认用户 / 导出 / 创建卷）
         // **不在这条链子上**：它已迁到官方 `Dialog`（窗口级层栈），
@@ -573,8 +565,6 @@ impl Render for Shell {
             // 后画的创建表单应该压在上面 —— 用户刚点的是它。
             .child(pull_dialog)
             .child(create_dialog)
-            .child(detail_dialog)
-            .child(distro_detail_dialog)
             // ⚠️ 「单输入框提示」不在这条链子上 —— 它走官方 `Dialog` 的窗口级层栈
             // （见上面 `Shell::open_prompt` 那段的说明）。
             .child(wslconf_dialog)
