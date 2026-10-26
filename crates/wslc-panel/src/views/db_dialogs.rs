@@ -1,8 +1,8 @@
 //! 数据库的弹窗与进度浮层：新建库 / 建用户 / 改密 / 授权 / 备份 / 导入 / 基础信息。
 
 use super::common::{
-    busy_text, cell_muted, cell_text_full, disclosure, form_field, overlay_button, page_empty,
-    radio_row, table_header, table_row,
+    busy_text, cell_muted, cell_text_full, disclosure, form_field, form_field_secret,
+    overlay_button, page_empty, radio_row, table_header, table_row,
 };
 use super::database::db_connection_card;
 use super::prelude::*;
@@ -141,7 +141,7 @@ pub(crate) fn db_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App) ->
                         .child(suggest)
                         .into_any_element(),
                 );
-                fields.push(form_field(
+                fields.push(form_field_secret(
                     "db-dialog-password",
                     "密码（已随机生成，可修改）",
                     &dialog.password,
@@ -213,7 +213,7 @@ pub(crate) fn db_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App) ->
                     ))
                     .into_any_element(),
             );
-            fields.push(form_field(
+            fields.push(form_field_secret(
                 "db-dialog-password",
                 "密码",
                 &dialog.password,
@@ -237,7 +237,7 @@ pub(crate) fn db_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App) ->
                     ))
                     .into_any_element(),
             );
-            fields.push(form_field(
+            fields.push(form_field_secret(
                 "db-dialog-password",
                 "新密码",
                 &dialog.password,

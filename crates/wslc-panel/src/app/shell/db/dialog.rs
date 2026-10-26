@@ -47,7 +47,11 @@ impl Shell {
         let collation = cx.new(|cx| InputState::new(window, cx).placeholder("留空 = 跟着字符集"));
         let user = cx.new(|cx| InputState::new(window, cx).placeholder("app"));
         let host = cx.new(|cx| InputState::new(window, cx).placeholder("%（任意主机）"));
-        let password = cx.new(|cx| InputState::new(window, cx).placeholder("密码"));
+        let password = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("密码")
+                .masked(true)
+        });
         let grant_db = cx.new(|cx| InputState::new(window, cx).placeholder("留空 = 先不授权"));
         // 候选下拉框：带搜索（库多的机器上一屏放不下），**空列表**在
         // `fill_grant_db_select` 里补上 —— 这里先给空 `Vec`。

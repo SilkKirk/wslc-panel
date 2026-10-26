@@ -4,8 +4,8 @@
 
 use super::common::{
     NoContainer, REOPEN_DB_PAGE, badge, blocked_card, busy_text, card, cell_muted, cell_text,
-    danger_button, empty_state, error_banner, form_field, list_count, overlay_button, page_empty,
-    store_warning, tab_bar, table_card, table_row,
+    danger_button, empty_state, error_banner, form_field, form_field_secret, list_count,
+    overlay_button, page_empty, store_warning, tab_bar, table_card, table_row,
 };
 use super::prelude::*;
 
@@ -239,7 +239,7 @@ pub(crate) fn db_connection_card(
             .w_full()
             .gap_3()
             .child(form_field("db-user", "用户名", &form.user, cx, false))
-            .child(form_field(
+            .child(form_field_secret(
                 "db-password",
                 "密码（只存在内存里）",
                 &form.password,

@@ -166,7 +166,26 @@ pub(crate) fn form_field(
     cx: &App,
     full: bool,
 ) -> AnyElement {
-    form_field_with_error(id, label, input, cx, full, false)
+    form_field_impl(id, label, input, cx, full, false, false)
+}
+
+/// 密码 / 口令字段：和 [`form_field`] 同形，但输入框默认遮住并在右侧给
+/// 一个「显示 / 隐藏」按钮。
+///
+/// 用官方 `Input` 的 `content_type(Password)` + `mask_toggle()`；对应的
+/// `InputState` 创建时还要 `.masked(true)`（两边都要，缺一个都可能只是
+/// "看起来像密码"而没有真正的遮罩行为）。
+///
+/// ⚠️ 不要拿它包 DSN 那种"整段都要读"的字段：把 `postgres://…` 整段遮住
+/// 反而没法核对主机 / 库名。DSN 的脱敏在展示那一行走 `redact_dsn`。
+pub(crate) fn form_field_secret(
+    id: &'static str,
+    label: &'static str,
+    input: &Entity<InputState>,
+    cx: &App,
+    full: bool,
+) -> AnyElement {
+    form_field_impl(id, label, input, cx, full, false, true)
 }
 
 /// [`form_field`] 的错误态版本：`invalid` 时标签和输入框边框一起变红。
@@ -209,6 +228,22 @@ pub(crate) fn form_field_with_error(
     full: bool,
     invalid: bool,
 ) -> AnyElement {
+    form_field_impl(id, label, input, cx, full, invalid, false)
+}
+
+/// [`form_field`] / [`form_field_secret`] / [`form_field_with_error`] 的唯一实现。
+///
+/// 三个公开函数只是"要不要错误态 / 要不要密码遮罩"的两个布尔组合；
+/// 外壳和宽度覆盖逻辑只写这一份。
+fn form_field_impl(
+    id: &'static str,
+    label: &'static str,
+    input: &Entity<InputState>,
+    cx: &App,
+    full: bool,
+    invalid: bool,
+    secret: bool,
+) -> AnyElement {
     // 取值只为在为空时把标签调暗一点，让"必填未填"看得见。
     let empty = input.read(cx).value().trim().is_empty();
     let label_color = if invalid {
@@ -220,6 +255,11 @@ pub(crate) fn form_field_with_error(
     };
 
     let mut input_el = Input::new(input).id(id).w_full();
+    if secret {
+        input_el = input_el
+            .content_type(InputContentType::Password)
+            .mask_toggle();
+    }
     if invalid {
         input_el = input_el.border_color(theme::danger());
     }

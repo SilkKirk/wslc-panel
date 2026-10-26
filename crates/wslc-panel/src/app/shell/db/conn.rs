@@ -14,7 +14,11 @@ impl Shell {
             return;
         }
         let user = cx.new(|cx| InputState::new(window, cx).placeholder("root"));
-        let password = cx.new(|cx| InputState::new(window, cx).placeholder("root 的密码"));
+        let password = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("root 的密码")
+                .masked(true)
+        });
         // 连接串（可选）：粘一条 `postgres://…` 就走原生连接。
         let dsn = cx.new(|cx| {
             InputState::new(window, cx)
