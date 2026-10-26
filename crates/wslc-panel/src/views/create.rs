@@ -465,5 +465,6 @@ pub(crate) fn create_dialog_body(
                                 ""
                             }),
                     )
+                    ),
         .into_any_element()
 }
