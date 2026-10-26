@@ -383,6 +383,9 @@ impl Shell {
 
     /// 把「备份中」浮层收起来（**不**取消备份）。
     ///
+    /// ⚠️ 原名 `cancel_db_backup` —— **名不副实**（它从来不取消任何东西），
+    /// 而且导入域那边同一个动作叫 `dismiss_db_import`。两个名字现在对齐了。
+    ///
     /// 这一版**没有**接取消令牌：`backup_database` 里是两条**顺序**的短命令
     /// （dump 一般几十秒内自己结束），接令牌要把它改成 `spawn_to_file` +
     /// 轮询那条路 —— 等"边 dump 边传"一起做。所以这里**不**假装能打断，
@@ -391,7 +394,7 @@ impl Shell {
     /// 和[`Shell::dismiss_db_import`] 同一个理由；区别是这个浮层底下没有
     /// 互斥锁要维护（`db.backup` 照样是 `Some`，所以「立即备份」仍然是
     /// "备份中…"、不会重复起一份）。
-    pub fn cancel_db_backup(&mut self, cx: &mut Context<Self>) {
+    pub fn dismiss_db_backup(&mut self, cx: &mut Context<Self>) {
         if let Some(db) = self.state.db.as_mut() {
             if let Some(backup) = db.backup.as_mut() {
                 backup.dismissed = true;

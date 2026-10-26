@@ -427,7 +427,7 @@ impl Shell {
                                 .label("放到后台")
                                 .small()
                                 .on_click(move |_, window, cx| {
-                                    entity.update(cx, |shell, cx| shell.cancel_db_backup(cx));
+                                    entity.update(cx, |shell, cx| shell.dismiss_db_backup(cx));
                                     window.close_dialog(cx);
                                 })
                                 .into_any_element(),

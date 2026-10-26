@@ -455,7 +455,7 @@ pub struct BackupState {
     /// 用户点过「放到后台」把浮层收起来了。
     ///
     /// 和 [`ImportState::dismissed`] 同一个理由：浮层带遮罩，而备份是分钟级的；
-    /// 收起来不等于取消（备份没有取消能力，见 `Shell::cancel_db_backup`）。
+    /// 收起来不等于取消（备份没有取消能力，见 `Shell::dismiss_db_backup`）。
     pub dismissed: bool,
 }
 

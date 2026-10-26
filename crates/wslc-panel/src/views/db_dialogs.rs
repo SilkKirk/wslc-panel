@@ -465,7 +465,7 @@ pub(crate) fn grant_kind_row(current: GrantKind, entity: &Entity<Shell>) -> AnyE
 /// 的模块注释），所以只有一句"备份中…"和目标文件路径。
 ///
 /// 「放到后台」= 只收遮罩，**不**打断备份（这一版本来也打断不了，
-/// 见 `Shell::cancel_db_backup`）。按钮不叫「知道了」：那个名字会让人以为
+/// 见 `Shell::dismiss_db_backup`）。按钮不叫「知道了」：那个名字会让人以为
 /// 它取消的是备份。
 pub(crate) fn db_backup_progress_body(db: &DbState) -> AnyElement {
     let Some(state) = db.backup.as_ref() else {
