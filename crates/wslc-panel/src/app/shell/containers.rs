@@ -3,33 +3,14 @@
 use super::super::prelude::*;
 use super::Shell;
 use super::state::{CreateDialog, DropdownItem, FactsState, TextPrompt};
-// 弹窗底部那行按钮的唯一实现（和 18 个浮层共用同一份，见 `views::common`）。
-use crate::views::{ShellView, modal_footer};
 
 impl Shell {
-    /// 打开提示对话框，并把焦点交给输入框。
+    /// 建提示弹窗的输入框和状态。
     ///
-    /// # 官方 `Dialog` 的三个注意点（v0.19.0 实机踩出来的；所有浮层通用）
-    ///
-    /// 它走**窗口级层栈**（`WindowState::active_dialogs`，由 `Root` 渲染），
-    /// 所以层序 = 栈序，遮罩自带 `.occlude()`、Esc 与点遮罩关闭自带
-    /// （`keyboard` / `overlay_closable`），不用我们维护 —— 见
-    /// `app::shell::dialogs`。
-    ///
-    /// 1. builder 闭包**可能被重跑**（gpui-component 的原话："it may run again
-    ///    when the dialog layer is rebuilt. Keep it cheap and create persistent
-    ///    entities before opening, not inside the builder"）—— 所以 `InputState`
-    ///    是在**打开之前**建好、存进 `self.forms.prompt` 的，闭包里只用它的 `Entity`；
-    /// 2. ⚠️ **别在闭包里现算"随打字变化"的内容**：闭包只在层被重建时重跑，
-    ///    **打字不触发它**。v0.19.0 实机就是这个 bug —— 输入框里已经填了
-    ///    `D:\wsl\MyDistro`，下面那行等效命令还停在 `--move <待填>`。
-    ///    正确做法是内容用**子实体**（[`crate::views::PromptContent`]）并
-    ///    `observe` 输入框，打字时只重画那一块；
-    /// 3. ⚠️ **底部按钮必须自己给**（`.footer(..)`）：普通 `Dialog` 不会自动画
-    ///    OK / Cancel —— 那是 `AlertDialog` 的行为。`DialogButtonProps` 的
-    ///    `render_ok` / `render_cancel` 只有 `AlertDialog` 调用，`Dialog::render`
-    ///    只看 `self.footer`，而 `show_cancel` 默认 `false`。v0.19.0 实机就是
-    ///    因为这条少了一整排按钮。
+    /// 外壳、按钮、Esc / 遮罩这些统统在 `app::shell::dialogs` 的 `DialogKey::Prompt`
+    /// 里 —— 这里只做"打开之前必须做"的事（`InputState::new` 要 `&mut Window`）。
+    /// 内容仍然是 [`crate::views::PromptContent`] 子实体，它 `observe` 输入框，
+    /// 所以打字时等效命令会跟着变（v0.19.0 那个 bug 的修法）。
     pub fn open_prompt(
         &mut self,
         kind: PromptKind,
@@ -37,105 +18,18 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        use gpui_kit::component::WindowExt as _;
-
         // 已经在开着就别再压一层（连点两下会弹出两个一模一样的对话框）。
         if self.forms.prompt.is_some() {
             return;
         }
 
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(kind.placeholder()));
-
-        // 打开就把焦点给输入框，用户可以直接开始打字。
-        let handle = input.read(cx).focus_handle(cx);
-        window.focus(&handle, cx);
-
-        let entity = cx.entity();
-        // 内容做成**子实体**并订阅输入框：打字时只重画它（见 `PromptContent` 的注释）。
-        let content = cx.new({
-            let input = input.clone();
-            let entity = entity.clone();
-            let distro = distro.clone();
-            move |cx| crate::views::PromptContent::new(kind, distro, input, entity, cx)
-        });
-
         self.forms.prompt = Some(TextPrompt {
             kind,
             distro,
             input,
         });
         cx.notify();
-
-        let on_ok = {
-            let entity = entity.clone();
-            move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                entity.update(cx, |shell, cx| shell.submit_prompt(cx));
-                true
-            }
-        };
-        let on_cancel = {
-            let entity = entity.clone();
-            move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                entity.update(cx, |shell, cx| shell.close_prompt(cx));
-                true
-            }
-        };
-        let on_close = {
-            let entity = entity.clone();
-            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                entity.update(cx, |shell, cx| shell.close_prompt(cx));
-            }
-        };
-
-        window.open_dialog(cx, move |dialog, _window, _cx| {
-            // 内容是一块**子实体**（`PromptContent`），它自己 `observe` 输入框：
-            // 打字时只重画那一块，不依赖 dialog 层重建。
-            //
-            // ⚠️ 别把它改成"在闭包里现算"：闭包只在层被重建时重跑，打字不触发 ——
-            // v0.19.0 实机就是这个 bug（输入框填了路径，等效命令还停在 `<待填>`）。
-            let body = content.clone();
-
-            // ⚠️ 底部按钮必须自己给：普通 `Dialog` **不会**自动画 OK / Cancel
-            // （那是 `AlertDialog` 的行为；`Dialog::render` 只看 `self.footer`，
-            // `show_cancel` 默认 `false`）。v0.19.0 实机就是因为这条少了一整排按钮。
-            let cancel = {
-                let entity = entity.clone();
-                Button::new("prompt-cancel")
-                    .label("取消")
-                    .small()
-                    .on_click(move |_, window, cx| {
-                        entity.update(cx, |shell, cx| shell.close_prompt(cx));
-                        window.close_dialog(cx);
-                    })
-            };
-            let confirm = {
-                let entity = entity.clone();
-                Button::new("prompt-confirm")
-                    .label(kind.confirm_label())
-                    .small()
-                    .primary()
-                    .on_click(move |_, window, cx| {
-                        entity.update(cx, |shell, cx| shell.submit_prompt(cx));
-                        window.close_dialog(cx);
-                    })
-            };
-
-            dialog
-                .title(kind.title())
-                .w(px(560.))
-                // 遮罩 / Esc / 点遮罩关闭都由官方负责（Esc 与遮罩走 `on_cancel`）。
-                .overlay(true)
-                .overlay_closable(true)
-                .keyboard(true)
-                .on_ok(on_ok.clone())
-                .on_cancel(on_cancel.clone())
-                .on_close(on_close.clone())
-                .child(body)
-                .footer(modal_footer([
-                    cancel.into_any_element(),
-                    confirm.into_any_element(),
-                ]))
-        });
     }
 
     /// 关闭提示弹窗。
@@ -983,72 +877,20 @@ impl Shell {
 
     // -- 容器 exec 浮层 ------------------------------------------------------
 
-    /// 打开 exec 浮层（要 `&mut Window` 才能建输入框）。
+    /// 建 exec 浮层的输入框和状态。
+    ///
+    /// 外壳、footer、Esc / 遮罩在 `app::shell::dialogs` 的 `DialogKey::Exec`；
+    /// 内容仍是 `ShellView`，后台任务推进时会重画。
     pub fn open_exec(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
-        use gpui_kit::component::WindowExt as _;
-
         let input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("ls -la /  （可以用管道、重定向、&&）")
         });
         let handle = input.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
 
-        let title = format!("执行命令 —— {name}");
         self.state.exec = Some(ExecState::new(name));
         self.forms.exec_input = Some(input);
         cx.notify();
-
-        let entity = cx.entity();
-        // ⚠️ 内容必须包在 `ShellView` 里：exec 的输出 / running / last_command
-        // 会随后台任务一直变，而 dialog builder **不会**因此重跑
-        // （v0.19.0 的教训，见 `common::ShellView` 的注释）。
-        let content = {
-            let view_entity = entity.clone();
-            let body_entity = entity.clone();
-            cx.new(move |cx| {
-                ShellView::new(
-                    view_entity,
-                    move |shell, cx| crate::views::exec_dialog_body(shell, &body_entity, cx),
-                    cx,
-                )
-            })
-        };
-        let on_cancel = {
-            let entity = entity.clone();
-            move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                entity.update(cx, |shell, cx| shell.close_exec(cx));
-                true
-            }
-        };
-        let on_close = {
-            let entity = entity.clone();
-            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                entity.update(cx, |shell, cx| shell.close_exec(cx));
-            }
-        };
-
-        window.open_dialog(cx, move |dialog, _window, _cx| {
-            let close = {
-                let entity = entity.clone();
-                Button::new("exec-close")
-                    .label("关闭")
-                    .small()
-                    .on_click(move |_, window, cx| {
-                        entity.update(cx, |shell, cx| shell.close_exec(cx));
-                        window.close_dialog(cx);
-                    })
-            };
-            dialog
-                .title(title.clone())
-                .w(px(760.))
-                .overlay(true)
-                .overlay_closable(true)
-                .keyboard(true)
-                .on_cancel(on_cancel.clone())
-                .on_close(on_close.clone())
-                .child(content.clone())
-                .footer(modal_footer([close.into_any_element()]))
-        });
     }
 
     /// 关闭 exec 浮层，输入框一起丢掉。

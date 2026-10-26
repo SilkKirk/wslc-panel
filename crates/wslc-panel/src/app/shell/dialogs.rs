@@ -48,6 +48,10 @@ pub(crate) enum DialogKey {
     ContainerDetail,
     /// 「发行版详情」对话框。
     DistroDetail,
+    /// 「容器 exec」对话框。
+    Exec,
+    /// 「单输入框提示」对话框（移动 / 调整大小 / 默认用户 / 导出 / 创建卷）。
+    Prompt,
     /// 「应用日志」对话框（部署管理页）。
     DeployLogs,
     /// 「站点配置」对话框（部署管理页）。
@@ -78,7 +82,7 @@ impl DialogKey {
     ///
     /// ⚠️ **`Confirm` 必须在最后**：它是"从任何浮层里弹出来的二次确认"，
     /// 压在表单弹窗**下面**就是 v0.9.14 那个"压缩磁盘的确认框在详情之下"的同型 bug。
-    pub(crate) const ALL: [DialogKey; 17] = [
+    pub(crate) const ALL: [DialogKey; 19] = [
         // 只读说明卡压在最底下：用户从页头点开后，还会接着打开备份列表 /
         // 数据库动作，那些必须盖在它上面。
         DialogKey::DbInfo,
@@ -88,6 +92,8 @@ impl DialogKey {
         DialogKey::ContainerLogs,
         DialogKey::ContainerDetail,
         DialogKey::DistroDetail,
+        DialogKey::Exec,
+        DialogKey::Prompt,
         DialogKey::DeployLogs,
         DialogKey::DeploySiteConf,
         DialogKey::DeployRemoveConfirm,
@@ -128,6 +134,8 @@ impl DialogKey {
             DialogKey::ContainerLogs => shell.state.logs.is_some(),
             DialogKey::ContainerDetail => shell.dialog_ui.detail.is_some(),
             DialogKey::DistroDetail => shell.dialog_ui.distro_detail.is_some(),
+            DialogKey::Exec => shell.state.exec.is_some(),
+            DialogKey::Prompt => shell.forms.prompt.is_some(),
             DialogKey::DeployLogs => shell
                 .state
                 .deploy
@@ -161,10 +169,28 @@ impl DialogKey {
     }
 }
 
+/// 浮层内容：绝大多数是 [`ShellView`]，少数几个（prompt）要自己的子实体。
+///
+/// `Dialog` 的 builder 可能重跑，所以这里存的是 `Entity`（可 clone），
+/// 每次重建时再取元素。
+enum DialogContent {
+    Shell(Entity<ShellView>),
+    Prompt(Entity<crate::views::PromptContent>),
+}
+
+impl DialogContent {
+    fn element(&self) -> AnyElement {
+        match self {
+            Self::Shell(view) => view.clone().into_any_element(),
+            Self::Prompt(view) => view.clone().into_any_element(),
+        }
+    }
+}
+
 /// 一个浮层外壳的"差异部分"。
 ///
 /// 其余东西（遮罩、宽度单位、Esc、`content` 的接线、`footer` 的重建）都由
-/// [`open_shell_dialog`] 统一处理 —— 17 个臂原先各写一遍，只有这五样不同。
+/// [`open_shell_dialog`] 统一处理 —— 19 个臂原先各写一遍，只有这五样不同。
 struct DialogSpec {
     title: SharedString,
     width: f32,
@@ -172,7 +198,7 @@ struct DialogSpec {
     overlay_closable: bool,
     /// Esc 关不关。
     keyboard: bool,
-    content: Entity<ShellView>,
+    content: DialogContent,
 }
 
 /// 把「读 `Shell` 状态画一块」包成会随 `Shell` 重画的子实体。
@@ -183,9 +209,10 @@ fn shell_view(
     entity: &Entity<Shell>,
     body: impl Fn(&Shell, &App) -> AnyElement + 'static,
     cx: &mut Context<Shell>,
-) -> Entity<ShellView> {
+) -> DialogContent {
     let view = entity.clone();
-    cx.new(move |cx| ShellView::new(view, body, cx))
+    let view = cx.new(move |cx| ShellView::new(view, body, cx));
+    DialogContent::Shell(view)
 }
 
 /// 统一打开一个官方 `Dialog`，并把**三条退出路径**（按钮 / Esc / 点遮罩）的
@@ -240,7 +267,7 @@ fn open_shell_dialog<F>(
             .overlay_closable(spec.overlay_closable)
             .keyboard(spec.keyboard && closable)
             .close_button(closable)
-            .child(spec.content.clone());
+            .child(spec.content.element());
         if let Some(on_cancel) = on_cancel.clone() {
             dialog = dialog.on_cancel(on_cancel);
         }
@@ -642,6 +669,116 @@ impl Shell {
                                 })
                                 .into_any_element(),
                         ]
+                    },
+                );
+            }
+            DialogKey::Exec => {
+                let Some(exec) = self.state.exec.as_ref() else {
+                    return;
+                };
+                let container = exec.container.clone();
+                let entity = cx.entity();
+                let body_entity = entity.clone();
+                let content = shell_view(
+                    &entity,
+                    move |shell, cx| crate::views::exec_dialog_body(shell, &body_entity, cx),
+                    cx,
+                );
+                let for_button = entity.clone();
+                open_shell_dialog(
+                    window,
+                    cx,
+                    DialogSpec {
+                        title: format!("执行命令 —— {container}").into(),
+                        width: 760.,
+                        overlay_closable: true,
+                        keyboard: true,
+                        content,
+                    },
+                    Some(Shell::close_exec),
+                    move || {
+                        let entity = for_button.clone();
+                        vec![
+                            Button::new("exec-close")
+                                .label("关闭")
+                                .small()
+                                .on_click(move |_, window, cx| {
+                                    entity.update(cx, |shell, cx| shell.close_exec(cx));
+                                    close_top_dialog(&entity, window, cx);
+                                })
+                                .into_any_element(),
+                        ]
+                    },
+                );
+            }
+            DialogKey::Prompt => {
+                let Some(prompt) = self.forms.prompt.as_ref() else {
+                    return;
+                };
+                let kind = prompt.kind;
+                let distro = prompt.distro.clone();
+                let input = prompt.input.clone();
+                let entity = cx.entity();
+                let content = {
+                    let entity = entity.clone();
+                    let input = input.clone();
+                    let distro = distro.clone();
+                    cx.new(move |cx| {
+                        crate::views::PromptContent::new(kind, distro, input, entity, cx)
+                    })
+                };
+                let content = DialogContent::Prompt(content);
+
+                // 打开前把焦点交给输入框；`Dialog` 的外壳可能会抢焦点，
+                // 所以这里和 `open_prompt` 保持同一条顺序（先 focus、再 open）。
+                let handle = input.read(cx).focus_handle(cx);
+                window.focus(&handle, cx);
+
+                let for_cancel = entity.clone();
+                let for_confirm = entity.clone();
+                open_shell_dialog(
+                    window,
+                    cx,
+                    DialogSpec {
+                        title: kind.title().into(),
+                        width: 560.,
+                        overlay_closable: true,
+                        keyboard: true,
+                        content,
+                    },
+                    Some(Shell::close_prompt),
+                    move || {
+                        let cancel = {
+                            let entity = for_cancel.clone();
+                            Button::new("prompt-cancel")
+                                .label("取消")
+                                .small()
+                                .on_click(move |_, window, cx| {
+                                    entity.update(cx, |shell, cx| shell.close_prompt(cx));
+                                    close_top_dialog(&entity, window, cx);
+                                })
+                        };
+                        let confirm = {
+                            let entity = for_confirm.clone();
+                            Button::new("prompt-confirm")
+                                .label(kind.confirm_label())
+                                .small()
+                                .primary()
+                                .on_click(move |_, window, cx| {
+                                    // 校验失败时 `submit_prompt` 会保留
+                                    // `forms.prompt`（例如值为空）；这时**不能**
+                                    // 关窗，否则下一帧 sync 看到状态还在，会把
+                                    // 它重新打开。
+                                    let closed = entity.update(cx, |shell, cx| {
+                                        shell.submit_prompt(cx);
+                                        shell.forms.prompt.is_none()
+                                    });
+                                    if closed {
+                                        close_top_dialog(&entity, window, cx);
+                                    }
+                                })
+                        };
+                        vec![cancel.into_any_element(), confirm.into_any_element()]
                     },
                 );
             }
