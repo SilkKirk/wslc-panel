@@ -2,7 +2,7 @@
 
 use super::common::{
     cell_muted, cell_text, cell_text_full, danger_button, disclosure, empty_state, form_field,
-    modal_scrim, modal_title, table_card, table_row,
+    table_card, table_row,
 };
 use super::prelude::*;
 

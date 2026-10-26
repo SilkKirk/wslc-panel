@@ -106,20 +106,20 @@ pub(crate) fn disclosure(
 /// **卡片边缘会挪动 20px**。正式软件里同一种模态只有一两档宽度。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModalSize {
-    /// 中：常规表单（原 680 / 700）。
+    /// 中：常规表单。
+    ///
+    /// ⚠️ 曾经有 `Narrow`（560）和 `Wide`（800）两档。浮层迁到官方 `Dialog`
+    /// 之后宽度由调用处的 `.w(px(..))` 直接给，这两档再没人用（clippy 的
+    /// dead_code 抓出来的），所以只剩这一档 —— 它服务于**唯一还在自绘路径上**
+    /// 的「数据库基础信息」（`db_info_overlay`）。
     Medium,
-    /// 宽：详情 / 日志 / 表格（原 760 / 780 / 820）。
-    Wide,
 }
 
 impl ModalSize {
     /// 这一档的像素宽度。
     pub fn width(self) -> f32 {
         match self {
-            // 680 → 700：簇内取整，和 `Medium` 的另一处（700）对齐。
             Self::Medium => 700.,
-            // 760 / 780 / 820 → 800：同上，取簇内中位。
-            Self::Wide => 800.,
         }
     }
 }
