@@ -163,7 +163,6 @@ pub(crate) fn sql_console_page(
             .into_any_element()
     } else {
         h_resizable("sql-main")
-            .w_full()
             .flex_1()
             .min_h_0()
             .child(
