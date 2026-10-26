@@ -2,6 +2,9 @@
 
 use super::common::{card, empty_state, form_field, form_field_with_error, radio_row};
 use super::prelude::*;
+// 安装步骤条用官方 `Stepper`（见 [`step_stepper`] 的说明）。只有这一页用它，
+// 所以不放 `views::prelude` —— 那会让别的页面多一个用不上的短名字。
+use gpui_kit::component::stepper::{Stepper, StepperItem};
 
 /// 「添加实例」页。
 ///
@@ -324,16 +327,15 @@ pub fn add_instance(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyEleme
     } else {
         match &plan {
             Ok(plan) => {
+                let steps: Vec<StepperItem> = plan
+                    .steps
+                    .iter()
+                    .map(|step| step_item(step.label.clone(), Some(step.line()), None))
+                    .collect();
                 let mut body = v_flex()
                     .w_full()
-                    .gap_1()
-                    .children(plan.preview_lines().into_iter().map(|line| {
-                        div()
-                            .font_family("Consolas")
-                            .text_xs()
-                            .text_color(theme::text())
-                            .child(line)
-                    }))
+                    .gap_2()
+                    .child(step_stepper("install-steps-preview", steps, 0))
                     .children(plan.notes.iter().map(|note| {
                         div()
                             .text_xs()
@@ -771,6 +773,72 @@ pub(crate) fn elapsed_label(state: &AppState) -> AnyElement {
         .into_any_element()
 }
 
+/// 安装步骤条里的**一步**：标题（可带 ✔/✘）+ 可选的一行命令。
+fn step_item(
+    label: impl Into<SharedString>,
+    line: Option<String>,
+    mark: Option<bool>,
+) -> StepperItem {
+    let mut text = v_flex().gap_1().child(
+        h_flex()
+            .gap_2()
+            .items_center()
+            .children(mark.map(|ok| {
+                let (glyph, color) = if ok {
+                    ("✔", theme::success())
+                } else {
+                    ("✘", theme::danger())
+                };
+                div().flex_none().text_xs().text_color(color).child(glyph)
+            }))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme::text())
+                    .child(label.into()),
+            ),
+    );
+    if let Some(line) = line {
+        text = text.child(
+            div()
+                .font_family("Consolas")
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child(line),
+        );
+    }
+    StepperItem::new().child(text)
+}
+
+/// 「要执行的步骤」与「安装过程」共用的**步骤条**（官方 `Stepper`）。
+///
+/// # 为什么两处共用一个控件
+///
+/// 预览（`plan.steps`）和进行中（`progress.finished`）说的是同一件事：
+/// 「这一串步骤，走到第几步」。原先前者是等宽命令行列表、后者是带 ✔/✘ 的
+/// 灰字列表 —— 同一件事两种画法，用户从"预览"到"开始装"要重新认一遍布局。
+///
+/// # 数据来源为什么不能合并
+///
+/// 进行中必须读 `progress.finished`（**执行器的账**），不能读 `plan.steps`：
+/// 安装期间参数框仍然可编辑，`plan` 会跟着变，用它对账会把 ✔ 标到错的步骤上。
+///
+/// # 为什么竖排
+///
+/// 每一步都可能带一行命令行（`wsl --install …`）；横排会被压成省略号，
+/// 而那一行正是用户要复制去复现的。
+///
+/// ⚠️ `id` 由调用方给，而且两处**必须不同** —— 预览和进度可能同屏
+/// （安装期间预览卡还在），GPUI 的元素 id 撞了会让两处共用一个状态。
+fn step_stepper(id: &'static str, items: Vec<StepperItem>, selected: usize) -> AnyElement {
+    Stepper::new(id)
+        .vertical()
+        .w_full()
+        .selected_index(selected)
+        .items(items)
+        .into_any_element()
+}
+
 /// 安装日志卡片：步骤 + 进度 + 输出 + 结局。
 ///
 /// 装完之后**留在页面上**（不自动清空）：失败了用户要读日志，
@@ -804,23 +872,23 @@ pub(crate) fn install_log_card(
         )
         .child(elapsed_label(state));
 
-    // 已经走完的步骤：一眼能看出卡在哪一步
-    let finished: Vec<AnyElement> = progress
+    // 步骤条：已走完的带 ✔/✘，正在走的是"当前项"。
+    //
+    // 数据来源是 `progress.finished`（**执行器的账**）而不是 `plan.steps` ——
+    // 安装期间参数框仍然可编辑，`plan` 会跟着变（见 [`step_stepper`] 的说明）。
+    let mut steps: Vec<StepperItem> = progress
         .finished
         .iter()
-        .map(|step| {
-            let (mark, color) = if step.ok {
-                ("✔", theme::success())
-            } else {
-                ("✘", theme::danger())
-            };
-            div()
-                .text_xs()
-                .text_color(color)
-                .child(format!("{mark} {}", step.label))
-                .into_any_element()
-        })
+        .map(|step| step_item(step.label.clone(), None, Some(step.ok)))
         .collect();
+    if progress.is_running() {
+        steps.push(step_item(
+            progress.step_label.clone(),
+            Some(progress.step_line.clone()).filter(|line| !line.trim().is_empty()),
+            None,
+        ));
+    }
+    let steps = step_stepper("install-steps-progress", steps, progress.finished.len());
 
     let outcome: AnyElement = match &progress.outcome {
         None => div().into_any_element(),
@@ -923,7 +991,7 @@ pub(crate) fn install_log_card(
             .w_full()
             .gap_2()
             .child(head)
-            .children(finished)
+            .child(steps)
             .child(outcome)
             .child(fallback)
             .child(log)
