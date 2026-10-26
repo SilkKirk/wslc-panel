@@ -47,7 +47,7 @@ mod wslconf;
 // （`page` 是页面分发，见文件末尾。）
 // 浮层的**外壳**不在这里：19 个浮层全部走官方 `Dialog`（窗口级层栈，见
 // `app::shell::dialogs`），`views` 只产出"内容"（`*_body`）。
-pub(crate) use common::{ShellView, modal_footer};
+pub(crate) use common::{ShellView, modal_footer, sidebar_toggle};
 pub(crate) use create::create_dialog_body;
 pub(crate) use db_dialogs::{
     db_backup_dialog_body, db_backup_progress_body, db_dialog_body, db_import_progress_body,

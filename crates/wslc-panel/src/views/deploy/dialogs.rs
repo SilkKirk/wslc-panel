@@ -3,7 +3,7 @@
 //! 外壳一律由官方 `Dialog` 负责（构造在 `app::shell::dialogs`）—— 本文件只产出
 //! 内容，不碰遮罩、宽度、标题与退出路径。
 
-use super::super::common::{disclosure, empty_state, form_field, kv_block, log_text};
+use super::super::common::{busy_text, disclosure, empty_state, form_field, kv_block, log_text};
 use super::super::prelude::*;
 
 /// 「添加部署 / 重新部署」弹窗。
@@ -292,11 +292,7 @@ pub(crate) fn deploy_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App
 /// 只读：一个输入框都没有，所以状态是纯数据。
 pub(crate) fn deploy_logs_body(logs: &DeployLogs) -> AnyElement {
     let body: AnyElement = if logs.busy {
-        div()
-            .text_sm()
-            .text_color(theme::text_muted())
-            .child("正在读取…")
-            .into_any_element()
+        busy_text("正在读取…")
     } else {
         log_text(logs.text.as_deref(), "deploy-logs-text")
     };
@@ -320,11 +316,7 @@ pub(crate) fn deploy_logs_body(logs: &DeployLogs) -> AnyElement {
 /// 逐行处理只会让用户没法对照 `nginx -t` 的错误行。
 pub(crate) fn deploy_site_conf_body(conf: &DeploySiteConf) -> AnyElement {
     let body: AnyElement = if conf.busy {
-        div()
-            .text_sm()
-            .text_color(theme::text_muted())
-            .child("正在读取…")
-            .into_any_element()
+        busy_text("正在读取…")
     } else {
         match conf.text.as_deref() {
             Some(text) if !text.trim().is_empty() => v_flex()

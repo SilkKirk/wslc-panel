@@ -3,9 +3,9 @@
 //! 弹窗与进度浮层在 [`super::db_dialogs`]。
 
 use super::common::{
-    NoContainer, REOPEN_DB_PAGE, badge, card, cell_muted, cell_text, danger_button, empty_state,
-    form_field, list_count, log_text, overlay_button, page_empty, store_warning, tab_bar,
-    table_card, table_row,
+    NoContainer, REOPEN_DB_PAGE, badge, blocked_card, busy_text, card, cell_muted, cell_text,
+    danger_button, empty_state, error_banner, form_field, list_count, overlay_button, page_empty,
+    store_warning, tab_bar, table_card, table_row,
 };
 use super::prelude::*;
 
@@ -143,11 +143,7 @@ pub(crate) fn db_header(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
     // 读取期间把按钮**换掉**（项目里不用 `.disabled()`）：置灰的按钮会让人
     // 反复去点，而"读取中…"说清了现在在等什么。
     let reload: AnyElement = if db.busy {
-        div()
-            .text_sm()
-            .text_color(theme::text_muted())
-            .child("读取中…")
-            .into_any_element()
+        busy_text("读取中…")
     } else {
         let entity = entity.clone();
         Button::new("db-reload")
@@ -315,34 +311,16 @@ pub(crate) fn db_connection_card(
 
 /// 探测就失败时的说明卡（不是 MySQL / 没客户端 / 容器没运行）。
 pub(crate) fn db_blocked_card(failure: &DbFailure) -> AnyElement {
-    v_flex()
-        .w_full()
-        .gap_3()
-        .p_4()
-        .rounded_lg()
-        .bg(theme::danger_soft())
-        .border_1()
-        .border_color(theme::danger_edge())
-        .child(
-            div()
-                .text_sm()
-                .font_semibold()
-                .text_color(theme::danger())
-                .child("这个容器现在管不了数据库"),
-        )
-        .child(
-            div()
-                .text_sm()
-                .text_color(theme::text())
-                .child(wslc_panel_core::util::strip_md(&failure.summary())),
-        )
-        .child(div().text_xs().text_color(theme::text_muted()).child(
-            "面板不自己连 3306，而是驱动容器里的客户端 —— 所以它不依赖端口有没有\
-                     发布出来，但要求那个客户端存在。想自己进去看，用「容器」页那一行\
-                     「更多」菜单里的「终端」。",
-        ))
-        .child(log_text(Some(&failure.detail), "db-blocked-detail"))
-        .into_any_element()
+    blocked_card(
+        "这个容器现在管不了数据库",
+        &failure.summary(),
+        "面板不自己连 3306，而是驱动容器里的客户端 —— 所以它不依赖端口有没有\
+         发布出来，但要求那个客户端存在。想自己进去看，用「容器」页那一行\
+         「更多」菜单里的「终端」。",
+        &failure.detail,
+        "db-blocked-detail",
+        None,
+    )
 }
 
 /// 上一次失败：一句"该怎么办" +（可滚动的）原文。
@@ -357,22 +335,7 @@ pub(crate) fn db_blocked_card(failure: &DbFailure) -> AnyElement {
 /// 也丢掉了"原文保留换行"这个排查价值。所以外壳保留手写，
 /// 但配色仍走 `theme::danger_*`（和 `Alert` 背后是同一组色）。
 pub(crate) fn db_error_banner(failure: &DbFailure) -> AnyElement {
-    v_flex()
-        .w_full()
-        .gap_2()
-        .p_3()
-        .rounded_md()
-        .bg(theme::danger_soft())
-        .border_1()
-        .border_color(theme::danger_edge())
-        .child(
-            div()
-                .text_sm()
-                .text_color(theme::danger())
-                .child(wslc_panel_core::util::strip_md(&failure.summary())),
-        )
-        .child(log_text(Some(&failure.detail), "db-error-detail"))
-        .into_any_element()
+    error_banner(&failure.summary(), &failure.detail, "db-error-detail")
 }
 
 /// 原生连接下"这几条写操作用不了"的一行说明。
@@ -422,18 +385,7 @@ pub(crate) fn db_loading(busy: bool) -> AnyElement {
             )
             .into_any_element();
     }
-    v_flex()
-        .w_full()
-        .py_8()
-        .items_center()
-        .justify_center()
-        .child(
-            div()
-                .text_sm()
-                .text_color(theme::text_dim())
-                .child("还没有读到数据 —— 点右上角「重新读取」"),
-        )
-        .into_any_element()
+    empty_state("还没有读到数据 —— 点右上角「重新读取」").into_any_element()
 }
 
 /// 「数据库 / 用户」两个 tab。

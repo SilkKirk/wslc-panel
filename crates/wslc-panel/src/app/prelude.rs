@@ -28,7 +28,7 @@ pub(crate) use gpui_kit::component::select::{SelectEvent, SelectState};
 // 都由它负责。之前是自己画的 `div` 行，连 hover 都要手写
 // （见 `AGENTS.md` §7.5 那条"自己画的可点元素必须手写 hover"）。
 pub(crate) use gpui_kit::component::sidebar::{
-    Sidebar, SidebarCollapsible, SidebarGroup, SidebarHeader, SidebarMenuItem, SidebarToggleButton,
+    Sidebar, SidebarCollapsible, SidebarGroup, SidebarHeader, SidebarMenuItem,
 };
 // 同 views/：不导入 `Disableable`，全项目不再用 `.disabled()`。
 pub(crate) use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};

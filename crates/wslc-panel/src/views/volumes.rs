@@ -1,8 +1,8 @@
 //! ③ 卷页。
 
 use super::common::{
-    cell_muted, cell_muted_full, cell_text, danger_button, empty_state, list_count, prompt_button,
-    table_card, table_row,
+    cell_muted, cell_muted_full, cell_text, danger_button, empty_state, list_count, page_header,
+    prompt_button, table_card, table_row,
 };
 use super::prelude::*;
 
@@ -34,36 +34,30 @@ pub(crate) fn volumes_page(state: &AppState, entity: &Entity<Shell>) -> impl Int
     //
     // 「创建卷」复用那个共用的单输入框弹窗（`PromptKind::CreateVolume`）——
     // 注意它**不属于任何发行版**，所以主体传空串（弹窗据此不画那一行）。
-    let header = h_flex()
-        .w_full()
-        .justify_between()
-        .items_center()
+    let actions = h_flex()
+        .gap_2()
+        .child(prompt_button(
+            "volume-create",
+            "创建卷",
+            PromptKind::CreateVolume,
+            "",
+            entity,
+        ))
         .child(
-            h_flex()
-                .gap_2()
-                .child(prompt_button(
-                    "volume-create",
-                    "创建卷",
-                    PromptKind::CreateVolume,
-                    "",
-                    entity,
-                ))
-                .child(
-                    // 「清理」在界面上的名字要带上"未使用"三个字：
-                    // 只写"清理"会让人担心它把正在用的卷也删了。
-                    danger_button(
-                        "volume-prune",
-                        "清理未使用卷",
-                        PendingAction::PruneVolumes,
-                        entity,
-                    )
-                    .into_any_element(),
-                ),
-        )
-        .child(list_count(format!(
-            "共 {} 个卷",
-            state.snapshot.volumes.len()
-        )));
+            // 「清理」在界面上的名字要带上"未使用"三个字：
+            // 只写"清理"会让人担心它把正在用的卷也删了。
+            danger_button(
+                "volume-prune",
+                "清理未使用卷",
+                PendingAction::PruneVolumes,
+                entity,
+            )
+            .into_any_element(),
+        );
+    let header = page_header(
+        actions,
+        list_count(format!("共 {} 个卷", state.snapshot.volumes.len())),
+    );
 
     v_flex().w_full().gap_3().child(header).child(table_card(
         VOLUME_COLUMNS,

@@ -1,8 +1,8 @@
 //! 数据库的弹窗与进度浮层：新建库 / 建用户 / 改密 / 授权 / 备份 / 导入 / 基础信息。
 
 use super::common::{
-    cell_muted, cell_text_full, disclosure, form_field, overlay_button, page_empty, radio_row,
-    table_header, table_row,
+    busy_text, cell_muted, cell_text_full, disclosure, form_field, overlay_button, page_empty,
+    radio_row, table_header, table_row,
 };
 use super::database::db_connection_card;
 use super::prelude::*;
@@ -488,12 +488,7 @@ pub(crate) fn db_backup_progress_body(db: &DbState) -> AnyElement {
             "在容器里执行 mysqldump，一般几十秒内结束（大库会久一些）。\
              完成后会在 Windows 侧存一份档案，容器内 /tmp 也留一份用于恢复。",
         ))
-        .child(
-            div()
-                .text_sm()
-                .text_color(theme::text_muted())
-                .child("备份中…"),
-        )
+        .child(busy_text("备份中…"))
         .into_any_element()
 }
 
@@ -530,12 +525,7 @@ pub(crate) fn db_import_progress_body(db: &DbState) -> AnyElement {
             "先把文件送进容器，再让容器里的 mysql 读它。\
              大文件会慢一些 —— 完成后这里会自动关掉，列表也会重读一次。",
         ))
-        .child(
-            div()
-                .text_sm()
-                .text_color(theme::text_muted())
-                .child("导入中…"),
-        )
+        .child(busy_text("导入中…"))
         .into_any_element()
 }
 
@@ -574,11 +564,7 @@ pub(crate) fn db_backup_dialog_body(
     // 入口只此一处：行上的「备份」是进这个浮层，创建在这里（同一动作不给两个入口）。
     let start: AnyElement = if db.backup.is_some() {
         // 跑着的时候把按钮换成这一句（项目里不用 `.disabled()`）
-        div()
-            .text_sm()
-            .text_color(theme::text_muted())
-            .child("备份中…")
-            .into_any_element()
+        busy_text("备份中…")
     } else {
         overlay_button(
             "db-backup-start",

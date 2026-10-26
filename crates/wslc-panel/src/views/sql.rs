@@ -1,6 +1,6 @@
 //! SQL 控制台（整页工作区）：左树 + 编辑器 + 结果表。
 
-use super::common::{NoContainer, log_text, page_empty, tab_bar};
+use super::common::{NoContainer, busy_text, log_text, page_empty, sidebar_toggle, tab_bar};
 use super::prelude::*;
 
 /// 「SQL 控制台」**整页**（v0.12）：左侧库 / 表树 + 右上编辑器 + 右下结果。
@@ -58,18 +58,7 @@ pub(crate) fn sql_console_page(
     // ⚠️ 它原来在应用级页头里，而 SQL 页**不画**那一层（见 `app/` 的说明），
     // 所以搬到这里来 —— 侧边栏收起后那块不渲染，按钮必须留在**不会被收起**
     // 的地方，否则点没了就再也开不回来。
-    let sidebar_toggle = {
-        let entity = entity.clone();
-        let collapsed = shell.sidebar_collapsed;
-        SidebarToggleButton::new()
-            .collapsed(collapsed)
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |shell, cx| {
-                    shell.sidebar_collapsed = !shell.sidebar_collapsed;
-                    cx.notify();
-                });
-            })
-    };
+    let toggle = sidebar_toggle(entity, shell.sidebar_collapsed);
     // 返回按钮：专业 SQL 客户端是"一个连接下拉框"，我们是"从数据库页进来"，
     // 所以留一个返回。用 `text` 变体（无底色）—— 顶栏上的按钮越少越好。
     let back = {
@@ -167,7 +156,7 @@ pub(crate) fn sql_console_page(
                 .border_color(theme::border())
                 // 工具栏只留三样：侧边栏折叠、返回、当前库。
                 // 「刷新表结构」搬进树头部的 `⟳`，「隐藏表结构」搬进树头部的 `«`。
-                .child(sidebar_toggle)
+                .child(toggle)
                 .child(back)
                 .child(db_badge)
                 .child(div().flex_1()),
@@ -254,11 +243,7 @@ pub(crate) fn sql_editor_pane(
     let run: AnyElement = if db.busy {
         // ⚠️ 点下去必须有变化（`AGENTS.md` §7.1）：从点击到结果出来这段时间
         // 界面上什么都不动的话，用户会以为按钮坏了然后点第二次。
-        div()
-            .text_sm()
-            .text_color(theme::text_muted())
-            .child("执行中…")
-            .into_any_element()
+        busy_text("执行中…")
     } else {
         let entity = entity.clone();
         Button::new("db-run-sql")

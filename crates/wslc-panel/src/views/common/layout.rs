@@ -7,6 +7,8 @@
 //! 画的是表格 / 表单 / 按钮的，去隔壁那几个文件。
 
 use super::super::prelude::*;
+// `error_banner` / `blocked_card` 里那段「可滚动的原文」共用 `common.rs` 根上的 `log_text`。
+use super::log_text;
 
 /// 卡片：标题 + 内容。
 pub(crate) fn card(title: &'static str, body: impl IntoElement) -> impl IntoElement {
@@ -190,4 +192,138 @@ pub(crate) fn store_warning(id: &'static str, text: impl Into<SharedString>) -> 
     use gpui_kit::component::alert::Alert;
 
     Alert::error(id, text.into()).banner().into_any_element()
+}
+
+/// 列表页页头：**动作在左、计数在右**。
+///
+/// # 只收这两页
+///
+/// 「镜像」与「卷」原先逐字同形（`h_flex().w_full().justify_between().items_center()`），
+/// 而「卷」那一页早先是**反过来**放的（计数在左）—— 用户每换一页都要重新找一眼
+/// "这页有几个"。收成一处之后两页不可能再漂。
+///
+/// ⚠️ 另外两页**刻意不用它**，别硬套：
+/// 「容器」页那条是**两行筛选条**（搜索框 + 范围 + 排序），左边不是"动作"而是控件；
+/// 「部署」页左边是一整块说明（容器 / 镜像 / 运行时 + 依据），比一行按钮高得多。
+pub(crate) fn page_header(actions: impl IntoElement, count: impl IntoElement) -> AnyElement {
+    h_flex()
+        .w_full()
+        .justify_between()
+        .items_center()
+        .child(actions)
+        .child(count)
+        .into_any_element()
+}
+
+/// 「忙的时候把按钮换成一行灰字」—— 项目里**不用** `.disabled()`（见 `AGENTS.md` §7.5）：
+/// 置灰的按钮会让人反复去点，而"执行中…"说清了现在在等什么。
+///
+/// # 为什么收成一处
+///
+/// 这段 `div().text_sm().text_color(text_muted()).child("…")` 原先在 9 个地方手写
+/// （页头的「重新读取」、SQL 的「执行」、数据库 / 部署两页的读取态、备份 / 导入、
+/// 日志浮层、站点配置……），每处的样式一模一样、只有文案不同。
+/// 收起来之后"等待态长什么样"只有一个定义 —— 这本来就是
+/// `AGENTS.md` §7.1「点下去先发一条『正在…』」的落地件。
+pub(crate) fn busy_text(label: impl Into<SharedString>) -> AnyElement {
+    div()
+        .text_sm()
+        .text_color(theme::text_muted())
+        .child(label.into())
+        .into_any_element()
+}
+
+/// 同 [`busy_text`]，但用 `text_xs` —— 塞在小块 / 清单状态行 / 树占位里时用这一档。
+///
+/// 两档分开而不是加个参数：`text_sm` 和 `text_xs` 在这里不是"同一件事的两种写法"，
+/// 而是**两种处境**（替换一颗按钮 / 一行状态脚注），混成一个参数只会让两个调用点
+/// 各自去查该传哪个。
+pub(crate) fn busy_text_xs(label: impl Into<SharedString>) -> AnyElement {
+    div()
+        .text_xs()
+        .text_color(theme::text_muted())
+        .child(label.into())
+        .into_any_element()
+}
+
+/// 上一次失败的**两段式**横幅：一句摘要 +（可滚动的）原文。
+///
+/// # 为什么这里不用官方 `Alert`
+///
+/// 读 `alert.rs` 确认过：`Alert` 的 `message` 是 `impl Into<Text>`，而 `Text` 只实现了
+/// `From<SharedString | String | &str | TextView>` —— 接不了任意 `Element`。
+/// 而这个横幅是**两段**（摘要 + 可滚动的原文），压成一句就滚动不了，
+/// 也丢掉了"原文保留换行"这个排查价值。所以外壳手写，配色仍走 `theme::danger_*`。
+///
+/// # 两页原先漂了
+///
+/// 「数据库」那份是 `rounded_md` + 摘要**不加粗**，「部署」那份是 `rounded_lg` +
+/// 加粗 —— 同一类信息（"上一次动作失败了"）在两张页面上长得不一样。
+/// 现在统一成 `rounded_md` + 加粗（横幅是窄条，半径该小一档；
+/// 摘要加粗是为了和下面的原文拉开层次）。
+pub(crate) fn error_banner(summary: &str, detail: &str, id: &'static str) -> AnyElement {
+    v_flex()
+        .w_full()
+        .gap_2()
+        .p_3()
+        .rounded_md()
+        .bg(theme::danger_soft())
+        .border_1()
+        .border_color(theme::danger_edge())
+        .child(
+            div()
+                .text_sm()
+                .font_semibold()
+                .text_color(theme::danger())
+                .child(wslc_panel_core::util::strip_md(summary)),
+        )
+        .child(log_text(Some(detail), id))
+        .into_any_element()
+}
+
+/// 探测就失败时的说明卡（不是这一页认识的容器 / 容器没运行）。
+///
+/// 「数据库管理」与「部署管理」两页原先各写一份，逐行同形，只有文案不同 ——
+/// 连"面板不自己连 3306 / 不自己起进程"那段解释都在两处各写了一遍。
+///
+/// ⚠️ 标题里的**具体原因**留在调用侧拼：部署页要把 `failure.kind.label()` 塞进
+/// 括号（"这个容器现在部署不了（不是 Node / Java / Go…）"），数据库页是一句固定的
+/// "这个容器现在管不了数据库" —— 那是两页各自的领域知识，不该进公共外壳。
+///
+/// `footnote` 是给"只有那一页需要多说一句"的地方留的（部署页会说
+/// "刚才是在读容器 X 的时候失败的"）。用 `Option` 而不是让调用侧 `.child()`：
+/// 这个函数返回 `AnyElement`（装箱的），调用侧没法再往上挂东西。
+pub(crate) fn blocked_card(
+    title: impl Into<SharedString>,
+    summary: &str,
+    note: &'static str,
+    detail: &str,
+    id: &'static str,
+    footnote: Option<AnyElement>,
+) -> AnyElement {
+    v_flex()
+        .w_full()
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .bg(theme::danger_soft())
+        .border_1()
+        .border_color(theme::danger_edge())
+        .child(
+            div()
+                .text_sm()
+                .font_semibold()
+                .text_color(theme::danger())
+                .child(title.into()),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_color(theme::text())
+                .child(wslc_panel_core::util::strip_md(summary)),
+        )
+        .child(div().text_xs().text_color(theme::text_muted()).child(note))
+        .child(log_text(Some(detail), id))
+        .children(footnote)
+        .into_any_element()
 }

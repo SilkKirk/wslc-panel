@@ -2,7 +2,7 @@
 
 // 四个浮层（prompt / exec / logs / export）的外壳都由官方 `Dialog` 负责
 // （构造在 `app::shell::dialogs`），本文件只产出"中间那块内容"。
-use super::common::{form_field, kv, kv_block, log_text};
+use super::common::{busy_text, form_field, kv, kv_block, log_text};
 use super::prelude::*;
 
 /// 提示对话框里那块**会随打字变化**的内容（官方 `Dialog` 的 body）。
@@ -312,11 +312,7 @@ pub(crate) fn exec_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App) 
     // 执行期间把「运行」**换掉**而不是置灰（项目里不用 `.disabled()`）——
     // 置灰的按钮会让人反复去点，一行"执行中…"说清了正在发生什么。
     let run_area: AnyElement = if exec.running {
-        div()
-            .text_sm()
-            .text_color(theme::text_muted())
-            .child("执行中…")
-            .into_any_element()
+        busy_text("执行中…")
     } else {
         let entity = entity.clone();
         Button::new("exec-run")

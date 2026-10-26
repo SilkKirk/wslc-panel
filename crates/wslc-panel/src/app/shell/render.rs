@@ -115,18 +115,7 @@ impl Render for Shell {
         //
         // ⚠️ 它必须放在**主区域**里，不能放进侧边栏自己：侧边栏收起之后
         // 那一块完全不渲染（`Offcanvas`），按钮跟着消失就再也点不回来了。
-        let sidebar_toggle = {
-            let entity = entity.clone();
-            let collapsed = self.sidebar_collapsed;
-            SidebarToggleButton::new()
-                .collapsed(collapsed)
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |shell, cx| {
-                        shell.sidebar_collapsed = !shell.sidebar_collapsed;
-                        cx.notify();
-                    });
-                })
-        };
+        let toggle = views::sidebar_toggle(&entity, self.sidebar_collapsed);
 
         let refresh_button = {
             let entity = entity.clone();
@@ -392,7 +381,7 @@ impl Render for Shell {
                                         h_flex()
                                             .gap_3()
                                             .items_center()
-                                            .child(sidebar_toggle)
+                                            .child(toggle)
                                             .child(
                                                 v_flex()
                                                     .gap_1()

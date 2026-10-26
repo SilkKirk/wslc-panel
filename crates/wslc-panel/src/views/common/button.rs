@@ -114,3 +114,32 @@ pub(crate) fn overlay_button(
 ) -> AnyElement {
     action_button(id, label, entity, open).into_any_element()
 }
+
+/// 折叠应用级侧边栏的按钮（v0.12.2）。
+///
+/// # 为什么要有这一层
+///
+/// 有**两处**需要它：普通页的页头（`app/shell/render.rs`）和 SQL 页
+/// （`views/sql.rs` 不画应用级页头，只能自己来）。两份接线原先**逐字相同** ——
+/// 复制的是**行为**（点一下翻 `Shell::sidebar_collapsed` 再 `notify`），
+/// 漏改一处就是"某一页的按钮点了没反应"，而这在 CI 里看不出来。
+///
+/// # 两条不能丢的前提
+///
+/// 1. **必须放在主区域里**，不能放进侧边栏自己：侧边栏收起之后那一块完全不渲染
+///    （`Offcanvas`），按钮跟着消失就再也点不回来了；
+/// 2. `collapsed` 得由调用方传**当前值**（而不是在这里读 `Shell`）：
+///    这个函数不持有 `Entity`，调用方本来就有那两个东西。
+pub(crate) fn sidebar_toggle(entity: &Entity<Shell>, collapsed: bool) -> impl IntoElement {
+    use gpui_kit::component::sidebar::SidebarToggleButton;
+
+    let entity = entity.clone();
+    SidebarToggleButton::new()
+        .collapsed(collapsed)
+        .on_click(move |_, _, cx| {
+            entity.update(cx, |shell, cx| {
+                shell.sidebar_collapsed = !shell.sidebar_collapsed;
+                cx.notify();
+            });
+        })
+}

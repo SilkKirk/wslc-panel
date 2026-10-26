@@ -4,8 +4,8 @@
 //! 它们的外壳一律由官方 `Dialog` 负责（构造在 `app::shell::dialogs`）。
 
 use super::common::{
-    NoContainer, cell_link, cell_muted_full, cell_text, immediate_button, log_text, overlay_button,
-    page_empty, store_warning, table_card, table_row,
+    NoContainer, blocked_card, busy_text, cell_link, cell_muted_full, cell_text, error_banner,
+    immediate_button, overlay_button, page_empty, store_warning, table_card, table_row,
 };
 use super::prelude::*;
 
@@ -130,11 +130,7 @@ pub(crate) fn deploy_header(deploy: &DeployState, entity: &Entity<Shell>) -> Any
     // 读取期间把按钮**换掉**（项目里不用 `.disabled()`）：置灰的按钮会让人
     // 反复去点，而"读取中…"说清了现在在等什么。
     let reload: AnyElement = if deploy.busy {
-        div()
-            .text_sm()
-            .text_color(theme::text_muted())
-            .child("读取中…")
-            .into_any_element()
+        busy_text("读取中…")
     } else {
         let entity = entity.clone();
         Button::new("deploy-reload")
@@ -242,55 +238,28 @@ pub(crate) fn deploy_blocked_card(
          想自己进去看，用「容器」页那一行「更多」菜单里的「终端」。"
     };
 
-    v_flex()
-        .w_full()
-        .gap_3()
-        .p_4()
-        .rounded_lg()
-        .bg(theme::danger_soft())
-        .border_1()
-        .border_color(theme::danger_edge())
-        .child(
+    blocked_card(
+        format!("这个容器现在部署不了（{}）", failure.kind.label()),
+        &failure.summary(),
+        note,
+        &failure.detail,
+        "deploy-blocked-detail",
+        Some(
             div()
-                .text_sm()
-                .font_semibold()
-                .text_color(theme::danger())
-                .child(format!("这个容器现在部署不了（{}）", failure.kind.label())),
-        )
-        .child(
-            div()
-                .text_sm()
-                .text_color(theme::text())
-                .child(wslc_panel_core::util::strip_md(&failure.summary())),
-        )
-        .child(div().text_xs().text_color(theme::text_muted()).child(note))
-        .child(log_text(Some(&failure.detail), "deploy-blocked-detail"))
-        .child(div().text_xs().text_color(theme::text_dim()).child(format!(
-            "刚才是在读容器 {} 的时候失败的。",
-            deploy.container
-        )))
-        .into_any_element()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child(format!(
+                    "刚才是在读容器 {} 的时候失败的。",
+                    deploy.container
+                ))
+                .into_any_element(),
+        ),
+    )
 }
 
 /// 上一次失败：一句"该怎么办" +（可滚动的）原文。
 pub(crate) fn deploy_failure_banner(failure: &wslc_panel_core::state::DeployFailure) -> AnyElement {
-    v_flex()
-        .w_full()
-        .gap_2()
-        .p_3()
-        .rounded_lg()
-        .bg(theme::danger_soft())
-        .border_1()
-        .border_color(theme::danger_edge())
-        .child(
-            div()
-                .text_sm()
-                .font_semibold()
-                .text_color(theme::danger())
-                .child(wslc_panel_core::util::strip_md(&failure.summary())),
-        )
-        .child(log_text(Some(&failure.detail), "deploy-error-detail"))
-        .into_any_element()
+    error_banner(&failure.summary(), &failure.detail, "deploy-error-detail")
 }
 
 /// 「正在读取…」占位（和 `db_loading` 同一形状）。
@@ -305,12 +274,7 @@ pub(crate) fn deploy_loading(busy: bool) -> AnyElement {
             .gap_2()
             .items_center()
             .child(Spinner::new())
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(theme::text_muted())
-                    .child("正在读取…"),
-            )
+            .child(busy_text("正在读取…"))
             .into_any_element()
     } else {
         div()

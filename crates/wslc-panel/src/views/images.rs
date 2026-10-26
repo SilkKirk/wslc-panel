@@ -2,7 +2,7 @@
 
 use super::common::{
     cell_muted, cell_text, cell_text_full, danger_button, disclosure, empty_state, form_field,
-    list_count, table_card, table_row,
+    list_count, page_header, table_card, table_row,
 };
 use super::prelude::*;
 
@@ -100,14 +100,7 @@ pub(crate) fn images_page(state: &AppState, entity: &Entity<Shell>) -> AnyElemen
     v_flex()
         .w_full()
         .gap_3()
-        .child(
-            h_flex()
-                .w_full()
-                .justify_between()
-                .items_center()
-                .child(open_pull)
-                .child(list_count(status)),
-        )
+        .child(page_header(open_pull, list_count(status)))
         .child(body)
         .into_any_element()
 }

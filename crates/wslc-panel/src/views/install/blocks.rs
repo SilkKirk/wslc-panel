@@ -43,11 +43,7 @@ pub(crate) fn online_block(
     // 状态：正在拉 / 失败原因（原文）/ 来源说明
     let status: AnyElement =
         if state.online.loading {
-            div()
-                .text_xs()
-                .text_color(theme::text_muted())
-                .child("正在拉取在线清单…")
-                .into_any_element()
+            busy_text_xs("正在拉取在线清单…")
         } else if !state.online.error.trim().is_empty() {
             v_flex()
                 .w_full()
@@ -194,11 +190,7 @@ pub(crate) fn mirror_block(
 
     // 状态行：正在拉 / 拉失败（原话）/ 清单概览
     let status: AnyElement = if state.mirrors.loading {
-        div()
-            .text_xs()
-            .text_color(theme::text_muted())
-            .child("正在拉取发行版清单…")
-            .into_any_element()
+        busy_text_xs("正在拉取发行版清单…")
     } else if let Some(error) = state.mirrors.load_error.as_ref() {
         div()
             .text_xs()
@@ -234,11 +226,7 @@ pub(crate) fn mirror_block(
     // ⚠️ **不写镜像站名字**（用户要求"不需要那些什么清华源之类的"）：
     // 只给"选好了 + 多大"，名字在安装日志里（`从 <site> 下载 …` 那一步）。
     let probe_line: AnyElement = if state.mirrors.probing {
-        div()
-            .text_xs()
-            .text_color(theme::text_muted())
-            .child("正在自动测速，挑最快的镜像…")
-            .into_any_element()
+        busy_text_xs("正在自动测速，挑最快的镜像…")
     } else if let Some(error) = state.mirrors.error.as_ref() {
         div()
             .text_xs()
