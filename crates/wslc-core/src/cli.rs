@@ -386,11 +386,7 @@ impl Wslc {
             readers.push(spawn_line_reader(err, Arc::clone(&callback)));
         }
 
-        Ok(FileStreamHandle {
-            child: Arc::new(Mutex::new(child)),
-            readers,
-            cancelled: Arc::new(AtomicBool::new(false)),
-        })
+        Ok(FileStreamHandle::new(child, readers))
     }
 }
 
@@ -822,11 +818,7 @@ fn spawn_streaming_impl(
         .map(|pipe| spawn_line_reader(pipe, Arc::clone(&callback)))
         .collect();
 
-    Ok(StreamHandle {
-        child: Arc::new(Mutex::new(child)),
-        readers,
-        cancelled: Arc::new(AtomicBool::new(false)),
-    })
+    Ok(StreamHandle::new(child, readers))
 }
 
 fn read_all(mut reader: impl Read) -> Vec<u8> {
@@ -895,30 +887,34 @@ pub fn to_os_strings(args: &[String]) -> Vec<OsString> {
 // 流式执行
 // ---------------------------------------------------------------------------
 
-/// [`Wslc::spawn_streaming`] 返回的句柄。
+/// 两个流式句柄共用的内部状态。
 ///
-/// 用 [`StreamHandle::try_wait`] **非阻塞**地轮询是否结束 —— 不要用阻塞的
-/// `wait()`：调用方通常在 GPUI 的异步执行器上，阻塞线程会占着线程池。
-pub struct StreamHandle {
+/// `StreamHandle` 与 `FileStreamHandle` 的差别只有**stdout 接到哪儿**
+/// （管道 vs 文件）；`try_wait` / `cancel_token` / `finish` 的行为完全一样，
+/// 所以只写这一份 —— 否则修一个 bug 要记得改两处。
+struct ProcessHandle {
     child: Arc<Mutex<Child>>,
     readers: Vec<JoinHandle<()>>,
     cancelled: Arc<AtomicBool>,
 }
 
-impl StreamHandle {
-    /// 取一个可克隆的取消令牌。
-    ///
-    /// 界面侧握令牌（点"取消"用），执行任务握句柄 —— 取消能力不需要
-    /// 把整个句柄搬来搬去。
-    pub fn cancel_token(&self) -> CancelToken {
+impl ProcessHandle {
+    fn new(child: Child, readers: Vec<JoinHandle<()>>) -> Self {
+        Self {
+            child: Arc::new(Mutex::new(child)),
+            readers,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn cancel_token(&self) -> CancelToken {
         CancelToken {
             child: Arc::clone(&self.child),
             cancelled: Arc::clone(&self.cancelled),
         }
     }
 
-    /// 非阻塞地看一眼：`Some(退出码)` 表示已经结束。
-    pub fn try_wait(&self) -> Result<Option<i32>> {
+    fn try_wait(&self) -> Result<Option<i32>> {
         let mut child = self.lock_child();
         match child.try_wait() {
             Ok(Some(status)) => Ok(Some(status.code().unwrap_or(-1))),
@@ -927,15 +923,14 @@ impl StreamHandle {
         }
     }
 
-    /// 是否被取消过。
-    pub fn was_cancelled(&self) -> bool {
+    fn was_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
     }
 
     /// 收尾：等读取线程把剩余输出读完，返回退出码。
     ///
     /// 要在 `try_wait` 返回 `Some` 之后再调，否则会阻塞到进程结束。
-    pub fn finish(self) -> Result<i32> {
+    fn finish(self) -> Result<i32> {
         let status = {
             let mut child = self.lock_child();
             child.wait()
@@ -950,6 +945,47 @@ impl StreamHandle {
     /// 锁里的 `Child` 依然有效。
     fn lock_child(&self) -> std::sync::MutexGuard<'_, Child> {
         self.child.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// [`Wslc::spawn_streaming`] 返回的句柄。
+///
+/// 用 [`StreamHandle::try_wait`] **非阻塞**地轮询是否结束 —— 不要用阻塞的
+/// `wait()`：调用方通常在 GPUI 的异步执行器上，阻塞线程会占着线程池。
+pub struct StreamHandle {
+    inner: ProcessHandle,
+}
+
+impl StreamHandle {
+    fn new(child: Child, readers: Vec<JoinHandle<()>>) -> Self {
+        Self {
+            inner: ProcessHandle::new(child, readers),
+        }
+    }
+
+    /// 取一个可克隆的取消令牌。
+    ///
+    /// 界面侧握令牌（点"取消"用），执行任务握句柄 —— 取消能力不需要
+    /// 把整个句柄搬来搬去。
+    pub fn cancel_token(&self) -> CancelToken {
+        self.inner.cancel_token()
+    }
+
+    /// 非阻塞地看一眼：`Some(退出码)` 表示已经结束。
+    pub fn try_wait(&self) -> Result<Option<i32>> {
+        self.inner.try_wait()
+    }
+
+    /// 是否被取消过。
+    pub fn was_cancelled(&self) -> bool {
+        self.inner.was_cancelled()
+    }
+
+    /// 收尾：等读取线程把剩余输出读完，返回退出码。
+    ///
+    /// 要在 `try_wait` 返回 `Some` 之后再调，否则会阻塞到进程结束。
+    pub fn finish(self) -> Result<i32> {
+        self.inner.finish()
     }
 }
 
@@ -984,51 +1020,36 @@ impl CancelToken {
 /// 用 [`FileStreamHandle::try_wait`] 非阻塞轮询 —— 不要阻塞 `wait()`，
 /// 调用方在 GPUI 的异步执行器上，阻塞线程会占着线程池。
 pub struct FileStreamHandle {
-    child: Arc<Mutex<Child>>,
-    readers: Vec<JoinHandle<()>>,
-    cancelled: Arc<AtomicBool>,
+    inner: ProcessHandle,
 }
 
 impl FileStreamHandle {
+    fn new(child: Child, readers: Vec<JoinHandle<()>>) -> Self {
+        Self {
+            inner: ProcessHandle::new(child, readers),
+        }
+    }
+
     /// 取一个可克隆的取消令牌（杀子进程）。
     pub fn cancel_token(&self) -> CancelToken {
-        CancelToken {
-            child: Arc::clone(&self.child),
-            cancelled: Arc::clone(&self.cancelled),
-        }
+        self.inner.cancel_token()
     }
 
     /// 非阻塞地看一眼：`Some(退出码)` 表示已经结束。
     pub fn try_wait(&self) -> Result<Option<i32>> {
-        let mut child = self.lock_child();
-        match child.try_wait() {
-            Ok(Some(status)) => Ok(Some(status.code().unwrap_or(-1))),
-            Ok(None) => Ok(None),
-            Err(e) => Err(Error::Io(e)),
-        }
+        self.inner.try_wait()
     }
 
     /// 是否被取消过。
     pub fn was_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::SeqCst)
+        self.inner.was_cancelled()
     }
 
     /// 收尾：等 stderr 的读取线程读完，返回退出码。
     ///
     /// 要在 `try_wait` 返回 `Some` 之后再调，否则会阻塞到进程结束。
     pub fn finish(self) -> Result<i32> {
-        let status = {
-            let mut child = self.lock_child();
-            child.wait()
-        };
-        for reader in self.readers {
-            let _ = reader.join();
-        }
-        Ok(status.map_err(Error::Io)?.code().unwrap_or(-1))
-    }
-
-    fn lock_child(&self) -> std::sync::MutexGuard<'_, Child> {
-        self.child.lock().unwrap_or_else(|e| e.into_inner())
+        self.inner.finish()
     }
 }
 
