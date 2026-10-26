@@ -159,6 +159,83 @@ impl DialogKey {
     }
 }
 
+/// 一个浮层外壳的"差异部分"。
+///
+/// 其余东西（遮罩、宽度单位、Esc、`content` 的接线、`footer` 的重建）都由
+/// [`open_shell_dialog`] 统一处理 —— 17 个臂原先各写一遍，只有这五样不同。
+struct DialogSpec {
+    title: SharedString,
+    width: f32,
+    /// 点遮罩关不关（有提交动作的浮层要 `false`，见 `AGENTS.md` §7.5）。
+    overlay_closable: bool,
+    /// Esc 关不关。
+    keyboard: bool,
+    content: Entity<ShellView>,
+}
+
+/// 把「读 `Shell` 状态画一块」包成会随 `Shell` 重画的子实体。
+///
+/// ⚠️ 必须包：`Dialog` 的 builder 闭包只在"浮层被重建"时重跑，打字 / 后台任务
+/// 推进都**不**触发它 —— 不包就会僵在打开那一刻（v0.19.0 的 bug）。
+fn shell_view(
+    entity: &Entity<Shell>,
+    body: impl Fn(&Shell, &App) -> AnyElement + 'static,
+    cx: &mut Context<Shell>,
+) -> Entity<ShellView> {
+    let view = entity.clone();
+    cx.new(move |cx| ShellView::new(view, body, cx))
+}
+
+/// 统一打开一个官方 `Dialog`，并把**三条退出路径**（按钮 / Esc / 点遮罩）的
+/// "清状态"接好。
+///
+/// `close` 传方法引用（`Shell::close_logs` 这类）—— 它的签名统一是
+/// `fn(&mut Shell, &mut Context<Shell>)`。进度类浮层不可关，传 `None`。
+///
+/// ⚠️ `footer` 是**闭包**而不是 `Vec`：`Dialog` 的 builder 可能重跑，而
+/// `AnyElement` 是一次性的，不能复用。
+///
+/// ⚠️ 清状态必须写在回调里：`sync_dialog_stack` 是**按状态对齐**的，
+/// 只关窗口不清状态，下一帧会把它重新打开（`AGENTS.md` §7.5）。
+fn open_shell_dialog<F>(
+    window: &mut Window,
+    cx: &mut Context<Shell>,
+    spec: DialogSpec,
+    close: Option<fn(&mut Shell, &mut Context<Shell>)>,
+    footer: F,
+) where
+    F: Fn() -> Vec<AnyElement> + 'static,
+{
+    use gpui_kit::component::WindowExt as _;
+
+    let entity = cx.entity();
+    let on_cancel = close.map(|close| {
+        let entity = entity.clone();
+        move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
+            entity.update(cx, |shell, cx| close(shell, cx));
+            true
+        }
+    });
+
+    window.open_dialog(cx, move |dialog, _window, _cx| {
+        let mut dialog = dialog
+            .title(spec.title.clone())
+            .w(px(spec.width))
+            .overlay(true)
+            .overlay_closable(spec.overlay_closable)
+            .keyboard(spec.keyboard)
+            .child(spec.content.clone());
+        if let Some(on_cancel) = on_cancel.clone() {
+            dialog = dialog.on_cancel(on_cancel);
+        }
+        let items = footer();
+        if !items.is_empty() {
+            dialog = dialog.footer(modal_footer(items));
+        }
+        dialog
+    });
+}
+
 impl Shell {
     /// 把「窗口级对话框栈」对齐到当前状态（官方 `Dialog`）。
     ///
@@ -243,50 +320,39 @@ impl Shell {
         match key {
             DialogKey::DbInfo => {
                 let entity = cx.entity();
-                // 内容包 `ShellView`：连接卡里的输入框、以及"当前生效的是哪条路"
-                // 都会变（应用连接串 / 重新读取），而 `Dialog` 的 builder 闭包
-                // 只在层被重建时重跑 —— 不包就会僵在打开那一刻（v0.19.0 的 bug）。
-                let content = {
-                    let view_entity = entity.clone();
-                    let body_entity = entity.clone();
-                    cx.new(move |cx| {
-                        ShellView::new(
-                            view_entity,
-                            move |shell, cx| crate::views::db_info_body(shell, &body_entity, cx),
-                            cx,
-                        )
-                    })
-                };
-                // 三条退出路径（按钮 / Esc / 点遮罩）都要清 `db_info_open`：
-                // `sync_dialog_stack` 是**按状态对齐**的，只关窗口不清状态，
-                // 下一次重绘会把它重新打开（`AGENTS.md` §7.5）。
-                let on_cancel = {
-                    let entity = entity.clone();
-                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| -> bool {
-                        entity.update(cx, |shell, cx| shell.close_db_info(cx));
-                        true
-                    }
-                };
-                window.open_dialog(cx, move |dialog, _window, _cx| {
-                    let close = {
-                        let entity = entity.clone();
-                        Button::new("db-info-close").label("关闭").small().on_click(
-                            move |_, window, cx| {
-                                entity.update(cx, |shell, cx| shell.close_db_info(cx));
-                                window.close_dialog(cx);
-                            },
-                        )
-                    };
-                    dialog
-                        .title("基础信息")
-                        .w(px(700.))
-                        .overlay(true)
-                        .overlay_closable(true)
-                        .keyboard(true)
-                        .on_cancel(on_cancel.clone())
-                        .child(content.clone())
-                        .footer(modal_footer([close.into_any_element()]))
-                });
+                let body_entity = entity.clone();
+                let content = shell_view(
+                    &entity,
+                    move |shell, cx| crate::views::db_info_body(shell, &body_entity, cx),
+                    cx,
+                );
+                let for_button = entity.clone();
+                open_shell_dialog(
+                    window,
+                    cx,
+                    DialogSpec {
+                        title: "基础信息".into(),
+                        width: 700.,
+                        overlay_closable: true,
+                        keyboard: true,
+                        content,
+                    },
+                    // 三条退出路径都要清 `db_info_open`，否则下一帧会重开。
+                    Some(Shell::close_db_info),
+                    move || {
+                        let entity = for_button.clone();
+                        vec![
+                            Button::new("db-info-close")
+                                .label("关闭")
+                                .small()
+                                .on_click(move |_, window, cx| {
+                                    entity.update(cx, |shell, cx| shell.close_db_info(cx));
+                                    window.close_dialog(cx);
+                                })
+                                .into_any_element(),
+                        ]
+                    },
+                );
             }
             DialogKey::Export => {
                 let Some(progress) = self.state.exporting.as_ref() else {
