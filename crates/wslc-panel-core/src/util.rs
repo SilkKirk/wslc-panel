@@ -1,6 +1,6 @@
 //! 界面用到的纯函数助手。
 //!
-//! 放在这个 crate 而不是 `app.rs`：它们是纯逻辑，单测不该为了跑它们
+//! 放在这个 crate 而不是 `app/`：它们是纯逻辑，单测不该为了跑它们
 //! 去链接 GPUI（见本 crate 的顶层说明）。
 
 use wslc_core::model::ContainerSummary;
@@ -170,9 +170,9 @@ pub fn refresh_label(busy: bool, user_initiated: bool) -> &'static str {
 
 /// 用量的档位（决定进度条与数字用哪个颜色）。
 ///
-/// 放在这里而不是 `views.rs`：它只是一串**阈值**，而阈值恰恰是"改着改着就错了、
+/// 放在这里而不是 `views/`：它只是一串**阈值**，而阈值恰恰是"改着改着就错了、
 /// 还没人发现"的那类东西（把 85 顺手调成 80，界面照跑、没人看得出来）。
-/// `views.rs` 里的断言 CI 根本不会跑（`cargo test --workspace --exclude wslc-panel`），
+/// `views/` 里的断言 CI 根本不会跑（`cargo test --workspace --exclude wslc-panel`），
 /// 所以判定归这里。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadLevel {

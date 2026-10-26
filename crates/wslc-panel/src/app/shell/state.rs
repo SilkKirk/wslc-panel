@@ -345,7 +345,7 @@ impl KeepAlive {
 /// 每个字段一个独立的 `InputState` —— 这是 GPUI 的标准做法。
 /// 拉取策略用预设按钮（不是输入框），所以这里只存一个枚举值。
 ///
-/// `pub(crate)` + 公开字段：渲染在 `views.rs` 里，需要逐个读出来画。
+/// `pub(crate)` + 公开字段：渲染在 `views/` 里，需要逐个读出来画。
 pub(crate) struct CreateDialog {
     pub(crate) image: Entity<InputState>,
     /// 「从本地镜像里选」下拉框（可搜索）。
@@ -410,7 +410,7 @@ impl CreateDialog {
     /// 需要 `cx` 才能从 `InputState` 里取值，所以它不是纯函数 ——
     /// 这也是 `views::page` 要多收一个 `cx` 的原因
     /// （弹窗底部要**实时**预览等效命令）。
-    /// `pub(crate)`：`views.rs` 要用它来做**实时**等效命令预览。
+    /// `pub(crate)`：`views/` 要用它来做**实时**等效命令预览。
     ///
     /// `existing_names` 是**现有容器的名字**（`AppState::container_names()`）：
     /// 容器名留空时按镜像推一个（见 [`wslc_core::model::suggest_container_name`]），

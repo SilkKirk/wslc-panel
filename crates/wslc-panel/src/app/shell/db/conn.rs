@@ -210,7 +210,7 @@ impl Shell {
     /// 所以执行路径只认连接卡；`DbState::creds` 退回成"上一次连成功的那份"
     /// （只在诊断 / 显示里用）。
     ///
-    /// `pub(crate)`：`views.rs` 渲染时构造 `PendingAction`（删库 / 删用户）
+    /// `pub(crate)`：`views/` 渲染时构造 `PendingAction`（删库 / 删用户）
     /// 也要用它 —— 那两个按钮的账号必须和别处是同一个来源。
     pub(crate) fn db_creds(&self, cx: &App) -> MysqlCreds {
         let (user, password) = self.read_db_form(cx);

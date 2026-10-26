@@ -5,7 +5,7 @@ use super::prelude::*;
 /// 「添加实例」页里选中的**来源类型**。
 ///
 /// 只记"用户选了哪一种"；带值的路径 / 名字在输入框里，
-/// 拼成 [`wslc_core::model::install::InstallSpec`] 与执行计划是 `app.rs` 的事。
+/// 拼成 [`wslc_core::model::install::InstallSpec`] 与执行计划是 `app/` 的事。
 ///
 /// # 为什么是这三种（原来是五种）
 ///
@@ -114,7 +114,7 @@ impl InstallSourceKind {
     /// 发行版名输入框的**标签**。
     ///
     /// 联网那两条路里它同时是"清单拉不到时手输的 id"，所以标签要长一些 ——
-    /// 原先这个函数住在 `views.rs`，而它旁边的 `label()` / `hint()` /
+    /// 原先这个函数住在 `views/`，而它旁边的 `label()` / `hint()` /
     /// `path_label()` / `name_placeholder()` 全都在这里，漏了它一个。
     pub fn name_field_label(self) -> &'static str {
         if self.is_online() {

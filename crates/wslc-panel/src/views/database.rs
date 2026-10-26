@@ -749,7 +749,7 @@ pub(crate) fn db_databases_card(
     // 页头那颗按钮：原生连接时不画（建库是 DDL，走容器里的客户端）。
     //
     // 用 `Vec` 而不是 `.when(…)`：项目里没验证过 `when` 存在
-    // （`views.rs` 里同类的注释，见树那一段），而 `.children(vec)` 到处都在用。
+    // （`views/` 里同类的注释，见树那一段），而 `.children(vec)` 到处都在用。
     let head_buttons: Vec<AnyElement> = if blocked.is_none() {
         vec![new_database.into_any_element()]
     } else {

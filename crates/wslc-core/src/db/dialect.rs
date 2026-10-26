@@ -56,7 +56,7 @@ pub enum LimitSyntax {
 /// # 为什么要这个
 ///
 /// `docs/PLAN-multi-db.md` §2.2 第 2 条：界面按能力位显隐，
-/// 而不是在 `views.rs` 里写 `if kind == Postgres`。
+/// 而不是在 `views/` 里写 `if kind == Postgres`。
 ///
 /// 用 bool 字段而不是 `bitflags` crate：只有 5 个位，引一个依赖不值得，
 /// 而且 `caps.can_show_tables` 比 `caps.contains(CAP_SHOW_TABLES)` 好读。

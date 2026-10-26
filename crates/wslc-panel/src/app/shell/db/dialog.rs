@@ -503,7 +503,7 @@ impl Shell {
         // `Error -> Error`，不需要 From 转换。`String` 的转换在**外面**做
         //（上一版把 `?` 放进 `Result<_, String>` 的闭包里，
         // `String: From<Error>` 不存在 —— CI 抓的）。
-        // ⚠️ 类型要写**全路径** `wslc_core::Result`：app.rs 作用域里的裸
+        // ⚠️ 类型要写**全路径** `wslc_core::Result`：app/ 作用域里的裸
         // `Result` 来自 `gpui_kit::*`，它的默认错误类型是 anyhow —— 两个
         // "Result" 长得一样，是不同的类型（CI 抓的）。
         let prepared: wslc_core::Result<Option<PreparedDbSql>> = (|| {

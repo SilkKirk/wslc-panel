@@ -66,7 +66,7 @@ pub fn dashboard(state: &AppState) -> impl IntoElement {
 pub(crate) fn environment_card(state: &AppState) -> AnyElement {
     let Some(info) = state.snapshot.info.as_ref() else {
         // 首屏（或 `wslc info` 失败）时给一句话，而不是三个空框。
-        // 失败原因由 `app.rs` 的 `error_banner` 统一说，这里只解释这块为什么空着。
+        // 失败原因由 `app/` 的 `error_banner` 统一说，这里只解释这块为什么空着。
         return card(
             "运行环境",
             div()

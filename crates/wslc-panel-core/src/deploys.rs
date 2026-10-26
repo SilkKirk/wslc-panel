@@ -320,7 +320,7 @@ pub fn store_path(data_dir: impl AsRef<Path>) -> PathBuf {
 /// 去重按 trim 之后的名字比，空名字直接丢掉（`removals_script` 那边还会再
 /// 拦一次带 `/`、`..` 的，这里不做路径判断）。
 ///
-/// ⚠️ 纯函数、住在这里（而不是 `app.rs`）：`app.rs` 没有 `#[cfg(test)]`，
+/// ⚠️ 纯函数、住在这里（而不是 `app/`）：`app/` 没有 `#[cfg(test)]`，
 /// 而 CI 的测试任务**不跑 `wslc-panel`** —— 写在那儿等于没有断言。
 pub fn merge_members(previous: &[String], current: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(previous.len() + current.len());

@@ -58,7 +58,7 @@ pub struct Shell {
     ///
     /// `InputState::new` 要 `&mut Window`，所以只能在进入页面时建一次
     /// （见 [`Shell::ensure_container_search`]）。`pub(crate)` 是因为
-    /// `views.rs` 要读它来画 `Input`。
+    /// `views/` 要读它来画 `Input`。
     pub(crate) container_search: Option<Entity<InputState>>,
     /// 搜索框内容变化的订阅。
     ///
@@ -69,7 +69,7 @@ pub struct Shell {
     ///
     /// 放 `Shell`：这是**能力**（能 kill 子进程），不是"状态"。
     /// 纯数据部分（拉了哪个镜像、输出了什么）在 `AppState::pulling` 里，
-    /// 因为 `views.rs` 只拿得到 `&AppState`。
+    /// 因为 `views/` 只拿得到 `&AppState`。
     pull_cancel: Option<wslc_core::CancelToken>,
     /// 正在进行的**导出**任务的取消令牌。
     ///
@@ -96,7 +96,7 @@ pub struct Shell {
     /// （和 `install_form` 同一个理由：`InputState::new` 要 `&mut Window`，
     /// 而渲染时每帧重建输入框会让用户**一个字都打不进去**）。
     ///
-    /// `pub(crate)`：`views.rs` 要读它来画 `Input`。
+    /// `pub(crate)`：`views/` 要读它来画 `Input`。
     pub(crate) terminal_dir_input: Option<Entity<InputState>>,
     /// 「创建容器」弹窗；关闭时为 `None`。
     create_dialog: Option<CreateDialog>,
@@ -118,8 +118,8 @@ pub struct Shell {
     /// 和 `create_dialog` 一样**懒创建**（`InputState::new` 要 `&mut Window`），
     /// 但**不随页面离开而销毁** —— 见 [`InstallForm`]。
     ///
-    /// `pub(crate)`：`views.rs` 要读它来渲染页面（`Shell` 的其余字段
-    /// 只有 `app.rs` 自己用，所以是私有的）。
+    /// `pub(crate)`：`views/` 要读它来渲染页面（`Shell` 的其余字段
+    /// 只有 `app/` 自己用，所以是私有的）。
     pub(crate) install_form: Option<InstallForm>,
     /// 两个下拉框（商店清单 / 镜像源清单）的**订阅**。
     ///
@@ -130,7 +130,7 @@ pub struct Shell {
     /// 「镜像」页的表单（registry / 仓库名两个输入框 + tag 下拉框）；
     /// 进过那一页之后一直是 `Some`。
     ///
-    /// `pub(crate)`：`views.rs` 要读它来渲染页面。
+    /// `pub(crate)`：`views/` 要读它来渲染页面。
     pub(crate) image_form: Option<ImageForm>,
     /// 「镜像」页 tag 下拉框的**订阅**。
     ///
@@ -153,7 +153,7 @@ pub struct Shell {
     create_subs: Vec<Subscription>,
     /// 单输入框提示弹窗（移动位置 / 调整大小 / 设置默认用户）；关闭时为 `None`。
     ///
-    /// 同样是 `pub(crate)`：浮层在 `views.rs` 里渲染。
+    /// 同样是 `pub(crate)`：浮层在 `views/` 里渲染。
     pub(crate) prompt: Option<TextPrompt>,
     /// 我们已经压进**窗口级对话框栈**的那几层（官方 `Dialog`），按打开顺序。
     ///
@@ -173,7 +173,7 @@ pub struct Shell {
     /// 正在跑的安装（事件队列 + 结果）；空闲时为 `None`。
     ///
     /// 纯数据部分（走到第几步、日志、进度）在 `AppState::installing` 里 ——
-    /// `views.rs` 只拿得到 `&AppState`。
+    /// `views/` 只拿得到 `&AppState`。
     install_run: Option<InstallRun>,
     /// 正在跑的安装的取消令牌。
     ///
@@ -204,7 +204,7 @@ pub struct Shell {
     deploy_tick: u32,
     /// 「数据库管理」页的连接卡 / SQL 输入框；没进过那一页时为 `None`。
     ///
-    /// `pub(crate)`：页面在 `views.rs` 里渲染。
+    /// `pub(crate)`：页面在 `views/` 里渲染。
     pub(crate) db_form: Option<DbPageForm>,
     /// SQL 结果表格的 `TableState`（v0.11）。
     ///

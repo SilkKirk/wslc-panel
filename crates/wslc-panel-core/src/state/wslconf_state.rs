@@ -13,7 +13,7 @@ use super::prelude::*;
 /// 而 GPUI 里 id 撞了会让勾选 / 焦点状态互相串。
 /// 测试 `every_wslconf_field_has_its_own_id` 就是盯这件事的。
 ///
-/// （它原先住在 `views.rs`。搬过来的理由见 `AGENTS.md` §2：
+/// （它原先住在 `views/`。搬过来的理由见 `AGENTS.md` §2：
 /// 这是纯函数，而放在那边就永远没有测试 —— CI 不跑 `wslc-panel` 的单测。）
 pub fn wslconf_field_id(section: &str, key: &str) -> &'static str {
     match (section, key) {

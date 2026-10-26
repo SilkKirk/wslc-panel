@@ -2,7 +2,7 @@
 //!
 //! # 为什么单独一个 crate
 //!
-//! 为了 **CI 的编译时间**。`state.rs` / `prefs.rs` 这一层完全不碰 GPUI
+//! 为了 **CI 的编译时间**。`state/` / `prefs.rs` 这一层完全不碰 GPUI
 //! （见 [`state`] 的模块说明），但它们的单测原本和 bin 在同一个 test target 里 ——
 //! 于是 `cargo test -p wslc-panel --bins` 必须把整棵 GPUI 依赖树 codegen
 //! 并**链接**一遍，才能跑几个字符串切分和列宽的断言。
@@ -21,7 +21,7 @@
 //!
 //! `wslc-panel` 那边在 `main.rs` 里用一层 re-export 垫片继续暴露
 //! `crate::state::…` / `crate::prefs::…` 这些旧路径 ——
-//! 所以 `app.rs` / `views.rs` 里的调用点一行都没改。
+//! 所以 `app/` / `views/` 里的调用点一行都没改。
 
 pub mod columns;
 // 数据库账号的本地存档（v0.8：建库同时建用户，列表要展示用户名 / 密码 ——
@@ -32,7 +32,7 @@ pub mod deploys;
 // 存档的原子写 + 崩溃恢复（v0.9.20：删旧档再 rename 有丢档窗口）。
 pub mod fileio;
 // 容器列表的过滤 / 排序（纯逻辑，带单测）—— 状态筛选的判据、排序规则
-// 都在这里，`views.rs` 只负责画按钮和读输入框。
+// 都在这里，`views/` 只负责画按钮和读输入框。
 pub mod listview;
 pub mod prefs;
 pub mod presets;

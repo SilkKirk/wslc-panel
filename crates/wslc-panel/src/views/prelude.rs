@@ -30,7 +30,7 @@ pub(crate) use gpui_kit::component::input::{Editor, Input, InputState};
 // 画出来像一排色块（v0.12 实机就是这个效果，用户说"太丑了"）；
 // `ListItem` 是给列表 / 树用的，悬停与选中态由组件自己管。
 pub(crate) use gpui_kit::component::list::ListItem;
-// 折叠应用级侧边栏的按钮。SQL 页不画应用级页头（见 `app.rs`），
+// 折叠应用级侧边栏的按钮。SQL 页不画应用级页头（见 `app/`），
 // 所以那个按钮必须由这一页自己提供。
 pub(crate) use gpui_kit::component::sidebar::SidebarToggleButton;
 // 「微软商店」与「在线发行版」两张清单都是**下拉框**（参考实现也是

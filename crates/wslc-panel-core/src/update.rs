@@ -1,7 +1,7 @@
 //! 面板侧的更新状态：**什么时候查、查到了要不要提示、卡片上写什么**。
 //!
 //! 不碰网络（那是 [`wslc_core::cmd::update::check`]），也不碰 GPUI
-//! （`views.rs` 只读这里的 [`Phase`]）。放这个 crate 是为了让「节流判据」和
+//! （`views/` 只读这里的 [`Phase`]）。放这个 crate 是为了让「节流判据」和
 //! 「提示判据」能被 `core` job 的单测覆盖 —— 这两条错了的表现是
 //! "每天弹一次"或"永远不弹"，都是靠肉眼很难发现的那类问题。
 
@@ -18,7 +18,7 @@ pub const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 
 /// 「关于」页那张更新卡的状态。
 ///
-/// 全是纯数据：`views.rs` 只读它，`app.rs` 负责迁移。
+/// 全是纯数据：`views/` 只读它，`app/` 负责迁移。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Phase {
     /// 还没检查过（或者这次会话关掉了自动检查）。
@@ -107,7 +107,7 @@ pub fn should_notify(current: &Version, release: &Release, skipped: Option<&str>
 /// 卡片上那行状态文案。
 ///
 /// `now_secs` 是为了算"上次检查：N 前"。纯函数，好测；文案集中在这里
-/// 而不是散在 `views.rs` 里，是为了让"四种状态各写一句话"这件事只发生一次。
+/// 而不是散在 `views/` 里，是为了让"四种状态各写一句话"这件事只发生一次。
 pub fn status_line(phase: &Phase, now_secs: u64) -> String {
     match phase {
         Phase::Idle => "还没检查过更新".to_owned(),

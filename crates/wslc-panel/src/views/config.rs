@@ -83,7 +83,7 @@ pub fn config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
             "查看原始 YAML",
             state,
             entity,
-            // 同 app.rs：滚动容器必须先有 id。
+            // 同 app/：滚动容器必须先有 id。
             v_flex()
                 .id("settings-raw-yaml")
                 .w_full()

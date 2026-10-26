@@ -58,7 +58,7 @@ fn only_the_pages_with_inputs_need_a_window_to_enter() {
             page.needs_window_to_enter(),
             expected,
             "{page:?} 的 `needs_window_to_enter` 和实际不符 —— \
-                 改了页面上的输入框就要同步改 `app.rs::set_page` 和这条断言"
+                 改了页面上的输入框就要同步改 `Shell::set_page` 和这条断言"
         );
     }
     assert!(Page::AddInstance.needs_window_to_enter());

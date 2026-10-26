@@ -10,7 +10,7 @@ fn every_wslconf_field_has_its_own_id() {
     // 否则新字段会静默拿到 `"wslconf-unknown"`；两个字段都忘了加就
     // **撞同一个 id**，而 GPUI 里 id 撞了会让勾选 / 焦点状态互相串。
     //
-    // 这也是当初把它从 `views.rs` 搬过来的主要收益：CI 不跑
+    // 这也是当初把它从 `views/` 搬过来的主要收益：CI 不跑
     // `wslc-panel` 的单测，那种测试放在那边等于不存在。
     let mut seen: Vec<&'static str> = Vec::new();
     for field in wslc_core::model::wslconf::FIELDS {

@@ -30,7 +30,7 @@ pub(crate) use gpui_kit::component::select::{SelectEvent, SelectState};
 pub(crate) use gpui_kit::component::sidebar::{
     Sidebar, SidebarCollapsible, SidebarGroup, SidebarHeader, SidebarMenuItem, SidebarToggleButton,
 };
-// 同 views.rs：不导入 `Disableable`，全项目不再用 `.disabled()`。
+// 同 views/：不导入 `Disableable`，全项目不再用 `.disabled()`。
 pub(crate) use gpui_kit::component::{Sizable, StyledExt, h_flex, v_flex};
 pub(crate) use gpui_kit::*;
 

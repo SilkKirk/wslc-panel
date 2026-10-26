@@ -55,7 +55,7 @@ pub(crate) fn db_info_body(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> A
 ///
 /// 四种动作共用一个弹窗：同时只可能开一个，而且它们共用"用户名 / 主机 / 密码 /
 /// 库名"那几格。哪种动作决定**画哪几格**，也决定提交时拼哪条 SQL
-/// （拼装在 `app.rs::submit_db_dialog` 里，用的是 `wslc-core` 的纯函数）。
+/// （拼装在 `Shell::submit_db_dialog` 里，用的是 `wslc-core` 的纯函数）。
 ///
 /// ⚠️ 提交前的校验（标识符白名单）在 `submit_db_dialog` 里：不合法就**不关弹窗**，
 /// 只给一条提示 —— 用户就在那一格上，改一个字比重打一遍强。

@@ -54,7 +54,7 @@
 
 > 「添加实例」只从**实例列表页上的按钮**进（侧边栏不列它）—— 那一页的输入框与
 > 两个下拉框必须在点击时创建（`InputState::new` / `SelectState::new` 都要
-> `&mut Window`），见 `app.rs` 的 `InstallForm`。
+> `&mut Window`），见 `app/shell/state.rs` 的 `InstallForm`。
 >
 > 表格里放不下的长文本（镜像 / 镜像表的引用 / 安装位置 / 卷挂载点）会显示成省略号，
 > **鼠标移上去弹出 tooltip 显示全文**（见 `views::cell_muted_full`）。
@@ -210,7 +210,7 @@ crates/
 │  └─ 单独一个 crate 是因为 postgres 0.19 要 MSRV 1.85
 │
 ├─ wslc-panel-core/  同样不依赖 GPUI：面板里"不是界面"的那一半
-│  ├─ state.rs       状态与数据采集（最大的一个文件）
+│  ├─ state/         状态与数据采集（按域 10 个模块 + tests/ 一个域一个文件）
 │  ├─ prefs.rs       应用自己的偏好（%LOCALAPPDATA%\wslc-panel\prefs.json）
 │  ├─ columns.rs     各页表格的列定义（表头 + 宽度）
 │  ├─ presets.rs     配置项的常用预设值
@@ -224,9 +224,10 @@ crates/
 │  └─ util.rs        纯函数助手（切分、strip_md、刷新按钮文案……）
 │
 └─ wslc-panel/       GPUI 应用
-   ├─ main.rs        窗口与生命周期、日志（发布版写文件）+ 对 core 的 re-export 垫片
-   ├─ app.rs         Shell：导航、异步刷新、所有动作与弹窗（唯一接触 GPUI 异步 API 的文件）
-   ├─ views.rs       各页面渲染 + 全部弹窗浮层（约 400 KB，**很大**）
+   ├─ main.rs        窗口与生命周期、日志（发布版写文件）
+   ├─ app/           Shell：导航、异步刷新、全部动作与浮层
+   │                 （shell/ 按域分，dialogs.rs 是官方 Dialog 的窗口级栈）
+   ├─ views/         各页面渲染 + 各浮层的内容（一个页面/一类浮层一个文件）
    ├─ native_db.rs   原生连接的门面（把 wslc-db 的结果翻译成面板的类型）
    ├─ sql_table.rs   SQL 结果表格（把 sqlview 算好的东西画到 DataTable 上）
    ├─ sql_complete.rs SQL 补全的 GPUI 适配层
@@ -309,7 +310,7 @@ base, component, and assets, so a Rust application lists a single dependency.」
 - **镜像的「体积」有两个口径，别混**：「拉取区」显示的是「**下载约 N MB**」
   （registry manifest 里各层压缩后之和），而下面的「本地镜像」表里 `wslc images`
   的 `Size` 是**解压后**的落盘占用。同机 nginx 实测 60.9 MB vs 163 MB，差 2.7 倍 —— 两个数都对。
-- **GPUI 文件里写测试模块要小心**：`app.rs` / `views.rs` 里有 `use gpui_kit::*;`，
+- **GPUI 文件里写测试模块要小心**：`app/` 与 `views/` 下都 `use gpui_kit::*;`，
   而 gpui 会再导出 `gpui_macros` 的 `test` **属性宏** —— 测试模块里写
   `use super::*;` 会把它继承进来、遮蔽 Rust 的 `#[test]`，报
   `recursion limit reached while expanding #[test]`（详见 [`docs/SPIKE.md`](docs/SPIKE.md)）。
