@@ -870,7 +870,7 @@ pub(crate) fn deploy_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App
                     .text_color(theme::text_dim())
                     .child("上游容器需网络可达；关闭自动接通后须自行连接用户网络。"),
             ),
-    );
+    ));
     let site_block = if runtime == wslc_core::model::AppRuntime::Nginx {
         Some(v_flex().w_full().gap_2().p_3().rounded_md()
             .bg(theme::bg()).border_1().border_color(theme::border())
@@ -902,7 +902,7 @@ pub(crate) fn deploy_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App
                     .child(proxy_block)
                     .into_any_element()
             }))
-            .into_any_element()))
+            .into_any_element())
     } else {
         None
     };
