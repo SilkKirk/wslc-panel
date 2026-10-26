@@ -60,7 +60,7 @@ crates/
 │
 └── wslc-panel/       只有 UI。edition 2024，rust-version 1.85
     ├── main.rs       入口、启动日志、应用主题
-    ├── app/          Shell（GPUI 实体）：shell/ 下按域分子模块（+ `dialogs.rs` 对话框栈、`db/` 目录）
+    ├── app/          Shell（GPUI 实体）：shell/ 下按域分子模块（+ `dialogs.rs` 对话框栈与 `dialogs/specs.rs`、`db/` 目录）
     ├── views/        渲染：按页面/浮层分模块（common 放共用小组件）
     └── theme.rs      颜色
 ```
@@ -650,7 +650,7 @@ cx.spawn_in(window, async move |this, cx| {
   只读浮层（日志 / 详情 / exec / 备份列表 / 基础信息）保留 `true`，点外面关掉很自然。
 - ✅ **浮层一律走官方 `Dialog`（窗口级栈），层序 = 栈序**（v0.19 起，**19/19 迁完**）。
   打开处调 `window.open_dialog(cx, |dialog, _, _| …)`，构造集中住在
-  `app/shell/dialogs.rs`；内容由 `views::*_body` 产出、外面包 `common::ShellView`
+  `app/shell/dialogs.rs` 与 `dialogs/specs.rs`；内容由 `views::*_body` 产出、外面包 `common::ShellView`
   （它 `observe` 了 `Shell`，否则内容会僵在打开那一刻）。
 
   **这一条根治了下面那个老坑**：`Dialog` 由 `Root` 统一渲染在窗口级的
@@ -718,9 +718,9 @@ cx.spawn_in(window, async move |this, cx| {
        它们同样要清状态，只是清的那个字段不影响任务本身。
 
   **19 个浮层全部在栈里**，所以 `Shell::render` 末尾那条 `.child()` 链子上
-  已经**不挂任何浮层**。加新浮层只有三处要动，都在 `app/shell/dialogs.rs`：
-  `DialogKey` 加一个变体、`sync_dialog_stack` 加一个 `if`、`open_dialog_for`
-  加一个臂 —— **不要**再往 render 的链子上挂东西。
+  已经**不挂任何浮层**。加新浮层只有三处要动：`app/shell/dialogs.rs` 的
+  `DialogKey` 变体 + `sync_dialog_stack` 的 `if`，以及 `dialogs/specs.rs` 的
+  `open_dialog_for` 臂 —— **不要**再往 render 的链子上挂东西。
 
   > 留下的历史（**别再犯**）：v0.9.14 及以前通用二次确认挂在链子的**最前面**，
   > 于是从详情里点「压缩磁盘」时，确认框连着遮罩一起被详情盖住 ——
