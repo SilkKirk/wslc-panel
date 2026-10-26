@@ -4,7 +4,6 @@
 //! 层序 / 状态对齐 / 打开关闭的公共逻辑仍在 `dialogs.rs`。
 
 use super::*;
-use crate::views::modal_footer;
 
 impl Shell {
     /// 记账：窗口里那一层已经关了，把 `dialog_stack` 里的记录也去掉。
