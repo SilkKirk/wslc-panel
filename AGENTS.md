@@ -104,8 +104,8 @@ crates/
 
 ### 用脚本拆大文件时的五个坑（2026-10-26 实测，每个都多花了一轮 CI）
 
-拆 `state/tests.rs`、`app/shell/db.rs`、`model/deploy.rs` 都是脚本按 `fn` / 小节边界
-切分、再按能力分组。本机没有编译器，所以错一处就是一轮 CI（约 3 分钟）：
+拆 `state/tests.rs`、`app/shell/db.rs`、`model/{deploy,install,mysql}.rs` 都是脚本按
+`fn` / 小节边界切分、再按能力分组。本机没有编译器，所以错一处就是一轮 CI（约 3 分钟）：
 
 1. **`mod` 和 `pub use` 要成对检查** —— 漏一个 `mod types;` 的表现是
    `unresolved import types`，看上去像文件写坏了，其实是声明漏了。
@@ -120,6 +120,15 @@ crates/
    抓成 `unused import`（实测一次 8 条）。
 5. **拆出来的文件末尾不能留空行**，分节横幅被搬走后也别留双空行 ——
    rustfmt 两条都会报。
+6. **私有 helper 被搬走后"兄弟模块还在用"** —— 原来同模块白拿，拆开就没了。
+   查法：把 `fn ` 开头的**非 `pub`** 逐个 grep 调用点；要跨模块用的提成
+   `pub(crate)` 并在 `mod.rs` 再导出（实测踩过 `is_name_char` / `validate`）。
+7. **"只有测试按名字用"的 helper** 要三件套：`#[allow(dead_code)]`（库构建里没人调）
+   + `pub(crate) fn` + `#[cfg(test)] pub(crate) use`（不 `cfg` 的话库构建报
+   unused import）。实测：`civil_from_days`。
+8. **rustfmt 会把 `pub(crate) use` 混排进 `pub use` 列表**，别手写"先列 pub use、
+   最后补 priv"的顺序：按路径排序，带属性的项在前
+   （`#[cfg(test)] pub(crate) use backup::civil_from_days;` 在 `pub use backup::*;` **之前**）。
 
 > 判据：`core` job 的**测试条数不变**（纯搬迁不该动断言），`lint` 绿了才算收工。
 
