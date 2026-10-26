@@ -809,7 +809,7 @@ impl Shell {
         // 窗口级栈的原因：层序 = 栈序，不会像以前那样被下面的浮层盖住）。
         // 数据库动作弹窗（新建库 / 建用户 / 改密 / 授权 / 导入）。
         // 门槛照旧：`db_form` 建好（页面进得来）且 `db_dialog` 有值。
-        if self.db_form.is_some() && self.state.db_dialog.is_some() {
+        if self.db_form.is_some() && self.db_dialog.is_some() {
             desired.push(DialogKey::DbAction);
         }        if self.state.confirm.is_some() {
             desired.push(DialogKey::Confirm);
@@ -1474,7 +1474,7 @@ impl Shell {
                 });
             }
         DialogKey::DbAction => {
-            let Some(kind) = self.state.db_dialog.as_ref().map(|d| d.kind.clone()) else {
+            let Some(kind) = self.db_dialog.as_ref().map(|d| d.kind.clone()) else {
                 return;
             };
             let title = kind.title().to_owned();
