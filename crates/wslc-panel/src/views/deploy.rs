@@ -5,9 +5,9 @@
 // 但 `modal_card` / `modal_scrim` / `modal_title` / `modal_footer` **仍要留着**：
 // 「添加部署」弹窗（还没迁）还在用它们。
 use super::common::{
-    NoContainer, cell_link, cell_muted_full, cell_text, disclosure, empty_state,
-    form_field, immediate_button, kv_block, log_text, modal_footer,
-    modal_title, overlay_button, page_empty, table_card, table_row,
+    NoContainer, cell_link, cell_muted_full, cell_text, disclosure, empty_state, form_field,
+    immediate_button, kv_block, log_text, modal_footer, modal_title, overlay_button, page_empty,
+    table_card, table_row,
 };
 use super::prelude::*;
 
