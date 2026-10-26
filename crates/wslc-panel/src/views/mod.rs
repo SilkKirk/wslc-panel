@@ -52,8 +52,7 @@ pub(crate) use db_dialogs::{
     db_info_overlay,
 };
 pub(crate) use deploy::{
-    deploy_dialog_overlay, deploy_logs_overlay, deploy_remove_confirm_overlay,
-    deploy_site_conf_overlay,
+    deploy_dialog_overlay, deploy_logs_body, deploy_remove_confirm_body, deploy_site_conf_body,
 };
 pub(crate) use details::{container_detail_body, distro_detail_body};
 pub(crate) use images::pull_dialog_overlay;

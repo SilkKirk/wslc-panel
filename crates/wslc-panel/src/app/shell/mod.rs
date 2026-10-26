@@ -64,6 +64,12 @@ pub(crate) enum DialogKey {
     ContainerDetail,
     /// 「发行版详情」对话框。
     DistroDetail,
+    /// 「应用日志」对话框（部署管理页）。
+    DeployLogs,
+    /// 「站点配置」对话框（部署管理页）。
+    DeploySiteConf,
+    /// 「删除部署」确认框。
+    DeployRemoveConfirm,
 }
 
 /// 应用外壳。

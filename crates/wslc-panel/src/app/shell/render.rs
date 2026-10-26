@@ -344,24 +344,8 @@ impl Render for Shell {
         // - 「添加部署 / 重新部署」要 `cx`（读那五格输入框的值）；
         // - 日志与删除确认都是**纯数据**（没有输入框），所以只要 `&Shell`。
         let deploy_dialog: AnyElement = views::deploy_dialog_overlay(self, &entity, cx);
-        let deploy_logs: AnyElement = match state.deploy.as_ref().and_then(|d| d.logs.as_ref()) {
-            Some(logs) => views::deploy_logs_overlay(logs, &entity),
-            None => div().into_any_element(),
-        };
-        // 「站点配置」也是**纯数据**（只读），和日志并列。
-        let deploy_site_conf: AnyElement =
-            match state.deploy.as_ref().and_then(|d| d.site_conf.as_ref()) {
-                Some(conf) => views::deploy_site_conf_overlay(conf, &entity),
-                None => div().into_any_element(),
-            };
-        let deploy_confirm: AnyElement = match state
-            .deploy
-            .as_ref()
-            .and_then(|d| d.confirm_remove.as_ref())
-        {
-            Some(app) => views::deploy_remove_confirm_overlay(app, state.deploy.as_ref(), &entity),
-            None => div().into_any_element(),
-        };
+        // NOTE: 部署日志 / 站点配置 / 删除确认都走官方 Dialog 栈
+        // （DialogKey::DeployLogs / DeploySiteConf / DeployRemoveConfirm）。
 
         // 页面渲染要 `&Shell`（不只是 `&AppState`）——「添加实例」页有输入框，
         // 而输入框的 `InputState` 住在 `Shell` 里。
@@ -573,11 +557,8 @@ impl Render for Shell {
             // 不需要盖住数据库 / 备份那几层（那两组不会同时开着），
             // 所以插在数据库弹窗**之前**。
             .child(deploy_dialog)
-            .child(deploy_logs)
-            .child(deploy_site_conf)
             // 删除确认排在日志之后：它是最后点的那个动作，应该在最上面
             //（日志浮层与它可能同时开着 —— 用户看着日志觉得该删了）。
-            .child(deploy_confirm)
             // 数据库页的动作弹窗排在最后：它可能盖在任一页（含容器详情）上。
             .child(db_dialog)
             // 「基础信息」排在动作弹窗**之后**（同时开着时它在上面 —— 但两者

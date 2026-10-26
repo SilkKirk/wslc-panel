@@ -1,9 +1,13 @@
 //! ②c 应用部署管理页：表格、行内动作、三个浮层。
 
+// ⚠️ `modal_title_danger` / `modal_footer` 不再导入：三个已迁的浮层
+// （日志 / 站点配置 / 删除确认）把标题和底部交给 `Dialog` + 调用处的
+// `modal_footer`，本文件只产出内容。剩下的「添加部署」弹窗仍用
+// `modal_card` / `modal_scrim` / `modal_title`。
 use super::common::{
     ModalSize, NoContainer, cell_link, cell_muted_full, cell_text, disclosure, empty_state,
-    form_field, immediate_button, kv_block, log_text, modal_card, modal_footer, modal_scrim,
-    modal_title, modal_title_danger, overlay_button, page_empty, table_card, table_row,
+    form_field, immediate_button, kv_block, log_text, modal_card, modal_scrim, modal_title,
+    overlay_button, page_empty, table_card, table_row,
 };
 use super::prelude::*;
 
@@ -645,7 +649,7 @@ pub(crate) fn deploy_row_actions(
 /// 而它的形状是"跑一条 `wslc` 命令 → 返回字符串"（同步、单个子进程）。
 /// 删一条部署要做三件事 —— 停进程、删掉面板铺进去的那些文件、**改本地存档并重读列表** ——
 /// 最后那件它表达不了。所以删除确认是部署页自己的浮层
-///（[`deploy_remove_confirm_overlay`]），按钮直接把动作交给 `Shell`。
+///（[`deploy_remove_confirm_body`]），按钮直接把动作交给 `Shell`。
 pub(crate) fn deploy_danger_button(
     id: &str,
     label: &'static str,
@@ -970,8 +974,10 @@ pub fn deploy_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) ->
     modal_scrim("deploy-dialog-scrim", card).into_any_element()
 }
 
-/// 应用日志浮层（只读：一个输入框都没有，所以状态是纯数据）。
-pub fn deploy_logs_overlay(logs: &DeployLogs, entity: &Entity<Shell>) -> AnyElement {
+/// 应用日志对话框的**内容**（外壳/标题/底部由 Dialog 负责）。
+///
+/// 只读：一个输入框都没有，所以状态是纯数据。
+pub(crate) fn deploy_logs_body(logs: &DeployLogs) -> AnyElement {
     let body: AnyElement = if logs.busy {
         div()
             .text_sm()
@@ -982,46 +988,24 @@ pub fn deploy_logs_overlay(logs: &DeployLogs, entity: &Entity<Shell>) -> AnyElem
         log_text(logs.text.as_deref(), "deploy-logs-text")
     };
 
-    let card =
-        v_flex()
-            .w(px(680.0))
-            .max_h(px(520.0))
-            .gap_3()
-            .p_4()
-            .rounded_lg()
-            .bg(theme::bg_card())
-            .border_1()
-            .border_color(theme::border())
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(modal_title(format!("日志 · {}", logs.app)))
-                    .child(div().text_xs().text_color(theme::text_dim()).child(
-                        crate::util::strip_md(
-                            "是这个应用**自己**的输出（启动时把它重定向到了目标目录的 \
-                             app.log）—— 不是容器主进程的日志，那个在「日志」按钮里。",
-                        ),
-                    )),
-            )
-            .child(body)
-            .child(h_flex().w_full().justify_end().child({
-                let entity = entity.clone();
-                Button::new("deploy-logs-close")
-                    .label("关闭")
-                    .small()
-                    .on_click(move |_, _, cx| {
-                        entity.update(cx, |shell, cx| shell.close_deploy_logs(cx));
-                    })
-            }));
-
-    modal_scrim("deploy-logs-scrim", card).into_any_element()
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(div().text_xs().text_color(theme::text_dim()).child(
+            crate::util::strip_md(
+                "是这个应用**自己**的输出（启动时把它重定向到了目标目录的 \
+                 app.log）—— 不是容器主进程的日志，那个在「日志」按钮里。",
+            ),
+        ))
+        .child(body)
+        .into_any_element()
 }
 
 /// 「站点配置」只读浮层。
 ///
 /// 文本**不**过 `strip_md`、不逐行重排：conf 里的缩进 / `#` / 空行都是有意义的，
 /// 逐行处理只会让用户没法对照 `nginx -t` 的错误行。
-pub fn deploy_site_conf_overlay(conf: &DeploySiteConf, entity: &Entity<Shell>) -> AnyElement {
+pub(crate) fn deploy_site_conf_body(conf: &DeploySiteConf) -> AnyElement {
     let body: AnyElement = if conf.busy {
         div()
             .text_sm()
@@ -1055,60 +1039,23 @@ pub fn deploy_site_conf_overlay(conf: &DeploySiteConf, entity: &Entity<Shell>) -
         }
     };
 
-    let reapply: AnyElement = if conf.busy {
-        div().into_any_element()
-    } else {
-        let app = conf.app.clone();
-        let entity = entity.clone();
-        Button::new("deploy-site-conf-reapply")
-            .label("重写配置")
-            .small()
-            .on_click(move |_, _, cx| {
-                let app = app.clone();
-                entity.update(cx, |shell, cx| shell.reapply_deploy_site(app, cx));
-            })
-            .into_any_element()
-    };
-
-    let card =
-        modal_card(ModalSize::Medium)
-            .max_h(px(560.))
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(modal_title(format!("站点配置 · {}", conf.app)))
-                    .child(div().text_xs().text_color(theme::text_dim()).child(
-                        crate::util::strip_md(
-                            "容器里的 `/etc/nginx/conf.d/00-wslc-panel-<应用名>.conf`（只读）。\
-                         重新部署会整份覆盖；要改就改部署弹窗里的站点区，别直接改这个文件。",
-                        ),
-                    ))
-                    .child(div().text_xs().text_color(theme::text_dim()).child(
-                        crate::util::strip_md(
-                            "容器重建后这份 conf 会丢 —— 可以点「重写配置」补回来\
-                         （只写 conf，不重新铺文件 / 不重新接网络）。",
-                        ),
-                    )),
-            )
-            .child(body)
-            .child(
-                h_flex()
-                    .w_full()
-                    .justify_end()
-                    .gap_2()
-                    .child(reapply)
-                    .child({
-                        let entity = entity.clone();
-                        Button::new("deploy-site-conf-close")
-                            .label("关闭")
-                            .small()
-                            .on_click(move |_, _, cx| {
-                                entity.update(cx, |shell, cx| shell.close_deploy_site_conf(cx));
-                            })
-                    }),
-            );
-
-    modal_scrim("deploy-site-conf-scrim", card).into_any_element()
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(div().text_xs().text_color(theme::text_dim()).child(
+            crate::util::strip_md(
+                "容器里的 `/etc/nginx/conf.d/00-wslc-panel-<应用名>.conf`（只读）。\
+                 重新部署会整份覆盖；要改就改部署弹窗里的站点区，别直接改这个文件。",
+            ),
+        ))
+        .child(div().text_xs().text_color(theme::text_dim()).child(
+            crate::util::strip_md(
+                "容器重建后这份 conf 会丢 —— 可以点「重写配置」补回来\
+                 （只写 conf，不重新铺文件 / 不重新接网络）。",
+            ),
+        ))
+        .child(body)
+        .into_any_element()
 }
 
 /// 删除二次确认。
@@ -1116,10 +1063,9 @@ pub fn deploy_site_conf_overlay(conf: &DeploySiteConf, entity: &Entity<Shell>) -
 /// ⚠️ 必须把**完整路径**摆出来：删的虽然只有面板自己铺过的那几个名字，
 /// 但目标可能是**卷挂载点**（本机那个 nginx 容器的 Web 根就挂在 `/dev/sdc` 上）
 /// —— 那意味着删掉的是卷里的数据，而且不可撤销。
-pub fn deploy_remove_confirm_overlay(
+pub(crate) fn deploy_remove_confirm_body(
     app: &str,
     deploy: Option<&DeployState>,
-    entity: &Entity<Shell>,
 ) -> AnyElement {
     let container = deploy.map(|d| d.container.clone()).unwrap_or_default();
     let target = deploy
@@ -1133,15 +1079,9 @@ pub fn deploy_remove_confirm_overlay(
     // （`danger_edge` 边框 + 红色标题），而 `modal_card` 给的是常规边框。
     // 那个差异是**有意义的**（用户要一眼看出这是不可撤销的操作），不是散落。
     // 但宽度仍走 `ModalSize::Narrow` —— 尺寸该统一，配色该区分。
-    let card = v_flex()
-        .w(px(ModalSize::Narrow.width()))
+    v_flex()
+        .w_full()
         .gap_3()
-        .p_4()
-        .rounded_lg()
-        .bg(theme::bg_card())
-        .border_1()
-        .border_color(theme::danger_edge())
-        .child(modal_title_danger(format!("删除部署「{app}」？")))
         .child(
             div()
                 .text_sm()
@@ -1170,31 +1110,7 @@ pub fn deploy_remove_confirm_overlay(
                      删掉的就是**卷里**的那几个文件 —— 卷还在，文件不会回来。",
                 )),
         )
-        .child(modal_footer([
-            {
-                let entity = entity.clone();
-                Button::new("deploy-remove-cancel")
-                    .label("取消")
-                    .small()
-                    .on_click(move |_, _, cx| {
-                        entity.update(cx, |shell, cx| shell.cancel_remove_deployment(cx));
-                    })
-            },
-            {
-                let entity = entity.clone();
-                let app = app.to_owned();
-                Button::new("deploy-remove-confirm")
-                    .label("确认删除")
-                    .small()
-                    .danger()
-                    .on_click(move |_, _, cx| {
-                        let app = app.clone();
-                        entity.update(cx, |shell, cx| shell.confirm_remove_deployment(app, cx));
-                    })
-            },
-        ]));
-
-    modal_scrim("deploy-remove-scrim", card).into_any_element()
+        .into_any_element()
 }
 
 // ---------------------------------------------------------------------------
