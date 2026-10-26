@@ -82,6 +82,8 @@ pub(crate) enum DialogKey {
     PullImage,
     /// 「发行版配置」（/etc/wsl.conf）弹窗。
     WslConf,
+    /// 「添加部署 / 重新部署」弹窗。
+    DeployForm,
 }
 
 /// 应用外壳。

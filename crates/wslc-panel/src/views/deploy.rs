@@ -1,13 +1,12 @@
 //! ②c 应用部署管理页：表格、行内动作、三个浮层。
 
-// 三个浮层（日志 / 站点配置 / 删除确认）已迁到官方 `Dialog`，所以
-// `modal_title_danger` 不再需要（危险色标题交给 `Dialog` 的 title + 调用处）。
-// 但 `modal_card` / `modal_scrim` / `modal_title` / `modal_footer` **仍要留着**：
-// 「添加部署」弹窗（还没迁）还在用它们。
+// 部署管理页的**四个浮层全部**迁到官方 `Dialog` 了，所以 `modal_card` /
+// `modal_scrim` / `modal_title` / `modal_footer` / `ModalSize` 这里都不再需要
+// —— 外壳（遮罩、卡片、标题、底部按钮）由 `Dialog` 和调用处的 `modal_footer` 负责，
+// 本文件只产出"中间那块内容"。
 use super::common::{
-    ModalSize, NoContainer, cell_link, cell_muted_full, cell_text, disclosure, empty_state,
-    form_field, immediate_button, kv_block, log_text, modal_card, modal_footer, modal_scrim,
-    modal_title, overlay_button, page_empty, table_card, table_row,
+    NoContainer, cell_link, cell_muted_full, cell_text, disclosure, empty_state, form_field,
+    immediate_button, kv_block, log_text, overlay_button, page_empty, table_card, table_row,
 };
 use super::prelude::*;
 
@@ -682,7 +681,7 @@ pub(crate) fn deploy_danger_button(
 ///   `model::deploy::removals_script`）；
 /// - 「启动命令会原样交给 /bin/sh -c」：它**不做**引号转义（刻意的，
 ///   见 `model::deploy::start_script`），不说清楚用户会以为它是参数。
-pub fn deploy_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyElement {
+pub(crate) fn deploy_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App) -> AnyElement {
     let Some(form) = shell.deploy_form.as_ref() else {
         return div().into_any_element();
     };
@@ -695,24 +694,14 @@ pub fn deploy_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) ->
     // 站点块出现后弹窗会高出一截；带 id 的滚动容器（AGENTS §7.5）。
     // 宽度从 560 提到 `ModalSize::Wide`（800）：这个弹窗里有「目标目录」
     // 「启动命令」这类长路径，560 宽时输入框里的路径几乎全是省略号。
-    let card = modal_card(ModalSize::Wide)
-        .id("deploy-dialog-scroll")
-        .max_h(px(760.))
-        .overflow_y_scroll()
+    let card = v_flex()
+        .w_full()
+        .gap_3()
         .child(
-            v_flex()
-                .gap_1()
-                .child(modal_title(if re_deploy {
-                    format!("重新部署 {}", form.editing.clone().unwrap_or_default())
-                } else {
-                    format!("添加部署 · {}", runtime.label())
-                }))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_dim())
-                        .child(format!("目标容器 {}", deploy.container)),
-                ),
+            div()
+                .text_xs()
+                .text_color(theme::text_dim())
+                .child(format!("目标容器 {}", deploy.container)),
         );
 
     // 重新部署时**不给**应用名的输入框，只把名字写出来 ——
@@ -913,7 +902,7 @@ pub fn deploy_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) ->
                     .child(proxy_block)
                     .into_any_element()
             }))
-            .into_any_element())
+            .into_any_element()))
     } else {
         None
     };
@@ -949,29 +938,9 @@ pub fn deploy_dialog_overlay(shell: &Shell, entity: &Entity<Shell>, cx: &App) ->
                     .child("启动命令须监听此端口，面板不会自动修改命令。")
             }),
         )
-        .child(modal_footer([
-            {
-                let entity = entity.clone();
-                Button::new("deploy-cancel")
-                    .label("取消")
-                    .small()
-                    .on_click(move |_, _, cx| {
-                        entity.update(cx, |shell, cx| shell.close_deploy_dialog(cx));
-                    })
-            },
-            {
-                let entity = entity.clone();
-                Button::new("deploy-submit")
-                    .label(if re_deploy { "重新部署" } else { "部署" })
-                    .small()
-                    .primary()
-                    .on_click(move |_, window, cx| {
-                        entity.update(cx, |shell, cx| shell.submit_deploy(window, cx));
-                    })
-            },
-        ]));
+        ;
 
-    modal_scrim("deploy-dialog-scrim", card).into_any_element()
+    card.into_any_element()
 }
 
 /// 应用日志对话框的**内容**（外壳/标题/底部由 Dialog 负责）。

@@ -315,10 +315,7 @@ impl Render for Shell {
         // 导入进度（跑着才有内容）。
         // NOTE: 导入进度走官方 Dialog 栈（DialogKey::DbImportProgress）。
 
-        // 部署页（v0.9）的三个浮层：
-        // - 「添加部署 / 重新部署」要 `cx`（读那五格输入框的值）；
-        // - 日志与删除确认都是**纯数据**（没有输入框），所以只要 `&Shell`。
-        let deploy_dialog: AnyElement = views::deploy_dialog_overlay(self, &entity, cx);
+        // NOTE: 添加部署 / 重新部署弹窗走官方 Dialog 栈（DialogKey::DeployForm）。
         // NOTE: 部署日志 / 站点配置 / 删除确认都走官方 Dialog 栈
         // （DialogKey::DeployLogs / DeploySiteConf / DeployRemoveConfirm）。
 
@@ -528,7 +525,6 @@ impl Render for Shell {
             // 部署页的三个浮层：它们只在「部署管理」页上出现，
             // 不需要盖住数据库 / 备份那几层（那两组不会同时开着），
             // 所以插在数据库弹窗**之前**。
-            .child(deploy_dialog)
             // 删除确认排在日志之后：它是最后点的那个动作，应该在最上面
             //（日志浮层与它可能同时开着 —— 用户看着日志觉得该删了）。
             // 数据库页的动作弹窗排在最后：它可能盖在任一页（含容器详情）上。
