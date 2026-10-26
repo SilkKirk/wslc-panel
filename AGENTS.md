@@ -49,7 +49,7 @@ crates/
 │       └── picker.rs  文件/目录选择器（借独立进程弹 Windows 原生对话框）
 │
 ├── wslc-panel-core/  面板里**不依赖 GPUI** 的那一半。edition 2024
-│   ├── state/        AppState / Snapshot / 各域状态（按域分 10 个模块 + tests.rs）
+│   ├── state/        AppState / Snapshot / 各域状态（按域分 10 个模块 + `tests/` 目录）
 │   ├── prefs.rs      本程序自己的偏好（refresh_secs / theme）
 │   ├── columns.rs    表格列定义
 │   ├── presets.rs    预设值
@@ -57,7 +57,7 @@ crates/
 │
 └── wslc-panel/       只有 UI。edition 2024，rust-version 1.85
     ├── main.rs       入口、启动日志、应用主题
-    ├── app/          Shell（GPUI 实体）：shell/ 下按域分 9 个子模块
+    ├── app/          Shell（GPUI 实体）：shell/ 下按域分子模块（+ `dialogs.rs` 对话框栈、`db/` 目录）
     ├── views/        渲染：按页面/浮层分 18 个模块（common 放共用小组件）
     └── theme.rs      颜色
 ```
@@ -101,6 +101,27 @@ crates/
 **所以：往 `wslc-panel-core` 里加东西是默认选择。** 只有真的需要
 `Entity` / `Context` / `Window` / `Element` 的东西才留在 `wslc-panel`。
 判断标准很简单：**这个文件 `use gpui` 吗？** 不 use 就该搬过去。
+
+### 用脚本拆大文件时的五个坑（2026-10-26 实测，每个都多花了一轮 CI）
+
+拆 `state/tests.rs`、`app/shell/db.rs`、`model/deploy.rs` 都是脚本按 `fn` / 小节边界
+切分、再按能力分组。本机没有编译器，所以错一处就是一轮 CI（约 3 分钟）：
+
+1. **`mod` 和 `pub use` 要成对检查** —— 漏一个 `mod types;` 的表现是
+   `unresolved import types`，看上去像文件写坏了，其实是声明漏了。
+2. **子模块深了一层，`super::` 要多一层** —— `app/shell/db/conn.rs` 里
+   `Shell` 在 `super::super`，`prelude` 在 `super::super::super`。
+3. **`include_str!` 的相对路径跟着深一层** —— `state/tests` 引用
+   `wslc-core/tests/fixtures` 时是 `../../../../`（少一层就是"文件不存在"）。
+4. **原文件里的私有 `use` 会被子模块继承** —— 内联的 `mod tests { use super::*; }`
+   能看到父模块的 `use std::path::Path`；搬到独立文件后这层继承**没了**，要自己补。
+   反过来，脚本按"名字出现过"补 import 很容易加多：**PowerShell 的 `-match`
+   默认不区分大小写**，`Path` 会命中注释里的 "path"，多出来的会被 clippy
+   抓成 `unused import`（实测一次 8 条）。
+5. **拆出来的文件末尾不能留空行**，分节横幅被搬走后也别留双空行 ——
+   rustfmt 两条都会报。
+
+> 判据：`core` job 的**测试条数不变**（纯搬迁不该动断言），`lint` 绿了才算收工。
 
 ---
 
