@@ -114,34 +114,17 @@ pub(crate) fn container_row_actions(
     let mut actions: Vec<AnyElement> = Vec::new();
 
     if running {
-        // 「数据库」：只有**认得出是 MySQL 家族**的容器才有。
-        //
-        // 判定是**纯字符串**（镜像名 / 命令 / 3306 端口，见
-        // `mysql_container_kind`）—— 渲染每帧都跑，绝不能在这里起进程。
-        // 认不出来就什么都不画（和 `image_preset` 同一条原则：
-        // 宁可少一个按钮，也不要给一个点进去全是报错的按钮）。
-        //
-        // 同样的理由省略了「停止的容器」那一支：页面里每一格都要
-        // `wslc exec`，容器没跑就只有 `WSLC_E_CONTAINER_NOT_RUNNING`。
-        // 先在上面那行点「启动」，按钮自然会出来。
-        // v0.14：除了 MySQL 家族，**PostgreSQL** 容器也给这个按钮。
-        //
-        // 判定仍然是**纯字符串**（镜像名 / 命令）—— 渲染每帧都跑，
-        // 绝不能在这里起进程。认不出来就什么都不画（和 `image_preset`
-        // 同一条原则：宁可少一个按钮，也不要给一个点进去全是报错的按钮）。
-        let has_db_page = mysql_model::mysql_container_kind(item).is_some()
-            || wslc_core::db::guess_kind(&wslc_core::db::ConnHint {
-                image: item.image.as_str(),
-                command: item.command.as_str(),
-                container_ports: &[],
-            })
-            .is_some();
-        if has_db_page {
+        // 「数据库 / 部署管理」的判定收在 `wslc_panel_core::container_caps`：
+        // 纯字符串 + **真实端口**，渲染每帧都跑也不会起进程，而且 `core` job
+        // 有断言。停止的容器不画 —— 那两个入口进去都要 `exec`，先点「启动」。
+        let caps = wslc_panel_core::container_caps::capabilities(item);
+
+        if caps.database {
             let target = name.to_owned();
             let image = item.image.clone();
             actions.push(overlay_button(
                 &format!("db-{name}"),
-                // 依据（镜像名 / 命令 / 3306 端口）不进按钮文案 ——
+                // 依据（镜像名 / 命令 / 端口）不进按钮文案 ——
                 // 数据库页上写着，这里是清单，只放得下动作。
                 "数据库",
                 move |shell, window, cx| {
@@ -151,16 +134,10 @@ pub(crate) fn container_row_actions(
             ));
         }
 
-        // 「部署管理」（v0.9）：认得出是 nginx / Java / Node.js / Go 的容器才有。
-        //
-        // 判定同样是**纯字符串**（镜像名 / 启动命令，见 `container_app_kind`）
-        // —— 渲染每帧都跑，绝不能在这里起进程。认不出来就什么都不画。
-        //
-        // ⚠️ 它和「数据库」会**同时**出现在一个既像 MySQL 又像这几类的容器上
-        // （比如一个镜像名认不出来、命令里同时有 `mysqld` 和 `node` 的怪东西）。
-        // 那两个按钮各自进去都会给出权威判定并说明"看起来不是" —— 这个代价
-        //（多一个按钮）比"漏掉一个"小，和 v0.7 接受 3306 误判是同一条取舍。
-        if let Some(candidate) = deploy_model::container_app_kind(item) {
+        // ⚠️ 它和「数据库」可能**同时**出现（比如镜像名认不出来、命令里
+        // 同时有 `mysqld` 和 `node` 的怪东西）。两个按钮各自进去都会给出
+        // 权威判定并说明"看起来不是" —— 这个代价比"漏掉一个"小。
+        if let Some(candidate) = caps.deploy {
             let target = name.to_owned();
             let image = item.image.clone();
             let runtime = candidate.runtime;

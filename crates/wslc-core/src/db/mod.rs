@@ -27,11 +27,15 @@ pub mod conn;
 pub mod detect;
 pub mod dialect;
 pub mod driver;
+// 连接串脱敏（纯字符串）：`wslc-db` 的 `ConnSpec` 与面板的 `DsnText`
+// 共用这一份判据，避免两边对 `?query` / 未编码 `@` 的处理漂移。
+pub mod dsn;
 pub mod mysql_driver;
 pub mod postgres_driver;
 
 pub use conn::{DbConn, DbHost, DbKind};
 pub use detect::{Confidence, ConnHint, guess_kind};
+pub use dsn::redact_dsn;
 pub use dialect::{Capabilities, DialectData, LimitSyntax, QuoteStyle, dialect_for};
 pub use driver::{Credentials, ServerInfo, SqlDriver};
 pub use mysql_driver::MySqlDriver;

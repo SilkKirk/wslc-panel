@@ -60,16 +60,6 @@ pub struct Snapshot {
     pub elapsed_ms: u128,
 }
 
-/// 当前 Unix 时间戳（秒）。拿不到系统时间时给 0。
-///
-/// 只用来给临时文件名加一段"不会重复"的标记，精度不重要。
-pub(crate) fn unix_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 /// `.wslconfig` 的读取结果。
 ///
 /// **只读** —— 这一版不做编辑（写文件）。为什么不提供"一键校验"见

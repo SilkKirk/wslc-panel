@@ -25,6 +25,9 @@
 //! 于是"这个类型属于哪个 crate"在调用点就看得见。
 
 pub mod columns;
+// 容器列表行上「数据库 / 部署管理」两个专属入口的纯判定。
+// 放在这里而不是 `views/containers.rs`：它要拿真实端口，而且 `core` job 要能测。
+pub mod container_caps;
 // 数据库账号的本地存档（v0.8：建库同时建用户，列表要展示用户名 / 密码 ——
 // MySQL 的密码是单向哈希，面板必须自己记）。
 pub mod dbcreds;

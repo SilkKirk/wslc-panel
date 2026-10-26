@@ -137,7 +137,7 @@ impl Page {
 
     /// 这一页是不是需要 `&mut Window` 才能进去。
     ///
-    /// 有三页在这个列里，原因都是同一个：`InputState::new` 要 `&mut Window`，
+    /// 有四页在这个列里，原因都是同一个：`InputState::new` 要 `&mut Window`，
     /// 而这些输入框描述的是**页面状态**（不是一次性动作），只能在点击导航
     /// 那一刻建一次；在 render 里建会每帧重建，字都打不进去。
     ///
@@ -164,15 +164,17 @@ impl Page {
     /// 子页面返回它所属的父级：
     ///
     /// - 「添加实例」是「实例列表」的一个动作 → 高亮实例列表；
-    /// - 「数据库管理 / 部署管理」服务某一个容器 → 高亮容器。
+    /// - 「数据库管理 / 部署管理 / SQL 控制台」服务某一个容器 → 高亮容器。
     ///
-    /// 不加这个的话，进这三个页面时侧边栏**一个都不选中**，用户会失去"我在哪"。
+    /// 不加这个的话，进这些子页面时侧边栏**一个都不选中**，用户会失去"我在哪"。
+    ///
+    /// ⚠️ 返回值必须是**侧边栏里真的有一项**的页面。`Page::Database` 虽然
+    /// 是 SQL 控制台的直接入口，但它自己不在 [`Page::ALL`] 里 —— 拿它当
+    /// 返回值等于"高亮一个不存在的东西"，SQL 页就会一个都不亮。
     pub fn nav_parent(self) -> Option<Page> {
         match self {
             Page::AddInstance => Some(Page::Instances),
-            Page::Database | Page::Deploy => Some(Page::Containers),
-            // SQL 控制台是从「数据库管理」页的列表行进去的，所以高亮那一页。
-            Page::Sql => Some(Page::Database),
+            Page::Database | Page::Deploy | Page::Sql => Some(Page::Containers),
             _ => None,
         }
     }

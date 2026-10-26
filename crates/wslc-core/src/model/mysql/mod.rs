@@ -55,8 +55,6 @@ mod table;
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-pub(crate) use backup::civil_from_days;
 pub use backup::*;
 pub use client::*;
 pub use creds::*;

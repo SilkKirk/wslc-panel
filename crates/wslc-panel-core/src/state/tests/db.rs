@@ -115,30 +115,30 @@ fn dsn_debug_never_leaks_the_password() {
 fn dsn_redaction_handles_the_shapes_people_actually_paste() {
     // 口令里带未编码的 `@`：按**最后一个** `@` 切，否则主机名会被当成口令
     assert_eq!(
-        redact_dsn_password("mysql://root:p@ss@10.0.0.5:3306/db"),
+        wslc_core::db::redact_dsn("mysql://root:p@ss@10.0.0.5:3306/db"),
         "mysql://root:***@10.0.0.5:3306/db"
     );
     // 没有口令（`user@host`）：原样
     assert_eq!(
-        redact_dsn_password("postgres://alice@h:5432/db"),
+        wslc_core::db::redact_dsn("postgres://alice@h:5432/db"),
         "postgres://alice@h:5432/db"
     );
     // 没有 userinfo：原样
     assert_eq!(
-        redact_dsn_password("postgres://h:5432/db"),
+        wslc_core::db::redact_dsn("postgres://h:5432/db"),
         "postgres://h:5432/db"
     );
     // 不像连接串的东西：原样返回，别瞎改
-    assert_eq!(redact_dsn_password("host=127.0.0.1"), "host=127.0.0.1");
-    assert_eq!(redact_dsn_password(""), "");
+    assert_eq!(wslc_core::db::redact_dsn("host=127.0.0.1"), "host=127.0.0.1");
+    assert_eq!(wslc_core::db::redact_dsn(""), "");
     // 没有库名、也没有端口
     assert_eq!(
-        redact_dsn_password("mysql://root:pw@h"),
+        wslc_core::db::redact_dsn("mysql://root:pw@h"),
         "mysql://root:***@h"
     );
     // 查询串（我们目前拒绝带它的连接串，但脱敏不该因此 panic）
     assert_eq!(
-        redact_dsn_password("postgres://u:p@h:5432/db?sslmode=require"),
+        wslc_core::db::redact_dsn("postgres://u:p@h:5432/db?sslmode=require"),
         "postgres://u:***@h:5432/db?sslmode=require"
     );
 }
@@ -486,6 +486,49 @@ fn scan_backup_dir_sorts_newest_first_and_skips_junk() {
     assert_eq!(
         entries[0].container_path,
         "/tmp/wslc-backups/a-20261016-035901.sql"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn credentials_startup_does_not_fall_back_to_cwd() {
+    // `LOCALAPPDATA` 缺失时不能去读 `./db-credentials.json`：那会让
+    // 面板把"从哪个目录启动时恰好放着的一份文件"当成自己的凭据。
+    let (store, error) = db_credentials_at(None);
+    assert!(store.is_empty());
+    assert!(
+        error.expect("必须给一句说明").contains("LOCALAPPDATA"),
+        "错误里要指出真正缺的环境变量"
+    );
+}
+
+#[test]
+fn credentials_startup_reads_from_the_given_data_dir() {
+    let dir = std::env::temp_dir().join(format!("wslc-dbcreds-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = crate::dbcreds::store_path(&dir);
+
+    let mut store = crate::dbcreds::DbCredentialStore::default();
+    store.put(
+        "mysql",
+        "shop",
+        crate::dbcreds::DbCredential {
+            user: "shop_user".to_owned(),
+            password: "s3cret".to_owned(),
+            host: "%".to_owned(),
+        },
+    );
+    store.save(&path).expect("应能写测试凭据");
+
+    let (loaded, error) = db_credentials_at(Some(dir.clone()));
+    assert!(error.is_none(), "{error:?}");
+    assert_eq!(
+        loaded
+            .get("mysql", "shop")
+            .expect("应能读回刚写的账号")
+            .user,
+        "shop_user"
     );
 
     std::fs::remove_dir_all(&dir).ok();

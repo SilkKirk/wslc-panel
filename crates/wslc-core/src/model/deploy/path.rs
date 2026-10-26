@@ -2,29 +2,9 @@
 
 use std::path::Path;
 
-/// 把一个值变成**安全的单引号 shell 字面量**。
-///
-/// 目标目录、应用名、pidfile 路径都是**用户输入**，而它们要拼进 `sh -c` 的
-/// 脚本文本里。这不是"参数被当成选项"那个问题，是**真的 shell 注入**：
-/// 一个叫 `a; rm -rf /` 的目标目录会真的去执行那半截。
-///
-/// 做法是 POSIX 的经典写法：整体用单引号包起来，内部的 `'` 写成 `'\''`
-/// （结束当前单引号串 → 一个转义的 `'` → 重新开始单引号串）。
-/// 单引号内部**除 `'` 外没有任何字符有特殊含义**，所以 `$`、反引号、`\`、
-/// 换行都不需要额外处理。
-pub fn shell_quote(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('\'');
-    for ch in value.chars() {
-        if ch == '\'' {
-            out.push_str("'\\''");
-        } else {
-            out.push(ch);
-        }
-    }
-    out.push('\'');
-    out
-}
+// 实现只有一份：`crate::util::shell_quote`。这里再导出，`deploy::shell_quote`
+// 的调用点（`cmd::deploy` / `model::deploy::script`）和测试都不用改。
+pub use crate::util::shell_quote;
 
 /// 应用名白名单：`[A-Za-z0-9_-]`，长度 1..=64。
 ///

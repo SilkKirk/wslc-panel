@@ -8,9 +8,31 @@ use crate::util::truncate_chars;
 /// 拆成自由函数是因为它**碰文件系统**：`AppState::new` 的构造表达式里
 /// 塞 IO 会让那个函数没法一眼看完，而且测试也注入不进去。
 pub(crate) fn db_credentials_at_startup() -> (crate::dbcreds::DbCredentialStore, Option<String>) {
-    crate::dbcreds::DbCredentialStore::load(&crate::dbcreds::store_path(
-        crate::prefs::app_dir().unwrap_or_default(),
-    ))
+    db_credentials_at(crate::prefs::app_dir())
+}
+
+/// [`db_credentials_at_startup`] 的**可测**形态：数据目录由调用方给。
+///
+/// ⚠️ 不能像早先那样 `app_dir().unwrap_or_default()`：`LOCALAPPDATA` 缺失时
+/// 那会得到一个**相对当前工作目录**的 `db-credentials.json`，读的时候读
+/// CWD、写的时候 `save_db_credentials` 又明确拒绝 —— 两边行为不一致，而且
+/// 可能把别人放在 CWD 的同名文件当成自己的凭据读出来。
+///
+/// 部署存档早就按这个形状处理了（见 `deploy_store_at_startup`），这里对齐。
+pub(crate) fn db_credentials_at(
+    dir: Option<PathBuf>,
+) -> (crate::dbcreds::DbCredentialStore, Option<String>) {
+    let Some(dir) = dir else {
+        return (
+            crate::dbcreds::DbCredentialStore::default(),
+            Some(
+                "LOCALAPPDATA 未设置 —— 数据库账号存不了盘，\
+                 这一次录入的账号重开面板就没了"
+                    .to_owned(),
+            ),
+        );
+    };
+    crate::dbcreds::DbCredentialStore::load(&crate::dbcreds::store_path(dir))
 }
 
 /// 扫一个备份目录，按**时间倒序**返回（新的在上）。
@@ -180,48 +202,8 @@ impl std::fmt::Debug for DsnText {
     /// 端口 / 库名 / 用户名**正是排障要看的东西（"我连的是哪台机器"），
     /// 遮掉它们等于让这条 Debug 失去价值。只遮口令那一段。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "DsnText({})", redact_dsn_password(&self.0))
+        write!(f, "DsnText({})", wslc_core::db::redact_dsn(&self.0))
     }
-}
-
-/// 把 `scheme://user:password@host…` 里的 `password` 换成 `***`。
-///
-/// 判据刻意和 `wslc-db::redact_dsn` **一致**（那边是 `wslc-db` 里唯一
-/// 有测试的那份实现，但 `wslc-panel-core` 不依赖那个 crate）：
-///
-/// - 先找 `://`，没有就原样返回（不像连接串的东西，没什么可遮的）；
-/// - 再在**权限段**（`://` 到第一个 `/` 或 `?`）里找**最后一个** `@`；
-/// - 那之后如果还有 `:`，`:` 到 `@` 之间就是口令。
-///
-/// ⚠️ 用**最后一个** `@`：口令里出现未编码的 `@` 很常见
-/// （`mysql://root:p@ss@h/db`），按第一个切会把主机名当成口令的一部分。
-pub(crate) fn redact_dsn_password(text: &str) -> String {
-    let Some(scheme_end) = text.find("://") else {
-        return text.to_owned();
-    };
-    let auth_start = scheme_end + 3;
-    // 权限段结束：第一个 `/` 或 `?`（都没有就到末尾）
-    let auth_end = text[auth_start..]
-        .find(['/', '?'])
-        .map(|i| auth_start + i)
-        .unwrap_or(text.len());
-    let auth = &text[auth_start..auth_end];
-    let Some(at) = auth.rfind('@') else {
-        // 没有 `@` = 没有 userinfo，也就没有口令
-        return text.to_owned();
-    };
-    let userinfo = &auth[..at];
-    let Some(colon) = userinfo.find(':') else {
-        // `user@host` 形式：没有口令
-        return text.to_owned();
-    };
-    // `user:` + `***` + `@host…`
-    format!(
-        "{}{}:***{}",
-        &text[..auth_start],
-        &userinfo[..colon],
-        &text[auth_start + at..]
-    )
 }
 
 /// 「数据库管理」页的状态。

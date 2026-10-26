@@ -25,10 +25,10 @@ pub fn human_secs(secs: u64) -> String {
 /// 放在这里而不是各调用点自己写：三个地方各写一遍 `SystemTime::now()` +
 /// `duration_since` + `unwrap_or_default` 只会多出三种细微不同的写法。
 pub fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
-        .unwrap_or(0)
+    // 实现只有一份：`wslc_core::util::now_secs`。这里保留转发是因为
+    // 面板侧有 4 处调用点写的是 `wslc_panel_core::util::now_secs()`，
+    // 而 core 那份同时被 MySQL 备份文件名复用。
+    wslc_core::util::now_secs()
 }
 
 /// 页头那句「最后刷新：N 秒前」。

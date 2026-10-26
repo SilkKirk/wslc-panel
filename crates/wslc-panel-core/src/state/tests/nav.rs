@@ -71,11 +71,18 @@ fn sub_pages_highlight_their_parent_in_the_sidebar() {
     assert_eq!(Page::AddInstance.nav_parent(), Some(Page::Instances));
     assert_eq!(Page::Database.nav_parent(), Some(Page::Containers));
     assert_eq!(Page::Deploy.nav_parent(), Some(Page::Containers));
+    assert_eq!(
+        Page::Sql.nav_parent(),
+        Some(Page::Containers),
+        "SQL 控制台的直接入口是「数据库管理」，但那一页不在 Page::ALL 里 —— \
+         它必须直接指向侧边栏里真的有的「容器」"
+    );
     assert_eq!(Page::Dashboard.nav_parent(), None);
 
     assert!(Page::AddInstance.highlights_nav(Page::Instances));
     assert!(Page::Database.highlights_nav(Page::Containers));
     assert!(Page::Deploy.highlights_nav(Page::Containers));
+    assert!(Page::Sql.highlights_nav(Page::Containers));
     // 子页面不会把别的导航项点亮
     assert!(!Page::Database.highlights_nav(Page::Images));
     // 普通页面只高亮自己，不会把别的页也点亮

@@ -770,14 +770,6 @@ fn restore_path_lands_in_its_own_directory() {
     );
 }
 
-#[test]
-fn civil_dates_are_correct_around_leap_years() {
-    // 已知锚点：1970-01-01 = day 0；2000-02-29 与 2024-02-29 都是闰日
-    assert_eq!(civil_from_days(0), (1970, 1, 1));
-    assert_eq!(civil_from_days(11_016), (2000, 2, 29));
-    assert_eq!(civil_from_days(19_782), (2024, 2, 29));
-}
-
 // -- 错误分类 -----------------------------------------------------------
 
 #[test]

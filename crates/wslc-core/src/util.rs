@@ -8,6 +8,46 @@
 //! 要截断），而面板侧的 `wslc-panel-core` 又**独立写了一份逐字相同**的实现
 //! （`util::truncate_chars`），两条注释还各自写了"不能按字节切"。
 //! 依赖方向是 `panel-core → core`，所以唯一能两边都用的位置在 core 这一侧。
+//!
+//! 后来 [`now_secs`] / [`shell_quote`] 也是同一个问题：三处 `now_secs`、
+//! 两处 shell 单引号转义，各写各的。安全边界和"当前时间"这种基础件
+//! 只该有一份实现。
+
+/// 当前的 Unix 时间（秒）。拿不到系统时间时返回 0。
+///
+/// 三处调用（更新检查的节流、卡片上的"上次检查"、MySQL 备份文件名）
+/// 对 0 都安全：节流最坏多查一次，卡片写"0 秒前"，备份文件名退化成
+/// 1970 年 —— 不会 panic，也不会阻塞。
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+}
+
+/// 把一个值变成**安全的单引号 shell 字面量**。
+///
+/// 目标目录、应用名、pidfile 路径、`wsl.conf` 里的用户名都可能来自用户输入，
+/// 而它们要拼进 `sh -c` 的脚本文本里。这不是"参数被当成选项"那个问题，
+/// 是**真的 shell 注入**：一个叫 `a; rm -rf /` 的目标目录会真的去执行那半截。
+///
+/// 做法是 POSIX 的经典写法：整体用单引号包起来，内部的 `'` 写成 `'\''`
+/// （结束当前单引号串 → 一个转义的 `'` → 重新开始单引号串）。
+/// 单引号内部**除 `'` 外没有任何字符有特殊含义**，所以 `$`、反引号、`\`、
+/// 换行都不需要额外处理。
+pub fn shell_quote(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('\'');
+    for ch in value.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
 
 /// 按**字符**（不是字节）截断，超长时在末尾加一个省略号。
 ///
@@ -31,6 +71,42 @@ pub fn truncate_chars(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_quote_handles_the_only_character_that_matters() {
+        assert_eq!(shell_quote("abc"), "'abc'");
+        assert_eq!(shell_quote(""), "''");
+        assert_eq!(shell_quote("a b"), "'a b'");
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+        assert_eq!(shell_quote("'"), r"''\'''");
+    }
+
+    #[test]
+    fn shell_quote_neutralizes_the_usual_injection_payloads() {
+        // 不要求这些字符串"看起来对"，只要求它们不会从单引号串里逃出来：
+        // 每个 `'` 都必须被拼成 `'\''`。
+        for raw in ["; rm -rf /", "$(whoami)", "`id`", "a\nb"] {
+            let quoted = shell_quote(raw);
+            assert!(quoted.starts_with('\''), "{quoted}");
+            assert!(quoted.ends_with('\''), "{quoted}");
+            assert_eq!(
+                quoted.matches(r"'\''").count(),
+                raw.matches('\'').count(),
+                "转义数量不对：{raw:?} → {quoted}"
+            );
+        }
+    }
+
+    #[test]
+    fn now_secs_is_not_zero_on_a_sane_clock() {
+        // 不比较具体时间（会漂），只确认它没落在"拿不到时间"的兜底上。
+        if std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .is_ok()
+        {
+            assert!(now_secs() > 0);
+        }
+    }
 
     #[test]
     fn truncate_is_char_safe() {

@@ -394,7 +394,7 @@ impl Shell {
                 Some(r) if !r.columns.is_empty() => {
                     // 建议文件名：`库-时间戳.csv`。表名我们不知道（结果可能是
                     // JOIN 出来的），所以用当前库名兜底。
-                    let stamp = wslc_core::model::mysql::now_secs();
+                    let stamp = wslc_core::util::now_secs();
                     let base = db.sql_database.as_deref().unwrap_or("result").to_owned();
                     // ⚠️ 行数**现在**记下来，不要去数 CSV 字符串里有多少个换行 ——
                     // 单元格里的换行是被 `"` 包着的（RFC 4180），

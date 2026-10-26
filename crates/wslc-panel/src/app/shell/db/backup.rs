@@ -69,7 +69,7 @@ impl Shell {
             &backup_dir,
             &container,
             &database,
-            wslc_core::model::mysql::now_secs(),
+            wslc_core::util::now_secs(),
         ) {
             Ok(paths) => paths,
             Err(e) => {

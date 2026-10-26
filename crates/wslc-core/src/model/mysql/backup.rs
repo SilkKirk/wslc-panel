@@ -1,5 +1,7 @@
 //! 备份与恢复：路径约定、`mysqldump` / `mysql <` 的参数、文件名与时间戳。
 
+use chrono::{DateTime, Utc};
+
 use crate::error::{Error, Result};
 
 use super::*;
@@ -191,7 +193,8 @@ pub fn sh_quote(value: &str) -> Result<String> {
             "路径 / 名字里不能有单引号或换行：{value}"
         )));
     }
-    Ok(format!("'{value}'"))
+    // 转义本身只留一份实现；上面那条"拒绝不可读形状"的**策略**留在这里。
+    Ok(crate::util::shell_quote(value))
 }
 
 /// 把一份 `.sql` 文件喂给 `mysql` 的容器内脚本（**纯函数**）。
@@ -303,39 +306,16 @@ pub const WINDOWS_BACKUP_SUBDIR: &str = "backups";
 /// 备份文件名（`<库名>-<YYYYMMDD>-<HHMMSS>.sql`，定宽、可排序）。
 ///
 /// 同一秒同库会撞名 —— 调用方撞了就报"刚备份过一次"，比自动加序号诚实。
+///
+/// 时间按 **UTC** 算（和早先的手写实现一致）：备份文件名只用于排序 / 识别，
+/// 不承担"给用户看本地时间"的职责。
 pub fn backup_file_name(database: &str, now_secs: u64) -> String {
-    let (y, m, d) = civil_from_days((now_secs / 86_400) as i64);
-    let secs = now_secs % 86_400;
-    format!(
-        "{database}-{:04}{:02}{:02}-{:02}{:02}{:02}.sql",
-        y,
-        m,
-        d,
-        secs / 3600,
-        (secs % 3600) / 60,
-        secs % 60
-    )
-}
-
-/// 从 Windows 侧时间戳算 UTC 秒（给 [`backup_file_name`] 用）。
-pub fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-/// 天数 → (年, 月, 日)（Howard Hinnant 的算法，公共领域）。
-#[allow(dead_code)] // 只有测试直接断言它（库构建里没人调）
-pub(crate) fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
+    let stamp = i64::try_from(now_secs)
+        .ok()
+        .and_then(|secs| DateTime::<Utc>::from_timestamp(secs, 0))
+        .map(|at| at.format("%Y%m%d-%H%M%S").to_string())
+        // 只有 now_secs 超出 chrono 可表示范围才会走到这里；保留一个
+        // 不会 panic 的兜底，正常路径永远是定宽格式。
+        .unwrap_or_else(|| now_secs.to_string());
+    format!("{database}-{stamp}.sql")
 }

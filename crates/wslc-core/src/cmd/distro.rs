@@ -25,6 +25,10 @@ use crate::model::distro::{Distro, WslStatus, parse_distro_list};
 // 本模块的 `--move` / `--export` 直接复用它。
 use crate::model::install::is_absolute_windows_path;
 
+// 实现只有一份：`crate::util::shell_quote`。这里再导出，`cmd::distro` 的
+// 调用点 / 测试以及 `#[cfg(test)]` 里的 `use super::*` 都照旧能拿到。
+pub use crate::util::shell_quote;
+
 /// 注册表根键：发行版元数据都在这里。
 pub const LXSS_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss";
 
@@ -559,18 +563,6 @@ pub fn set_default_user(wsl: &Wsl, name: &str, user: &str) -> Result<()> {
 
 /// 发行版内 `wsl.conf` 的路径。
 pub const WSL_CONF_PATH: &str = "/etc/wsl.conf";
-
-/// 把一段文本包成 POSIX shell 的**单引号字面量**。
-///
-/// 单引号里除了 `'` 本身什么都不会被解释；`'` 的写法是 `'\''`
-/// （关引号 → 反斜杠转义的单引号 → 再开引号）。
-///
-/// ⚠️ **凡是用户输入要进 shell 命令的地方都必须走这里。**
-/// 表单里的「默认用户」是自由文本，不转义的话用户写一个
-/// `; rm -rf /` 就直接执行了。
-pub fn shell_quote(text: &str) -> String {
-    format!("'{}'", text.replace('\'', "'\\''"))
-}
 
 /// 读发行版内的 `/etc/wsl.conf`。
 ///

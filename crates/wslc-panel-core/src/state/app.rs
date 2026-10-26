@@ -5,7 +5,7 @@ use super::{
     BackupEntry, ConfirmAction, DbState, DeployState, DetailInspect, DistroAction, ExecState,
     ExportProgress, InstallProgress, LogsState, MirrorState, OnlineDistroState, Page,
     PendingAction, PullProgress, RegistryState, SettingsTab, Snapshot, Toast, UiSection,
-    WslConfState, db_credentials_at_startup, deploy_store_at_startup, scan_backup_dir, unix_secs,
+    WslConfState, db_credentials_at_startup, deploy_store_at_startup, scan_backup_dir,
 };
 
 /// 只为了拿 `session.storagePath` 这一个值而读一次 `settings.yaml`。
@@ -476,7 +476,7 @@ impl AppState {
             default_dir: self.prefs.install_dir.clone(),
             temp_dir: mirrors::temp_dir().to_string_lossy().into_owned(),
             // 临时文件名要唯一：同一个发行版连装两次不能撞在同一个文件上。
-            stamp: format!("{}-{}", std::process::id(), unix_secs()),
+            stamp: format!("{}-{}", std::process::id(), crate::util::now_secs()),
             wslconfig_sparse: sparse,
         }
     }

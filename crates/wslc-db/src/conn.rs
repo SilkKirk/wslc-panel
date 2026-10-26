@@ -5,6 +5,10 @@
 
 use wslc_core::db::DbKind;
 
+// 脱敏实现只有一份（`wslc_core::db::redact_dsn`）；这里再导出，
+// `wslc_db::redact_dsn` 的调用点 / 测试都不用改。
+pub use wslc_core::db::redact_dsn;
+
 /// 一条数据库连接的全部参数。
 ///
 /// # `host` 是核心
@@ -217,28 +221,6 @@ pub fn parse_dsn(text: &str) -> Result<ConnSpec, DsnError> {
     Ok(spec)
 }
 
-/// 把连接串里的**口令段**打掉，用于界面显示。
-///
-/// 连接串里有明文口令，而界面上的那一行会被截图发到 issue 里。
-/// 只打口令、保留协议/用户/主机/库 —— 用户要能确认"连的是哪台"。
-///
-/// 认不出形状就**原样返回**（宁可显示不完全，也不要显示错）。
-pub fn redact_dsn(dsn: &str) -> String {
-    let Some(start) = dsn.find("://") else {
-        return dsn.to_owned();
-    };
-    let after = start + 3;
-    // 用**最后一个** `@`：和 `parse_dsn` 的切法保持一致（口令里可能有未编码的 @）
-    let Some(at_rel) = dsn[after..].rfind('@') else {
-        return dsn.to_owned();
-    };
-    let at = after + at_rel;
-    let Some(colon_rel) = dsn[after..at].find(':') else {
-        return dsn.to_owned();
-    };
-    let colon = after + colon_rel;
-    format!("{}***{}", &dsn[..colon + 1], &dsn[at..])
-}
 /// 连接串解析不出来。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DsnError(pub String);
