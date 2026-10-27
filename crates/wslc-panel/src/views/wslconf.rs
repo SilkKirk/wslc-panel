@@ -7,7 +7,7 @@ use super::prelude::*;
 ///
 /// 参考项目没有这个 —— 它的 UI 把每个字段都 `unwrap_or(默认值)` 再写回，
 /// 用户根本分不清"我看到的是默认"还是"明确设过"。
-pub(crate) fn default_tag(explicit: bool) -> Option<AnyElement> {
+fn default_tag(explicit: bool) -> Option<AnyElement> {
     if explicit {
         return None;
     }
@@ -19,7 +19,7 @@ pub(crate) fn default_tag(explicit: bool) -> Option<AnyElement> {
 /// 不需要 `cx`：`Input::new(input)` / `Checkbox::new(id)` 都只吃 `Entity`，
 /// 不用 `App`。（原先它多收一个 `cx` 却在函数里写着 `let _ = cx;` ——
 /// 那是"我其实不需要它"的标记，一并去掉了。）
-pub(crate) fn wslconf_row(
+fn wslconf_row(
     state: &WslConfState,
     dialog: &WslConfDialog,
     field: &'static wslconf::Field,

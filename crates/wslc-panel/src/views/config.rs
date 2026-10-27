@@ -267,7 +267,7 @@ pub fn wsl_config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
 }
 
 /// 单个配置项的一行。
-pub(crate) fn setting_row(
+fn setting_row(
     key: &'static SettingKey,
     effective: Option<String>,
     entity: &Entity<Shell>,
@@ -363,7 +363,7 @@ pub(crate) fn setting_row(
         .into_any_element()
 }
 
-pub(crate) fn open_in_editor_button(entity: &Entity<Shell>) -> impl IntoElement {
+fn open_in_editor_button(entity: &Entity<Shell>) -> impl IntoElement {
     let entity = entity.clone();
     Button::new("open-settings")
         .label("用系统编辑器打开")
@@ -378,7 +378,7 @@ pub(crate) fn open_in_editor_button(entity: &Entity<Shell>) -> impl IntoElement 
 /// 没有改动时**不返回禁用按钮**，而是一行绿色文字。
 /// 原因：gpui-component 的禁用态文字几乎看不清（实机截图确认过），
 /// 而"已保存"本身是个**状态**，用文字表达比用灰按钮更准确。
-pub(crate) fn save_button(entity: &Entity<Shell>, dirty: bool) -> AnyElement {
+fn save_button(entity: &Entity<Shell>, dirty: bool) -> AnyElement {
     if !dirty {
         return h_flex()
             .items_center()
@@ -401,7 +401,7 @@ pub(crate) fn save_button(entity: &Entity<Shell>, dirty: bool) -> AnyElement {
         .into_any_element()
 }
 
-pub(crate) fn reload_button(entity: &Entity<Shell>) -> impl IntoElement {
+fn reload_button(entity: &Entity<Shell>) -> impl IntoElement {
     let entity = entity.clone();
     Button::new("reload-settings")
         .label("重新加载")

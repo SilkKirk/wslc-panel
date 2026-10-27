@@ -4,7 +4,7 @@ use super::common::{card, cell_full};
 use super::prelude::*;
 
 /// 顶部统计数字块。
-pub(crate) fn stat_tile(label: &'static str, value: String, color: Rgba) -> impl IntoElement {
+fn stat_tile(label: &'static str, value: String, color: Rgba) -> impl IntoElement {
     v_flex()
         .flex_1()
         .gap_1()
@@ -63,7 +63,7 @@ pub(crate) fn dashboard_page(state: &AppState) -> impl IntoElement {
 /// 刻意**不显示** `Direct3D` / `DXCore`：它们是给 GPU 直通 / 计算负载看的，
 /// 和"容器跑不跑得起来"没关系 —— 以前它们和版本号并排摆着，
 /// 用户得自己判断哪个重要。
-pub(crate) fn environment_card(state: &AppState) -> AnyElement {
+fn environment_card(state: &AppState) -> AnyElement {
     let Some(info) = state.snapshot.info.as_ref() else {
         // 首屏（或 `wslc info` 失败）时给一句话，而不是三个空框。
         // 失败原因由 `app/` 的 `error_banner` 统一说，这里只解释这块为什么空着。
@@ -97,7 +97,7 @@ pub(crate) fn environment_card(state: &AppState) -> AnyElement {
 ///
 /// 仍然加 `truncate`：Windows 版本在别的机器上可能是
 /// `10.0.26100.1742 (Win11 24H2)` 这种带括号的，不指望它一定放得下。
-pub(crate) fn env_cell(label: &'static str, value: String) -> impl IntoElement {
+fn env_cell(label: &'static str, value: String) -> impl IntoElement {
     v_flex()
         .flex_1()
         .min_w_0()
@@ -120,14 +120,14 @@ pub(crate) fn env_cell(label: &'static str, value: String) -> impl IntoElement {
 /// （组件库 `Size::Size(s) => this.size(s * 0.75)`）—— 写 170，屏幕上量到的是
 /// 127.5px。这个数没在实机上校过，是照 1Panel 那排环的比例估的：
 /// `AGENTS.md` §8 那条"实机看一眼"照旧成立（尤其是窗口窄到 880px 时）。
-pub(crate) const GAUGE_DIAMETER: f32 = 170.0;
+const GAUGE_DIAMETER: f32 = 170.0;
 
 /// 一个圆环：环里是"大数字 + 标签"，环下面一行小字写口径。
 ///
 /// `value` 是 0–100 的百分比；`None` 表示**这一项读不到** —— 那时候环画成空的、
 /// 大数字写 `—`。不能把"读不到"画成 0%：两者在环上长得一模一样，
 /// 而"占用 0"和"没读到"对用户是两件事。
-pub(crate) fn gauge(
+fn gauge(
     id: &'static str,
     value: Option<f64>,
     color: Rgba,
@@ -190,7 +190,7 @@ pub(crate) fn gauge(
 ///
 /// 阈值判定（≥60% 黄、≥85% 红）在 `wslc-panel-core` 里带单测 ——
 /// 这个文件里的断言 CI 不会跑。拿不到值时按"轻载"上色（不吓人）。
-pub(crate) fn gauge_color(percent: Option<f64>) -> Rgba {
+fn gauge_color(percent: Option<f64>) -> Rgba {
     match load_level(percent.unwrap_or(0.0)) {
         LoadLevel::Low => theme::primary(),
         LoadLevel::Medium => theme::warning(),
@@ -199,7 +199,7 @@ pub(crate) fn gauge_color(percent: Option<f64>) -> Rgba {
 }
 
 /// 环里那个大数字：百分比两位小数；读不到就是破折号。
-pub(crate) fn gauge_big(percent: Option<f64>) -> String {
+fn gauge_big(percent: Option<f64>) -> String {
     match percent {
         Some(value) => format!("{value:.2} %"),
         None => "—".to_owned(),
@@ -210,7 +210,7 @@ pub(crate) fn gauge_big(percent: Option<f64>) -> String {
 ///
 /// 顺序：CPU → 内存 → 容器 → 存储。前三只都是"容器这一摊"的（CPU / 内存 / 数量），
 /// 存储单独摆在最后 —— 实机反馈就是把存储和容器调了个个儿。
-pub(crate) fn status_card(state: &AppState, stats: &DashboardStats) -> AnyElement {
+fn status_card(state: &AppState, stats: &DashboardStats) -> AnyElement {
     let cpu_percent = stats.cpu_whole_machine_percent();
     let mem_percent = stats.mem_percent();
     let disk_percent = stats.vhd_percent_of_disk();
@@ -367,7 +367,7 @@ pub(crate) fn status_card(state: &AppState, stats: &DashboardStats) -> AnyElemen
 /// 容器的数量**不在这里** —— 它已经是上面那一环了，摆两遍只会让人
 /// 犹豫该看哪个（`AGENTS.md` §5 同一条道理）。这一排回答的是"我这儿
 /// 有多少东西"，想看清单一页一个，所以刻意**不可点**。
-pub(crate) fn overview_tiles(state: &AppState) -> impl IntoElement {
+fn overview_tiles(state: &AppState) -> impl IntoElement {
     let snap = &state.snapshot;
 
     h_flex()

@@ -71,7 +71,7 @@ pub(crate) fn volumes_page(state: &AppState, entity: &Entity<Shell>) -> impl Int
 /// ⚠️ `InUse` 字段没有实机夹具（采集环境没有卷，见 `volume.rs` 顶部），
 /// 所以 `None` 必须显示 `—`。**不要**拿它决定能不能删 —— 删除/清理
 /// 仍然交给 `wslc` 自己判断。
-pub(crate) fn volume_usage_cell(volume: &VolumeListItem) -> AnyElement {
+fn volume_usage_cell(volume: &VolumeListItem) -> AnyElement {
     match volume.in_use() {
         Some(true) => cell_text("使用中"),
         Some(false) => div()
@@ -84,7 +84,7 @@ pub(crate) fn volume_usage_cell(volume: &VolumeListItem) -> AnyElement {
 }
 
 /// 卷行末：**直接**显示删除。
-pub(crate) fn volume_row_actions(ix: usize, name: &str, entity: &Entity<Shell>) -> AnyElement {
+fn volume_row_actions(ix: usize, name: &str, entity: &Entity<Shell>) -> AnyElement {
     danger_button(
         &format!("remove-volume-{ix}"),
         "删除",

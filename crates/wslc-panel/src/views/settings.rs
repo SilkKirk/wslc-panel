@@ -38,7 +38,7 @@ pub(crate) fn settings_page(shell: &Shell, entity: &Entity<Shell>) -> AnyElement
 ///
 /// 走 `common::tab_bar`（官方 `TabBar` + `Tab`）—— 和「数据库管理」、
 /// SQL 多结果那两处是同一份接线。
-pub(crate) fn settings_tabs(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+fn settings_tabs(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     let labels: Vec<SharedString> = SettingsTab::ALL
         .iter()
         .map(|tab| SharedString::from(tab.label()))
@@ -68,7 +68,7 @@ pub(crate) fn settings_tabs(state: &AppState, entity: &Entity<Shell>) -> AnyElem
 ///
 /// 「关于」以前是一个独立的侧边栏页面；v0.9.22 起它变成这一页的最后一个
 /// tab（见 [`settings_about`]）—— 它只有只读信息，不值得占一个一级入口。
-pub(crate) fn settings_general(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
+fn settings_general(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     let state = &shell.state;
     v_flex()
         .w_full()
@@ -172,7 +172,7 @@ pub fn settings_about(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
 /// 用户要的是**提示**，下载他自己挑加速站。
 /// 而且实测本机到 release 资产只有 11–15 KB/s，30 MB 要 40 分钟 ——
 /// 应用内下载只会更糟。
-pub(crate) fn update_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
+fn update_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     use wslc_panel_core::update::Phase;
 
     let state = &shell.state;
@@ -303,7 +303,7 @@ pub(crate) fn update_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
 /// 这里只负责画按钮。以前那一步必须写在点击回调里（`Theme::change` 要
 /// `&mut App`），现在 `Shell` 的方法里也能拿到，所以收成一处，
 /// 免得"回调里切了组件库、状态里忘了切自绘配色"这类两处不同步的 bug。
-pub(crate) fn theme_card(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+fn theme_card(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     let current = state.prefs.theme;
     // 「跟随系统」要显示系统当前是什么主题 —— 用的是启动时读到的缓存值
     // （点按钮时会在后台再读一次，见 `Shell::set_theme`）。
@@ -361,7 +361,7 @@ pub(crate) fn theme_card(state: &AppState, entity: &Entity<Shell>) -> AnyElement
 ///
 /// 卡片标题刻意叫「刷新」而不是「界面」：主题卡也叫「界面」，
 /// 两张同名卡片挨在一起会让人分不清哪个是哪个。
-pub(crate) fn interface_card(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+fn interface_card(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     let path_text = wslc_panel_core::prefs::Prefs::path()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "（无法确定偏好文件位置）".to_owned());
@@ -390,7 +390,7 @@ pub(crate) fn interface_card(state: &AppState, entity: &Entity<Shell>) -> AnyEle
 ///
 /// 这是**应用自己的偏好**，不是 `wslc` 的配置 —— 所以它和上面那些
 /// `settings.yaml` 的条目在视觉上分开，用的是本地 `prefs` 而不是 `SettingsDoc`。
-pub(crate) fn refresh_secs_picker(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
+fn refresh_secs_picker(state: &AppState, entity: &Entity<Shell>) -> impl IntoElement {
     let current = state.prefs.refresh_secs;
 
     // 互斥选项 → 官方 `RadioGroup`（理由同主题卡）。
@@ -446,7 +446,7 @@ pub(crate) fn refresh_secs_picker(state: &AppState, entity: &Entity<Shell>) -> i
 ///
 /// 点过「自定义路径…」才会建（`InputState::new` 要 `&mut Window`，
 /// 见 [`Shell::edit_terminal_dir`]）—— 渲染时现建会让用户一个字都打不进去。
-pub(crate) fn terminal_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
+fn terminal_card(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     let current = &shell.state.prefs.terminal_dir;
 
     // 三个档位都是**互斥选项**（`Home` / `Panel` / 自定义），所以整组交给官方

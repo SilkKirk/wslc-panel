@@ -464,7 +464,7 @@ pub(crate) fn add_instance_page(shell: &Shell, cx: &App, entity: &Entity<Shell>)
 }
 
 /// 一句"已经跑了多久"。
-pub(crate) fn elapsed_label(state: &AppState) -> AnyElement {
+fn elapsed_label(state: &AppState) -> AnyElement {
     let text = state
         .installing
         .as_ref()
@@ -560,7 +560,7 @@ fn step_stepper(id: &'static str, items: Vec<StepperItem>, selected: usize) -> A
 ///
 /// 装完之后**留在页面上**（不自动清空）：失败了用户要读日志，
 /// 成功了也能对一下"到底跑了哪些步骤"。下次点「再装一个」时被替换掉。
-pub(crate) fn install_log_card(
+fn install_log_card(
     state: &AppState,
     source: InstallSourceKind,
     entity: &Entity<Shell>,

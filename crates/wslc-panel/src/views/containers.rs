@@ -9,7 +9,7 @@ use super::prelude::*;
 /// 资源使用率：CPU 与内存**上下两行**（照 1Panel 的排版）。
 ///
 /// 已停止的容器没有 stats，显示 `—`。
-pub(crate) fn cell_resources(summary: &ContainerSummary) -> AnyElement {
+fn cell_resources(summary: &ContainerSummary) -> AnyElement {
     match summary.stats.as_ref() {
         None => cell_muted("—"),
         Some(stats) => v_flex()
@@ -39,7 +39,7 @@ pub(crate) fn cell_resources(summary: &ContainerSummary) -> AnyElement {
 ///
 /// `healthy` 刻意**不画**：那是默认态，每行都挂一个绿色「健康」只会让
 /// 真正异常的橙/红徽标被淹没。
-pub(crate) fn cell_container_status(summary: &ContainerSummary) -> AnyElement {
+fn cell_container_status(summary: &ContainerSummary) -> AnyElement {
     let item = &summary.item;
     let health = item.health_status.trim();
 
@@ -78,7 +78,7 @@ pub(crate) fn cell_container_status(summary: &ContainerSummary) -> AnyElement {
 ///
 /// 实际画法在 [`common::name_link`]（实例页那个链接和它**逐行相同**，
 /// 所以合到一处了；悬停/按下为什么要手写、id 为什么必须给，都写在那儿）。
-pub(crate) fn container_name_link(name: &str, entity: &Entity<Shell>) -> AnyElement {
+fn container_name_link(name: &str, entity: &Entity<Shell>) -> AnyElement {
     name_link("detail", name, entity, |shell, target, cx| {
         shell.open_detail(target, cx)
     })
@@ -105,7 +105,7 @@ pub(crate) fn container_name_link(name: &str, entity: &Entity<Shell>) -> AnyElem
 ///
 /// MySQL / MariaDB 容器多一个「数据库」按钮（v0.7.0）：它是那一类容器上
 /// 最高频的动作，而且**只能从这里进**（数据库管理页不在侧边栏里）。
-pub(crate) fn container_row_actions(
+fn container_row_actions(
     item: &ContainerListItem,
     entity: &Entity<Shell>,
 ) -> AnyElement {
@@ -208,7 +208,7 @@ pub(crate) fn container_row_actions(
 ///
 /// ⚠️ 回调是 `'static` 的（菜单可能比这一帧活得久）：所以名字 / `Entity`
 /// 都要 `move` 进去，不能借 `item`。
-pub(crate) fn container_more_menu(item: &ContainerListItem, entity: &Entity<Shell>) -> AnyElement {
+fn container_more_menu(item: &ContainerListItem, entity: &Entity<Shell>) -> AnyElement {
     let name = item.display_name().to_owned();
     let running = item.is_running();
     let entity = entity.clone();

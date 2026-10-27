@@ -21,7 +21,7 @@ use super::super::prelude::*;
 /// 现在外壳只有这一份。五个具名助手保留，是因为**它们的名字说明语义**
 /// （这个按钮会弹确认 / 会直接跑 / 只是开个浮层），调用点读起来比
 /// `action_button(id, label, |shell, _, cx| …)` 清楚。
-pub(crate) fn action_button(
+fn action_button(
     id: &str,
     label: &'static str,
     entity: &Entity<Shell>,

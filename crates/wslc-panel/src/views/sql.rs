@@ -212,7 +212,7 @@ pub(crate) fn sql_console_page(
 /// 从数据库列表行上的「SQL」按钮进来时就是那一行；不指定的话
 /// `SELECT * FROM t` 会报 "No database selected"（实测过），
 /// 所以这件事必须显式画出来，而不是让用户从报错里猜。
-pub(crate) fn sql_target_db(db: &DbState, entity: &Entity<Shell>, account: &str) -> AnyElement {
+fn sql_target_db(db: &DbState, entity: &Entity<Shell>, account: &str) -> AnyElement {
     match db.sql_database.as_deref() {
         Some(name) => {
             let clear = {
@@ -261,7 +261,7 @@ pub(crate) fn sql_target_db(db: &DbState, entity: &Entity<Shell>, account: &str)
     }
 }
 /// 右上：SQL 编辑器（多行 + 行号 + 语法高亮）+ 执行按钮。
-pub(crate) fn sql_editor_pane(
+fn sql_editor_pane(
     db: &DbState,
     form: &DbPageForm,
     entity: &Entity<Shell>,
@@ -382,7 +382,7 @@ pub(crate) fn sql_editor_pane(
 /// - 没搜索：库是父节点、表是子节点，点库名展开；
 /// - 有搜索：拍平成一层的「库.表」—— 否则用户搜到的那张表还藏在一个
 ///   收起的库节点里，等于白搜。
-pub(crate) fn sql_tree_pane(db: &DbState, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
+fn sql_tree_pane(db: &DbState, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     let pane = |inner: AnyElement| -> AnyElement {
         v_flex()
             // 宽度由外层 `h_resizable` 的 `resizable_panel` 决定；这里写死
@@ -579,7 +579,7 @@ pub(crate) fn sql_tree_pane(db: &DbState, shell: &Shell, entity: &Entity<Shell>)
 /// 放在高度不定的容器里会算错（表现为滚动条乱跳 / 底部空白）。
 /// 所以这一层用 `flex_1 + min_h_0`，让布局给出确定高度 ——
 /// 父链上每一层都有确定高度（页面 `h_full` → 右侧列 `h_full` → 这里 `flex_1`）。
-pub(crate) fn sql_results_pane(db: &DbState, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
+fn sql_results_pane(db: &DbState, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     // 统一的容器：吃满剩余高度 + 内边距。三种形态共用，免得各写一遍。
     let shell_area = |inner: AnyElement| -> AnyElement {
         v_flex()

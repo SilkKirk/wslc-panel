@@ -97,7 +97,7 @@ pub(crate) fn deploy_page(shell: &Shell, _cx: &App, entity: &Entity<Shell>) -> A
 /// 只**报告**：已建好的容器改不了端口发布（`-p` 只在建容器时给），所以这里
 /// 不画按钮，只把 `主机 URL → 容器端口` 摆出来。端口列的 URL 是逐应用的，
 /// 这里是容器级的全量清单。
-pub(crate) fn deploy_published_line(deploy: &DeployState) -> String {
+fn deploy_published_line(deploy: &DeployState) -> String {
     let ports = deploy_model::published_container_ports(&deploy.ports);
     if ports.is_empty() {
         return "还没有端口发布到主机（-p 只能在建容器时给）".to_owned();
@@ -116,7 +116,7 @@ pub(crate) fn deploy_published_line(deploy: &DeployState) -> String {
 }
 
 /// 页头：容器 / 镜像 / 运行时 + 依据 + 「← 返回容器」「重新读取」「添加部署…」。
-pub(crate) fn deploy_header(deploy: &DeployState, entity: &Entity<Shell>) -> AnyElement {
+fn deploy_header(deploy: &DeployState, entity: &Entity<Shell>) -> AnyElement {
     let back = {
         let entity = entity.clone();
         Button::new("deploy-back")
@@ -222,7 +222,7 @@ pub(crate) fn deploy_header(deploy: &DeployState, entity: &Entity<Shell>) -> Any
 }
 
 /// 探测就失败时的说明卡（不是这几类容器 / 容器没运行）。
-pub(crate) fn deploy_blocked_card(
+fn deploy_blocked_card(
     deploy: &DeployState,
     failure: &wslc_panel_core::state::DeployFailure,
 ) -> AnyElement {
@@ -258,12 +258,12 @@ pub(crate) fn deploy_blocked_card(
 }
 
 /// 上一次失败：一句"该怎么办" +（可滚动的）原文。
-pub(crate) fn deploy_failure_banner(failure: &wslc_panel_core::state::DeployFailure) -> AnyElement {
+fn deploy_failure_banner(failure: &wslc_panel_core::state::DeployFailure) -> AnyElement {
     error_banner(&failure.summary(), &failure.detail, "deploy-error-detail")
 }
 
 /// 「正在读取…」占位（和 `db_loading` 同一形状）。
-pub(crate) fn deploy_loading(busy: bool) -> AnyElement {
+fn deploy_loading(busy: bool) -> AnyElement {
     use gpui_kit::component::spinner::Spinner;
 
     // 和 `db_loading` 同一个判断：busy 时必须有**转圈**，只换文字不够。
@@ -295,7 +295,7 @@ pub(crate) fn deploy_loading(busy: bool) -> AnyElement {
 }
 
 /// 已部署列表。
-pub(crate) fn deploy_table(deploy: &DeployState, entity: &Entity<Shell>) -> AnyElement {
+fn deploy_table(deploy: &DeployState, entity: &Entity<Shell>) -> AnyElement {
     let rows: Vec<TableRow> = deploy
         .entries
         .iter()
@@ -367,7 +367,7 @@ pub(crate) fn deploy_table(deploy: &DeployState, entity: &Entity<Shell>) -> AnyE
 /// 「读不到」和「目标不存在」是**两件事**，所以分开画：前者是"问容器的时候
 /// 出错了"（可能是容器刚停、网络抖动），后者是"真的没有了"。
 /// 把前者显示成后者会让人以为文件丢了。
-pub(crate) fn deploy_status_cell(entry: &DeployEntry, deploy: &DeployState) -> AnyElement {
+fn deploy_status_cell(entry: &DeployEntry, deploy: &DeployState) -> AnyElement {
     if let Some(error) = entry.probe_error.as_ref() {
         // 用 `cell_muted_full` 承载 tooltip：它拿组件库的 `Button` 当壳，
         // 所以截断的文字能悬停看全文（`AGENTS.md` §7.5）。
@@ -401,7 +401,7 @@ pub(crate) fn deploy_status_cell(entry: &DeployEntry, deploy: &DeployState) -> A
 ///
 /// ⚠️ 已存在的容器改不了端口发布（`-p` 只在 `run` / `create` 时给），
 /// 所以这里绝不画一个点了没用的「发布」按钮 —— 而是把下一步说清楚。
-pub(crate) fn deploy_port_cell(
+fn deploy_port_cell(
     entry: &DeployEntry,
     deploy: &DeployState,
     entity: &Entity<Shell>,
@@ -448,7 +448,7 @@ pub(crate) fn deploy_port_cell(
 /// 按形态分岔 —— 这不是"多给一个入口"，而是**两类东西的动作本来就不同**：
 /// 内容形态（nginx）没有属于我们的进程，画「启动 / 停止」只会点了报错。
 /// 只画**当前有意义**的那几个（停止时画「启动」，运行时画「停止」）。
-pub(crate) fn deploy_row_actions(
+fn deploy_row_actions(
     entry: &DeployEntry,
     deploy: &DeployState,
     entity: &Entity<Shell>,
@@ -599,7 +599,7 @@ pub(crate) fn deploy_row_actions(
 /// 删一条部署要做三件事 —— 停进程、删掉面板铺进去的那些文件、**改本地存档并重读列表** ——
 /// 最后那件它表达不了。所以删除确认是部署页自己的浮层
 ///（[`deploy_remove_confirm_body`]），按钮直接把动作交给 `Shell`。
-pub(crate) fn deploy_danger_button(
+fn deploy_danger_button(
     id: &str,
     label: &'static str,
     run: impl Fn(&mut Shell, &mut Context<Shell>) + 'static,

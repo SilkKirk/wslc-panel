@@ -209,6 +209,11 @@ pub fn split_statements(script: &str) -> Vec<String> {
     }
     let mut mode = Mode::Normal;
 
+    // ⚠️ 下面这 8 处 `chars.next().unwrap()` **不是**漏写的兜底：
+    // 每一处前面都紧挨着 `chars.peek() == Some(&…)`，peek 命中才 next，
+    // 所以 `Some` 是**上一个表达式**保证的。写成
+    // `if let Some(n) = chars.next() { … }` 反而会让"这里到底会不会缺字符"
+    // 变成一句要靠读控制流才能确认的事。
     while let Some(c) = chars.next() {
         // ── 先处理"已经在特殊状态里"的情况 ──────────────────────────────
         match &mode {

@@ -13,7 +13,7 @@ use super::prelude::*;
 /// 数据来自 `wslc image inspect --format json`（`Shell::probe_image_facts`
 /// 在后台读、读到了顺手把端口预填），解析在 `wslc-core`
 /// （`model::parse_image_inspect`，配两个真机 fixture 单测）。
-pub(crate) fn image_facts_hint(dialog: &CreateDialog) -> AnyElement {
+fn image_facts_hint(dialog: &CreateDialog) -> AnyElement {
     match &dialog.facts {
         // 用户自己敲的镜像引用：我们没去读，就什么都不说。
         FactsState::Idle => div().into_any_element(),
@@ -96,7 +96,7 @@ pub(crate) fn image_facts_hint(dialog: &CreateDialog) -> AnyElement {
 /// 用的是和 `to_spec` 完全一样的输入，所以提示里的名字、下面等效命令里的
 /// `--name`、以及真正执行的名字三者不会不一致。
 /// 用户自己填了名字就不显示（那时候这行只会是噪音）。
-pub(crate) fn auto_name_hint(dialog: &CreateDialog, state: &AppState, cx: &App) -> AnyElement {
+fn auto_name_hint(dialog: &CreateDialog, state: &AppState, cx: &App) -> AnyElement {
     if !dialog.name.read(cx).value().trim().is_empty() {
         return div().into_any_element();
     }
@@ -131,7 +131,7 @@ pub(crate) fn auto_name_hint(dialog: &CreateDialog, state: &AppState, cx: &App) 
 ///
 /// 判断"预填在不在"用的是最朴素的字符串包含：这里只是一句提示，
 /// 值不值得为它把 `env` 的解析规则再抄一遍。
-pub(crate) fn image_env_hint(dialog: &CreateDialog, cx: &App) -> AnyElement {
+fn image_env_hint(dialog: &CreateDialog, cx: &App) -> AnyElement {
     let image = dialog.image.read(cx).value().trim().to_owned();
     let Some(preset) = wslc_core::model::image_preset(&image) else {
         return div().into_any_element();
@@ -175,7 +175,7 @@ pub(crate) fn image_env_hint(dialog: &CreateDialog, cx: &App) -> AnyElement {
 /// 三选一是**互斥选项**，所以用官方 `RadioGroup`（`common::radio_row`）：
 /// 原先那排"选中就变主色"的按钮对读屏软件是一堆独立动作，
 /// 键盘上也拿不到方向键移动 + 空格选中。
-pub(crate) fn pull_policy_row(current: &PullPolicy, entity: &Entity<Shell>) -> AnyElement {
+fn pull_policy_row(current: &PullPolicy, entity: &Entity<Shell>) -> AnyElement {
     let options: [(&'static str, PullPolicy); 3] = [
         ("只用本地镜像", PullPolicy::Never),
         ("缺了就拉", PullPolicy::Missing),
@@ -218,7 +218,7 @@ pub(crate) fn pull_policy_row(current: &PullPolicy, entity: &Entity<Shell>) -> A
 ///
 /// 直接调 `RunSpec::to_args()` 生成 —— 和真正执行时用的是**同一段代码**，
 /// 不会出现"预览和执行不一致"。用户也可以直接复制到终端复现。
-pub(crate) fn command_preview(spec: &RunSpec) -> AnyElement {
+fn command_preview(spec: &RunSpec) -> AnyElement {
     let command = format!(
         "wslc {}",
         wslc_core::util::format_args_for_display(&spec.to_args())

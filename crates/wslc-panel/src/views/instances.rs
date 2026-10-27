@@ -139,7 +139,7 @@ pub(crate) fn instances_page(state: &AppState, entity: &Entity<Shell>) -> AnyEle
 /// `kept` = **本面板正吊着它**（见 [`KeepAlive`](crate::app)）。
 /// 列表里它只影响「启动」按钮给不给（已经吊着了，再吊一个没意义）；
 /// "谁在维持这个发行版"那句话在详情弹窗里，不在这一行 —— 原因见下面的注释。
-pub(crate) fn distro_row(
+fn distro_row(
     distro: &Distro,
     default_name: Option<&str>,
     kept: bool,
@@ -191,7 +191,7 @@ pub(crate) fn distro_row(
 ///
 /// 和容器页一样：名字就是入口，低频动作都收在详情里。
 /// 实际画法在 [`common::name_link`]（和 `container_name_link` 同一份实现）。
-pub(crate) fn distro_name_link(name: &str, entity: &Entity<Shell>) -> AnyElement {
+fn distro_name_link(name: &str, entity: &Entity<Shell>) -> AnyElement {
     name_link("distro-detail", name, entity, |shell, target, cx| {
         shell.open_distro_detail(target, cx)
     })
@@ -200,7 +200,7 @@ pub(crate) fn distro_name_link(name: &str, entity: &Entity<Shell>) -> AnyElement
 /// 「添加实例」入口按钮 —— 跳到「添加实例」页。
 ///
 /// 跳转走 `set_page`（需要 `window`）：那一页的输入框必须在点击时创建。
-pub(crate) fn add_instance_button(entity: &Entity<Shell>) -> AnyElement {
+fn add_instance_button(entity: &Entity<Shell>) -> AnyElement {
     let entity = entity.clone();
     Button::new("goto-add-instance")
         .label("添加实例")
@@ -220,7 +220,7 @@ pub(crate) fn add_instance_button(entity: &Entity<Shell>) -> AnyElement {
 /// 列表里塞满按钮，常用的那个反而找不到。
 ///
 /// `kept` = 本面板正吊着它（见 [`distro_row`]）。
-pub(crate) fn distro_row_actions(
+fn distro_row_actions(
     distro: &Distro,
     is_default: bool,
     kept: bool,
@@ -295,7 +295,7 @@ pub(crate) fn distro_row_actions(
 }
 
 /// 发行版状态徽标单元格。
-pub(crate) fn cell_distro_badge(state: DistroState) -> AnyElement {
+fn cell_distro_badge(state: DistroState) -> AnyElement {
     let (fg, bg) = theme::distro_state_colors(&state);
     badge(state.label().to_owned(), fg, bg).into_any_element()
 }

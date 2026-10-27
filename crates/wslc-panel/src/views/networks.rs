@@ -61,7 +61,7 @@ pub(crate) fn networks_page(state: &AppState, entity: &Entity<Shell>) -> impl In
 }
 
 /// 网络行末：**直接**显示删除；内置网络仍只给一行说明。
-pub(crate) fn network_row_actions(ix: usize, name: &str, entity: &Entity<Shell>) -> AnyElement {
+fn network_row_actions(ix: usize, name: &str, entity: &Entity<Shell>) -> AnyElement {
     danger_button(
         &format!("remove-network-{ix}"),
         "删除",

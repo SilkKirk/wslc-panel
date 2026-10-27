@@ -109,7 +109,7 @@ pub(crate) fn images_page(state: &AppState, entity: &Entity<Shell>) -> AnyElemen
 ///
 /// `Containers` 字段缺失（空串）时显示 `—`，**不能**显示「未使用」——
 /// "读不到"和"确实是 0"是两件事，后者才允许说这个镜像没被用。
-pub(crate) fn image_usage_cell(image: &ImageListItem) -> AnyElement {
+fn image_usage_cell(image: &ImageListItem) -> AnyElement {
     if image.containers.trim().is_empty() {
         return cell_muted("—");
     }
@@ -127,7 +127,7 @@ pub(crate) fn image_usage_cell(image: &ImageListItem) -> AnyElement {
 ///
 /// 只有两个动作，而且是这一行专属的入口；再套一层「更多」只会让用户
 /// 多点一次。容器列表行不一样（那里最多 4 个动作），「更多」只留那处。
-pub(crate) fn image_row_actions(ix: usize, reference: &str, entity: &Entity<Shell>) -> AnyElement {
+fn image_row_actions(ix: usize, reference: &str, entity: &Entity<Shell>) -> AnyElement {
     let create_ref = reference.to_owned();
     let remove_ref = reference.to_owned();
     let entity_for_create = entity.clone();
@@ -174,7 +174,7 @@ pub(crate) fn pull_dialog_body(
 /// 弹窗里那张**表单**（没在拉取时）。
 ///
 /// 拆成独立函数只是为了让 [`pull_dialog_overlay`] 的两种形态一眼看得清。
-pub(crate) fn pull_dialog_form(
+fn pull_dialog_form(
     form: &ImageForm,
     state: &AppState,
     entity: &Entity<Shell>,
@@ -407,7 +407,7 @@ pub(crate) fn pull_dialog_form(
 ///
 /// 它**不是浮层**：页面本身就是"正在拉"的上下文，再盖一层没有额外信息
 /// （v0.6.2 之前「拉取镜像」弹窗的进度形态也复用了它，那个弹窗已经删了）。
-pub(crate) fn pull_progress_body(progress: &PullProgress, entity: &Entity<Shell>) -> AnyElement {
+fn pull_progress_body(progress: &PullProgress, entity: &Entity<Shell>) -> AnyElement {
     /// 进度区显示多少行。
     const PROGRESS_TAIL_LINES: usize = 12;
 

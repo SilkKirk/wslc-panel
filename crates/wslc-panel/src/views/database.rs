@@ -116,7 +116,7 @@ pub(crate) fn database_page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -> 
 }
 
 /// 页头：容器 / 镜像 / 家族 / 客户端 + 「← 返回容器」「基础信息」「重新读取」。
-pub(crate) fn db_header(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
+fn db_header(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
     let back = {
         let entity = entity.clone();
         Button::new("db-back")
@@ -310,7 +310,7 @@ pub(crate) fn db_connection_card(
 }
 
 /// 探测就失败时的说明卡（不是 MySQL / 没客户端 / 容器没运行）。
-pub(crate) fn db_blocked_card(failure: &DbFailure) -> AnyElement {
+fn db_blocked_card(failure: &DbFailure) -> AnyElement {
     blocked_card(
         "这个容器现在管不了数据库",
         &failure.summary(),
@@ -334,7 +334,7 @@ pub(crate) fn db_blocked_card(failure: &DbFailure) -> AnyElement {
 /// 而这个横幅是**两段**（摘要 + 可滚动的原文），压成一句就没法滚动、
 /// 也丢掉了"原文保留换行"这个排查价值。所以外壳保留手写，
 /// 但配色仍走 `theme::danger_*`（和 `Alert` 背后是同一组色）。
-pub(crate) fn db_error_banner(failure: &DbFailure) -> AnyElement {
+fn db_error_banner(failure: &DbFailure) -> AnyElement {
     error_banner(&failure.summary(), &failure.detail, "db-error-detail")
 }
 
@@ -352,7 +352,7 @@ pub(crate) fn db_error_banner(failure: &DbFailure) -> AnyElement {
 ///
 /// 文案来自 [`DbState::write_blocked_reason`] —— 判据和文字在同一处，
 /// 改了判据不会忘了改文案。
-pub(crate) fn db_native_write_notice(reason: &'static str) -> AnyElement {
+fn db_native_write_notice(reason: &'static str) -> AnyElement {
     div()
         .w_full()
         .text_xs()
@@ -366,7 +366,7 @@ pub(crate) fn db_native_write_notice(reason: &'static str) -> AnyElement {
 /// 忙着的时候用官方 `Spinner`（转圈），不忙时是一句静态提示 ——
 /// **两者的区别要一眼看得出**：只换文字（"正在读取…" / "还没有读到数据"）
 /// 在截图和余光里几乎一样，用户会以为卡住了。正式软件都有那个转圈。
-pub(crate) fn db_loading(busy: bool) -> AnyElement {
+fn db_loading(busy: bool) -> AnyElement {
     use gpui_kit::component::spinner::Spinner;
 
     if busy {
@@ -400,7 +400,7 @@ pub(crate) fn db_loading(busy: bool) -> AnyElement {
 /// 走 `common::tab_bar`（官方 `TabBar` + `Tab`）—— 和设置页、SQL 结果那两处
 /// 是同一份接线。旧写法是"两个 `Button`、选中那个 `.primary()`"：那是把
 /// **状态**画成了**动作**，而且每个 tab 都要各建一个 `on_click`。
-pub(crate) fn db_tabs(
+fn db_tabs(
     current: DbTab,
     entity: &Entity<Shell>,
     mysql_family: bool,
@@ -445,7 +445,7 @@ pub(crate) fn db_tabs(
 ///
 /// 所以这一页明说支持到哪儿，并给一个真的能用的入口（SQL 控制台）。
 /// 用户要的是"能跑 SQL、能看到表结构"，这两样已经通了。
-pub(crate) fn db_postgres_card(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
+fn db_postgres_card(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
     // 打开控制台时连哪个库：优先"当前库"，否则第一个库。
     //
     // 为什么必须给一个具体的库：PostgreSQL 的元数据和 SQL 都**按库隔离**
@@ -523,7 +523,7 @@ pub(crate) fn db_postgres_card(db: &DbState, entity: &Entity<Shell>) -> AnyEleme
 /// 系统库现在**不出现在列表里**（[`db_databases_card`] 里过滤掉了），
 /// 所以这个标记实际只在别处（比如将来"显示系统库"的开关）还有用 ——
 /// 留着是因为"这一行是不是系统库"这件事本身仍然要能一眼看出来。
-pub(crate) fn db_name_cell(entry: &wslc_core::model::DbEntry) -> AnyElement {
+fn db_name_cell(entry: &wslc_core::model::DbEntry) -> AnyElement {
     h_flex()
         .gap_2()
         .min_w_0()
@@ -550,7 +550,7 @@ pub(crate) fn db_name_cell(entry: &wslc_core::model::DbEntry) -> AnyElement {
 /// `shell` / `cx` 是给「删库」那一行的：它要 `PendingAction::DropDatabase`，
 /// 而动作里的凭据必须和这一行**同一个来源**（`Shell::creds_for_row`，
 /// 面板记的账号优先、没记过才用连接卡）。
-pub(crate) fn db_databases_card(
+fn db_databases_card(
     db: &DbState,
     credentials: &wslc_panel_core::dbcreds::DbCredentialStore,
     shell: &Shell,
@@ -738,7 +738,7 @@ pub(crate) fn db_databases_card(
 ///
 /// `shell` / `cx` 只给「删除」那一行用：`PendingAction::DropUser` 里的凭据
 /// 必须和「改密码 / 授权」走同一个来源（`Shell::db_creds`，读连接卡）。
-pub(crate) fn db_users_card(
+fn db_users_card(
     db: &DbState,
     shell: &Shell,
     cx: &App,

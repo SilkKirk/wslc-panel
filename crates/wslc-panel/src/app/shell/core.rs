@@ -86,7 +86,7 @@ pub(crate) fn current_version() -> wslc_core::update::Version {
 /// （中文系统是「默认分发:」），解析成本比列表高。
 ///
 /// 列表（`wsl --list --verbose`）仍然跟随自动刷新 —— 状态变化要看得到。
-pub(crate) const DISTRO_STATUS_SECS: u64 = 30;
+const DISTRO_STATUS_SECS: u64 = 30;
 
 /// 数据库动作弹窗「校验通过之后要执行的东西」。
 ///
@@ -121,7 +121,7 @@ pub(crate) type PreparedDbSql = (String, &'static str, Option<(String, String, S
 ///
 /// `U+0001`（Start of Heading）是控制字符，不可能出现在标识符里 ——
 /// 用它当分隔符，拆解就是无歧义的。
-pub(crate) const TREE_ID_SEP: char = '\u{1}';
+const TREE_ID_SEP: char = '\u{1}';
 
 /// 表节点（叶子）的 id：`t\u{1}库\u{1}表`。
 pub(crate) fn leaf_id(database: &str, table: &str) -> String {
