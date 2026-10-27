@@ -82,30 +82,16 @@ pub fn key(container: &str, database: &str) -> String {
 impl DbCredentialStore {
     /// 读档。文件不存在 → 空档（第一次运行就是这么进来的）；
     /// 解析失败 → 空档 + `Some(原因)`（调用方决定要不要提示）。
+    ///
+    /// 三种兜底的语义只有一份，在 [`crate::fileio::read_json`]
+    /// （本文件和 `deploys` 原先各写一遍逐字相同的实现）。
     pub fn load(path: &Path) -> (Self, Option<String>) {
-        // `fileio::read_text` 会在主文件缺失时尝试 `.bak`：
-        // 旧版保存逻辑删完旧档、rename 前崩溃的话，这里还能把账号捞回来。
-        let text = match crate::fileio::read_text(path) {
-            Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Self::default(), None),
-            Err(e) => return (Self::default(), Some(format!("读不到凭据存档：{e}"))),
-        };
-        match serde_json::from_str::<DbCredentialStore>(&text) {
-            Ok(store) => (store, None),
-            Err(e) => (
-                Self::default(),
-                Some(format!(
-                    "凭据存档解析失败（{}）—— 里面的账号要重新录入：{e}",
-                    path.display()
-                )),
-            ),
-        }
+        crate::fileio::read_json(path, "凭据存档", "里面的账号要重新录入")
     }
 
     /// 写档（原子写，见 [`crate::fileio`] 的模块注释）。
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        let text = serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_owned());
-        crate::fileio::write_atomic(path, &text)
+        crate::fileio::write_json(path, self)
     }
 
     /// 取一个库的账号。

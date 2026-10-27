@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use wslc_core::model::DeploySite;
-use wslc_core::model::deploy::{TargetOverlap, target_overlap};
+use wslc_core::model::deploy::{TargetOverlap, first_segment_under, target_overlap};
 
 /// 一条部署记录。
 ///
@@ -103,29 +103,16 @@ pub fn key(container: &str, app: &str) -> String {
 impl DeployStore {
     /// 读档。文件不存在 → 空档（第一次运行就是这么进来的）；
     /// 解析失败 → 空档 + `Some(原因)`（调用方**必须**把它显示出来）。
+    ///
+    /// 三种兜底的语义只有一份，在 [`crate::fileio::read_json`]
+    /// （本文件和 `dbcreds` 原先各写一遍逐字相同的实现）。
     pub fn load(path: &Path) -> (Self, Option<String>) {
-        // 主文件缺失时从 `.bak` 恢复（见 `fileio` 的崩溃点表）。
-        let text = match crate::fileio::read_text(path) {
-            Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Self::default(), None),
-            Err(e) => return (Self::default(), Some(format!("读不到部署存档：{e}"))),
-        };
-        match serde_json::from_str::<DeployStore>(&text) {
-            Ok(store) => (store, None),
-            Err(e) => (
-                Self::default(),
-                Some(format!(
-                    "部署存档解析失败（{}）—— 里面的记录要重新部署一次：{e}",
-                    path.display()
-                )),
-            ),
-        }
+        crate::fileio::read_json(path, "部署存档", "里面的记录要重新部署一次")
     }
 
     /// 写档（原子写，见 [`crate::fileio`] 的模块注释）。
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        let text = serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_owned());
-        crate::fileio::write_atomic(path, &text)
+        crate::fileio::write_json(path, self)
     }
 
     /// 取一条记录。
@@ -207,14 +194,17 @@ impl DeployStore {
     /// - 相同 / 新目标是已有目标的父目录 → 拦；
     /// - 新目标在旧目录里面 → 只有当"子目录第一段"不在旧应用的
     ///   [`DeployRecord::members`] 里才放行（否则旧应用的逐名删除会带走它）。
+    ///
+    /// ⚠️ 这里**不**自己归一化尾部 `/`：`target_overlap` 和 `first_segment_under`
+    /// 内部都会归一（规则只有一份，在 `wslc-core` 的 `model::deploy`）。
+    /// 早先这里预归一化一次、两个被调函数再各归一化一次 —— 同一条规则三处，
+    /// 改的时候很容易只改到一处。
     pub fn target_blocker(&self, container: &str, app: &str, target: &str) -> Option<TargetBlock> {
-        let target = normalize_target(target);
         for record in self.for_container(container) {
             if record.app.as_str() == app.trim() {
                 continue;
             }
-            let existing = normalize_target(&record.target);
-            match target_overlap(target, existing) {
+            match target_overlap(target, &record.target) {
                 Some(TargetOverlap::Same) => {
                     return Some(TargetBlock::Same(record.app.clone()));
                 }
@@ -222,7 +212,7 @@ impl DeployStore {
                     return Some(TargetBlock::CoversExisting(record.app.clone()));
                 }
                 Some(TargetOverlap::NewInsideExisting) => {
-                    if let Some(name) = first_segment_under(target, existing) {
+                    if let Some(name) = first_segment_under(target, &record.target) {
                         if record.members.iter().any(|member| member.trim() == name) {
                             return Some(TargetBlock::InsideMember {
                                 existing: record.app.clone(),
@@ -247,22 +237,6 @@ impl DeployStore {
 ///   不要让两个应用真的撞上）。
 fn record_binds_port(record: &DeployRecord) -> bool {
     record.runtime.trim() != "nginx" || record.site.is_some()
-}
-
-/// 去掉尾部 `/`；空串（或全 `/`）归一成 `/`。
-fn normalize_target(path: &str) -> &str {
-    let trimmed = path.trim().trim_end_matches('/');
-    if trimmed.is_empty() { "/" } else { trimmed }
-}
-
-/// `path` 在 `parent` 底下的**第一段**。
-fn first_segment_under<'a>(path: &'a str, parent: &str) -> Option<&'a str> {
-    let rest = if parent == "/" {
-        path.strip_prefix('/')?
-    } else {
-        path.strip_prefix(parent)?.strip_prefix('/')?
-    };
-    rest.split('/').next().filter(|name| !name.is_empty())
 }
 
 /// `target_blocker` 给出的三种"不能这么做"。

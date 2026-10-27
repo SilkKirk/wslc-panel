@@ -11,15 +11,18 @@
 //!
 //! # 这张表解决什么问题
 //!
-//! 现在这些知识散在三处、而且都是写死的：
+//! 这些知识原先散在好几处、而且都是写死的：
 //!
-//! | 知识 | 现在在哪儿 |
-//! |---|---|
-//! | 关键字表 | `wslc-panel-core/sqlcomplete.rs` 的两个 `const` |
-//! | 标识符引号 | `quote_ident()` 里写死反引号 |
-//! | `LIMIT` 语法 | `schematree::select_from_table_sql` 里写死 `LIMIT 200` |
+//! | 知识 | 原先在哪儿 | 现在 |
+//! |---|---|---|
+//! | 关键字表 | `wslc-panel-core/sqlcomplete.rs` 的两个 `const` | [`DialectData::keywords`] |
+//! | 标识符引号 | `schematree` 里写死反引号 | [`DialectData::quote_ident`] |
+//! | `LIMIT` 语法 | `schematree` 里写死 `LIMIT 200` | [`DialectData::limit_clause`] |
+//! | 点表名那条 SQL | `schematree` 与 `postgres` **各一份** | [`DialectData::select_from_table_sql`] |
 //!
-//! 三种引擎各有各的写法，散着写必然出现"MySQL 的规则漏到 PostgreSQL 上"。
+//! 三种引擎各有各的写法，散着写必然出现"MySQL 的规则漏到 PostgreSQL 上" ——
+//! 点表名那条就是这么坏过一次：控制台一律走 MySQL 那份，于是 PostgreSQL 下
+//! 填进编辑区的是反引号 SQL（语法错误）。
 
 /// 标识符怎么包。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,7 +120,39 @@ impl DialectData {
             LimitSyntax::FetchFirst => format!("FETCH FIRST {n} ROWS ONLY"),
         }
     }
+
+    /// `\`库\`.\`表\`` 形式（引号风格按本方言）。
+    pub fn qualified_name(&self, database: &str, table: &str) -> String {
+        format!("{}.{}", self.quote_ident(database), self.quote_ident(table))
+    }
+
+    /// 点表名时填进编辑区的那条 SQL。
+    ///
+    /// # 这一份是**唯一**实现（v0.22.3 收口）
+    ///
+    /// 收之前有两份手写：`model::schematree::select_from_table_sql`（写死反引号）
+    /// 和 `model::postgres::select_from_table_sql`（写死双引号）。而 SQL 控制台
+    /// 点树时**一律**走 MySQL 那份 —— 于是 PostgreSQL 下点一张表，填进编辑区的是
+    /// ``SELECT * FROM `public`.`t_user` LIMIT 200``，反引号在 PostgreSQL 里是
+    /// 语法错误，**点表这个动作直接不可用**。
+    ///
+    /// 根因不是"漏了一个分支"，是"引号风格这两个地方各写了一遍，而别处已经
+    /// 有 [`DialectData::quote_ident`]"。所以这里收成一份，调用方按 [`dialect_for`]
+    /// 取本引擎的方言就行。
+    pub fn select_from_table_sql(&self, database: &str, table: &str, limit: usize) -> String {
+        format!(
+            "SELECT * FROM {} {}",
+            self.qualified_name(database, table),
+            self.limit_clause(limit)
+        )
+    }
 }
+
+/// 点表名时默认取多少行。
+///
+/// 和两个引擎共用的数：一屏看 20~30 行，200 行够翻几屏，又不至于把整张表
+/// 拉进内存（`schematree` 的文档里有实测依据）。
+pub const DEFAULT_LIMIT: usize = 200;
 
 /// 三种引擎共有的语句骨架（语句 → 子句 → 最常用函数）。
 ///
@@ -354,6 +389,32 @@ mod tests {
         for kind in [DbKind::MySql, DbKind::MariaDb, DbKind::Postgres] {
             assert!(dialect_for(kind).line_comments.contains(&"--"));
         }
+    }
+
+    /// ⚠️ 回归钉（v0.22.3）：点表名生成的 SQL **必须按方言引号**。
+    ///
+    /// 坏过的样子：控制台一律走 `schematree` 那份（反引号），于是 PostgreSQL
+    /// 下点一张表填进编辑区的是 ``SELECT * FROM `public`.`t_user` LIMIT 200``
+    /// —— 反引号在 PostgreSQL 里是语法错误，那个动作**点了没用**。
+    #[test]
+    fn select_from_table_sql_follows_the_dialect() {
+        assert_eq!(
+            dialect_for(DbKind::MySql).select_from_table_sql("djxm", "sys_user", DEFAULT_LIMIT),
+            "SELECT * FROM `djxm`.`sys_user` LIMIT 200"
+        );
+        assert_eq!(
+            dialect_for(DbKind::Postgres).select_from_table_sql("public", "t_user", DEFAULT_LIMIT),
+            r#"SELECT * FROM "public"."t_user" LIMIT 200"#
+        );
+        // 引号内部的引号要双写，否则是注入
+        assert_eq!(
+            dialect_for(DbKind::MySql).select_from_table_sql("d`b", "t`bl", 10),
+            "SELECT * FROM `d``b`.`t``bl` LIMIT 10"
+        );
+        assert_eq!(
+            dialect_for(DbKind::Postgres).select_from_table_sql("pub\"lic", "t", 10),
+            r#"SELECT * FROM "pub""lic"."t" LIMIT 10"#
+        );
     }
 
     #[test]

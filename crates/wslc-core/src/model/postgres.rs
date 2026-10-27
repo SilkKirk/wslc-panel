@@ -24,12 +24,6 @@
 //! **意外收获**：`--csv` 模式下空结果集仍然带表头（`id\n`，3 字节），
 //! 而 MySQL 的 `-B` 是 0 字节 —— 也就是说这一路连列名都能拿到。
 
-/// 默认取多少行（点表名自动生成 SELECT 时）。
-///
-/// 和 MySQL 那边同一个数：一屏看 20~30 行，200 行够翻几屏，
-/// 又不至于把整张表拉进内存。
-pub const DEFAULT_LIMIT: usize = 200;
-
 /// 拼出执行一条 SQL 的 `psql` 参数。
 ///
 /// # 每个开关的理由（都是实测的）
@@ -448,18 +442,6 @@ fn is_blank_statement(stmt: &str) -> bool {
     !saw_code
 }
 
-/// 点表名时要填进编辑区的那条 SQL。
-///
-/// `schema.table` 两段都要引号：PostgreSQL 的标识符大小写敏感
-/// （不加引号会被折叠成小写，`"MyTable"` 和 `mytable` 是两张表）。
-pub fn select_from_table_sql(schema: &str, table: &str, limit: usize) -> String {
-    format!(
-        "SELECT * FROM \"{}\".\"{}\" LIMIT {limit}",
-        schema.replace('"', "\"\""),
-        table.replace('"', "\"\"")
-    )
-}
-
 /// 库列表。
 ///
 /// `datallowconn` 排掉不允许连接的库（`template0` 那种），
@@ -805,13 +787,18 @@ mod tests {
 
     #[test]
     fn select_template_quotes_both_parts() {
+        // 拼法只剩一份（`db::dialect`），那边有更全的断言；这里钉住
+        // **PostgreSQL 那条长什么样** —— 它是"点表名"在 pg 上能不能用。
+        use crate::db::{DEFAULT_LIMIT, DbKind, dialect_for};
+
+        let pg = dialect_for(DbKind::Postgres);
         assert_eq!(
-            select_from_table_sql("public", "t_user", 200),
+            pg.select_from_table_sql("public", "t_user", DEFAULT_LIMIT),
             r#"SELECT * FROM "public"."t_user" LIMIT 200"#
         );
         // 引号要双写，否则注入
         assert_eq!(
-            select_from_table_sql("pub\"lic", "t", 10),
+            pg.select_from_table_sql("pub\"lic", "t", 10),
             r#"SELECT * FROM "pub""lic"."t" LIMIT 10"#
         );
     }

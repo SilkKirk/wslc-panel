@@ -259,42 +259,6 @@ pub fn merge_columns(tree: &mut SchemaTree, tsv: &str) {
     }
 }
 
-/// 点树里某张表时，填进编辑区的那条 SQL。
-///
-/// # 为什么要 `LIMIT`
-///
-/// `SELECT * FROM 一张几百万行的表` 会把全部数据拉进内存、再塞进 GPUI 的
-/// 渲染树。实测这台机器上 `sys_oper_log` 只有 350 行还好，但用户库里
-/// 有几十万行的表是常态。所以默认带 `LIMIT`，用户想要更多自己改数字。
-///
-/// `LIMIT 200` 这个数：一屏大概能看 20~30 行，200 行够翻几屏，
-/// 又不至于让 `-B` 的输出撑爆内存。
-///
-/// # 为什么加反引号
-///
-/// 表名可能是 `order`（保留字）或者带 `-` 的。反引号是 MySQL 的标识符引用，
-/// 加了之后这些名字都能用。名字里的反引号**双写**转义（和 `-B` 的规矩一样）。
-pub fn select_from_table_sql(database: &str, table: &str) -> String {
-    format!(
-        "SELECT * FROM {} LIMIT {}",
-        qualified_name(database, table),
-        DEFAULT_LIMIT
-    )
-}
-
-/// 默认 `LIMIT`。
-pub const DEFAULT_LIMIT: u32 = 200;
-
-/// `\`库\`.\`表\`` 形式，反引号双写转义。
-pub fn qualified_name(database: &str, table: &str) -> String {
-    format!("{}.{}", quote_ident(database), quote_ident(table))
-}
-
-/// 用反引号包一个标识符；内部的反引号双写。
-fn quote_ident(name: &str) -> String {
-    format!("`{}`", name.replace('`', "``"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -426,18 +390,25 @@ mod tests {
 
     #[test]
     fn select_sql_quotes_identifiers() {
+        // 拼 SQL 的唯一实现在 `db::dialect`（`DialectData::select_from_table_sql`），
+        // 那边有一份更全的断言（两种引号风格 + 内部引号双写）。
+        // 这里只钉住"MySQL 那条长什么样"，因为 8 个列表页的**点击行为**
+        // 都依赖它。
+        use crate::db::{DEFAULT_LIMIT, DbKind, dialect_for};
+
+        let mysql = dialect_for(DbKind::MySql);
         assert_eq!(
-            select_from_table_sql("djxm", "sys_user"),
+            mysql.select_from_table_sql("djxm", "sys_user", DEFAULT_LIMIT),
             "SELECT * FROM `djxm`.`sys_user` LIMIT 200"
         );
         // 保留字 / 带横线的表名靠反引号
         assert_eq!(
-            select_from_table_sql("shop", "order"),
+            mysql.select_from_table_sql("shop", "order", DEFAULT_LIMIT),
             "SELECT * FROM `shop`.`order` LIMIT 200"
         );
         // 名字里的反引号双写
         assert_eq!(
-            select_from_table_sql("d`b", "t`bl"),
+            mysql.select_from_table_sql("d`b", "t`bl", DEFAULT_LIMIT),
             "SELECT * FROM `d``b`.`t``bl` LIMIT 200"
         );
     }

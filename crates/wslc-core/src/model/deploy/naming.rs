@@ -154,15 +154,38 @@ pub fn target_overlap(new_target: &str, existing_target: &str) -> Option<TargetO
 }
 
 /// 去掉尾部 `/`；空串（或全 `/`）归一成 `/`。
-fn normalize_target(path: &str) -> &str {
+///
+/// `pub` 是因为 `wslc-panel-core::deploys` 的目录冲突判定要用**同一个**
+/// 归一化：那边原先自己抄了一份逐字相同的实现，两份一旦漂，"同一个目录"
+/// 在面板的存档层和模型层就会给出不同答案。
+pub fn normalize_target(path: &str) -> &str {
     let trimmed = path.trim().trim_end_matches('/');
     if trimmed.is_empty() { "/" } else { trimmed }
 }
 
 /// `path` 是不是在 `parent` 里面（按路径边界）。
-fn is_under(path: &str, parent: &str) -> bool {
+///
+/// 同上：`pub` 给 `wslc-panel-core::deploys` 复用。
+pub fn is_under(path: &str, parent: &str) -> bool {
     if parent == "/" {
         return path != "/" && path.starts_with('/');
     }
     path.starts_with(parent) && path.as_bytes().get(parent.len()) == Some(&b'/')
+}
+
+/// `path` 在 `parent` 底下的**第一段**（两个都先按 [`normalize_target`] 归一）。
+///
+/// 返回 `None` = `path` 不在 `parent` 底下，或者底下那一段是空的。
+///
+/// 原先这是 `wslc-panel-core::deploys` 的私有函数，而它依赖的
+/// `normalize_target` 在那里也有一份副本 —— 现在归到规则本身该在的地方。
+pub fn first_segment_under<'a>(path: &'a str, parent: &str) -> Option<&'a str> {
+    let path = normalize_target(path);
+    let parent = normalize_target(parent);
+    let rest = if parent == "/" {
+        path.strip_prefix('/')?
+    } else {
+        path.strip_prefix(parent)?.strip_prefix('/')?
+    };
+    rest.split('/').next().filter(|name| !name.is_empty())
 }

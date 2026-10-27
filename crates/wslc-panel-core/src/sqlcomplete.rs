@@ -35,7 +35,7 @@ use wslc_core::model::schematree::{SchemaTree, TableNode};
 ///
 /// 方言数据属于数据层（`wslc_core::db::dialect`）：引号风格、关键字表、
 /// `LIMIT` 语法、能力位都是"这个引擎怎么说话"，补全只是**消费者**之一
-/// （另一个是 `schematree::select_from_table_sql` 拼的那条 SQL）。
+/// （另一个是 `DialectData::select_from_table_sql` 拼的那条 SQL）。
 ///
 /// 这里保留 `Dialect` 这个名字当别名，是为了不让补全的调用点全都改一遍；
 /// 真正的单一定义在 `DbKind`。

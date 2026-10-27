@@ -231,13 +231,22 @@ impl Shell {
         .detach();
     }
 
-    /// 点树里的表名 → 把 `SELECT * FROM \`库\`.\`表\` LIMIT 200` 填进编辑区。
+    /// 点树里的表名 → 把 `SELECT * FROM <表> LIMIT 200` 填进编辑区。
     ///
     /// # 为什么是"填进去"而不是"直接执行"
     ///
     /// 用户点表是想看数据，但**先看一眼 SQL** 是更安全的默认：他可能想加
     /// `WHERE`，也可能只是点错了表。填进去之后按一下「执行」就行，
     /// 而"点了就立刻跑一个全表扫描"是不可撤销的（尤其是生产库）。
+    ///
+    /// # 引号风格跟着**当前引擎**走
+    ///
+    /// 原先这里调的是 `model::schematree::select_from_table_sql` —— 那是 MySQL 的
+    /// 反引号版本。PostgreSQL 的标识符引用是双引号，反引号到那边是**语法错误**，
+    /// 于是"点表"在 PostgreSQL 库上等于点了没反应（填进去的 SQL 跑不了）。
+    ///
+    /// 拼法现在只有一份（`DialectData::select_from_table_sql`），这里按
+    /// `DbState::conn` 的引擎取方言 —— 别在这里再写 `if matches!(kind, …)`。
     pub fn pick_schema_table(
         &mut self,
         database: String,
@@ -245,8 +254,14 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let sql = wslc_core::model::schematree::select_from_table_sql(&database, &table);
-        // 顺便把「当前库」设成这个表所在的库 —— 否则 `SELECT * FROM \`库\`.\`表\``
+        let Some(db) = self.state.db.as_ref() else {
+            return;
+        };
+        // 先取方言再拼：`db` 是**不可变**借用，拼完就得放开，
+        // 下面那句 `as_mut()` 要不回来（借用检查器看最后一次使用）。
+        let dialect = wslc_core::db::dialect_for(db.conn.kind);
+        let sql = dialect.select_from_table_sql(&database, &table, wslc_core::db::DEFAULT_LIMIT);
+        // 顺便把「当前库」设成这个表所在的库 —— 否则 `SELECT * FROM 库.表`
         // 虽然能跑，但下面再手写 `SELECT * FROM 别的表` 时会报
         // "No database selected"（实测过）。
         if let Some(db) = self.state.db.as_mut() {

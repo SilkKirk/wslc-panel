@@ -49,7 +49,7 @@ pub mod storage;
 // 起 `curl.exe` 的那一半在 `cmd::update`。
 // 刻意不做下载/校验/替换 exe —— 见那个模块顶部的说明。
 pub mod update;
-// 跨模块的纯函数小工具（	runcate_chars 在这儿 —— 原先各写一份的那个）。
+// 跨模块的纯函数小工具（`truncate_chars` 在这儿 —— 原先各写一份的那个）。
 pub mod util;
 pub mod wslconfig;
 

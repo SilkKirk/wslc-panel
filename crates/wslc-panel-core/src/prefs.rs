@@ -300,22 +300,19 @@ impl Prefs {
 
     /// 读取偏好；文件不存在或内容坏了都退回默认值（**不报错**）。
     ///
-    /// 一个界面偏好不值得因为解析失败就拦住启动。
+    /// 一个界面偏好不值得因为解析失败就拦住启动 —— 所以和另外两个存档
+    /// 用同一个 `fileio::read_json`（兜底语义一致），只是**不把原因往上传**，
+    /// 而是就地 `warn` 一句进日志。这是"三个存档里唯一允许静默"的一个，
+    /// 因为它的内容坏掉时用户看不出任何差别，弹一条提示只是噪音。
     pub fn load() -> Self {
         let Some(path) = Self::path() else {
             return Self::default();
         };
-        // 和另外两个存档一样走 `fileio`：主文件缺失时能从 `.bak` 恢复。
-        let Ok(text) = crate::fileio::read_text(&path) else {
-            return Self::default();
-        };
-        match serde_json::from_str::<Prefs>(&text) {
-            Ok(prefs) => prefs.normalized(),
-            Err(e) => {
-                tracing::warn!("{} 解析失败，使用默认偏好：{e}", path.display());
-                Self::default()
-            }
+        let (prefs, problem): (Prefs, _) = crate::fileio::read_json(&path, "偏好文件", "已改用默认值");
+        if let Some(problem) = problem {
+            tracing::warn!("{problem}");
         }
+        prefs.normalized()
     }
 
     /// 写回磁盘；失败只记录日志，不影响界面。
@@ -323,9 +320,7 @@ impl Prefs {
         let Some(path) = Self::path() else {
             return Err("LOCALAPPDATA 未设置，无法确定偏好文件位置".to_owned());
         };
-        let text =
-            serde_json::to_string_pretty(self).map_err(|e| format!("序列化偏好失败：{e}"))?;
-        crate::fileio::write_atomic(&path, &text)
+        crate::fileio::write_json(&path, self)
             .map_err(|e| format!("写入 {} 失败：{e}", path.display()))
     }
 }

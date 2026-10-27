@@ -52,8 +52,11 @@ pub(super) fn run_curl_step(step: &PlannedStep, opts: &RunOptions) -> Result<()>
 }
 
 /// 从 `curl` 的参数里找出 `-o` 指的文件。
-// 只有测试按名字用（正式构建里没有调用点）—— `AGENTS.md` §2 那类"三件套"。
-#[allow(dead_code)]
+///
+/// `pub(super)` 但**没有 `#[allow(dead_code)]`**：正式构建里 [`run_curl_step`]
+/// 就在上面第一行调它。早先这里挂过一条"只有测试按名字用"的 allow ——
+/// 那是**写错了**（把 `cmd/install.rs` 里那份导入注释照搬到函数上），
+/// 而多余的 allow 会让"这个函数真的没人用了"这种腐烂**永远不报警**。
 pub(super) fn output_path(args: &[String]) -> Result<PathBuf> {
     let at = args.iter().position(|a| a == "-o").ok_or_else(|| {
         Error::Install("内部错误：下载步骤里没有 `-o`，拿不到产物路径".to_owned())

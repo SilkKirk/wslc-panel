@@ -30,10 +30,22 @@
 //! ⚠️ 不引入 `tempfile` / `windows` 之类的依赖：本机没有 Rust 工具链，
 //! 改 `Cargo.toml` 会动 `Cargo.lock`（见 `AGENTS.md` §3）。`std::fs`
 //! 的 rename 在同一目录内足够完成这件事。
+//!
+//! # 为什么还有 [`read_json`] / [`write_json`]
+//!
+//! `dbcreds` 与 `deploys` 两个存档的 `load` / `save` 原先**逐字相同**
+//! （只有"读不到 XXX 存档"那句里的名词不同）：同样的 `read_text` +
+//! `serde_json::from_str` + 三种失败兜底，同样的 `to_string_pretty` + `write_atomic`。
+//! 而 `prefs` 是第三份，写法还**不一样** —— 它在序列化失败时返回错误，
+//! 那两家却 `unwrap_or_else(|_| "{}")`，也就是**把整份存档覆盖成 `{}`**。
+//! 收成这两个函数之后，"存档读写的兜底语义"只有一个定义。
 
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
+
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 /// 主文件旁边的 `.bak` 路径。
 ///
@@ -78,6 +90,53 @@ pub fn read_text(path: &Path) -> io::Result<String> {
         }
         Err(error) => Err(error),
     }
+}
+
+/// 读一个 JSON 存档；**任何失败都退回 `T::default()` 并给出原因**。
+///
+/// # 三条兜底各自的意思（`dbcreds` / `deploys` 原先各写一遍）
+///
+/// - 文件不存在 → 空存档、**不算错**（第一次运行就是这么进来的）；
+/// - 读得到但解析不了 → 空存档 + 原因（调用方**必须**把它显示出来，
+///   否则用户看到的是一个"凭空少了几条记录"的列表，而没有任何解释）；
+/// - 读不到（权限 / 磁盘） → 空存档 + 原因。
+///
+/// `label` 是"XXX 存档"里的那个名词，用来拼给人看的句子；
+/// `hint` 是"里面的记录要怎么办"那半句（两个存档不一样：凭据要重录，
+/// 部署记录要重新部署一次）。
+pub fn read_json<T>(path: &Path, label: &str, hint: &str) -> (T, Option<String>)
+where
+    T: DeserializeOwned + Default,
+{
+    let text = match read_text(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return (T::default(), None),
+        Err(e) => return (T::default(), Some(format!("读不到{label}：{e}"))),
+    };
+    match serde_json::from_str::<T>(&text) {
+        Ok(value) => (value, None),
+        Err(e) => (
+            T::default(),
+            Some(format!(
+                "{label}解析失败（{}）—— {hint}：{e}",
+                path.display()
+            )),
+        ),
+    }
+}
+
+/// 把一个 JSON 存档写回磁盘（原子写，见本模块文档）。
+///
+/// ⚠️ **序列化失败要返回错误，不能退回 `"{}"`**。早先 `dbcreds` / `deploys`
+/// 写的是 `serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_owned())`
+/// —— 那等于"序列化不了就把整份存档清空"：用户的账号 / 部署记录在第一次
+/// 落盘时就全没了，而且**没有任何错误传出去**（`save` 返回 `Ok`）。
+/// 这些类型都是扁平的 `String` / `u16` / `Vec`，实际到不了这条路，
+/// 但兜底的方向反了 —— 兜底要往"保住旧数据"倒，不能往"清空"倒。
+pub fn write_json<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
+    let text = serde_json::to_string_pretty(value)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    write_atomic(path, &text)
 }
 
 /// 原子地把 `text` 写到 `path`（自动创建父目录）。
@@ -197,6 +256,79 @@ mod tests {
 
         assert_eq!(read_text(&path).expect("主文件应优先"), "new");
         assert!(!backup.exists(), "读到主文件后应清掉旧 .bak");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---- JSON 存档那一层（`dbcreds` / `deploys` / `prefs` 共用）----
+
+    #[derive(Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    struct Sample {
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        count: u32,
+    }
+
+    #[test]
+    fn json_round_trips_through_disk() {
+        let dir = temp_dir("json-roundtrip");
+        let path = dir.join("sample.json");
+
+        let value = Sample {
+            name: "a".to_owned(),
+            count: 2,
+        };
+        write_json(&path, &value).expect("应能写");
+        let (back, problem): (Sample, _) = read_json(&path, "样本存档", "要重新录一次");
+        assert!(problem.is_none(), "{problem:?}");
+        assert_eq!(back, value);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_json_file_is_an_empty_store_not_an_error() {
+        // 「第一次运行」就是这么进来的 —— 不能当错误报给用户。
+        let (store, problem): (Sample, _) = read_json(
+            Path::new(r"Z:\definitely\not\a\real\path\sample.json"),
+            "样本存档",
+            "要重新录一次",
+        );
+        assert_eq!(store, Sample::default());
+        assert!(problem.is_none(), "文件不存在不算错：{problem:?}");
+    }
+
+    #[test]
+    fn corrupt_json_file_degrades_to_default_and_reports() {
+        // 损坏要**既**退回默认值（界面还能画）**又**把原因说出来
+        // （否则用户看到的是"凭空少了几条记录"）。
+        let dir = temp_dir("json-corrupt");
+        let path = dir.join("sample.json");
+        fs::write(&path, "{ 不是 json").expect("应能写坏档");
+
+        let (store, problem): (Sample, _) = read_json(&path, "样本存档", "要重新录一次");
+        assert_eq!(store, Sample::default());
+        let problem = problem.expect("损坏要能被说出来");
+        // 句子要带上名词、路径和"怎么办"那半句 —— 三样缺一用户就不知道下一步。
+        assert!(problem.contains("样本存档"), "{problem}");
+        assert!(problem.contains("sample.json"), "{problem}");
+        assert!(problem.contains("要重新录一次"), "{problem}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn json_read_also_recovers_from_backup() {
+        // `read_json` 必须走上层的 `read_text`（而不是自己 `read_to_string`），
+        // 否则两个存档会丢掉 `.bak` 恢复这条兜底。
+        let dir = temp_dir("json-backup");
+        let path = dir.join("sample.json");
+        fs::write(backup_path(&path), r#"{"name":"from-bak","count":7}"#).expect("应能写 .bak");
+
+        let (store, problem): (Sample, _) = read_json(&path, "样本存档", "要重新录一次");
+        assert!(problem.is_none(), "{problem:?}");
+        assert_eq!(store.name, "from-bak");
 
         let _ = fs::remove_dir_all(&dir);
     }

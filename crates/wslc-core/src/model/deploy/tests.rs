@@ -1172,6 +1172,32 @@ fn target_overlap_compares_by_path_boundary() {
     );
 }
 
+/// `first_segment_under` 现在**自己归一化**两个入参（v0.22.3 收口时改的）——
+/// 原先调用点必须先把尾部 `/` 去掉再传，漏一次就得到 `None`（"看着能过"）。
+#[test]
+fn first_segment_under_normalizes_both_sides() {
+    assert_eq!(first_segment_under("/root/assets", "/root"), Some("assets"));
+    // 同一件事，只是两头带 / 或者带空格
+    assert_eq!(
+        first_segment_under("/root/assets/", "/root/"),
+        Some("assets")
+    );
+    assert_eq!(
+        first_segment_under(" /root/assets ", " /root "),
+        Some("assets")
+    );
+    // 根目录是特例：`/` 底下的第一段
+    assert_eq!(first_segment_under("/root", "/"), Some("root"));
+    assert_eq!(first_segment_under("/", "/"), None, "根底下没有第一段");
+    // 不在底下 / 按边界才算
+    assert_eq!(first_segment_under("/root2/assets", "/root"), None);
+    assert_eq!(
+        first_segment_under("/root", "/root"),
+        None,
+        "自己是自己但没下一段"
+    );
+}
+
 // -----------------------------------------------------------------------
 // nginx 站点配置
 // -----------------------------------------------------------------------

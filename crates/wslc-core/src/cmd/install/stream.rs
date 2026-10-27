@@ -103,8 +103,11 @@ pub(super) fn line_sink(
 ///
 /// 去掉 `wsl.exe` 那句固定套话（它每行都一样，且不含任何信息），
 /// 剩下的按行拼起来 —— 真正的错误码（`Wsl/InstallDistro/...`）就在里面。
-// 只有测试按名字用（正式构建里没有调用点）—— `AGENTS.md` §2 那类"三件套"。
-#[allow(dead_code)]
+///
+/// **不是**"只有测试按名字用"：正式路径在上面 [`finish_stream`] 的
+/// `Err(Error::NonZeroExit { stderr: failure_detail(&tail), .. })` 里。
+/// 早先那句 allow 的注释是错的（照抄了别处的模板），已删 ——
+/// 多余的 `#[allow(dead_code)]` 会掩盖真正的死代码。
 pub(super) fn failure_detail(tail: &[String]) -> String {
     let meaningful: Vec<&str> = tail
         .iter()

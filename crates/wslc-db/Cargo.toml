@@ -16,7 +16,10 @@ publish.workspace = true
 [dependencies]
 # `DbKind` 等类型来自这里（单向依赖：`wslc-core` 不知道本 crate 存在）。
 wslc-core = { workspace = true }
-# 同步驱动 —— 为什么不用 sqlx / tokio-postgres 见 `docs/PLAN-native-db.md` §2：
+# 同步驱动 —— 为什么不用 sqlx / tokio-postgres 见 `src/lib.rs` 顶部的
+# 「为什么是同步驱动」那段（原先指向 `docs/PLAN-native-db.md` §2，那份文档
+# 2026-10-27 已删，见 `AGENTS.md` §5「计划文档」。理由只该有一处，
+# 现在住在 `src/lib.rs` 里）：
 # 本项目的铁律是"阻塞调用放 background_executor"，同步驱动天然符合；
 # 异步驱动要桥 tokio runtime，多一层就多一类"卡界面/死锁"的 bug。
 #
