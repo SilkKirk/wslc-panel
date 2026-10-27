@@ -498,13 +498,17 @@ Button::new(id).label("更多").small()
 
 | 官方组件 | 我们现在用什么 | 为什么不换 |
 |---|---|---|
-| `group_box::GroupBox` | `common::card()`（17 处） | `title_style` / `content_style` 收的是 `StyleRefinement`，要构造它得先建个 `div`、链式设完再从 `style()` 取（很别扭）；而且 `GroupBox::render` 在内容外**多套一层**（`gap_2`），17 张卡的间距会整体变。颜色（`bg_card` / `border`）还得逐项覆盖。收益只剩"标题字号跟组件主题走" |
-| `separator::Separator` | `border_b_1()`（4 处） | `horizontal()` 的实现是"容器高度 0 + 绝对定位的 1px 线"，替换掉 `border` 会让布局**少 1px**，且在滚动容器里贴不到正确位置。4 处 border 不值得 |
+| `group_box::GroupBox` | `common::card()`（**22 处调用** + 1 处定义，审查时点的） | `title_style` / `content_style` 收的是 `StyleRefinement`，要构造它得先建个 `div`、链式设完再从 `style()` 取（很别扭）；而且 `GroupBox::render` 在内容外**多套一层**（`gap_2`），这 22 张卡的间距会整体变。颜色（`bg_card` / `border`）还得逐项覆盖。收益只剩"标题字号跟组件主题走" |
+| `separator::Separator` | `border_b_1()`（**4 处**） | `horizontal()` 的实现是"容器高度 0 + 绝对定位的 1px 线"，替换掉 `border` 会让布局**少 1px**，且在滚动容器里贴不到正确位置。4 处 border 不值得 |
 | `skeleton::Skeleton` | "正在读取…" / 官方 `Spinner` | 本项目的等待大多**有进度**（安装 / 导出 / 导入）；真正没进度的只有"读表结构、查 registry tag"两处，而它们已经有 `Spinner`（`db_loading`）。铺 Skeleton 要先为每块布局造形状，收益是"感知性能"，代价是每处都要维护假盒子 |
 | `badge::Badge` | `Tag::custom`（`common::badge`） | `Badge` 是**数字 / 红点角标**（`.count()` / `.dot()`），不是文字胶囊。文字胶囊的官方组件就是 `Tag`，而 `common::badge` 用的正是 `Tag::custom` —— 已经是官方用法 |
 
 > 判断标准不是"有没有官方组件"，而是"换过去之后**行为/观感/维护成本**里
 > 至少一项明确变好"。只变"更像官方的写法"不算。
+>
+> ⚠️ 这张表里的**数字是会变的**（`card()` 从 17 涨到 22 就是加页面加出来的）。
+> 数字只是"规模"的说明，**论据是后半列的代价**；重跑一遍数字发现对不上时，
+> 先改数字、别删论据 —— 除非某个代价真的消失了，那才该重新论证。
 
 ### 计划文档
 
@@ -718,9 +722,23 @@ cx.spawn_in(window, async move |this, cx| {
        它们同样要清状态，只是清的那个字段不影响任务本身。
 
   **19 个浮层全部在栈里**，所以 `Shell::render` 末尾那条 `.child()` 链子上
-  已经**不挂任何浮层**。加新浮层只有三处要动：`app/shell/dialogs.rs` 的
-  `DialogKey` 变体 + `sync_dialog_stack` 的 `if`，以及 `dialogs/specs.rs` 的
-  `open_dialog_for` 臂 —— **不要**再往 render 的链子上挂东西。
+  已经**不挂任何浮层**。加新浮层只有三处要动：
+
+  1. `app/shell/dialogs.rs` 的 `DialogKey` 变体（枚举）**和** `DialogKey::ALL`
+     那张表（**顺序 = 层序**，插在哪就是第几层）**和** `DialogKey::is_open`
+     的臂（"这一帧该不该开"的**唯一判据**）；
+  2. `dialogs/specs.rs` 的 `open_dialog_for` 臂（怎么开：标题 / 宽度 /
+     `overlay_closable` / `keyboard` / `close` / footer）；
+  3. 那个状态的**三条退出路径**（页脚按钮 / Esc / 点遮罩）都要清状态 + 记账
+     （见上一节那张表）。
+
+  ⚠️ **`sync_dialog_stack` 里没有 `if`** —— 它是"按 `DialogKey::ALL` +
+  `is_open` 算一遍 desired，再和 `dialog_stack` 求最长公共前缀"的通用算法。
+  （这一条原文写的是"`sync_dialog_stack` 的 `if`"，那是 v0.21 之前的样子：
+  17 个手写顺序 `if`，层序只藏在书写顺序里。改成表之后，加浮层不需要动
+  sync —— 但它**仍然要动 `ALL` 的顺序**，而这件事只有那张表能表达。）
+
+  **不要**再往 render 的链子上挂东西。
 
   > 留下的历史（**别再犯**）：v0.9.14 及以前通用二次确认挂在链子的**最前面**，
   > 于是从详情里点「压缩磁盘」时，确认框连着遮罩一起被详情盖住 ——
