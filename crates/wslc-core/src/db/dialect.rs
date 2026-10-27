@@ -128,7 +128,7 @@ impl DialectData {
 
     /// 点表名时填进编辑区的那条 SQL。
     ///
-    /// # 这一份是**唯一**实现（v0.22.3 收口）
+    /// # 这一份是**唯一**实现（审查时收口）
     ///
     /// 收之前有两份手写：`model::schematree::select_from_table_sql`（写死反引号）
     /// 和 `model::postgres::select_from_table_sql`（写死双引号）。而 SQL 控制台
@@ -391,7 +391,7 @@ mod tests {
         }
     }
 
-    /// ⚠️ 回归钉（v0.22.3）：点表名生成的 SQL **必须按方言引号**。
+    /// ⚠️ 回归钉：点表名生成的 SQL **必须按方言引号**。
     ///
     /// 坏过的样子：控制台一律走 `schematree` 那份（反引号），于是 PostgreSQL
     /// 下点一张表填进编辑区的是 ``SELECT * FROM `public`.`t_user` LIMIT 200``

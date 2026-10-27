@@ -1172,7 +1172,7 @@ fn target_overlap_compares_by_path_boundary() {
     );
 }
 
-/// `first_segment_under` 现在**自己归一化**两个入参（v0.22.3 收口时改的）——
+/// `first_segment_under` 现在**自己归一化**两个入参（审查收口时改的）——
 /// 原先调用点必须先把尾部 `/` 去掉再传，漏一次就得到 `None`（"看着能过"）。
 #[test]
 fn first_segment_under_normalizes_both_sides() {
