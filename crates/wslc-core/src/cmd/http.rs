@@ -29,18 +29,17 @@ use crate::mirrors;
 /// 静默生效了），而触发它的方式是"调用方传了一串带了 `-q` 的参数" ——
 /// 那种事只会在某次拼参数改动之后才出现。所以把它提成 [`with_quiet_first`]，
 /// 让"最前 + 只一份"这条能用断言钉住。
-fn with_quiet_first(args: &[&str]) -> Vec<String> {
+///
+/// 返回 `Vec<&str>`（借用 `args`）：`run_helper_with_hint` 收的就是 `&[&str]`，
+/// 多一层 `to_owned()` 只会多一次分配、再被 `to_owned_args` 复制一遍。
+fn with_quiet_first<'a>(args: &[&'a str]) -> Vec<&'a str> {
     let mut out = Vec::with_capacity(args.len() + 1);
     // 永远是**第一个**。curl 只认第一个 `-q`，后面的 `--config` 照样生效，
     // 所以"调用方已经带了就不加"那种写法（`if !args.contains(&"-q")`）
     // 在 `-q` 位于中间时会让这条承诺静默失效。
-    out.push("-q".to_owned());
+    out.push("-q");
     // 调用方自己带的 `-q` 滤掉（避免重复；位置也不对，留着只会误导读代码的人）。
-    out.extend(
-        args.iter()
-            .filter(|arg| **arg != "-q")
-            .map(|arg| (*arg).to_owned()),
-    );
+    out.extend(args.iter().filter(|arg| **arg != "-q").copied());
     out
 }
 
@@ -89,7 +88,7 @@ mod tests {
     fn quiet_flag_is_always_first_and_only_once() {
         // ① 调用方不带 `-q`：我们补在最前
         let plain = with_quiet_first(&["-sS", "-L", "https://x"]);
-        assert_eq!(plain.first().map(String::as_str), Some("-q"), "{plain:?}");
+        assert_eq!(plain.first().copied(), Some("-q"), "{plain:?}");
         assert_eq!(
             plain,
             vec!["-q", "-sS", "-L", "https://x"],
@@ -99,14 +98,14 @@ mod tests {
         // ② 调用方**自带** `-q` 但在中间：必须被提到最前，且不能留两份。
         //    这是旧写法 `if !args.contains(&"-q")` 漏掉的那种形状。
         let mid = with_quiet_first(&["-sS", "-q", "https://x"]);
-        assert_eq!(mid.first().map(String::as_str), Some("-q"), "{mid:?}");
-        assert_eq!(mid.iter().filter(|a| *a == "-q").count(), 1, "只该有一份");
+        assert_eq!(mid.first().copied(), Some("-q"), "{mid:?}");
+        assert_eq!(mid.iter().filter(|a| **a == "-q").count(), 1, "只该有一份");
         assert_eq!(mid, vec!["-q", "-sS", "https://x"]);
 
         // ③ 调用方自带 `-q` 在最后：同样被提上来
         let last = with_quiet_first(&["-sS", "https://x", "-q"]);
-        assert_eq!(last.first().map(String::as_str), Some("-q"), "{last:?}");
-        assert_eq!(last.iter().filter(|a| *a == "-q").count(), 1);
+        assert_eq!(last.first().copied(), Some("-q"), "{last:?}");
+        assert_eq!(last.iter().filter(|a| **a == "-q").count(), 1);
 
         // ④ 空参数：只有 `-q`
         assert_eq!(with_quiet_first(&[]), vec!["-q"]);
