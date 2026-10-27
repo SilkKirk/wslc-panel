@@ -391,9 +391,15 @@ impl Shell {
     /// ⚠️ 只接受 `http://` / `https://`：这个入参来自容器 inspect 的
     /// `Ports`，理论上是我们自己拼的，但把任意字符串交给
     /// `explorer.exe` 等于多开一个协议处理器入口，没必要。
+    ///
+    /// 判据走 [`wslc_core::mirrors::is_http_url`]，**不在这里手写**
+    /// `starts_with("http://")`。手写那版会拒掉 `HTTPS://…` —— 而 RFC 里
+    /// scheme 是大小写无关的，`is_http_url` 的文档就是为这件事写的
+    /// （它还负责挡住 `file://` / `-o` 这类"交给 curl 会被当选项"的形态）。
+    /// 两处各写一份的结果就是"同一个 URL，在镜像探测那里能过、点开却报错"。
     pub fn open_url(&mut self, url: String, cx: &mut Context<Self>) {
         let url = url.trim().to_owned();
-        if !(url.starts_with("http://") || url.starts_with("https://")) {
+        if !wslc_core::mirrors::is_http_url(&url) {
             self.state
                 .notify(Toast::error(format!("不是可打开的 URL：{url}")));
             cx.notify();

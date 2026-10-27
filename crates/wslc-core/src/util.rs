@@ -70,6 +70,27 @@ pub fn format_args_for_display(args: &[String]) -> String {
         .join(" ")
 }
 
+/// 取字符串前 `max` 个**字节**，落在字符边界上才截，否则原样返回。
+///
+/// # 这是"id 前 N 位"的唯一实现
+///
+/// 容器 / 镜像 / 网络各自有一个 `short_id()`，四份都是同一句
+/// `self.id.get(..self.id.len().min(12)).unwrap_or(&self.id)` —— 抄了四遍，
+/// 连"为什么用 `get` 不用切片"这个坑都只在一处写了注释。
+///
+/// # 为什么是 `get(..n)` 而不是 `&s[..n]`
+///
+/// id 来自外部命令的输出，**理论上**是 64 位十六进制，但那不是设计前提：
+/// 一个多字节字符正好跨过第 `n` 个字节时，`&s[..n]` 是一次**启动路径上的 panic**。
+/// `get` 在非边界上返回 `None`，于是退回整串 —— 显示上"长了一点"，
+/// 比崩掉好（`main.rs` 的 `short_build_sha` 是同一个理由）。
+///
+/// 注意它和 [`truncate_chars`] 不是一件事：那个按**字符**切给人看的文字、
+/// 还会补省略号；这个只用于 id 这类**定长标识**，不补任何东西。
+pub fn short_prefix(text: &str, max: usize) -> &str {
+    text.get(..text.len().min(max)).unwrap_or(text)
+}
+
 /// 按**字符**（不是字节）截断，超长时在末尾加一个省略号。
 ///
 /// # 为什么不能按字节切
@@ -155,5 +176,39 @@ mod tests {
         assert_eq!(truncate_chars("", 0), "");
         // 差一个字符才真的截
         assert_eq!(truncate_chars("abcd", 3), "abc…");
+    }
+
+    // ---- `short_prefix`（容器 / 镜像 / 网络 / 构建号的短 ID）----
+
+    #[test]
+    fn short_prefix_takes_the_first_max_bytes() {
+        // 真机形状：64 位十六进制 ID
+        assert_eq!(
+            short_prefix("abcdef0123456789abcdef0123456789", 12),
+            "abcdef012345"
+        );
+        // 构建号用 7 位
+        assert_eq!(short_prefix("cbee728ea3b1f42aa", 7), "cbee728");
+    }
+
+    #[test]
+    fn short_prefix_keeps_short_input_whole() {
+        // 比上限还短：原样返回，不补空格、不报错
+        assert_eq!(short_prefix("dev", 7), "dev");
+        assert_eq!(short_prefix("", 12), "");
+        // 正好等于上限
+        assert_eq!(short_prefix("abcdefghijkl", 12), "abcdefghijkl");
+    }
+
+    #[test]
+    fn short_prefix_never_splits_a_multibyte_char() {
+        // ⚠️ 这条就是"用 `get` 不用切片"的理由本身。
+        // `"abcdefghijk中"`：ASCII 11 个字节，`中` 占 3 字节 → 第 12 个字节
+        // 落在 `中` 的中间。`&s[..12]` 在这里**直接 panic**；
+        // `short_prefix` 退回整串（显示上长一个字符，总比崩了强）。
+        let s = "abcdefghijk中";
+        assert_eq!(short_prefix(s, 12), s, "非字符边界必须退回整串");
+        // 边界正好落在一个字符结束处时才真的截
+        assert_eq!(short_prefix(s, 11), "abcdefghijk");
     }
 }

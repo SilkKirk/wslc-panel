@@ -139,7 +139,8 @@ impl ContainerListItem {
 
     /// 12 位短 ID。
     ///
-    /// ⚠️ 用 `get(..n)` 而不是 `&self.id[..n]`：`len()` 是**字节**数，
+    /// ⚠️ 实现在 [`crate::util::short_prefix`]（用它，别在这儿手写）：
+    /// `get(..n)` 而不是 `&self.id[..n]` —— `len()` 是**字节**数，
     /// 第 12 个字节正好落在多字节字符中间时，切片会直接 panic。
     /// 今天 `wslc` 给的是十六进制 ID，所以碰不到 —— 但 `id` 是
     /// `#[serde(default)]` 的自由字符串，被包装脚本改写、或某台机器上
@@ -147,8 +148,11 @@ impl ContainerListItem {
     /// 绝不能 panic"（`jsonl` 好不容易把坏行挡住了，一个 panic
     /// 会把整个界面拖掉）。`get` 落到字符边界之外时退回整串，
     /// 比"少显示几位"更诚实。
+    ///
+    /// 镜像 / 网络两个模型要的是逐字相同的一句话，所以那段理由现在只写在
+    /// `short_prefix` 一处 —— 四份抄下来之后只有这一份带着解释。
     pub fn short_id(&self) -> &str {
-        self.id.get(..self.id.len().min(12)).unwrap_or(&self.id)
+        crate::util::short_prefix(&self.id, 12)
     }
 
     /// 展示名：优先容器名，其次短 ID。
@@ -603,10 +607,10 @@ impl ContainerInspect {
 
     /// 12 位短 ID。
     ///
-    /// ⚠️ 同 [`ContainerListItem::short_id`]：`get(..n)` 而不是切片，
-    /// 避免第 12 个字节踩在多字节字符中间时 panic。
+    /// ⚠️ 同 [`ContainerListItem::short_id`]：走 [`crate::util::short_prefix`]
+    /// （`get(..n)` 而不是切片，避免第 12 个字节踩在多字节字符中间时 panic）。
     pub fn short_id(&self) -> Option<&str> {
-        self.id().map(|s| s.get(..s.len().min(12)).unwrap_or(s))
+        self.id().map(|s| crate::util::short_prefix(s, 12))
     }
 
     /// 容器名，**已去掉 `inspect` 特有的前导 `/`**。

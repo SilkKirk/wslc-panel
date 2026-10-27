@@ -47,6 +47,14 @@ mod wslconf;
 // （`page` 是页面分发，见文件末尾。）
 // 浮层的**外壳**不在这里：19 个浮层全部走官方 `Dialog`（窗口级层栈，见
 // `app::shell::dialogs`），`views` 只产出"内容"（`*_body`）。
+//
+// ⚠️ 这一条**同样约束各子模块内部的可见性**（v0.22.3 起）：只在本文
+// 文件里用、别处一次都不调的助手写成 `fn`（私有），别写成 `pub(crate)`。
+// 审查时量过：154 个 `pub(crate)` 里有 75 个从没被别的文件调过 ——
+// 那种声明的意思是"别处会用"，读代码的人据此判断"改它要小心谁"，
+// 而实际上一个人都没用。**接口应当等于真实的使用面。**
+// 判据：全仓**代码行**里搜一遍（注释里提到名字不算调用），搜不到就私有；
+// 反过来 `page()` 要调的 `*_page` 必须留着 `pub(crate)`。
 pub(crate) use common::{ShellView, modal_footer, sidebar_toggle};
 pub(crate) use create::create_dialog_body;
 pub(crate) use db_dialogs::{

@@ -61,11 +61,12 @@ impl ImageListItem {
 
     /// 12 位短 ID。
     ///
-    /// ⚠️ `get(..n)` 而不是 `&self.id[..n]`：`len()` 是**字节**数，
-    /// 第 12 个字节落在多字节字符中间时切片会 panic。
-    /// 这类"解析出来的自由字符串"一律不能假设是 ASCII。
+    /// ⚠️ 走 [`crate::util::short_prefix`]：`get(..n)` 而不是 `&self.id[..n]`，
+    /// 因为 `len()` 是**字节**数，第 12 个字节落在多字节字符中间时切片会 panic。
+    /// 这类"解析出来的自由字符串"一律不能假设是 ASCII ——
+    /// 完整理由写在 `short_prefix` 的文档里（那里是唯一实现）。
     pub fn short_id(&self) -> &str {
-        self.id.get(..self.id.len().min(12)).unwrap_or(&self.id)
+        crate::util::short_prefix(&self.id, 12)
     }
 
     /// 是否为悬空镜像（没有仓库名也没有标签）。

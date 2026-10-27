@@ -40,10 +40,10 @@ pub struct NetworkListItem {
 impl NetworkListItem {
     /// 12 位短 ID。
     ///
-    /// ⚠️ `get(..n)` 而不是 `&self.id[..n]`：`len()` 是**字节**数，
-    /// 第 12 个字节落在多字节字符中间时切片会 panic。
+    /// ⚠️ 走 [`crate::util::short_prefix`]（`get(..n)` 而不是 `&self.id[..n]`：
+    /// 第 12 个字节落在多字节字符中间时切片会 panic）。
     pub fn short_id(&self) -> &str {
-        self.id.get(..self.id.len().min(12)).unwrap_or(&self.id)
+        crate::util::short_prefix(&self.id, 12)
     }
 
     /// `IPv4` 字符串转布尔。
