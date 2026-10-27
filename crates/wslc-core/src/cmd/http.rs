@@ -35,7 +35,7 @@ pub(crate) fn curl(url: &str, args: &[&str], timeout: Duration) -> Result<Comman
     // 里面的 `--proxy` / `-K` / `--output` 能改变请求目的地或落盘位置。
     // 我们只想要一条"取这个 URL"的命令，配置文件的隐式行为不应参与。
     let mut with_quiet = Vec::with_capacity(args.len() + 1);
-    if !args.iter().any(|arg| *arg == "-q") {
+    if !args.contains(&"-q") {
         with_quiet.push("-q");
     }
     with_quiet.extend_from_slice(args);
