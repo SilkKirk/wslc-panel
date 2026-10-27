@@ -107,7 +107,12 @@
 ### 方式一：安装包（推荐）
 
 到 [Releases](https://github.com/SilkKirk/wslc-panel/releases) 下载
-**`wslc-panel-vX.Y.Z-setup-x64.exe`**，双击安装。
+**`wslc-panel-<版本>-setup-x64.exe`**，双击安装。
+
+> ⚠️ 安装包的文件名**不带 `v` 前缀**（`wslc-panel-0.22.3-setup-x64.exe`），
+> 而 zip 带（`wslc-panel-v0.22.3-windows-x64.zip`）—— 这是
+> `scripts/build-installer.ps1` 从 tag 取版本号时的既有行为，两个资产不一样。
+> 按 `wslc-panel-v…-setup` 去搜会找不到。
 
 - **per-user 安装**（装到 `%LOCALAPPDATA%\Programs\wslc-panel`），**不需要管理员权限**，
   不弹 UAC；

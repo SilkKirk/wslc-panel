@@ -337,7 +337,13 @@ git push origin main
 3. 推 main → **等 CI 全绿** → 打 `vX.Y.Z` 标签 → 推标签。
 4. `release.yml` 由 `push: tags: ["v*"]` 触发，编译并发布三个资产：
    `wslc-panel.exe`（绿色版）、`wslc-panel-vX.Y.Z-windows-x64.zip`（归档）、
-   `wslc-panel-vX.Y.Z-setup-x64.exe`（Inno Setup 安装包，只在 `v` 标签上编）。
+   `wslc-panel-X.Y.Z-setup-x64.exe`（Inno Setup 安装包，只在 `v` 标签上编）。
+
+   ⚠️ **安装包的名字里没有 `v`**（`wslc-panel-0.22.3-setup-x64.exe`），
+   而 zip 里有（`wslc-panel-v0.22.3-windows-x64.zip`）—— 实测 v0.22.1 /
+   v0.22.2 / v0.22.3 三版都是这样（`scripts/build-installer.ps1` 从 tag
+   取版本号时去了 `v`）。**`README` 早先写成 `vX.Y.Z-setup`，是错的**，
+   用户按那个名字去发布页会找不到文件；已改。
 
    ⚠️ **`wslc-panel.exe` 这个文件名是契约**：发布页、README、以及更新提示里
    指向的都是它。改名等于让所有存量用户的"去发布页下载"落空。
