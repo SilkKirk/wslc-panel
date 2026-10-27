@@ -670,7 +670,7 @@ fn mirror_plan_uses_the_installer_for_wsl_bundles() {
     );
     // 临时文件按格式取后缀
     assert!(
-        plan.steps[1].args[8].ends_with(".wsl"),
+        plan.steps[1].args[9].ends_with(".wsl"),
         "{:?}",
         plan.steps[1].args
     );
