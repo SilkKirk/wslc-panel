@@ -308,7 +308,8 @@ impl Prefs {
         let Some(path) = Self::path() else {
             return Self::default();
         };
-        let (prefs, problem): (Prefs, _) = crate::fileio::read_json(&path, "偏好文件", "已改用默认值");
+        let (prefs, problem): (Prefs, _) =
+            crate::fileio::read_json(&path, "偏好文件", "已改用默认值");
         if let Some(problem) = problem {
             tracing::warn!("{problem}");
         }
