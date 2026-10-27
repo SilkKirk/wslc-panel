@@ -415,6 +415,8 @@ pub fn parse_update_time(json: &str) -> Option<String> {
 /// [`is_http_url`]，否则一个以 `-` 开头的字符串会被 curl 当成选项。
 pub fn curl_json_args(url: &str) -> Vec<String> {
     vec![
+        // `-q`：不读用户的 `_curlrc`（见 `cmd::http::curl` 的说明）。
+        "-q".to_owned(),
         "-s".to_owned(),
         "-L".to_owned(),
         "-m".to_owned(),
@@ -438,6 +440,8 @@ pub fn curl_json_args(url: &str) -> Vec<String> {
 /// 界面退化成"已下载多少"而没有百分比，功能不受影响。
 pub fn probe_args(url: &str) -> Vec<String> {
     vec![
+        // `-q`：不读用户的 `_curlrc`。
+        "-q".to_owned(),
         "-s".to_owned(),
         "-I".to_owned(),
         "-L".to_owned(),
@@ -547,6 +551,9 @@ pub fn pick_fastest(probes: &[(Candidate, Option<Probe>)]) -> Option<(Candidate,
 /// 保证判据只有一处）。
 pub fn download_args(url: &str, out: &str) -> Vec<String> {
     vec![
+        // `-q`：不读用户的 `_curlrc`。下载会写盘，`_curlrc` 里的
+        // `output=` 能把产物写到意料之外的位置，必须显式关掉。
+        "-q".to_owned(),
         "-s".to_owned(),
         // `-S`：出错时仍然说话。-s 单用会把错误一起吞掉，
         // 那是"点了没反应"里最难查的一种。
@@ -878,6 +885,7 @@ mod tests {
         assert_eq!(
             args,
             vec![
+                "-q",
                 "-s",
                 "-L",
                 "-m",
@@ -1002,7 +1010,8 @@ mod tests {
     #[test]
     fn download_args_pin_the_url_and_output() {
         let args = download_args("https://x/y.tar.xz", r"D:\tmp\y.tar.xz");
-        assert_eq!(args[0], "-s");
+        assert_eq!(args[0], "-q");
+        assert_eq!(args[1], "-s");
         assert!(args.iter().any(|a| a == "-S"), "出错必须仍然说话");
         assert_eq!(args[args.len() - 1], "https://x/y.tar.xz");
         let at = args.iter().position(|a| a == "-o").unwrap();
@@ -1060,6 +1069,7 @@ mod tests {
         assert_eq!(
             probe,
             vec![
+                "-q",
                 "-s",
                 "-I",
                 "-L",

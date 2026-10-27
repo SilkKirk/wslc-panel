@@ -31,11 +31,19 @@ pub(crate) fn curl(url: &str, args: &[&str], timeout: Duration) -> Result<Comman
             "不是 http(s) 地址，已拒绝调用 curl：{url}"
         )));
     }
+    // `-q` 必须放在最前：curl 默认会读用户的 `_curlrc` / `.curlrc`，
+    // 里面的 `--proxy` / `-K` / `--output` 能改变请求目的地或落盘位置。
+    // 我们只想要一条"取这个 URL"的命令，配置文件的隐式行为不应参与。
+    let mut with_quiet = Vec::with_capacity(args.len() + 1);
+    if !args.iter().any(|arg| *arg == "-q") {
+        with_quiet.push("-q");
+    }
+    with_quiet.extend_from_slice(args);
     cli::run_helper_with_hint(
         "curl.exe",
         "curl.exe",
         cli::CURL_NOT_FOUND_HINT,
-        args,
+        &with_quiet,
         timeout,
     )
 }

@@ -627,6 +627,7 @@ fn mirror_plan_downloads_then_imports_then_cleans_up() {
     assert_eq!(
         plan.steps[1].args,
         vec![
+            "-q",
             "-s",
             "-S",
             "-L",
@@ -643,10 +644,10 @@ fn mirror_plan_downloads_then_imports_then_cleans_up() {
     assert_eq!(plan.steps[2].args, vec![r"D:\wsl\Ubuntu-24.04"]);
     assert_eq!(plan.steps[3].args[0], "--import");
     // 删掉的必须是**下载下来的那个文件**（curl 参数里 `-o` 后面那个）
-    assert_eq!(plan.steps[4].args[0], plan.steps[1].args[8]);
+    assert_eq!(plan.steps[4].args[0], plan.steps[1].args[9]);
     // 下载那一步是可以取消的
     assert!(plan.steps[1].cancellable);
-    assert!(plan.preview_lines()[1].starts_with("2. curl -s -S -L"));
+    assert!(plan.preview_lines()[1].starts_with("2. curl -q -s -S -L"));
 }
 
 #[test]

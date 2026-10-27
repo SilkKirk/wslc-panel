@@ -420,7 +420,7 @@ pub(crate) fn create_dialog_body(
                 .gap_3()
                 .child(form_field(
                     "create-ports",
-                    "端口映射（逗号或换行分隔，如 8080:80）",
+                    "端口映射（逗号分隔，如 8080:80）",
                     &dialog.ports,
                     cx,
                     false,
