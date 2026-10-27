@@ -195,7 +195,7 @@ pub(crate) fn deploy_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App
                             // 所以留，但压到一行：示例本身已经把格式说清了，
                             // "路径前缀不能重复"是校验规则，等真冲突时报错即可
                             // （校验在 `valid_proxy_prefix` 里，有测试）。
-                            .child("每行一条，分号分隔：/auth/ => http://auth:9000"),
+                            .child("每行一条（分号也可以）：/auth/ => http://auth:9000"),
                     ),
             ))
             .child({

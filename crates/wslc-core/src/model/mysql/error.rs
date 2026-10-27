@@ -90,6 +90,9 @@ fn classify_native_text(text: &str) -> Option<MysqlErrorKind> {
         // （那是容器里 mysqld 的场景），见上面文档。
         "连不上服务器" => MysqlErrorKind::Unknown,
         "SQL 执行出错" => MysqlErrorKind::SqlError,
+        // 连接串本身不合法（`native_db::parse` 的前缀）：这是用户输入 /
+        // 配置问题，给"等几秒"或"密码不对"的建议都会误导。
+        "连接串不合法" => MysqlErrorKind::Unknown,
         // TLS 对用户来说也是"连不上"，但**原因完全不同**（证书 / 服务端配置）。
         // 归成 `Unknown`，让原文（含 "TLS handshake"）自己说话。
         "TLS 握手失败" => MysqlErrorKind::Unknown,

@@ -252,11 +252,13 @@ pub fn format_proxy_rule(rule: &ProxyRule) -> String {
 
 /// 解析「更多反代」：`/api/ => http://api:8080; /auth/ => http://auth:9000 strip`
 ///
-/// 用 `;` 分隔（单行输入框里最稳；上游本身不允许 `;`，不会有歧义）。
+/// 分号 / 换行都能分条：v0.22 起这一格是多行 `Textarea`，界面文案写的是
+/// "每行一条"；只认分号会让用户按提示输入后报"多了一个看不懂的词"。
+/// 老的单行输入 / 存档仍然只有分号，两种都收。
 pub fn parse_proxy_rules(raw: &str) -> Result<Vec<ProxyRule>, String> {
     let mut out = Vec::new();
     for part in raw
-        .split(';')
+        .split([';', '\n'])
         .map(str::trim)
         .filter(|part| !part.is_empty())
     {

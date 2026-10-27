@@ -264,7 +264,9 @@ fn open_shell_dialog<F>(
             .title(spec.title.clone())
             .w(px(spec.width))
             .overlay(true)
-            .overlay_closable(spec.overlay_closable)
+            // `closable` 是总开关：`close: None`（进度类）时连遮罩也不能关，
+            // 否则关了不清状态、下一帧又弹回来。`spec` 里再写 true 也不生效。
+            .overlay_closable(spec.overlay_closable && closable)
             .keyboard(spec.keyboard && closable)
             .close_button(closable)
             .child(spec.content.element());

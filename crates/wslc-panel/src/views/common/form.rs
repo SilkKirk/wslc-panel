@@ -209,9 +209,10 @@ pub(crate) fn textarea_field(
 
     // `Textarea` 没有 `Input::id()` 那条链；它自己从 `TextareaState` 的实体
     // 拿元素 id。`_id` 保留在签名里，是为了和 `form_field` 的调用形状一致。
+    // 官方建议多行输入补 `aria_label`（屏幕阅读器靠它，不靠旁边的视觉标签）。
     let field = Field::new()
         .label_fn(move |_, _| div().text_xs().text_color(label_color).child(label))
-        .child(Textarea::new(input).w_full());
+        .child(Textarea::new(input).w_full().aria_label(label));
 
     if full {
         field.flex_none().w_full().into_any_element()

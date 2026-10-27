@@ -395,6 +395,13 @@ impl Shell {
                     move |shell, cx| crate::views::exec_dialog_body(shell, &body_entity, cx),
                     cx,
                 );
+                // 和 Prompt 一致：Dialog 外壳会抢焦点，打开前把输入框的
+                // 焦点交回去。`open_exec` 里的 focus 发生在状态变更之前，
+                // 那时这一层还没被 `open_dialog` 重建。
+                if let Some(input) = self.forms.exec_input.as_ref() {
+                    let handle = input.read(cx).focus_handle(cx);
+                    window.focus(&handle, cx);
+                }
                 let for_button = entity.clone();
                 open_shell_dialog(
                     window,
@@ -453,7 +460,9 @@ impl Shell {
                     DialogSpec {
                         title: kind.title().into(),
                         width: 560.,
-                        overlay_closable: true,
+                        // 有输入 / 提交动作：点遮罩丢掉填了一半的路径，
+                        // 比"点外面关不掉"更烦（AGENTS §7.5）。
+                        overlay_closable: false,
                         keyboard: true,
                         content,
                     },

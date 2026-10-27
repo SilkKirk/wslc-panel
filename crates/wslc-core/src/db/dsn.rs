@@ -35,8 +35,29 @@ pub fn redact_dsn(text: &str) -> String {
         .unwrap_or(text.len());
     let auth = &text[auth_start..auth_end];
     let Some(at) = auth.rfind('@') else {
-        // 没有 `@` = 没有 userinfo，也就没有口令
-        return text.to_owned();
+        // 权限段里没有 `@`：正常情况下就是没有 userinfo（`postgres://h:5432/db`）。
+        //
+        // 但口令里如果出现**未编码的** `/` 或 `?`，`auth_end` 会提前截断，
+        // 这里就看不到那个 `@` —— 早先的实现直接把原文返回，等于**把口令
+        // 原样漏进日志 / 界面**。安全优先：只要权限段里已经出现 `:`，
+        // 就退到整串的最后一个 `@`，把 `:` 到它之间全部遮掉。
+        // 代价是"主机:端口 + query 里恰好有 @、且没有口令"会被过度遮盖；
+        // 本项目本来就不接受带 query 的连接串，这个代价可以接受。
+        let Some(colon) = auth.find(':') else {
+            return text.to_owned();
+        };
+        let Some(fallback_at) = text.rfind('@') else {
+            return text.to_owned();
+        };
+        if fallback_at <= auth_start + colon {
+            return text.to_owned();
+        }
+        return format!(
+            "{}{}:***{}",
+            &text[..auth_start],
+            &auth[..colon],
+            &text[fallback_at..]
+        );
     };
     let userinfo = &auth[..at];
     let Some(colon) = userinfo.find(':') else {
@@ -77,6 +98,20 @@ mod tests {
         // 取**最后一个** `@`：按第一个切会把 `ss@10.0.0.5` 当成主机名。
         assert_eq!(
             redact_dsn("mysql://root:p@ss@10.0.0.5:3306/db"),
+            "mysql://root:***@10.0.0.5:3306/db"
+        );
+    }
+
+    #[test]
+    fn unencoded_slashes_or_question_marks_in_the_password_still_fail_closed() {
+        // 未编码的 `/` / `?` 会让权限段提前结束，`:` 到 `@` 之间的口令
+        // 不能被原文返回 —— 这是"宁可多遮，不能漏"的兜底。
+        assert_eq!(
+            redact_dsn("mysql://root:p/ss@10.0.0.5:3306/db"),
+            "mysql://root:***@10.0.0.5:3306/db"
+        );
+        assert_eq!(
+            redact_dsn("mysql://root:p?ss@10.0.0.5:3306/db"),
             "mysql://root:***@10.0.0.5:3306/db"
         );
     }

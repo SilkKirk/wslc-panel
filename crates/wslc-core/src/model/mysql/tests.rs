@@ -837,6 +837,14 @@ fn native_connection_errors_keep_their_own_classification() {
         classify_error("TLS 握手失败：error performing TLS handshake", None),
         MysqlErrorKind::Unknown
     );
+    // 连接串本身写错：输入 / 配置问题，别退化成 MySQL 的关键词猜测
+    assert_eq!(
+        classify_error(
+            "连接串不合法：不支持的 scheme `mysql+ssl`（只认 mysql:// / mariadb:// / postgres://）",
+            None
+        ),
+        MysqlErrorKind::Unknown
+    );
 
     // ⚠️ 反过来也要成立：**容器 exec 那条路的原文不能被误认成原生**。
     // 它没有那六个中文标签前缀，所以照旧按 MySQL 的规则走 ——

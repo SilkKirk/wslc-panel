@@ -707,7 +707,7 @@ pub(crate) fn install_log_card(
     let progress_bar: AnyElement = if progress.is_running() {
         use gpui_kit::component::progress::Progress;
 
-        let bar = Progress::new("install-progress");
+        let bar = Progress::new("install-progress").w_full();
         match progress.percent() {
             Some(percent) => bar.value(percent as f32).into_any_element(),
             None => bar.loading(true).into_any_element(),
