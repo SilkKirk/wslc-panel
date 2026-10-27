@@ -18,7 +18,38 @@ fn snapshot_default_is_empty_and_has_no_data() {
     assert_eq!(stats.mem_limit, None);
     assert_eq!(stats.cpu_whole_machine_percent(), None);
     assert_eq!(stats.mem_percent(), None);
+    // 「容器」那一环：一个容器都没有时 `None`（环空着），不是 0%。
+    // 0% 看起来像"一个都没在跑"，而真实情况是"还没有容器"。
+    assert_eq!(stats.container_percent(), None);
     assert!(stats.disk.is_none());
+}
+
+/// 「容器」那一环的比例（四个环里原先唯一没有测试的那个）。
+///
+/// 它原先写在 `views/dashboard.rs` 里手算，而 `views/` 不在任何测试目标里
+/// （`cargo test --workspace --exclude wslc-panel`）。这条测试就是把它
+/// 搬进 `wslc-panel-core` 的理由：口径写错了要能被 CI 拦住。
+#[test]
+fn container_percent_is_running_over_total() {
+    fn stats(running: usize, total: usize) -> DashboardStats {
+        DashboardStats {
+            running,
+            total,
+            ..Default::default()
+        }
+    }
+
+    assert_eq!(stats(0, 4).container_percent(), Some(0.0), "一个都没在跑");
+    assert_eq!(stats(4, 4).container_percent(), Some(100.0), "全在跑");
+    assert_eq!(stats(1, 4).container_percent(), Some(25.0));
+    // ⚠️ 分母是 `total` 不是 `running`：写成 `running / running` 也能算出
+    // 100%，但 1/4 会被算成 100% —— 这条边界是它和那个 bug 的分水岭。
+    assert_eq!(stats(1, 3).container_percent(), Some(100.0 / 3.0));
+
+    // 一个容器都没有 → `None`（环空着），**不是** `Some(0.0)`
+    assert_eq!(stats(0, 0).container_percent(), None);
+    // 口径异常（理论上不会出现）也不该 panic、不该算出 >100%
+    assert_eq!(stats(8, 4).container_percent(), Some(100.0), "夹到 100");
 }
 
 #[test]

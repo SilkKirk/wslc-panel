@@ -217,8 +217,11 @@ fn status_card(state: &AppState, stats: &DashboardStats) -> AnyElement {
     let has_running = stats.running > 0;
 
     // 数量那一环：全部为 0 时没有"比例"可言，`None` 让环空着。
-    let count_percent =
-        (stats.total > 0).then(|| stats.running as f64 / stats.total as f64 * 100.0);
+    //
+    // 口径在 `DashboardStats::container_percent`（带测试）—— 和另外三个环
+    // 同一个出处。原先这里手写了一遍 `running / total * 100`，而 `views/`
+    // 不在任何测试目标里（见 `AGENTS.md` §2），写错了不会有信号。
+    let count_percent = stats.container_percent();
 
     // CPU 环：拿不到核数时**照样报原始合计**（那一行小字会说明"拿不到核数"），
     // 但绝不把它当"整机占用率"—— 多核机器上 400% 是四个核跑满。

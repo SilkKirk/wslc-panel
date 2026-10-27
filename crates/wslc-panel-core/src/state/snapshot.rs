@@ -254,6 +254,27 @@ impl DashboardStats {
         let percent = vhd as f64 / total as f64 * 100.0;
         percent.is_finite().then(|| percent.clamp(0.0, 100.0))
     }
+
+    /// 正在运行的容器占全部容器的比例（0.0–100.0）—— 「容器」那一环。
+    ///
+    /// 一个容器都没有时返回 `None`：没有"比例"可言，环该画成空的
+    /// （不是 0% —— 0% 看起来像"一个都没在跑"，而真实情况是"还没有容器"）。
+    ///
+    /// # 为什么这个方法必须住在这里
+    ///
+    /// 同类的另外三个（CPU / 内存 / 存储）都在这儿、都有测试；只有这一条
+    /// 原先写在 `views/dashboard.rs` 里手算：
+    /// `(stats.total > 0).then(|| stats.running as f64 / stats.total as f64 * 100.0)`。
+    /// 而 `views/` **不在任何测试目标里**（`cargo test --workspace --exclude
+    /// wslc-panel`，见 `AGENTS.md` §2）—— 那个表达式写错（比如把 `total`
+    /// 当分母写成 `running`）不会有任何信号。四个环的口径应当同一个出处。
+    pub fn container_percent(&self) -> Option<f64> {
+        if self.total == 0 {
+            return None;
+        }
+        let percent = self.running as f64 / self.total as f64 * 100.0;
+        percent.is_finite().then(|| percent.clamp(0.0, 100.0))
+    }
 }
 
 /// 阻塞式采集一次完整快照。
