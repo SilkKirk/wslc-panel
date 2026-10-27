@@ -737,8 +737,14 @@ pub fn image_size(json: &str) -> Result<ImageSize, String> {
 
 /// `curl.exe` 拉 JSON 的参数（正文走 stdout）。
 ///
-/// 和 [`crate::mirrors::curl_json_args`] 长得像，但有**三个刻意的差别**：
+/// 和 [`crate::mirrors::curl_json_args`] 长得像，但有**四个刻意的差别**：
 ///
+/// - **没有 `-q`**：本函数的调用者 `cmd::registry::run` 把参数交给
+///   `cmd::http::curl`，那一层**强制**把 `-q` 放到最前
+///   （`with_quiet_first`，有测试钉住"最前 + 只一份"）。而 `curl_json_args`
+///   是给 `cli::spawn_streaming_program` 直呼 curl 用的，所以它自带 ——
+///   看不出来就自己补一个的话，会传两份（第二份位置还不一定对）。
+///   判据是"这批参数交给谁"，见 `update::curl_args` 的文档。
 /// - `-S`：`-s` 单用会把错误一起吞掉，那是"点了没反应"里最难查的一种；
 /// - `--fail-with-body`：HTTP 4xx/5xx 时**退出码非 0、但正文照给**。
 ///   实测 404 → 退出码 22 + stdout 是错误信封 + stderr 是

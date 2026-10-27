@@ -290,6 +290,16 @@ fn notes_head(body: &str) -> String {
 ///   （和"下载 30 MB 的 exe 不能给总超时"是两件事）；
 /// - `Accept` / `User-Agent`：GitHub **强制**要求 User-Agent（不带给 403），
 ///   带上版本号也方便以后在日志里对账。
+///
+/// ⚠️ **这里刻意没有 `-q`**：本函数的唯一调用者是 `cmd::update::check`，
+/// 它把参数交给 `cmd::http::curl`，那一层会**强制**把 `-q` 放到最前
+/// （`with_quiet_first`，有测试钉住"最前 + 只一份"）。
+///
+/// 别在这儿自己补一个 `-q`：加了不会报错，只会传两份（第二份位置还不一定对）。
+/// **判据是"这批参数交给谁"**：
+/// - 交给 `cmd::http::curl` → **不要**带 `-q`（它负责）；
+/// - 交给 `cli::spawn_streaming_program` 直达 curl（install 的下载）→ **必须**自带
+///   （见 `mirrors::download_args`，那里第一个参数就是 `-q`）。
 pub fn curl_args(url: &str) -> Vec<String> {
     vec![
         "-sS".to_owned(),

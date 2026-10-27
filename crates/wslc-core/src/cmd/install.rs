@@ -343,9 +343,20 @@ fn arg(step: &PlannedStep, index: usize) -> Result<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // 下面这几个**只有测试按名字用**（正式构建里没有调用点），所以在测试模块内部
-    // 导入，不给顶层留一串 `#[cfg(test)]`：`failure_detail` 在 stream.rs、
-    // `output_path` 在 curl.rs、参数改写与退避预算在 step.rs。
+    // 这几个在测试模块内部导入，不给顶层留一串 `#[cfg(test)]`：
+    // `failure_detail` 在 stream.rs、`output_path` 在 curl.rs、
+    // 参数改写与退避预算在 step.rs。
+    //
+    // ⚠️ **别再给它们加 `#[allow(dead_code)]`**：早先这里写着"只有测试按名字用，
+    // 正式构建里没有调用点"，于是那两个函数上各挂了一条 allow —— 而它们其实
+    // **都在正式路径上**（`output_path` 被 `run_curl_step` 第一行调用，
+    // `failure_detail` 被 `finish_stream` 的 `Error::NonZeroExit` 用）。
+    // 多余的 allow 会让"这个函数真的没人用了"这种腐烂永远不报警。
+    // 审查时已把两条 allow 删掉 —— 现在**全仓一条 `allow(dead_code)` 属性都没有**
+    // （这条注释自己不算），那是**正确的**：`step.rs` 那几个
+    // （`args_with_id_replaced` / `worth_retrying_busy` / `BUSY_*`）同样在正式
+    // 路径上被用。将来真有"只给测试用"的助手时，先考虑把它挪进
+    // `#[cfg(test)]` 模块 —— 而不是挂一条 allow。
     use super::curl::output_path;
     use super::step::{
         BUSY_FIRST_WAIT, BUSY_MAX_WAIT, BUSY_RETRIES, args_with_id_replaced,
