@@ -551,6 +551,44 @@ fn builds_create_database_with_optional_charset() {
     assert!(create_database_sql("shop", Some("utf8mb4; drop"), None).is_err());
 }
 
+/// ⚠️ **字面契约**：字符集 / 排序规则校验失败时，错误文本里必须带上那两个词。
+///
+/// `app::shell::db::dialog` 靠 `message.contains(CHARSET_LABEL)` /
+/// `COLLATION_LABEL` 决定把焦点送到「编码」折叠区里的哪一格 —— 这是"报错了
+/// 但没带你去改哪一格"那个 bug 的唯一护栏。改文案时这条测试会响；
+/// 删了它，那个 `contains` 就只剩"读代码时记得"这一层保障。
+#[test]
+fn charset_errors_keep_the_words_the_ui_matches_on() {
+    // 空值那一条
+    let empty = create_database_sql("shop", Some(""), None).unwrap();
+    assert!(!empty.contains("COLLATE"), "空字符集不该拼出 COLLATE");
+
+    // 非法字符那一条（这才会真的报错）
+    let charset_err = create_database_sql("shop", Some("utf8mb4; drop"), None)
+        .expect_err("带分号的字符集名必须被拒")
+        .to_string();
+    assert!(
+        charset_err.contains(CHARSET_LABEL),
+        "字符集的错误文本里没有 `{CHARSET_LABEL}`，界面就聚焦不到那一格：{charset_err}"
+    );
+    assert!(
+        !charset_err.contains(COLLATION_LABEL),
+        "别串味：{charset_err}"
+    );
+
+    let collation_err = create_database_sql("shop", None, Some("utf8mb4; drop"))
+        .expect_err("带分号的排序规则名必须被拒")
+        .to_string();
+    assert!(
+        collation_err.contains(COLLATION_LABEL),
+        "排序规则的错误文本里没有 `{COLLATION_LABEL}`：{collation_err}"
+    );
+    assert!(
+        !collation_err.contains(CHARSET_LABEL),
+        "别串味：{collation_err}"
+    );
+}
+
 #[test]
 fn builds_user_statements() {
     assert_eq!(

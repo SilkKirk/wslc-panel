@@ -44,7 +44,15 @@ fn container_percent_is_running_over_total() {
     assert_eq!(stats(1, 4).container_percent(), Some(25.0));
     // ⚠️ 分母是 `total` 不是 `running`：写成 `running / running` 也能算出
     // 100%，但 1/4 会被算成 100% —— 这条边界是它和那个 bug 的分水岭。
-    assert_eq!(stats(1, 3).container_percent(), Some(100.0 / 3.0));
+    //
+    // ⚠️ 这里**不能**写 `assert_eq!(…, Some(100.0 / 3.0))`：实现算的是
+    // `1.0 / 3.0 * 100.0`，和 `100.0 / 3.0` **不是同一个浮点值**
+    // （差最后一个 ulp，实测这条断言就是这么红的）。用相对误差比。
+    let one_of_three = stats(1, 3).container_percent().expect("3 个里 1 个在跑");
+    assert!(
+        (one_of_three - 100.0 / 3.0).abs() < 1e-9,
+        "1/3 应该是 33.33…%，实际 {one_of_three}"
+    );
 
     // 一个容器都没有 → `None`（环空着），**不是** `Some(0.0)`
     assert_eq!(stats(0, 0).container_percent(), None);

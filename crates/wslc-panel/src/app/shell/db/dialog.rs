@@ -605,11 +605,18 @@ impl Shell {
             Ok(Some(prepared)) => prepared,
             Err(e) => {
                 // 编码字段折叠后，校验错误仍应把用户带到可见的输入框。
+                //
+                // ⚠️ 这里靠**错误文本里的词**判断是哪一格 —— 那条字面契约写在
+                // `wslc_core::model::mysql::ddl` 的 `CHARSET_LABEL` /
+                // `COLLATION_LABEL` 上（定义处，不是这里）。用常量而不是再抄一遍
+                // 中文，是为了让"改词"这件事只有一处可改：抄一份的话，
+                // 校验那边改了词、这里静默失效 —— 表现是"报错了但没带你去改"，
+                // 而它不会有任何编译错误。
                 let message = e.to_string();
                 let encoding_input = self.forms.db_dialog.as_ref().and_then(|dialog| {
-                    if message.contains("字符集") {
+                    if message.contains(mysql_model::CHARSET_LABEL) {
                         Some(dialog.charset.clone())
-                    } else if message.contains("排序规则") {
+                    } else if message.contains(mysql_model::COLLATION_LABEL) {
                         Some(dialog.collation.clone())
                     } else {
                         None

@@ -59,6 +59,25 @@ pub fn validate_host(host: &str) -> Result<()> {
     Ok(())
 }
 
+/// 字符集那一格的错误文本里一定含 `字符集` 这个词。
+///
+/// ⚠️ **这是界面依赖的一条字面契约**：`app::shell::db::dialog` 在用户点
+/// 「创建库」校验失败时，靠 `message.contains(CHARSET_LABEL)` /
+/// `COLLATION_LABEL` 决定把焦点送到「编码」折叠区里的哪一格
+/// （那是唯一一处看起来"什么都做了、其实没聚焦到对的地方"的地方）。
+///
+/// 所以这两个词**别翻译、别改写**：改了之后那个 `contains` 静默失效，
+/// 表现是"报错了，但没带你去改哪一格" —— 而它不会有任何编译错误。
+///
+/// 更好的做法是给 `Error` 加一个结构化的 `InvalidArgument { field, hint }`，
+/// 但那要把 `InvalidArgument(String)` 这个变体在整个仓库里改一遍
+/// （20+ 处构造点、以及 `Display` 的实现）。当前只有这一处读者，
+/// 先把契约写在**定义处**，比留在调用点靠注释记着强。
+pub const CHARSET_LABEL: &str = "字符集";
+
+/// 排序规则那一格的错误文本里一定含 `排序规则` 这个词（理由同 [`CHARSET_LABEL`]）。
+pub const COLLATION_LABEL: &str = "排序规则";
+
 /// 校验字符集 / 排序规则名（`utf8mb4` / `utf8mb4_0900_ai_ci`）。
 pub fn validate_charset(kind: &str, value: &str) -> Result<()> {
     let value = value.trim();
@@ -116,11 +135,11 @@ pub fn create_database_sql(
     validate_ident("库名", name)?;
     let mut sql = format!("CREATE DATABASE {}", ident(name));
     if let Some(charset) = charset.map(str::trim).filter(|s| !s.is_empty()) {
-        validate_charset("字符集", charset)?;
+        validate_charset(CHARSET_LABEL, charset)?;
         sql.push_str(&format!(" DEFAULT CHARACTER SET {charset}"));
     }
     if let Some(collation) = collation.map(str::trim).filter(|s| !s.is_empty()) {
-        validate_charset("排序规则", collation)?;
+        validate_charset(COLLATION_LABEL, collation)?;
         sql.push_str(&format!(" DEFAULT COLLATE {collation}"));
     }
     Ok(sql)
