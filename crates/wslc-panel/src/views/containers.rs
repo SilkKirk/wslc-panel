@@ -105,10 +105,7 @@ fn container_name_link(name: &str, entity: &Entity<Shell>) -> AnyElement {
 ///
 /// MySQL / MariaDB 容器多一个「数据库」按钮（v0.7.0）：它是那一类容器上
 /// 最高频的动作，而且**只能从这里进**（数据库管理页不在侧边栏里）。
-fn container_row_actions(
-    item: &ContainerListItem,
-    entity: &Entity<Shell>,
-) -> AnyElement {
+fn container_row_actions(item: &ContainerListItem, entity: &Entity<Shell>) -> AnyElement {
     let name = item.display_name();
     let running = item.is_running();
     let mut actions: Vec<AnyElement> = Vec::new();

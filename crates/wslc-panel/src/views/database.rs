@@ -738,12 +738,7 @@ fn db_databases_card(
 ///
 /// `shell` / `cx` 只给「删除」那一行用：`PendingAction::DropUser` 里的凭据
 /// 必须和「改密码 / 授权」走同一个来源（`Shell::db_creds`，读连接卡）。
-fn db_users_card(
-    db: &DbState,
-    shell: &Shell,
-    cx: &App,
-    entity: &Entity<Shell>,
-) -> AnyElement {
+fn db_users_card(db: &DbState, shell: &Shell, cx: &App, entity: &Entity<Shell>) -> AnyElement {
     // 用户列表**自己**读失败（多半是权限：普通账号读不到 `mysql.user`，`ERROR 1142`）:
     // 只在这个 tab 里画。整页红色横幅会让人以为整个页面坏了，
     // 而「数据库」tab 明明好好地列着表（v0.16.0 实机反馈）。

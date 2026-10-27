@@ -368,11 +368,7 @@ pub(crate) fn db_dialog_body(shell: &Shell, entity: &Entity<Shell>, cx: &App) ->
 ///
 /// 用户的心智是"先挑一个常见的，挑不到再手打"；反过来的话，手打完看见下面
 /// 还挂着一个"请选择"的下拉框，会以为那一格没填好。
-fn grant_db_field(
-    dialog: &DbDialog,
-    id: &'static str,
-    label: &'static str,
-) -> AnyElement {
+fn grant_db_field(dialog: &DbDialog, id: &'static str, label: &'static str) -> AnyElement {
     v_flex()
         .w_full()
         .gap_1()
