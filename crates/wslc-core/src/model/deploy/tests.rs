@@ -1370,10 +1370,7 @@ fn proxy_rules_parse_and_format_round_trip() {
     assert_eq!(parse_proxy_rules(&formatted.join("; ")).unwrap(), rules);
     // 多行 Textarea 里用户会按提示换行；换行与分号必须等价
     assert_eq!(
-        parse_proxy_rules(
-            "/api/ => http://api:8080\n/auth/ => https://auth:9000 strip"
-        )
-        .unwrap(),
+        parse_proxy_rules("/api/ => http://api:8080\n/auth/ => https://auth:9000 strip").unwrap(),
         rules
     );
     // 空串 / 多余分号 / 空行不算规则
