@@ -113,8 +113,8 @@
 到 [Releases](https://github.com/SilkKirk/wslc-panel/releases) 下载
 **`wslc-panel-<版本>-setup-x64.exe`**，双击安装。
 
-> ⚠️ 安装包的文件名**不带 `v` 前缀**（`wslc-panel-0.22.3-setup-x64.exe`），
-> 而 zip 带（`wslc-panel-v0.22.3-windows-x64.zip`）—— 这是
+> ⚠️ 安装包的文件名**不带 `v` 前缀**（`wslc-panel-0.22.4-setup-x64.exe`），
+> 而 zip 带（`wslc-panel-v0.22.4-windows-x64.zip`）—— 这是
 > `scripts/build-installer.ps1` 从 tag 取版本号时的既有行为，两个资产不一样。
 > 按 `wslc-panel-v…-setup` 去搜会找不到。
 
@@ -332,7 +332,7 @@ base, component, and assets, so a Rust application lists a single dependency.」
 正常启动时它长这样：
 
 ```text
-INFO wslc_panel: wslc-panel 启动（版本 0.22.3，构建 <短 sha>）
+INFO wslc_panel: wslc-panel 启动（版本 0.22.4，构建 <短 sha>）
 INFO gpui_windows::direct_write: Use Microsoft YaHei UI as UI font.
 INFO gpui_windows::directx_devices: Using GPU: Intel(R) UHD Graphics
 INFO gpui_windows::directx_devices: Created device with Direct3D 11.1 feature level.
