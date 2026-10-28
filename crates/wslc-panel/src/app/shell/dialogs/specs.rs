@@ -765,11 +765,8 @@ impl Shell {
                 let ok_label = action.confirm_label().to_owned();
                 let entity = cx.entity();
                 let body_action = action.clone();
-                let content = shell_view(
-                    &entity,
-                    move |_shell, _cx| confirm_body(&body_action),
-                    cx,
-                );
+                let content =
+                    shell_view(&entity, move |_shell, _cx| confirm_body(&body_action), cx);
                 let for_cancel = entity.clone();
                 let for_confirm = entity.clone();
                 open_shell_dialog(

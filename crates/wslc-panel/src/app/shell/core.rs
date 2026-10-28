@@ -64,7 +64,10 @@ pub(crate) fn reveal_with_explorer(
     what: &'static str,
 ) -> std::io::Result<()> {
     let target = target.as_ref();
-    match std::process::Command::new("explorer.exe").arg(target).spawn() {
+    match std::process::Command::new("explorer.exe")
+        .arg(target)
+        .spawn()
+    {
         Ok(_) => {
             tracing::info!("已用 explorer 打开{what} {}", target.to_string_lossy());
             Ok(())
