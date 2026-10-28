@@ -31,6 +31,27 @@ pub(crate) fn card(title: &'static str, body: impl IntoElement) -> impl IntoElem
 }
 
 /// 键值对行。
+///
+/// # 为什么大部分页面不用官方 `DescriptionList`
+///
+/// 官方那个**确实更好**的地方只有一处：`horizontal` 布局给所有 label
+/// 同一个宽度，于是值那一列上下对齐。所以「关于」页那 4 条用了它
+/// （`views/settings.rs`，那里有完整理由）。
+///
+/// 其余页面继续用本函数，理由是**这两个函数要混着用**：
+///
+/// - 同一张卡片里既有单行值（`kv`）又有需要换行的长值（[`kv_block`]），
+///   而两者的标签**字号不同**（`text_sm` vs `text_xs`）——
+///   `DescriptionList` 只给一种标签样式，混进去要逐个覆盖；
+/// - `kv` 的右半边带 `truncate()` + tooltip 看全文，而
+///   `DescriptionList` 的布局不截断：容器详情里那些长镜像引用 / 网络名
+///   会把整张卡撑宽。
+///
+/// 换句话说：**在"一整块纯文本、列宽必须对齐"的场合用 `DescriptionList`**
+/// （目前只有「关于」页），其余继续走这两个函数 —— 那里真正要的是
+/// "截断 + 悬停看全文"，不是"标签对齐"。
+/// 判断标准还是 `AGENTS.md` §5 那句：换过去之后行为 / 观感 / 维护成本
+/// 至少一项明确变好 —— 只变"更像官方写法"不算。
 pub(crate) fn kv(label: &'static str, value: impl Into<SharedString>) -> impl IntoElement {
     h_flex()
         .w_full()
