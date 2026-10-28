@@ -3,7 +3,10 @@
 //! 只被 `install.rs` 的页面函数调用；`install.rs` 与 `install/` 目录并存，
 //! 所以不需要改成目录模型。
 
-use super::super::common::*;
+// 逐项导入而不是 `common::*`：`views/mod.rs` 那段说明过"逐项列"是刻意的
+// ——glob 会让"这里到底依赖 common 的哪些东西"变成一件查不清的事，
+// 而 `common` 有 40 多个条目，实际本文件只用到 2 个。
+use super::super::common::{busy_text_xs, form_field};
 use super::super::prelude::*;
 
 /// 「微软商店」那一块：刷新 + **下拉框** + 来源说明。
