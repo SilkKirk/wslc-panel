@@ -9,6 +9,7 @@
 
 use super::super::super::prelude::*;
 use super::super::Shell;
+use super::super::core::reveal_with_explorer;
 
 impl Shell {
     /// 备份一个数据库（长任务；状态在 `AppState::db.backup`）。
@@ -416,8 +417,8 @@ impl Shell {
             cx.notify();
             return;
         };
-        let toast = match std::process::Command::new("explorer.exe").arg(&dir).spawn() {
-            Ok(_) => Toast::info(format!("已打开 {}", dir.display())),
+        let toast = match reveal_with_explorer(&dir, "文件管理器") {
+            Ok(()) => Toast::info(format!("已打开 {}", dir.display())),
             Err(e) => Toast::error(format!("打不开文件管理器：{e}")),
         };
         self.state.notify(toast);

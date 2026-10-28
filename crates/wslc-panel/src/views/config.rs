@@ -10,9 +10,11 @@ use super::prelude::*;
 /// 当前能力：逐项展示 + 预设值快捷写入 + 恢复默认 + 原始 YAML 查看 +
 /// 带时间戳备份的保存 + 用系统编辑器打开。
 ///
-/// 任意文本输入的完整表单需要 GPUI 的 `InputState` / `TextInput`，
-/// 属于下一步（见  M6）。
-pub fn config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+/// 任意文本输入的完整表单需要每项一个 `InputState`，而这些输入框描述的
+/// 是**页面状态**（不是一次性动作）—— 只能在进页面时建一次。那要先把
+/// 「wslc 配置」从 tab 提成有 `&mut Window` 入口的页面（见
+/// `Page::needs_window_to_enter`），是下一步的事。
+pub(crate) fn config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     let Some(doc) = &state.settings else {
         let message = state
             .settings_error
@@ -118,7 +120,7 @@ pub fn config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
 ///
 /// 所以这一页只做**不需要跑 WSL 就能做**的部分：把文件摊开、
 /// 把实测已知放错文件的键指出来、真要改就交给系统编辑器。
-pub fn wsl_config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
+pub(crate) fn wsl_config(state: &AppState, entity: &Entity<Shell>) -> AnyElement {
     let info = &state.snapshot.wslconfig;
 
     let path_text = info

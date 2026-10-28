@@ -2,8 +2,33 @@
 
 use super::super::super::prelude::*;
 use super::super::Shell;
-use super::super::core::PreparedDbSql;
 use super::super::state::{AfterPick, DbDialog, DbDialogKind, DbStatement, DropdownItem};
+
+/// 数据库动作弹窗「校验通过之后要执行的东西」。
+///
+/// 形状是 `(SQL, 标题, 要记进本地存档的账号)`：
+///
+/// - 第 1 样是拼好的 SQL（多段用 `; ` 连接，实测能跑）；
+/// - 第 2 样是提示条里的动词（"新建数据库" / "改密码"……）；
+/// - 第 3 样**只在「建库同时建用户」时有值**：`(库, 用户, 密码)`。
+///   它必须等 SQL **执行成功**之后才写进本地存档 —— 列表上不能出现一个
+///   MySQL 里根本不存在的账号。
+///
+/// # 为什么要一个别名
+///
+/// 这个三元组原先直接写在 `submit_db_dialog` 的 `let prepared:` 里，
+/// 那行的类型长这样：
+///
+/// ```text
+/// wslc_core::Result<Option<(String, &'static str, Option<(String, String, String)>)>>
+/// ```
+///
+/// clippy 的 `type_complexity` 会报（它确实很难一眼看懂）。起个名字之后
+/// 那个 `let` 只剩下"这是个 Result"，而**具体形状在这里有文档**。
+///
+/// 它住在**本文件**而不是 `shell/core.rs`：只有一个调用点（同文件的
+/// `submit_db_dialog`），放到共用的 `core` 里等于给出一个"别处也会用"的假信号。
+type PreparedDbSql = (String, &'static str, Option<(String, String, String)>);
 
 impl Shell {
     /// 打开一个动作弹窗（新建库 / 新建用户 / 改密码 / 授权）。
@@ -324,7 +349,15 @@ impl Shell {
             return;
         };
         if db.busy || db.import.is_some() || db.backup.is_some() {
-            // 有别的长任务在跑：让它先结束（按钮那边也会换成"…中"）
+            // 有别的长任务在跑：让它先结束。
+            //
+            // ⚠️ 别静默 return：弹窗的「导入」按钮这时照样画着（它不是按忙碌态
+            // 换文案的那几个），点了没反应会被当成"按钮坏了"（`AGENTS.md` §7.1）。
+            // 弹窗**不关**（下面的提交路径没走到，`db_dialog` 还在），
+            // 用户等一会儿可以直接再点。
+            self.state
+                .notify(Toast::info("还有别的数据库正在跑 —— 等它结束再导入"));
+            cx.notify();
             return;
         }
         let container = db.container.clone();
@@ -638,6 +671,11 @@ impl Shell {
             return;
         };
         if db.busy {
+            // 同上面那条：弹窗还开着、按钮还在，静默 return = "点了没反应"。
+            // 状态没清，所以弹窗不会关（页脚那个 `is_none()` 判据会放行这一点）。
+            self.state
+                .notify(Toast::info("数据库页正在忙 —— 等它结束再提交"));
+            cx.notify();
             return;
         }
         let container = db.container.clone();

@@ -5,6 +5,24 @@
 
 use super::*;
 
+/// 通用二次确认对话框的**内容**（标题 / 底部按钮由 `Dialog` 负责）。
+///
+/// 只服务下面 `DialogKey::Confirm` 那一个臂：容器域和发行版域共用那个浮层，
+/// 但文案由 [`ConfirmAction`] 自己给，所以这里不需要知道是哪个域。
+///
+/// 文案里的 Markdown 必须过 `strip_md`：这是"不可撤销"那类确认框，
+/// 留着字面星号比别处更糟（`util::strip_md` 的注释里有完整理由）。
+///
+/// ⚠️ 它原先住在 `shell/core.rs`（"每个域都会用"的那一层），但只有这一处调用 ——
+/// 放在共用层等于给出一个假信号，下一个读代码的人会以为改它要顾别的域。
+fn confirm_body(action: &ConfirmAction) -> AnyElement {
+    div()
+        .text_sm()
+        .text_color(theme::text_muted())
+        .child(wslc_panel_core::util::strip_md(&action.body()))
+        .into_any_element()
+}
+
 impl Shell {
     /// 记账：窗口里那一层已经关了，把 `dialog_stack` 里的记录也去掉。
     ///
@@ -485,16 +503,13 @@ impl Shell {
                                 .primary()
                                 .on_click(move |_, window, cx| {
                                     // 校验失败时 `submit_prompt` 会保留
-                                    // `forms.prompt`（例如值为空）；这时**不能**
-                                    // 关窗，否则下一帧 sync 看到状态还在，会把
-                                    // 它重新打开。
+                                    // `forms.prompt`（例如值为空）—— 见
+                                    // `close_top_dialog_if_closed`。
                                     let closed = entity.update(cx, |shell, cx| {
                                         shell.submit_prompt(cx);
                                         shell.forms.prompt.is_none()
                                     });
-                                    if closed {
-                                        close_top_dialog(&entity, window, cx);
-                                    }
+                                    close_top_dialog_if_closed(&entity, closed, window, cx);
                                 })
                         };
                         vec![cancel.into_any_element(), confirm.into_any_element()]
@@ -752,7 +767,7 @@ impl Shell {
                 let body_action = action.clone();
                 let content = shell_view(
                     &entity,
-                    move |_shell, _cx| super::super::core::confirm_body(&body_action),
+                    move |_shell, _cx| confirm_body(&body_action),
                     cx,
                 );
                 let for_cancel = entity.clone();
@@ -843,14 +858,20 @@ impl Shell {
                                 .on_click(move |_, window, cx| {
                                     // 导入不是一条 SQL（送文件进去让 mysql 读），
                                     // 走自己的提交路径。
-                                    entity.update(cx, |shell, cx| {
+                                    //
+                                    // ⚠️ 两条路都可能在**校验阶段就放弃**（库名不合法 /
+                                    // 没选文件）并且**故意不关弹窗** —— 那时窗口也不能关，
+                                    // 否则状态还在、下一帧 sync 又把它打开。判据是
+                                    // 清没清状态，不是"成功没有"（见 `close_top_dialog_if_closed`）。
+                                    let closed = entity.update(cx, |shell, cx| {
                                         if is_import {
                                             shell.start_db_import(window, cx);
                                         } else {
                                             shell.submit_db_dialog(window, cx);
                                         }
+                                        shell.forms.db_dialog.is_none()
                                     });
-                                    close_top_dialog(&entity, window, cx);
+                                    close_top_dialog_if_closed(&entity, closed, window, cx);
                                 })
                         };
                         vec![cancel.into_any_element(), confirm.into_any_element()]
@@ -902,8 +923,15 @@ impl Shell {
                                 .on_click(move |_, window, cx| {
                                     // `window` 是必需的：提交时要检查"预填了但没填值"
                                     // 的必需变量，并把焦点送到那一格。
-                                    entity.update(cx, |shell, cx| shell.confirm_create(window, cx));
-                                    close_top_dialog(&entity, window, cx);
+                                    //
+                                    // 校验失败时状态**留着**（焦点已经送到那一格）——
+                                    // 这时关窗就是一个来回：下一帧它又弹回来，
+                                    // 刚送过去的焦点也跟着丢。
+                                    let closed = entity.update(cx, |shell, cx| {
+                                        shell.confirm_create(window, cx);
+                                        shell.forms.create_dialog.is_none()
+                                    });
+                                    close_top_dialog_if_closed(&entity, closed, window, cx);
                                 })
                         };
                         vec![cancel.into_any_element(), confirm.into_any_element()]
@@ -1047,8 +1075,14 @@ impl Shell {
                                 .small()
                                 .primary()
                                 .on_click(move |_, window, cx| {
-                                    entity.update(cx, |shell, cx| shell.submit_deploy(window, cx));
-                                    close_top_dialog(&entity, window, cx);
+                                    // 校验不通过时 `submit_deploy` **不关弹窗**（把焦点
+                                    // 送回那一格）。窗口这时也不能关 —— 详见
+                                    // `close_top_dialog_if_closed`。
+                                    let closed = entity.update(cx, |shell, cx| {
+                                        shell.submit_deploy(window, cx);
+                                        shell.forms.deploy_form.is_none()
+                                    });
+                                    close_top_dialog_if_closed(&entity, closed, window, cx);
                                 })
                         };
                         vec![cancel.into_any_element(), submit.into_any_element()]

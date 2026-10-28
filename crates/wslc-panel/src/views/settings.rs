@@ -86,7 +86,7 @@ fn settings_general(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
 ///
 /// v0.10 起这一页多了「更新」卡，所以它开始收 `&Shell`（要发起动作、
 /// 要读 `Phase`）—— 和「常规」tab 同一个理由。
-pub fn settings_about(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
+pub(crate) fn settings_about(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     let state = &shell.state;
     const LINKS: &[(&str, &str)] = &[
         ("项目主页", "https://github.com/SilkKirk/wslc-panel"),

@@ -296,4 +296,30 @@ fn close_top_dialog(entity: &Entity<Shell>, window: &mut Window, cx: &mut App) {
     entity.update(cx, |shell, _cx| shell.forget_top_dialog());
 }
 
+/// **提交型**浮层的页脚收尾：状态真的清掉了才关窗。
+///
+/// # 为什么要问"清掉了吗"，而不是"提交成功了吗"
+///
+/// 提交型浮层在校验失败时**故意不关**（把焦点送回那一格，见 `AGENTS.md` §7.1），
+/// 而页脚这一刻后台任务还没跑，拿不到"成功没有"。唯一能问的是**状态本身**：
+/// 它被清掉 = 这一层该退出了。
+///
+/// 无条件关窗的后果是一个来回：窗口关了、状态还在，下一帧 `sync_dialog_stack`
+/// 按状态把它**原样打开**。用户看到的是"点了一下，弹窗闪一下"，
+/// 而且刚被送过去的焦点跟着丢了 —— 看起来像"点了没反应"。
+///
+/// 只有 `Prompt` 臂早先写对了（`shell.submit_prompt(cx); shell.forms.prompt.is_none()`），
+/// 另外三个提交臂各抄了一遍"无条件关窗"。提成一处之后，新加的提交型浮层
+/// 不会再漏这一步。
+fn close_top_dialog_if_closed(
+    entity: &Entity<Shell>,
+    closed: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if closed {
+        close_top_dialog(entity, window, cx);
+    }
+}
+
 mod specs;

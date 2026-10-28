@@ -2,6 +2,7 @@
 
 use super::super::prelude::*;
 use super::Shell;
+use super::core::reveal_with_explorer;
 
 impl Shell {
     /// 加载 `settings.yaml`（优先使用 `wslc info` 报告的路径）。
@@ -115,12 +116,9 @@ impl Shell {
             }
         }
 
-        let toast = match std::process::Command::new("explorer.exe")
-            .arg(&path)
-            .spawn()
-        {
-            Ok(_) if created => Toast::success("已创建空的 .wslconfig 并用系统默认程序打开"),
-            Ok(_) => Toast::success("已用系统默认程序打开 .wslconfig"),
+        let toast = match reveal_with_explorer(&path, "系统默认程序") {
+            Ok(()) if created => Toast::success("已创建空的 .wslconfig 并用系统默认程序打开"),
+            Ok(()) => Toast::success("已用系统默认程序打开 .wslconfig"),
             Err(e) => Toast::error(format!("打开失败：{e}")),
         };
         self.state.notify(toast);

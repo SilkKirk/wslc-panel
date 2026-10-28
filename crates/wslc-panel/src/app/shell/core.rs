@@ -34,34 +34,46 @@ pub(crate) fn dir_non_empty(dir: &str) -> bool {
     }
 }
 
-/// 这次连数据库要用哪个账号。
+/// 用 `explorer.exe` 打开一个 URL / 文件 / 目录，**不等它退出**。
 ///
-/// 规则只有一条：**用户填了就用他的**，没填才用探测到的那个
-/// （容器环境变量里的 `MYSQL_ROOT_PASSWORD`）。
+/// # 为什么可以同步调
 ///
-/// 为什么"空密码"要特殊对待：空密码是 MySQL 的**合法配置**
-/// （`MYSQL_ALLOW_EMPTY_PASSWORD=yes`），而"还没填"和"就是要空密码"在界面上
-/// 长得一模一样。这里选"环境变量优先" —— 那种容器里环境变量写的本来就是
-/// 空密码（`RootCredHint::Empty`），两条路殊途同归。
-pub(crate) fn effective_db_creds(
-    probe: &MysqlProbe,
-    typed_user: &str,
-    typed_password: &str,
-) -> (String, String) {
-    let user = if typed_user.is_empty() {
-        "root".to_owned()
-    } else {
-        typed_user.to_owned()
-    };
-    let password = if typed_password.is_empty() {
-        match &probe.root_hint {
-            RootCredHint::Password(password) => password.clone(),
-            _ => String::new(),
+/// `explorer.exe` 只把目标交给 Windows 的默认处理器（浏览器 / 文件关联 /
+/// 资源管理器）就返回，**不等待、不捕获输出** —— `AGENTS.md` §7.1 允许这一类
+/// "只把进程拉起来"的同步调用。
+///
+/// # 为什么收成一处
+///
+/// 四个调用点（打开 URL / 打开安装位置 / 打开 settings.yaml / 打开备份目录）
+/// 原先各写一份 `Command::new("explorer.exe")…spawn()` + 一对
+/// `tracing::info!/warn!` + toast 文案。它们对外只有两个差别：打开的是什么、
+/// 以及成功 / 失败时那句话怎么说。外壳抄四遍的代价是漏改：
+/// v0.9 那轮就给三处补过 `tracing::warn!`，只有一处还留着"失败一声不响"。
+///
+/// 返回 `Result<(), std::io::Error>` 而不是直接发 toast：失败文案属于调用方的
+/// 领域知识（"打开浏览器失败" vs "打不开文件管理器"）。日志在这里统一写。
+///
+/// ⚠️ 走**参数**（`.arg(..)`），不要拼一条命令行字符串：路径里的空格、中文、
+/// `&` 在 `cmd` 里各有含义，而 `explorer.exe` 的引号规则出了名的怪
+/// （它还会把 `,` 当分隔符）。`Command::arg` 负责转义。
+///
+/// 收 `impl AsRef<OsStr>` 是为了同时吃 `Path`（三个目录 / 文件调用点）和
+/// `&str`（URL）：`explorer.exe` 对两者一视同仁，都是"交给默认处理器"。
+pub(crate) fn reveal_with_explorer(
+    target: impl AsRef<std::ffi::OsStr>,
+    what: &'static str,
+) -> std::io::Result<()> {
+    let target = target.as_ref();
+    match std::process::Command::new("explorer.exe").arg(target).spawn() {
+        Ok(_) => {
+            tracing::info!("已用 explorer 打开{what} {}", target.to_string_lossy());
+            Ok(())
         }
-    } else {
-        typed_password.to_owned()
-    };
-    (user, password)
+        Err(e) => {
+            tracing::warn!("打开{what}失败：{e}");
+            Err(e)
+        }
+    }
 }
 
 /// 本程序自己的版本号（`Cargo.toml` 的 `version`），解析成可比较的形式。
@@ -87,69 +99,6 @@ pub(crate) fn current_version() -> wslc_core::update::Version {
 ///
 /// 列表（`wsl --list --verbose`）仍然跟随自动刷新 —— 状态变化要看得到。
 const DISTRO_STATUS_SECS: u64 = 30;
-
-/// 数据库动作弹窗「校验通过之后要执行的东西」。
-///
-/// 形状是 `(SQL, 标题, 要记进本地存档的账号)`：
-///
-/// - 第 1 样是拼好的 SQL（多段用 `; ` 连接，实测能跑）；
-/// - 第 2 样是提示条里的动词（"新建数据库" / "改密码"……）；
-/// - 第 3 样**只在「建库同时建用户」时有值**：`(库, 用户, 密码)`。
-///   它必须等 SQL **执行成功**之后才写进本地存档 —— 列表上不能出现一个
-///   MySQL 里根本不存在的账号。
-///
-/// # 为什么要一个别名
-///
-/// 这个三元组原先直接写在 `submit_db_dialog` 的 `let prepared:` 里，
-/// 那行的类型长这样：
-///
-/// ```text
-/// wslc_core::Result<Option<(String, &'static str, Option<(String, String, String)>)>>
-/// ```
-///
-/// clippy 的 `type_complexity` 会报（它确实很难一眼看懂）。起个名字之后
-/// 那个 `let` 只剩下"这是个 Result"，而**具体形状在这里有文档**。
-pub(crate) type PreparedDbSql = (String, &'static str, Option<(String, String, String)>);
-
-/// `TreeItem` 的 id 分隔符。
-///
-/// # 为什么不是 `.` 或 `::`
-///
-/// MySQL 的标识符几乎什么字符都能含（反引号里连空格和点都可以），
-/// 所以拿 `.` 拼 `库.表` 再拆开会**拆错**：库名 `a.b` + 表名 `c` 和
-/// 库名 `a` + 表名 `b.c` 拼出来一样。
-///
-/// `U+0001`（Start of Heading）是控制字符，不可能出现在标识符里 ——
-/// 用它当分隔符，拆解就是无歧义的。
-const TREE_ID_SEP: char = '\u{1}';
-
-/// 表节点（叶子）的 id：`t\u{1}库\u{1}表`。
-pub(crate) fn leaf_id(database: &str, table: &str) -> String {
-    format!("t{TREE_ID_SEP}{database}{TREE_ID_SEP}{table}")
-}
-
-/// 库节点（父节点）的 id：`d\u{1}库`。
-///
-/// 只需要唯一 —— 点库节点时组件自己展开/收起，我们不解析它。
-pub(crate) fn folder_id(database: &str) -> String {
-    format!("d{TREE_ID_SEP}{database}")
-}
-
-/// 危险操作的确认浮层。
-///
-/// 容器域和发行版域共用这一个浮层 —— 文案由 [`ConfirmAction`] 自己给，
-/// 所以这里不需要知道是哪个域。
-/// 通用二次确认对话框的**内容**（标题 / 底部按钮由 `Dialog` 负责）。
-///
-/// 文案里的 Markdown 必须过 `strip_md`：这一条是"不可撤销"那类确认框，
-/// 留着字面星号比别处更糟（`util::strip_md` 的注释里有完整理由）。
-pub(crate) fn confirm_body(action: &ConfirmAction) -> AnyElement {
-    div()
-        .text_sm()
-        .text_color(theme::text_muted())
-        .child(wslc_panel_core::util::strip_md(&action.body()))
-        .into_any_element()
-}
 
 impl Shell {
     /// 创建外壳：立刻触发一次采集、加载配置、启动自动刷新。
@@ -405,18 +354,12 @@ impl Shell {
             cx.notify();
             return;
         }
-        match std::process::Command::new("explorer.exe").arg(&url).spawn() {
-            Ok(_) => {
-                tracing::info!("已用默认浏览器打开 {url}");
-                self.state
-                    .notify(Toast::info(format!("已在浏览器打开 {url}")));
-            }
-            Err(e) => {
-                tracing::warn!("打开浏览器失败：{e}");
-                self.state
-                    .notify(Toast::error(format!("打开浏览器失败：{e}")));
-            }
-        }
+        // 失败时不把 `{url}` 再贴一遍：toast 已经带上它了，日志里也有。
+        let toast = match reveal_with_explorer(url.as_str(), "浏览器") {
+            Ok(()) => Toast::info(format!("已在浏览器打开 {url}")),
+            Err(e) => Toast::error(format!("打开浏览器失败：{e}")),
+        };
+        self.state.notify(toast);
         cx.notify();
     }
 

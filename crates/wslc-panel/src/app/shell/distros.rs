@@ -2,6 +2,7 @@
 
 use super::super::prelude::*;
 use super::Shell;
+use super::core::reveal_with_explorer;
 use super::state::{AfterPick, KeepAlive, WslConfDialog};
 
 impl Shell {
@@ -343,21 +344,13 @@ impl Shell {
             return;
         }
 
-        // `explorer.exe` 即使成功也常返回非 0，所以只看能否启动。
-        match std::process::Command::new("explorer.exe")
-            .arg(&base)
-            .spawn()
-        {
-            Ok(_) => {
-                tracing::info!("已在资源管理器中打开 {}", base.display());
-                self.state
-                    .notify(Toast::info(format!("已打开 {}", base.display())));
-            }
-            Err(e) => {
-                tracing::warn!("打开资源管理器失败：{e}");
-                self.state.notify(Toast::error(format!("打开失败：{e}")));
-            }
-        }
+        // `explorer.exe` 即使成功也常返回非 0，所以只看能否启动
+        // （判据和日志都在 `reveal_with_explorer` 里）。
+        let toast = match reveal_with_explorer(&base, "资源管理器") {
+            Ok(()) => Toast::info(format!("已打开 {}", base.display())),
+            Err(e) => Toast::error(format!("打开失败：{e}")),
+        };
+        self.state.notify(toast);
         cx.notify();
     }
 

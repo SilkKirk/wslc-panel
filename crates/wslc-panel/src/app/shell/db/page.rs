@@ -2,7 +2,40 @@
 
 use super::super::super::prelude::*;
 use super::super::Shell;
-use super::super::core::effective_db_creds;
+
+/// 这次连数据库要用哪个账号。
+///
+/// 规则只有一条：**用户填了就用他的**，没填才用探测到的那个
+/// （容器环境变量里的 `MYSQL_ROOT_PASSWORD`）。
+///
+/// 为什么"空密码"要特殊对待：空密码是 MySQL 的**合法配置**
+/// （`MYSQL_ALLOW_EMPTY_PASSWORD=yes`），而"还没填"和"就是要空密码"在界面上
+/// 长得一模一样。这里选"环境变量优先" —— 那种容器里环境变量写的本来就是
+/// 空密码（`RootCredHint::Empty`），两条路殊途同归。
+///
+/// ⚠️ 它只服务本文件（`load_db` 那一段），所以住在 `db/` 里而不是
+/// `shell/core.rs`：`core` 只放**每个域都会用**的东西（见那个文件的头）。
+/// 摆在共用的地方，下一个人会以为别处也在用它、改的时候不敢动。
+fn effective_db_creds(
+    probe: &MysqlProbe,
+    typed_user: &str,
+    typed_password: &str,
+) -> (String, String) {
+    let user = if typed_user.is_empty() {
+        "root".to_owned()
+    } else {
+        typed_user.to_owned()
+    };
+    let password = if typed_password.is_empty() {
+        match &probe.root_hint {
+            RootCredHint::Password(password) => password.clone(),
+            _ => String::new(),
+        }
+    } else {
+        typed_password.to_owned()
+    };
+    (user, password)
+}
 
 impl Shell {
     /// 打开某个容器的数据库管理页（从容器列表行的「数据库」按钮进）。

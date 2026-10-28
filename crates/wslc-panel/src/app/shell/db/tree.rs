@@ -2,7 +2,34 @@
 
 use super::super::super::prelude::*;
 use super::super::Shell;
-use super::super::core::{folder_id, leaf_id};
+
+/// `TreeItem` 的 id 分隔符。
+///
+/// # 为什么不是 `.` 或 `::`
+///
+/// MySQL 的标识符几乎什么字符都能含（反引号里连空格和点都可以），
+/// 所以拿 `.` 拼 `库.表` 再拆开会**拆错**：库名 `a.b` + 表名 `c` 和
+/// 库名 `a` + 表名 `b.c` 拼出来一样。
+///
+/// `U+0001`（Start of Heading）是控制字符，不可能出现在标识符里 ——
+/// 用它当分隔符，拆解就是无歧义的。
+///
+/// ⚠️ **拼和拆都在本文件**（[`leaf_id`] / [`folder_id`] 拼、
+/// [`Shell::on_schema_tree_click`] 拆），必须用同一个常量：两处各写一个字面量
+/// `'\u{1}'` 的话，改了一边就是"点了没反应"，而且不会有任何编译错误。
+const TREE_ID_SEP: char = '\u{1}';
+
+/// 表节点（叶子）的 id：`t\u{1}库\u{1}表`。
+fn leaf_id(database: &str, table: &str) -> String {
+    format!("t{TREE_ID_SEP}{database}{TREE_ID_SEP}{table}")
+}
+
+/// 库节点（父节点）的 id：`d\u{1}库`。
+///
+/// 只需要唯一 —— 点库节点时组件自己展开/收起，我们不解析它。
+fn folder_id(database: &str) -> String {
+    format!("d{TREE_ID_SEP}{database}")
+}
 
 impl Shell {
     /// 确保搜索框存在（`InputState::new` 要 `&mut Window`，所以懒创建）。
@@ -115,7 +142,7 @@ impl Shell {
     /// `id` 的格式见 [`leaf_id`] / [`folder_id`]：`t\u{1}库\u{1}表` 是表，
     /// `d\u{1}库` 是库（点库由组件自己展开/收起，这里什么都不做）。
     pub fn on_schema_tree_click(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let mut parts = id.split('\u{1}');
+        let mut parts = id.split(TREE_ID_SEP);
         let Some(kind) = parts.next() else {
             return;
         };

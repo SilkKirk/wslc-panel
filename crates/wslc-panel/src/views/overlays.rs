@@ -23,7 +23,7 @@ use super::prelude::*;
 /// （`DialogButtonProps::render_ok/render_cancel` 只有 `AlertDialog` 调；
 /// `Dialog::render` 里只看 `self.footer`，而 `show_cancel` 默认 `false`）。
 /// v0.19.0 实机就是因为这条少了一整排按钮。
-pub struct PromptContent {
+pub(crate) struct PromptContent {
     kind: PromptKind,
     distro: String,
     input: Entity<InputState>,
@@ -33,7 +33,7 @@ pub struct PromptContent {
 impl PromptContent {
     /// 建实体并**订阅输入框**（`observe` 返回的 `Subscription` 丢掉就取消订阅，
     /// 所以必须 `detach`）。
-    pub fn new(
+    pub(crate) fn new(
         kind: PromptKind,
         distro: String,
         input: Entity<InputState>,
