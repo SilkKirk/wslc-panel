@@ -482,7 +482,7 @@ mod tests {
     fn csv_follows_the_given_row_order() {
         // 屏幕上的顺序来自 delegate 的排序下标表；导出必须按它写，
         // 否则"点了排序再导出"会得到一份看起来没排过的文件。
-        let r = res(&["n"], rows(&[&["10"], &["9"], &["100"]]));
+        let r = res(&["n"], vec![vec!["10"], vec!["9"], vec!["100"]]);
         let sorted = sort_order(&r.rows, 0, SortDir::Ascending);
         assert_eq!(sorted, vec![1, 0, 2], "前提：数值序是 9,10,100");
 
@@ -499,7 +499,7 @@ mod tests {
     fn csv_skips_out_of_range_indices_instead_of_panicking() {
         // `order` 来自界面状态，和 `result` 之间只靠"同一个结果集"这个约定
         // 对齐。对不上时宁可少写几行，也不能 panic —— 那会把整个面板拖掉。
-        let r = res(&["n"], rows(&[&["a"], &["b"]]));
+        let r = res(&["n"], vec![vec!["a"], vec!["b"]]);
         assert_eq!(to_csv(&r, Some(&[1, 99, 0])), "n\r\nb\r\na\r\n");
         // 全越界 → 只剩表头
         assert_eq!(to_csv(&r, Some(&[42])), "n\r\n");
