@@ -37,6 +37,52 @@ fn effective_db_creds(
     (user, password)
 }
 
+/// 读 MySQL 家族的两张表（库 / 用户），**有连接串就走原生、否则进容器 exec**。
+///
+/// # 为什么是一个函数
+///
+/// 这段分叉在 `load_db`（进页面 / 重读）和 `reload_db_lists`（建库 / 删库之后）
+/// 各写了一遍，**逐行相同**。而它带着两条容易漏的约束：
+///
+/// 1. **两条查询必须独立** —— 用户列表读不到 `mysql.user` 是常态
+///    （业务账号没有那个权限），那时**库列表不能跟着一起失败**，
+///    所以返回的是两个 `Result` 而不是一个；
+/// 2. **有连接串必须走原生** —— 否则"建完库刷新"会去读容器，
+///    而页面正在显示的是远程库，两边对不上。
+///
+/// 抄两遍的代价已经出现过一次（v0.16 加原生连接时只改了 `load_db`，
+/// `reload_db_lists` 差点留在 exec 那条路上）。收成一处之后，
+/// 两处的行为**不可能**再分叉。
+///
+/// ⚠️ 这是**阻塞**的（原生连接会真的握手、exec 会起进程），
+/// 调用方必须把它放在 `background_executor` 里。
+///
+/// 返回类型写全路径：`DbEntry` / `DbUser` **没有**进 `app/prelude.rs`
+/// （那里只导出各域都用的类型），本文件里另一处用到 `DbEntry` 也写全路径。
+fn read_mysql_lists(
+    wslc: &Wslc,
+    dsn: Option<&str>,
+    container: &str,
+    bin: &str,
+    creds: &MysqlCreds,
+) -> (
+    Result<Vec<wslc_core::model::DbEntry>, String>,
+    Result<Vec<wslc_core::model::DbUser>, String>,
+) {
+    match dsn {
+        Some(text) => (
+            crate::native_db::mysql_databases(text).map_err(|e| e.to_string()),
+            crate::native_db::mysql_users(text).map_err(|e| e.to_string()),
+        ),
+        None => (
+            wslc_core::cmd::mysql::list_databases(wslc, container, bin, creds)
+                .map_err(|e| e.to_string()),
+            wslc_core::cmd::mysql::list_users(wslc, container, bin, creds)
+                .map_err(|e| e.to_string()),
+        ),
+    }
+}
+
 impl Shell {
     /// 打开某个容器的数据库管理页（从容器列表行的「数据库」按钮进）。
     ///
@@ -214,20 +260,8 @@ impl Shell {
                 let lists_dsn = dsn.clone();
                 cx.background_executor()
                     .spawn(async move {
-                        let (databases, users) = match lists_dsn.as_deref() {
-                            // 原生：两条独立查询（用户列表读不到 `mysql.user`
-                            // 是常态 —— 那时库列表不能跟着一起失败）。
-                            Some(text) => (
-                                crate::native_db::mysql_databases(text).map_err(|e| e.to_string()),
-                                crate::native_db::mysql_users(text).map_err(|e| e.to_string()),
-                            ),
-                            None => (
-                                wslc_core::cmd::mysql::list_databases(&wslc, &target, &bin, &creds)
-                                    .map_err(|e| e.to_string()),
-                                wslc_core::cmd::mysql::list_users(&wslc, &target, &bin, &creds)
-                                    .map_err(|e| e.to_string()),
-                            ),
-                        };
+                        let (databases, users) =
+                            read_mysql_lists(&wslc, lists_dsn.as_deref(), &target, &bin, &creds);
                         // 顺手重扫备份目录（进页面时目录可能被手动动过）。
                         // 放在这个块里是**故意的**：扫描碰文件系统，而
                         // `update_in` 的回调在界面线程上 —— 见
@@ -489,20 +523,7 @@ impl Shell {
                 let lists_dsn = dsn.clone();
                 cx.background_executor()
                     .spawn(async move {
-                        match lists_dsn.as_deref() {
-                            // 有连接串 → 原生（否则"建完库刷新"会去读容器，
-                            // 和页面正在显示的远程库对不上）。
-                            Some(text) => (
-                                crate::native_db::mysql_databases(text).map_err(|e| e.to_string()),
-                                crate::native_db::mysql_users(text).map_err(|e| e.to_string()),
-                            ),
-                            None => (
-                                wslc_core::cmd::mysql::list_databases(&wslc, &target, &bin, &creds)
-                                    .map_err(|e| e.to_string()),
-                                wslc_core::cmd::mysql::list_users(&wslc, &target, &bin, &creds)
-                                    .map_err(|e| e.to_string()),
-                            ),
-                        }
+                        read_mysql_lists(&wslc, lists_dsn.as_deref(), &target, &bin, &creds)
                     })
                     .await
             };
