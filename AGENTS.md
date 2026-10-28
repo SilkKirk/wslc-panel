@@ -727,6 +727,23 @@ cx.spawn_in(window, async move |this, cx| {
      - 只读浮层（日志 / 详情 / exec / 备份列表）**也**要 `.on_cancel` ——
        它们同样要清状态，只是清的那个字段不影响任务本身。
 
+     ⚠️ **提交型浮层的页脚不能无条件关窗**（2026-10-28 审查发现的，四个臂里
+     只有一个写对了）。判据是**状态清掉了没有**，不是"提交成功没有"（那一刻
+     后台任务还没跑，拿不到结果）：
+
+     ```rust
+     let closed = entity.update(cx, |shell, cx| {
+         shell.submit_deploy(window, cx);        // 校验失败时它**故意不清**状态
+         shell.forms.deploy_form.is_none()
+     });
+     close_top_dialog_if_closed(&entity, closed, window, cx);
+     ```
+
+     提交型浮层在校验失败时**故意不关**（把焦点送回那一格），而窗口无条件
+     关掉的话：下一帧 `sync_dialog_stack` 按状态把它原样打开 —— 用户看到
+     "点了一下、弹窗闪一下"，刚被送过去的焦点也丢了。判据统一走
+     `dialogs.rs` 的 `close_top_dialog_if_closed`，别再手写 `if closed`。
+
   **19 个浮层全部在栈里**，所以 `Shell::render` 末尾那条 `.child()` 链子上
   已经**不挂任何浮层**。加新浮层只有三处要动：
 
