@@ -26,9 +26,10 @@
 //! # 分层
 //!
 //! ```text
-//! conn.rs     ConnSpec + 连接串拼装（纯函数，有测试）
+//! conn.rs     ConnSpec + 连接串 / DSN 拼装与脱敏（纯函数，有测试）
 //! session.rs  TextTable / DbError / Session trait + 按 kind 打开
-//! pg.rs       PostgreSQL 实现（postgres 0.19）
+//! my.rs       MySQL / MariaDB 实现（mysql 28，文本协议）
+//! pg.rs       PostgreSQL 实现（postgres 0.19，simple_query + prepare）
 //! ```
 
 pub mod conn;
