@@ -335,6 +335,23 @@ pub(crate) fn containers_page(shell: &Shell, cx: &App, entity: &Entity<Shell>) -
             .into_any_element()
     });
 
+    // 状态筛选：**一排小按钮 + 选中那颗 `.primary()`**，不是官方 `RadioGroup`。
+    //
+    // 这看起来正是 `common::radio_row` 文档里说"那是旧写法、语义错了"的那个形状，
+    // 所以这里必须说清为什么保留（`AGENTS.md` §5：注释要和实现一致，
+    // 否则后来人会照着注释继续改）。
+    //
+    // `radio_row` 的文档第 2 条自己写着：`RadioGroup` 横向布局在 render 里是
+    // `h_flex().w_full().flex_wrap()` + **固定 `gap_3()`**，改不了 ——
+    // **不适合塞进紧凑工具栏**。而这一行是
+    // `[全部 N][运行中 N][未运行 N] [排序：…] [共 N 个容器]`，
+    // 换过去会因为 `w_full` 把排序菜单和计数挤到下一行（这行自己有 `flex_wrap`，
+    // 表现就是"工具栏莫名变成两行"）。
+    //
+    // 代价是读屏语义弱一些（一排动作而不是"这组选了哪个"）—— 这是刻意的取舍：
+    // 筛选条是**高频**控件，先把布局和一眼可读保住。
+    // 真要修语义，正确方向是给 `RadioGroup` 一个能关掉 `w_full`/`flex_wrap` 的配置，
+    // 而不是把这一行拆成两行。
     let chips: Vec<AnyElement> = ContainerScope::ALL
         .iter()
         .map(|scope| {

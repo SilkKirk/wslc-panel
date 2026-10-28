@@ -207,6 +207,14 @@ pub(crate) fn logs_dialog_body(state: &AppState, entity: &Entity<Shell>) -> AnyE
     //
     // 选中态用 `primary` 配色表示（项目里不用 `.disabled()`）——
     // 和「添加实例」页选来源那一排是同一套写法。
+    //
+    // ⚠️ 这里**不用**官方 `RadioGroup`（`common::radio_row`），理由写在那一行
+    // 工具条的形状上：这一行是
+    // `[500 行][1000 行][全部] [显示时间戳] [刷新] [在终端里跟随]` ——
+    // 一排控件挤在一起。`RadioGroup` 的横向布局在 render 里是
+    // `h_flex().w_full().flex_wrap()` + 固定 `gap_3()`（改不了），
+    // 换过去会把后面三颗挤到下一行。`radio_row` 的文档第 2 条**正是**为这件事
+    // 写的（"不适合塞进紧凑工具栏"），别把它当成"还没迁完"。
     let tail_buttons: Vec<AnyElement> = LogsState::TAILS
         .iter()
         .enumerate()
