@@ -123,7 +123,7 @@ impl SqlResultDelegate {
     /// # 规则不在这个文件里
     ///
     /// 比较规则（数字按数值比、空值排最后、相等时按下标定序）全在
-    /// [`sqlview::sort_order`] —— 那是**纯函数、有 7 条单测、`core` job 会跑**。
+    /// [`sqlview::sort_order`] —— 那是**纯函数、有单测、`core` job 会跑**。
     /// 这里只负责把结果存下来。
     ///
     /// ⚠️ 这个 crate（`wslc-panel`）里**不能写 `#[test]`**：`use gpui_kit::*`

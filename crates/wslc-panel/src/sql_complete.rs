@@ -3,7 +3,7 @@
 //! # 这一层薄得只剩"格式转换"
 //!
 //! 该给哪些候选、替换哪一段、别名怎么认 —— 全在
-//! [`wslc_panel_core::sqlcomplete`]（纯逻辑，`core` job 有 17 条单测）。
+//! [`wslc_panel_core::sqlcomplete`]（纯逻辑，`core` job 有 16 条单测）。
 //! 这里只做一件事：把那个结果包成 `lsp_types::CompletionItem`，
 //! 因为 `gpui-kit` 的 `CompletionProvider` trait 签名就是这么定的。
 //!
