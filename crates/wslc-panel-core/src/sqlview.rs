@@ -190,7 +190,20 @@ pub fn any_has_grid(results: &[SqlResult]) -> bool {
 ///
 /// 含 `,` `"` 换行 的字段用 `"` 包起来，内部的 `"` 写成 `""`。
 /// 这是我们**唯一**会写出去的文件格式，所以规矩写死在这里、配单测。
-pub fn to_csv(result: &SqlResult) -> String {
+///
+/// # 行序 = 屏幕上的顺序
+///
+/// 表格允许点列头排序（`SqlResultDelegate::perform_sort`），而导出的
+/// 顺序必须和用户看到的一致 —— 否则"点了排序再导出"会得到一份看起来
+/// 没排过的文件。
+///
+/// 排序**不重排 `SqlResult.rows`**（原数据要原样留着），只另存一份下标表。
+/// 所以这里收一个 `order`：`None` = 原始顺序；`Some(&[..])` = 那一串下标。
+///
+/// ⚠️ **下标越界的行会被跳过**，不会 panic —— `order` 来自界面状态，
+/// 和 `result` 之间只靠"同一个结果集"这个约定对齐（切 tab 会整个换掉
+/// `sql_table`，但 `to_csv` 不该依赖那个时序）。
+pub fn to_csv(result: &SqlResult, order: Option<&[usize]>) -> String {
     let mut out = String::new();
     out.push_str(
         &result
@@ -201,7 +214,9 @@ pub fn to_csv(result: &SqlResult) -> String {
             .join(","),
     );
     out.push_str("\r\n");
-    for row in &result.rows {
+
+    // 每一行都走同一个出口，免得"有序"和"无序"两支各写一遍循环。
+    let mut push_row = |row: &Vec<String>| {
         out.push_str(
             &row.iter()
                 .map(|c| csv_field(c))
@@ -209,6 +224,14 @@ pub fn to_csv(result: &SqlResult) -> String {
                 .join(","),
         );
         out.push_str("\r\n");
+    };
+
+    match order {
+        None => result.rows.iter().for_each(&mut push_row),
+        Some(order) => order
+            .iter()
+            .filter_map(|&ix| result.rows.get(ix))
+            .for_each(&mut push_row),
     }
     out
 }
@@ -438,7 +461,7 @@ mod tests {
                 vec!["3", "line1\nline2"],
             ],
         );
-        let csv = to_csv(&r);
+        let csv = to_csv(&r, None);
         let lines: Vec<&str> = csv.split("\r\n").collect();
         assert_eq!(lines[0], "id,name");
         assert_eq!(lines[1], "1,\"a,b\"");
@@ -448,9 +471,38 @@ mod tests {
 
     #[test]
     fn csv_of_empty_result_is_just_the_header() {
-        assert_eq!(to_csv(&SqlResult::default()), "\r\n");
+        assert_eq!(to_csv(&SqlResult::default(), None), "\r\n");
         let r = res(&["a", "b"], vec![]);
-        assert_eq!(to_csv(&r), "a,b\r\n");
+        assert_eq!(to_csv(&r, None), "a,b\r\n");
+    }
+
+    // ---- 导出的行序 = 屏幕上的顺序（`order` 参数）----
+
+    #[test]
+    fn csv_follows_the_given_row_order() {
+        // 屏幕上的顺序来自 delegate 的排序下标表；导出必须按它写，
+        // 否则"点了排序再导出"会得到一份看起来没排过的文件。
+        let r = res(&["n"], rows(&[&["10"], &["9"], &["100"]]));
+        let sorted = sort_order(&r.rows, 0, SortDir::Ascending);
+        assert_eq!(sorted, vec![1, 0, 2], "前提：数值序是 9,10,100");
+
+        assert_eq!(
+            to_csv(&r, Some(&sorted)),
+            "n\r\n9\r\n10\r\n100\r\n",
+            "导出没有按屏幕顺序写"
+        );
+        // 不传 order 时仍是原始顺序（老行为不变）
+        assert_eq!(to_csv(&r, None), "n\r\n10\r\n9\r\n100\r\n");
+    }
+
+    #[test]
+    fn csv_skips_out_of_range_indices_instead_of_panicking() {
+        // `order` 来自界面状态，和 `result` 之间只靠"同一个结果集"这个约定
+        // 对齐。对不上时宁可少写几行，也不能 panic —— 那会把整个面板拖掉。
+        let r = res(&["n"], rows(&[&["a"], &["b"]]));
+        assert_eq!(to_csv(&r, Some(&[1, 99, 0])), "n\r\nb\r\na\r\n");
+        // 全越界 → 只剩表头
+        assert_eq!(to_csv(&r, Some(&[42])), "n\r\n");
     }
 
     // ---- 排序（v0.11.1 从 `sql_table.rs` 搬来这里，为了能被 CI 测到）----

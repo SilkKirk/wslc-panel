@@ -26,7 +26,7 @@
 //! 它们在 `sqlview` 里是纯函数，`core` job 能测到。这个文件只负责
 //! "把 `sqlview` 算出来的东西画到 `DataTable` 上"。
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 // `use gpui_kit::*` 而不是逐项导入 `gpui::…`：
 // `.italic()` / `.text_right()` / `.w_full()` 这些样式方法来自 gpui 的
@@ -54,10 +54,26 @@ pub struct SqlResultDelegate {
     /// 存下标而不是重排 `rows` 本身：原数据要原样留着导出 CSV
     /// （导出的顺序该跟屏幕上一致 —— 所以导出时也要读这个）。
     order: Option<Vec<usize>>,
+    /// 和 [`Self::order`] **同一份**内容的共享槽，给导出用。
+    ///
+    /// # 为什么要这个共享槽
+    ///
+    /// 导出（`Shell::export_sql_result_csv`）拿不到 delegate：它是
+    /// `Entity<TableState<SqlResultDelegate>>` 里的泛型参数，而
+    /// `TableState` 没有公开"把 delegate 借出来"的接口（本机没有 gpui-kit
+    /// 源码，赌一个 API 名赌错了就是一轮 CI）。
+    ///
+    /// 所以把顺序**复制到一个两边都持有的 `Arc`** 里：delegate 排序时写、
+    /// 导出时读。开销是一个 `Vec<usize>`，只有点列头时才写一次。
+    ///
+    /// ⚠️ 两处必须**同源**：`recompute_order` 是唯一写入点，它同时写
+    /// `self.order` 和这个槽（见那里）。别在别处单独改其中一个。
+    shared_order: Arc<Mutex<Option<Vec<usize>>>>,
 }
 
 impl SqlResultDelegate {
     pub fn new(result: SqlResult) -> Self {
+        let shared_order: Arc<Mutex<Option<Vec<usize>>>> = Arc::new(Mutex::new(None));
         let columns = result
             .columns
             .iter()
@@ -82,7 +98,16 @@ impl SqlResultDelegate {
             rows: Arc::new(result.rows),
             sort: None,
             order: None,
+            shared_order,
         }
+    }
+
+    /// 建 delegate 时把"顺序共享槽"一起交出去（导出方持有它）。
+    ///
+    /// 返回的是 `Arc` 的克隆，和 delegate 内部那个指向**同一份**数据。
+    /// 调用方拿它去 `export_sql_result_csv`，于是导出看到的就是屏幕上的顺序。
+    pub fn order_slot(&self) -> Arc<Mutex<Option<Vec<usize>>>> {
+        Arc::clone(&self.shared_order)
     }
 
     /// 当前显示顺序下的第 `row_ix` 行在原始数据里的下标。
@@ -108,16 +133,23 @@ impl SqlResultDelegate {
     /// `--workspace --exclude wslc-panel`，写在这里的测试**根本不会被执行**。
     /// `main.rs` 顶部有一段专门讲这件事。
     fn recompute_order(&mut self) {
-        let Some((col, dir)) = self.sort else {
-            self.order = None;
-            return;
+        // ⚠️ 这是**唯一**写入点：`self.order` 和 `shared_order` 必须同时写，
+        // 否则导出会拿到上一种顺序（或原始顺序）。
+        let order = match self.sort {
+            None => None,
+            Some((col, dir)) => {
+                let dir = match dir {
+                    ColumnSort::Descending => sqlview::SortDir::Descending,
+                    // `ColumnSort::Default` 走不到这里（`perform_sort` 已把它变成 None）
+                    _ => sqlview::SortDir::Ascending,
+                };
+                Some(sqlview::sort_order(&self.rows, col, dir))
+            }
         };
-        let dir = match dir {
-            ColumnSort::Descending => sqlview::SortDir::Descending,
-            // `ColumnSort::Default` 走不到这里（`perform_sort` 已把它变成 None）
-            _ => sqlview::SortDir::Ascending,
-        };
-        self.order = Some(sqlview::sort_order(&self.rows, col, dir));
+        if let Ok(mut slot) = self.shared_order.lock() {
+            *slot = order.clone();
+        }
+        self.order = order;
     }
 }
 

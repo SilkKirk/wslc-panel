@@ -1113,6 +1113,22 @@ pub(crate) struct SqlUi {
     pub(crate) sql_table:
         Option<Entity<gpui_kit::component::table::TableState<crate::sql_table::SqlResultDelegate>>>,
 
+    /// 结果表格当前**显示顺序**的下标表（`None` = 没排序）。
+    ///
+    /// # 为什么要单独存一份
+    ///
+    /// 导出 CSV 必须按**屏幕上的顺序**写（见 `sqlview::to_csv` 的说明），
+    /// 而导出这段代码拿不到 delegate —— 它藏在
+    /// `Entity<TableState<SqlResultDelegate>>` 的泛型参数里，而 `TableState`
+    /// 没有公开"把 delegate 借出来"的接口。
+    ///
+    /// 这个 `Arc` 和 delegate 里那个是**同一个**（`SqlResultDelegate::order_slot`），
+    /// 排序时由 delegate 写、导出时由 `Shell` 读。
+    ///
+    /// ⚠️ 每次重建 `sql_table` 都要一起换掉（否则读到的是上一个结果的顺序）——
+    /// 两处建表的地方各写一次，别漏。
+    pub(crate) sql_view_order: std::sync::Arc<std::sync::Mutex<Option<Vec<usize>>>>,
+
     /// 当前在看的**第几个**结果（多语句时按 tab 分开）。
     pub(crate) sql_result_tab: usize,
 

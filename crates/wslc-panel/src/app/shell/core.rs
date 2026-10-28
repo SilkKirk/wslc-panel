@@ -147,6 +147,8 @@ impl Shell {
             },
             sql_ui: SqlUi {
                 sql_table: None,
+                // 还没有结果表格，所以顺序也是空的（建表时会换成 delegate 那个）。
+                sql_view_order: std::sync::Arc::new(std::sync::Mutex::new(None)),
                 sql_result_tab: 0,
                 sql_raw_open: false,
                 tree_collapsed: false,

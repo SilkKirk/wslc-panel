@@ -297,16 +297,23 @@ impl Shell {
         }
         // 表格整个换掉。`None`（报错 / 全是 DDL / 没有结果）时也清，
         // 免得旧结果还留在屏幕上。
-        self.sql_ui.sql_table = new_table.map(|r| {
-            cx.new(|cx| {
-                gpui_kit::component::table::TableState::new(
-                    crate::sql_table::SqlResultDelegate::new(r),
-                    window,
-                    cx,
-                )
-                .cell_selectable(true)
-            })
-        });
+        //
+        // ⚠️ `sql_view_order` 跟着一起换：它是**这个结果集**的排序下标表，
+        // 留着上一个结果的会让导出的行序对不上（见 `SqlUi::sql_view_order`）。
+        match new_table {
+            Some(r) => {
+                let delegate = crate::sql_table::SqlResultDelegate::new(r);
+                self.sql_ui.sql_view_order = delegate.order_slot();
+                self.sql_ui.sql_table = Some(cx.new(|cx| {
+                    gpui_kit::component::table::TableState::new(delegate, window, cx)
+                        .cell_selectable(true)
+                }));
+            }
+            None => {
+                self.sql_ui.sql_table = None;
+                self.sql_ui.sql_view_order = std::sync::Arc::new(std::sync::Mutex::new(None));
+            }
+        }
         if reload {
             self.reload_db_lists(cx);
         }
@@ -331,15 +338,14 @@ impl Shell {
         if result.columns.is_empty() {
             // 没有表格的结果（DDL / 无输出）不建表格 —— 界面画一句说明就够了
             self.sql_ui.sql_table = None;
+            self.sql_ui.sql_view_order = std::sync::Arc::new(std::sync::Mutex::new(None));
         } else {
             let result = result.clone();
+            let delegate = crate::sql_table::SqlResultDelegate::new(result);
+            self.sql_ui.sql_view_order = delegate.order_slot();
             self.sql_ui.sql_table = Some(cx.new(|cx| {
-                gpui_kit::component::table::TableState::new(
-                    crate::sql_table::SqlResultDelegate::new(result),
-                    window,
-                    cx,
-                )
-                .cell_selectable(true)
+                gpui_kit::component::table::TableState::new(delegate, window, cx)
+                    .cell_selectable(true)
             }));
         }
         self.sql_ui.sql_result_tab = index;
@@ -390,6 +396,19 @@ impl Shell {
                 return;
             };
             let result = db.sql_results.get(self.sql_ui.sql_result_tab);
+            // 导出按**屏幕上的顺序**写：表格允许点列头排序，而排序不重排
+            // `SqlResult.rows`（原数据原样留着），只另存一份下标表。
+            // 所以这里把那份下标表取出来一起交给 `to_csv` —— 不取的话
+            // "点了排序再导出"会得到一份看起来没排过的文件。
+            //
+            // ⚠️ 锁中毒时按"没排序"处理（`unwrap_or(None)`）：宁可导出原始
+            // 顺序，也不要因为一个后台线程 panic 过就不让人导出。
+            let order = self
+                .sql_ui
+                .sql_view_order
+                .lock()
+                .ok()
+                .and_then(|slot| slot.clone());
             // 没有结果、或者结果没有表格（DDL / 无输出）→ 不给导出。
             // 一个只有表头的 CSV 没有意义，只会让用户以为导出坏了。
             match result {
@@ -404,7 +423,7 @@ impl Shell {
                     Some((
                         format!("{base}-{stamp}.csv"),
                         r.row_count(),
-                        wslc_panel_core::sqlview::to_csv(r),
+                        wslc_panel_core::sqlview::to_csv(r, order.as_deref()),
                     ))
                 }
                 _ => None,
