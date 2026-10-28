@@ -12,15 +12,6 @@ pub fn list(wslc: &Wslc) -> Result<Vec<NetworkListItem>> {
     jsonl::parse_lines(&out.stdout)
 }
 
-/// 可连接的网络名（排除 `host` / `none`，它们不能作为 `--network` 的通用目标）。
-pub fn attachable_names(wslc: &Wslc) -> Result<Vec<String>> {
-    Ok(list(wslc)?
-        .into_iter()
-        .filter(|n| matches!(n.name.as_str(), "bridge") || !n.is_builtin())
-        .map(|n| n.name)
-        .collect())
-}
-
 /// 删除网络。
 pub fn remove(wslc: &Wslc, names: &[String]) -> Result<()> {
     if names.is_empty() {
@@ -99,8 +90,16 @@ mod tests {
         assert_eq!(items.len(), 3);
     }
 
+    /// 真机夹具里**只有 `bridge` 算内置**（`host` / `none` 在这份输出里没有，
+    /// 所以这里断言的是"过滤之后恰好剩一个，且是 bridge"）。
+    ///
+    /// 它测的是 [`NetworkListItem::is_builtin`] 对**真实输出**的判据 ——
+    /// 面板的「网络」页靠它决定禁不禁用删除按钮（内置网络删不掉）。
+    ///
+    /// （这条原先叫 `attachable_names_…`，因为那时 `cmd::network` 里有个
+    /// 同判据的 `attachable_names()`；那个函数没有任何调用点，已删。）
     #[test]
-    fn attachable_names_keeps_bridge_and_drops_host_and_none() {
+    fn the_fixture_has_exactly_one_builtin_network() {
         let items: Vec<NetworkListItem> =
             jsonl::parse_lines(include_str!("../../tests/fixtures/network_list.jsonl")).unwrap();
         let names: Vec<String> = items

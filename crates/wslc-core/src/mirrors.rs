@@ -199,11 +199,6 @@ pub fn arch() -> &'static str {
     }
 }
 
-/// 本机架构的清单拿得到吗。
-pub fn available_on_this_arch() -> bool {
-    arch() != "unknown"
-}
-
 /// 一个候选下载地址（站点 + 完整 URL + 格式）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {

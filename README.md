@@ -60,9 +60,13 @@
 > **鼠标移上去弹出 tooltip 显示全文**（见 `views::cell_muted_full`）。
 
 安全设计：**停止 / 停止全部 / 强杀 / 删除容器 / 删除镜像 / 清理容器 / 删除网络 / 删除卷 /
-清理未使用卷 / 终止会话** 全部走二次确认弹窗，并显示不可撤销的提示。
-（「终止会话」的确认框会写明：这个会话里**正在运行**的容器会一起停下，
-但镜像/容器/卷在会话的 `storage.vhdx` 里、不会被删。）
+清理未使用卷** 全部走二次确认弹窗，并显示不可撤销的提示。
+
+> ⚠️ **没有「终止会话」**：v0.9.16 把 `wslc system session list` 那条采集删掉了
+> （会话名从 `wslc info` 的 `Server.Sessions` 拿，见 `AppState::session_label`），
+> 界面上**没有**会话列表，也就没有终止某个会话的按钮。`wslc-core` 里
+> `cmd::system::terminate_session` 留着的是**能力**，不是"还有入口"——
+> 想终止会话就在终端里跑 `wslc system session terminate <id>`。
 
 ### 自动刷新
 
