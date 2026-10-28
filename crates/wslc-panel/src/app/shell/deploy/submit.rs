@@ -708,16 +708,14 @@ impl Shell {
                 if let Some(message) = site_step.error.clone() {
                     shell.state.deploy_store.put(
                         &container,
+                        // ⚠️ 用 `..record.clone()` 而不是把 9 个字段再抄一遍：
+                        // 这三处（站点失败 / 成功 / 启动失败）只有 `site` 或
+                        // `members` 不同，其余全一样。抄一遍的代价是**加字段时
+                        // 漏改一处** —— 而漏改的表现是"某条路径写进去的记录
+                        // 少了一列"，读的时候才发现。
                         wslc_panel_core::deploys::DeployRecord {
-                            app: app.clone(),
-                            runtime: runtime.key().to_owned(),
-                            source: record.source.clone(),
-                            target: record.target.clone(),
-                            command: record.command.clone(),
-                            artifact: record.artifact.clone(),
-                            port,
-                            members: record.members.clone(),
                             site: site_step.site.clone(),
+                            ..record.clone()
                         },
                     );
                     let _ = shell.state.save_deploy_store();
@@ -741,16 +739,10 @@ impl Shell {
                         // 部署确实发生了，跟"用户现在在看哪一页"无关。
                         shell.state.deploy_store.put(
                             &container,
+                            // 只有 `site` 变成这一步的结果，其余同 `record`。
                             wslc_panel_core::deploys::DeployRecord {
-                                app: app.clone(),
-                                runtime: runtime.key().to_owned(),
-                                source: record.source.clone(),
-                                target: record.target.clone(),
-                                command: record.command.clone(),
-                                artifact: record.artifact.clone(),
-                                port,
-                                members: record.members.clone(),
                                 site: site_step.site.clone(),
+                                ..record.clone()
                             },
                         );
                         if let Some(error) = shell.state.save_deploy_store() {
@@ -787,16 +779,12 @@ impl Shell {
                         // 存并集才能让之后的「删除」把这些名字都收拾干净。
                         shell.state.deploy_store.put(
                             &container,
+                            // 失败时 `members` 换成并集（见上面那段说明），
+                            // 其余同 `record`。
                             wslc_panel_core::deploys::DeployRecord {
-                                app: app.clone(),
-                                runtime: runtime.key().to_owned(),
-                                source: record.source.clone(),
-                                target: record.target.clone(),
-                                command: record.command.clone(),
-                                artifact: record.artifact.clone(),
-                                port,
                                 members: removals.clone(),
                                 site: site_step.site.clone(),
+                                ..record.clone()
                             },
                         );
                         let _ = shell.state.save_deploy_store();
