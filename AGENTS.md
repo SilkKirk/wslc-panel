@@ -525,6 +525,9 @@ Button::new(id).label("更多").small()
 > 已在 2026-10-27 删掉 —— 现状以本文件 + `README.md` 为准，历史事实从 git 里翻
 > （`git log -- docs/`）。别再往这些路径加新引用。
 
+> 全仓审查的**可执行判据**（能 grep 的 8 条 + 只能人工读的 2 条）在
+> [`docs/review-checklist.md`](docs/review-checklist.md)。改完代码不要只跑 CI，也过一遍那几条。
+
 ---
 
 ## 6. 参考项目（只读，**绝对不能抄**）
