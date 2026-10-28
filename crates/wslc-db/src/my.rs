@@ -265,14 +265,25 @@ mod tests {
     fn server_codes_map_to_the_right_kind() {
         // 判据是 MySQL 文档里定死的错误号，不是我们的猜测。
         assert_eq!(classify_server_code(1045), DbErrorKind::Auth, "口令错");
-        assert_eq!(classify_server_code(1044), DbErrorKind::Auth, "库级权限不足");
-        assert_eq!(classify_server_code(1142), DbErrorKind::Auth, "表级权限不足");
-        assert_eq!(classify_server_code(1049), DbErrorKind::Database, "库不存在");
+        assert_eq!(
+            classify_server_code(1044),
+            DbErrorKind::Auth,
+            "库级权限不足"
+        );
+        assert_eq!(
+            classify_server_code(1142),
+            DbErrorKind::Auth,
+            "表级权限不足"
+        );
+        assert_eq!(
+            classify_server_code(1049),
+            DbErrorKind::Database,
+            "库不存在"
+        );
         // 其余服务端错误都是 SQL 本身的问题（语法 / 约束 / 类型）
         assert_eq!(classify_server_code(1064), DbErrorKind::Query, "语法错误");
         assert_eq!(classify_server_code(1062), DbErrorKind::Query, "唯一键冲突");
     }
-
     /// ⚠️ 回归钉：TLS 握手失败**必须**被认出来，而不是说成"连不上"。
     ///
     /// 两个理由，缺一都会让这个 bug 回来：

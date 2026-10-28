@@ -80,9 +80,18 @@ impl ConnSpec {
         if let Some(db) = self.database.as_deref().filter(|s| !s.is_empty()) {
             parts.push(format!("dbname={}", conninfo_quote(db)));
         }
+        // ⚠️ `sslmode` 这一对是**给真正的 driver 用的**（`libpq` 语义），
+        // 但**当前没有任何调用方消费它**：
+        //
+        // `pg.rs::PgSession::open` 用的是 `postgres::NoTls`，并且在 `tls == true`
+        // 时**直接报错**（"PostgreSQL 的 TLS 还没接"）—— 那条错误发生在
+        // `Client::connect` 之前，所以这个串根本没被送到驱动手上。
+        //
+        // 换句话说：`tls = true` 走不到这里。留着它是因为
+        // `postgres_conninfo()` 是对外可用的纯函数（有单测钉形状），
+        // 将来接 TLS 时这一行就是"意图表达"的落点。
+        // ⚠️ 别以为设置了 `tls` 就能加密 —— 现在只会得到一条错误。
         if self.tls {
-            // `postgres` 0.19 的 TLS 要靠额外的 `MakeTlsConnect` 实现；
-            // 这里只把意图表达出来，驱动层据此决定用哪种 TLS。
             parts.push("sslmode=require".to_owned());
         } else {
             parts.push("sslmode=prefer".to_owned());
