@@ -104,6 +104,68 @@ pub(crate) fn current_version() -> wslc_core::update::Version {
 const DISTRO_STATUS_SECS: u64 = 30;
 
 impl Shell {
+    /// 「跑一条 CLI 动作 → 提示 → 刷新」的唯一实现（容器域与发行版域共用）。
+    ///
+    /// # 为什么收成一处
+    ///
+    /// `spawn_container_action` 和 `spawn_distro_action` 原先**逐行相同**：
+    /// 发一条「正在…」、`background_executor` 里跑、按结果发成功 / 失败提示、
+    /// 然后 `refresh`。实质差异只有两样 —— 跑哪个调用器、以及动作的签名。
+    ///
+    /// 抄两遍的代价不是行数，而是**漂移**：改提示文案、加取消支持、
+    /// 或者修"成功后忘了刷新"这类 bug 时，很容易只改一处。
+    /// （同样的教训在 `deploy/lifecycle.rs` 的起停上已经吃过一次：
+    /// `stop` 漏了 `progress` 守卫。那边收成了 `spawn_deploy_lifecycle`。）
+    ///
+    /// # 为什么收 `run` 闭包而不是函数指针
+    ///
+    /// 两个域的 CLI 封装签名不一样：发行版是 `fn(&Wsl, &str)`，
+    /// 容器是 `fn(&Wslc, &[String])`（一次能停多个）。调用点各写一行
+    /// `move |wslc, wsl| …` 把差异吞掉，比在这里引入 trait 或枚举都短。
+    ///
+    /// ⚠️ `run` 会在**后台执行器**上被调用，所以它必须只做阻塞活、
+    /// 不要去碰 `self` / `cx`（`'static` 已经挡住了，但意图要写清）。
+    pub(crate) fn spawn_simple_action(
+        &mut self,
+        verb: &'static str,
+        name: String,
+        run: impl FnOnce(&Wslc, &Wsl) -> wslc_core::Result<()> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        // 点下去先给个回应。没有这一条的话，从点击到结果出来这段时间
+        // 界面上什么都没变 —— 用户只会觉得按钮坏了然后去点第二次
+        // （`AGENTS.md` §7.1）。
+        self.state
+            .notify(Toast::info(format!("正在{verb} {name}…")));
+        cx.notify();
+
+        // 两个调用器都 `Clone`（内部只是程序路径 + 超时设置），
+        // 因为后台闭包不能借 `self`。
+        let wslc = self.state.wslc.clone();
+        let wsl = self.state.wsl.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { run(&wslc, &wsl) })
+                .await;
+
+            let _ = this.update(cx, |shell, cx| {
+                match result {
+                    Ok(()) => shell
+                        .state
+                        .notify(Toast::success(format!("{name} 已{verb}"))),
+                    Err(e) => shell
+                        .state
+                        .notify(Toast::error(format!("{name} {verb}失败：{e}"))),
+                }
+                // 立即刷新，让列表反映最新状态。
+                shell.refresh(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// 创建外壳：立刻触发一次采集、加载配置、启动自动刷新。
     pub fn new(cx: &mut Context<Self>) -> Self {
         let mut shell = Self {

@@ -239,8 +239,12 @@ impl Shell {
 
     /// 启动/重启的公共实现：后台跑一条 `wslc <verb> <name>`，完了刷新。
     ///
-    /// 用函数指针而不是闭包泛型：`start` 和 `restart` 签名一致，
-    /// 函数指针省掉一层泛型参数，编译器也更容易推断。
+    /// 实现收在 [`Shell::spawn_simple_action`]（和发行版域共用）——
+    /// 那一条的文档讲了"为什么所有动作都必须走后台"以及"为什么收成一处"。
+    ///
+    /// 这里只把**容器的**签名 `fn(&Wslc, &[String])` 适配成共用的形状：
+    /// `wslc start/restart` 收**多个名字**，我们一次只传一个
+    /// （`std::slice::from_ref`）。
     pub(crate) fn spawn_container_action(
         &mut self,
         verb: &'static str,
@@ -248,39 +252,14 @@ impl Shell {
         action: fn(&Wslc, &[String]) -> wslc_core::Result<Vec<String>>,
         cx: &mut Context<Self>,
     ) {
-        // 点下去先给个回应 —— 和发行版那条（[`Shell::spawn_distro_action`]）
-        // 保持一致。
-        //
-        // 没有这一条的话，从点击到结果出来这段时间界面上什么都没变。
-        // `wslc start/restart` 通常是秒级，但容器多、镜像要拉、或者 WSL
-        // 刚被唤醒时会明显更久 —— 那期间用户只会觉得按钮坏了然后去点第二次
-        // （`AGENTS.md` §7.1 第二条）。
-        self.state
-            .notify(Toast::info(format!("正在{verb} {name}…")));
-        cx.notify();
-
-        let wslc = self.state.wslc.clone();
         let target = name.clone();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { action(&wslc, std::slice::from_ref(&target)) })
-                .await;
-
-            let _ = this.update(cx, |shell, cx| {
-                match result {
-                    Ok(_) => shell
-                        .state
-                        .notify(Toast::success(format!("{name} 已{verb}"))),
-                    Err(e) => shell
-                        .state
-                        .notify(Toast::error(format!("{name} {verb}失败：{e}"))),
-                }
-                shell.refresh(cx);
-                cx.notify();
-            });
-        })
-        .detach();
+        self.spawn_simple_action(
+            verb,
+            name,
+            // 返回值（`wslc start` 会回显名字）用不上：成功提示里已经有名字了。
+            move |wslc, _wsl| action(wslc, std::slice::from_ref(&target)).map(|_| ()),
+            cx,
+        );
     }
 
     // -- 创建容器弹窗 --------------------------------------------------------

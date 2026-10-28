@@ -167,17 +167,10 @@ impl Shell {
 
     /// 后台跑一个发行版动作，完了刷新。
     ///
-    /// # 为什么所有动作都必须走这里
+    /// 实现收在 [`Shell::spawn_simple_action`]（和容器域共用）——
+    /// 那一条的文档讲了"为什么所有动作都必须走后台"以及"为什么收成一处"。
     ///
-    /// `wsl.exe` 是**同步**等的（`Command::output()` 那种），
-    /// 直接在界面线程上调用会让整个窗口卡住 ——
-    /// Windows 大约 5 秒后就给它挂上"**未响应**"。
-    ///
-    /// 实测「启动」一个发行版要一两秒，`--shutdown` 更久，
-    /// 压缩/移动是分钟级。这些**全都**不能在界面线程上跑。
-    ///
-    /// 另外：点下去先发一条"正在…"，否则从点击到结果出来这段时间
-    /// 界面上什么都没发生，用起来像是按钮没反应。
+    /// 这里只把**发行版的**签名 `fn(&Wsl, &str)` 适配成共用的形状。
     pub(crate) fn spawn_distro_action(
         &mut self,
         verb: &'static str,
@@ -185,33 +178,8 @@ impl Shell {
         action: fn(&Wsl, &str) -> wslc_core::Result<()>,
         cx: &mut Context<Self>,
     ) {
-        let wsl = self.state.wsl.clone();
         let target = name.clone();
-
-        self.state
-            .notify(Toast::info(format!("正在{verb} {name}…")));
-        cx.notify();
-
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { action(&wsl, &target) })
-                .await;
-
-            let _ = this.update(cx, |shell, cx| {
-                match result {
-                    Ok(()) => shell
-                        .state
-                        .notify(Toast::success(format!("{name} 已{verb}"))),
-                    Err(e) => shell
-                        .state
-                        .notify(Toast::error(format!("{name} {verb}失败：{e}"))),
-                }
-                shell.refresh(cx);
-                cx.notify();
-            });
-        })
-        .detach();
+        self.spawn_simple_action(verb, name, move |_wslc, wsl| action(wsl, &target), cx);
     }
 
     /// 启动发行版，并**让它一直保持运行**。
