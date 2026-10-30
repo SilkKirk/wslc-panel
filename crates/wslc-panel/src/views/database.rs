@@ -20,8 +20,13 @@ use super::prelude::*;
 ///
 /// 1. **探测就失败**（不是 MySQL / 容器没运行 / 镜像里没客户端）：
 ///    只画那张说明卡片。这时候再摆一排空表和连接卡只会干扰判断。
-/// 2. **正常**：连接卡 + tab（数据库 / 用户 / SQL 控制台）。
+/// 2. **正常**：连接卡（在「基础信息」浮层里）+ 两个 tab（数据库 / 用户）。
 /// 3. **还没读到数据**：表格的位置放一句"正在读取…"。
+///
+/// ⚠️ **只有两个 tab**（`DbTab` 就两个变体）。SQL 控制台在 v0.12 起是
+/// **独立整页**（`views::sql_console_page`），不在这两个 tab 里 ——
+/// 这里原先写着"三个 tab（数据库 / 用户 / SQL 控制台）"，是 v0.12 之前的事实。
+/// PostgreSQL 家族另外走 [`db_postgres_card`]（那两个 tab 的动作全是 MySQL 专有）。
 ///
 /// # 密码
 ///
@@ -487,58 +492,66 @@ fn db_postgres_card(db: &DbState, entity: &Entity<Shell>) -> AnyElement {
 
     v_flex()
         .w_full()
-        .gap_2()
+        .gap_3()
         .child(
-            div()
-                .text_sm()
-                .font_semibold()
-                .text_color(theme::text())
-                .child(format!(
-                    "{} · 共 {} 个库",
-                    db.engine_label(),
-                    db.databases.len()
-                )),
+            // 三行说明自己一组（组内 `gap_2`），和下面的库名列表之间用
+            // 外层 `gap_3` 拉开。
+            //
+            // ⚠️ 这里原本是 `.gap_2()` + 两颗 `div().h(px(4.))` 当**间隔器** ——
+            // 全仓就这两处这么写。用空 div 当间距的问题不是丑，是它**不可组合**：
+            // 调整外层 gap 时它不跟着变，于是间距变成"8 + 4 + 8"这种没人记得住
+            // 的数，而这个数只存在于这一屏的视觉记忆里。分组 + `gap_*` 之后，
+            // 间距只由两个具名值决定。
+            v_flex()
+                .w_full()
+                .gap_2()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_semibold()
+                        .text_color(theme::text())
+                        .child(format!(
+                            "{} · 共 {} 个库",
+                            db.engine_label(),
+                            db.databases.len()
+                        )),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child("这一页已支持：SQL 控制台、表结构树、方言感知补全。"),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_dim())
+                        .child("数据库 / 用户 / 备份恢复 是 MySQL 专有功能，暂未适配 PostgreSQL。"),
+                ),
         )
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme::text_dim())
-                .child("这一页已支持：SQL 控制台、表结构树、方言感知补全。"),
-        )
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme::text_dim())
-                .child("数据库 / 用户 / 备份恢复 是 MySQL 专有功能，暂未适配 PostgreSQL。"),
-        )
-        .child(div().h(px(4.)))
         .children(names)
-        .child(div().h(px(4.)))
         .child(open)
         .into_any_element()
 }
 
-/// 库名那一格：名字 + （系统库时）一个「系统」标记。
+/// 库名那一格。
 ///
-/// 系统库现在**不出现在列表里**（[`db_databases_card`] 里过滤掉了），
-/// 所以这个标记实际只在别处（比如将来"显示系统库"的开关）还有用 ——
-/// 留着是因为"这一行是不是系统库"这件事本身仍然要能一眼看出来。
+/// ⚠️ **只有一个名字，没有「系统」徽标**。v0.22.4 及以前这里挂着一段
+/// `entry.is_system().then(|| badge("系统", …))`，但那个分支**永远不会成立**：
+/// 调用方（[`db_databases_card`]）在传进来之前就 `filter(|e| !e.is_system())`
+/// 过滤掉了系统库，而数量另外写在那行的「另有 N 个系统库未显示」里。
+///
+/// 那段死逻辑留着的代价不只是几行：它的注释写着"将来'显示系统库'的开关还有用"，
+/// 于是读代码的人会以为这件事有人在做。真要加那个开关时，这个函数再长回
+/// 一个 `bool` 参数也不迟。
 fn db_name_cell(entry: &wslc_core::model::DbEntry) -> AnyElement {
-    h_flex()
-        .gap_2()
-        .min_w_0()
-        .child(
-            div()
-                .text_sm()
-                .overflow_hidden()
-                .truncate()
-                .child(entry.name.clone()),
-        )
-        .children(
-            entry.is_system().then(|| {
-                badge("系统", theme::text_dim(), theme::neutral_soft()).into_any_element()
-            }),
-        )
+    div()
+        .text_sm()
+        .overflow_hidden()
+        .truncate()
+        // 库名是**用户数据**，必须过 `strip_md`（`AGENTS.md` §5）——
+        // MySQL 允许库名里带 `**`。
+        .child(wslc_panel_core::util::strip_md(&entry.name))
         .into_any_element()
 }
 

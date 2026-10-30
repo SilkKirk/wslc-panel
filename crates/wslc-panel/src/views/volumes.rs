@@ -14,8 +14,7 @@ pub(crate) fn volumes_page(state: &AppState, entity: &Entity<Shell>) -> impl Int
         .snapshot
         .volumes
         .iter()
-        .enumerate()
-        .map(|(ix, vol)| {
+        .map(|vol| {
             table_row(
                 VOLUME_COLUMNS,
                 vec![
@@ -23,7 +22,18 @@ pub(crate) fn volumes_page(state: &AppState, entity: &Entity<Shell>) -> impl Int
                     volume_usage_cell(vol),
                     cell_muted(vol.driver.clone()),
                     cell_muted_full(vol.name.clone(), vol.mountpoint.clone()),
-                    volume_row_actions(ix, &vol.name, entity),
+                    // ⚠️ id 用**卷名**，不是 `enumerate()` 给的下标 ——
+                    // GPUI 的 hover / 焦点状态按元素 id 记，下标会在删掉上一行
+                    // 之后整体前移，光标停的那一行就变成另一行了。
+                    // 全仓其它列表页用的都是业务标识（见 `views/networks.rs`
+                    // 同一处说明）。
+                    danger_button(
+                        &format!("remove-volume-{}", vol.name),
+                        "删除",
+                        PendingAction::RemoveVolume(vol.name.clone()),
+                        entity,
+                    )
+                    .into_any_element(),
                 ],
             )
         })
@@ -71,25 +81,15 @@ pub(crate) fn volumes_page(state: &AppState, entity: &Entity<Shell>) -> impl Int
 /// ⚠️ `InUse` 字段没有实机夹具（采集环境没有卷，见 `volume.rs` 顶部），
 /// 所以 `None` 必须显示 `—`。**不要**拿它决定能不能删 —— 删除/清理
 /// 仍然交给 `wslc` 自己判断。
+///
+/// 三档的**颜色**是有意的：`使用中` 用正文色（值得注意）、`未使用` 用次要色
+/// （默认状态）、`—` 用更淡的色（我们不知道）。三者都是一句话，所以都走
+/// `cell_*`，别手写 `div` —— 原先 `Some(false)` 那支是自己拼的
+/// `div().text_sm().text_color(...)`，和另外两支不同源。
 fn volume_usage_cell(volume: &VolumeListItem) -> AnyElement {
     match volume.in_use() {
         Some(true) => cell_text("使用中"),
-        Some(false) => div()
-            .text_sm()
-            .text_color(theme::text_muted())
-            .child("未使用")
-            .into_any_element(),
+        Some(false) => cell_muted("未使用"),
         None => cell_muted("—"),
     }
-}
-
-/// 卷行末：**直接**显示删除。
-fn volume_row_actions(ix: usize, name: &str, entity: &Entity<Shell>) -> AnyElement {
-    danger_button(
-        &format!("remove-volume-{ix}"),
-        "删除",
-        PendingAction::RemoveVolume(name.to_owned()),
-        entity,
-    )
-    .into_any_element()
 }
