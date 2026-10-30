@@ -616,7 +616,20 @@ pub(crate) fn db_backup_dialog_body(
         .enumerate()
         .filter(|(_, entry)| entry.database == database)
         .map(|(index, entry)| {
-            let restore = Button::new(SharedString::from(format!("db-restore-{index}")))
+            // ⚠️ **元素 id 用备份文件名，`index` 只留给动作参数**。
+            //
+            // `index` 在这里有两个用途，必须分开看：
+            // - 作为 `Shell::restore_db_backup(index, …)` /
+            //   `delete_db_backup(index, …)` 的参数 —— 它索引的是
+            //   `DbState::backups`，是**业务语义**，改不了（那要动 Shell 那层）；
+            // - 作为**元素 id** —— 这个不该用下标：GPUI 按 id 记 hover / 焦点，
+            //   删掉一份备份之后其余行的下标整体前移，光标停的那一行会变成
+            //   另一行（网络页 / 卷页 / 镜像页同一处问题，
+            //   见 `docs/review-checklist.md` 第 2 条）。
+            //
+            // 备份文件名天然唯一（同一个目录里不可能重名），拿它当 id 正好。
+            let file_key = &entry.file_name;
+            let restore = Button::new(SharedString::from(format!("db-restore-{file_key}")))
                 .label("恢复")
                 .small()
                 .primary()
@@ -628,7 +641,7 @@ pub(crate) fn db_backup_dialog_body(
                 })
                 .into_any_element();
             let open_dir = overlay_button(
-                &format!("db-open-backup-{index}"),
+                &format!("db-open-backup-{file_key}"),
                 "打开位置",
                 {
                     let dir = entry.path.parent().map(|p| p.to_path_buf());
@@ -638,7 +651,7 @@ pub(crate) fn db_backup_dialog_body(
             );
             let delete = {
                 let entity = entity.clone();
-                Button::new(SharedString::from(format!("db-delete-backup-{index}")))
+                Button::new(SharedString::from(format!("db-delete-backup-{file_key}")))
                     .label("删除")
                     .small()
                     .on_click(move |_, _, cx| {

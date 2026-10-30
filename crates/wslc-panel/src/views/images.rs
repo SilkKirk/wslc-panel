@@ -34,8 +34,7 @@ pub(crate) fn images_page(state: &AppState, entity: &Entity<Shell>) -> AnyElemen
         .snapshot
         .images
         .iter()
-        .enumerate()
-        .map(|(ix, img)| {
+        .map(|img| {
             let reference = img.reference();
             table_row(
                 IMAGE_COLUMNS,
@@ -44,7 +43,7 @@ pub(crate) fn images_page(state: &AppState, entity: &Entity<Shell>) -> AnyElemen
                     cell_muted(img.size.clone()),
                     image_usage_cell(img),
                     cell_muted(img.created_since.clone()),
-                    image_row_actions(ix, &reference, entity),
+                    image_row_actions(&reference, entity),
                 ],
             )
         })
@@ -136,12 +135,17 @@ fn image_usage_cell(image: &ImageListItem) -> AnyElement {
 ///
 /// 只有两个动作，而且是这一行专属的入口；再套一层「更多」只会让用户
 /// 多点一次。容器列表行不一样（那里最多 4 个动作），「更多」只留那处。
-fn image_row_actions(ix: usize, reference: &str, entity: &Entity<Shell>) -> AnyElement {
+///
+/// ⚠️ `id` 用**镜像引用**，不用 `enumerate()` 给的下标。
+/// GPUI 的 hover / 焦点状态按元素 id 记 —— 删掉上面一行之后，下面各行的
+/// 下标整体前移，光标停的那一行会忽然变成另一行。
+/// （网络页 / 卷页同一处问题在 `d4e6fac` 里改掉了，这一处是当时漏下的第三处。）
+fn image_row_actions(reference: &str, entity: &Entity<Shell>) -> AnyElement {
     let create_ref = reference.to_owned();
     let remove_ref = reference.to_owned();
     let entity_for_create = entity.clone();
 
-    let create = Button::new(SharedString::from(format!("image-create-{ix}")))
+    let create = Button::new(SharedString::from(format!("image-create-{reference}")))
         .label("创建容器")
         .tooltip("用这个镜像创建容器")
         .small()
@@ -156,7 +160,7 @@ fn image_row_actions(ix: usize, reference: &str, entity: &Entity<Shell>) -> AnyE
         .flex_wrap()
         .child(create)
         .child(danger_button(
-            &format!("remove-image-{ix}"),
+            &format!("remove-image-{reference}"),
             "删除",
             PendingAction::RemoveImage(remove_ref),
             entity,
