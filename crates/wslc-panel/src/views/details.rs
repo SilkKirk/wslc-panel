@@ -344,6 +344,19 @@ pub(crate) fn distro_detail_body(
     }
 
     // 「打开安装位置」是**只读**操作，所以和其他动作分开摆到左边。
+    //
+    // ⚠️ 这两个按钮是**手写 `Button`**，不走 `common::overlay_button`
+    // （这一排别处都走它）。不是漏改，是两个具体差异：
+    //
+    // - 「编辑配置」要 `.tooltip(...)` —— 它的标签只有四个字，不说明
+    //   "编辑的是**发行版里面的** /etc/wsl.conf"就会被读成"编辑实例配置"；
+    //   而 `overlay_button` 没有 tooltip 参数（它服务的那些按钮文案已经
+    //   自解释：`数据库` / `部署管理`）；
+    // - 两个按钮的 label 都是 `&'static str` 且不需要 `id` 格式化 ——
+    //   手写并不比走助手长多少。
+    //
+    // 真要统一的话，正确方向是给 `overlay_button` 加一个可选的 tooltip，
+    // 而不是把这里的两颗塞进去再在外面补 tooltip（那个 API 不成立）。
     let reveal = {
         let entity = entity.clone();
         let target = name.to_owned();
