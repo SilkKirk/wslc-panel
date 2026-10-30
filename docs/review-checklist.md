@@ -175,7 +175,37 @@ GPUI 的 hover / 焦点状态**按元素 id 记**。删掉上面一行之后，�
 
 ---
 
-## 五、仍然没有覆盖的
+## 五、⚠️ 走 API 推送前，必须先确认工作区是 LF
+
+`scripts/gh-api-push.ps1` 按**工作区字节**建 blob（它必须这样：那条路是为
+`github.com:443` 不通准备的，拿不到索引树）。而 Windows 检出时工作区是
+**CRLF**，`.gitattributes` 的 `eol=lf` 只在 git 走索引那一步生效 ——
+**API 那条路绕过了它**。
+
+实测（2026-10-30）：一次 API 推送把两个文件推成了全 CRLF ——
+`images.rs` 从 17677 字节/全 LF 变成 18508 字节/全 CRLF。后果不是"看起来
+一样就行"：下次正常 checkout 时 git 会按 LF 重写，表现为**整文件的伪改动**，
+正是 `AGENTS.md` §7.6 里 `--renormalize` 那条警告的镜像情形。
+
+**推送前的一句判据**（纯本地，不走网络）：
+
+```powershell
+# 工作区字节 == 索引里的 blob？相等才说明行尾已经归一化
+git hash-object --no-filters <文件>   # 对比 git rev-parse HEAD:<文件>
+```
+
+不等就先转 LF 再推：
+
+```powershell
+$t = [System.IO.File]::ReadAllText($f)
+[System.IO.File]::WriteAllText($f, $t -replace "`r`n", "`n")
+```
+
+推完再验一次远端（`contents?ref=<sha>` → base64 解出来数 CRLF/LF）。
+
+---
+
+## 六、仍然没有覆盖的
 
 - **`views/` 的渲染结果**：`wslc-panel` 不在任何测试目标里
   （`cargo test --workspace --exclude wslc-panel`），所以布局错位、
