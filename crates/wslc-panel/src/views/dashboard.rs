@@ -365,11 +365,15 @@ fn status_card(state: &AppState, stats: &DashboardStats) -> AnyElement {
     .into_any_element()
 }
 
-/// 底部那排数字：镜像 / 网络 / 卷 / WSL 实例。
+/// 底部那排数字：**WSL 实例 / 镜像 / 网络 / 卷**（就是下面 `stat_tile` 的调用顺序）。
 ///
 /// 容器的数量**不在这里** —— 它已经是上面那一环了，摆两遍只会让人
 /// 犹豫该看哪个（`AGENTS.md` §5 同一条道理）。这一排回答的是"我这儿
 /// 有多少东西"，想看清单一页一个，所以刻意**不可点**。
+///
+/// ⚠️ 这份注释原先写的是"镜像 / 网络 / 卷 / WSL 实例"，和实际顺序不符 ——
+/// 顺序是有意的：**实例排第一**（它是容器赖以存在的那个层面，也是侧边栏
+/// 里紧跟「基本信息」的一页），容器生态（镜像 / 网络 / 卷）跟在后面。
 fn overview_tiles(state: &AppState) -> impl IntoElement {
     let snap = &state.snapshot;
 

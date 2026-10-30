@@ -60,7 +60,19 @@ pub(crate) fn networks_page(state: &AppState, entity: &Entity<Shell>) -> impl In
     let body = table_card(
         NETWORK_COLUMNS,
         rows,
-        Some(empty_state("没有网络").into_any_element()),
+        Some(
+            // ⚠️ 这一页**刻意不给"下一步点哪"** —— 它没有创建入口。
+            //
+            // 面板没接 `wslc network create`（v0.9 起没做），用户自定义网络
+            // 只会在「创建容器」选网络时由 `wslc` 自己带出来。所以这里能说的
+            // 只是一句**它为什么会空**：`bridge` / `host` / `none` 是内置网络，
+            // 正常机器上至少有一个 `bridge`；一个都没有通常意味着
+            // `wslc network list` 读失败（原因在页面顶部的红色横幅里）。
+            //
+            // （「镜像」/「卷」两页的空态给的是"点右上角…"，那两页确实有
+            // 创建入口 —— 别把这条规矩机械地套到这里。）
+            empty_state("没有读到任何网络 —— 内置的 bridge 通常总有一个").into_any_element(),
+        ),
     );
 
     v_flex()

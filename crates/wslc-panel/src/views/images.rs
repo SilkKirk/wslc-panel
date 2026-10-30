@@ -94,7 +94,16 @@ pub(crate) fn images_page(state: &AppState, entity: &Entity<Shell>) -> AnyElemen
     let body = table_card(
         IMAGE_COLUMNS,
         rows,
-        Some(empty_state("没有本地镜像").into_any_element()),
+        Some(
+            // 空态要说**下一步点哪**，不只说"没有"。
+            //
+            // 这一页确实有下一步（页头那颗「拉取镜像…」），而原先只写
+            // "没有本地镜像" —— 用户得自己往上看一眼才知道能做什么。
+            // 同一份道理在 `database.rs`（"点右上角「重新读取」"）和
+            // `db_dialogs.rs`（"点右上角的「立即备份」"）已经做了，
+            // 这一页和卷页是漏的。
+            empty_state("还没有本地镜像 —— 点右上角的「拉取镜像…」拉一个").into_any_element(),
+        ),
     );
 
     v_flex()

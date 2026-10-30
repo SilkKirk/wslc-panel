@@ -72,7 +72,12 @@ pub(crate) fn volumes_page(state: &AppState, entity: &Entity<Shell>) -> impl Int
     v_flex().w_full().gap_3().child(header).child(table_card(
         VOLUME_COLUMNS,
         rows,
-        Some(empty_state("没有卷（无卷时 wslc 输出为空）").into_any_element()),
+        Some(
+            // 空态给下一步（和「镜像」页同一份理由）：这一页有「创建卷」，
+            // 而原先只写"没有卷（无卷时 wslc 输出为空）"—— 括号里那句是
+            // **给我们自己看的**（解释为什么是空的），对用户没有下一步。
+            empty_state("还没有卷 —— 点左上角的「创建卷」建一个").into_any_element(),
+        ),
     ))
 }
 
